@@ -240,7 +240,7 @@ impl PatternFolder {
 
         if let Some(index) = oldest_index {
             let group = self.buffer.remove(index);
-            let formatted = self.format_group(group)?;
+            let formatted = self.format_group(&group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
             return Ok(Some(formatted));
@@ -266,7 +266,7 @@ impl PatternFolder {
         // Flush all remaining groups in chronological order
         while !self.buffer.is_empty() {
             let group = self.buffer.remove(0);
-            let formatted = self.format_group(group)?;
+            let formatted = self.format_group(&group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
             output.push(formatted);
@@ -301,7 +301,7 @@ impl PatternFolder {
 
         let mut output = Vec::new();
         for (count, group) in top_groups {
-            let formatted = self.format_group(group)?;
+            let formatted = self.format_group(&group)?;
             self.stats.output_lines += formatted.lines().count();
             output.push((count, formatted));
         }
@@ -365,7 +365,7 @@ impl PatternFolder {
 
                     // Check if they're similar enough to merge
                     let similarity = self.normalizer.similarity_score(group1_first, group2_first);
-                    if similarity >= self.config.threshold as f64 {
+                    if similarity >= f64::from(self.config.threshold) {
                         // Merge group j into group i
                         let group_to_merge = self.buffer.remove(j);
                         for line in group_to_merge.lines {
@@ -417,7 +417,7 @@ impl PatternFolder {
         }
     }
 
-    fn format_group(&mut self, group: PatternGroup) -> Result<String> {
+    fn format_group(&mut self, group: &PatternGroup) -> Result<String> {
         if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
             self.stats.collapsed_groups += 1;
             self.stats.lines_saved += group.count() - 3; // First, summary, and last lines are output
@@ -442,7 +442,7 @@ impl PatternFolder {
             let first_line_output = if self.config.sanitize_pii && !self.config.essence_mode {
                 apply_pii_masking(first_line, &group.first().tokens)
             } else {
-                first_line.to_string()
+                first_line.clone()
             };
             result.push_str(&first_line_output);
             result.push('\n');
@@ -468,7 +468,7 @@ impl PatternFolder {
                     {
                         apply_pii_masking(last_line, &group.last().tokens)
                     } else {
-                        last_line.to_string()
+                        last_line.clone()
                     };
                     result.push_str(&last_line_output);
                 }
@@ -782,10 +782,10 @@ impl PatternFolder {
             }
 
             // Strip ANSI if needed
-            let line = if !self.config.preserve_color {
-                ansi_regex.replace_all(&line, "").to_string()
-            } else {
+            let line = if self.config.preserve_color {
                 line
+            } else {
+                ansi_regex.replace_all(&line, "").to_string()
             };
 
             // Extract timestamp for range tracking
@@ -984,7 +984,7 @@ impl PatternFolder {
     /// Parallel batch processing: normalize in parallel, cluster sequentially
     fn process_batch(&mut self) -> Result<()> {
         let batch = std::mem::take(&mut self.batch_buffer);
-        let processed_lines = self.parallel_pattern_detection(batch)?;
+        let processed_lines = self.parallel_pattern_detection(&batch)?;
 
         for processed_line in processed_lines {
             self.sequential_clustering(processed_line)?;
@@ -993,7 +993,7 @@ impl PatternFolder {
     }
 
     /// Phase 1: Parallel pattern detection and normalization (the CPU-intensive work)
-    fn parallel_pattern_detection(&self, lines: Vec<String>) -> Result<Vec<LogLine>> {
+    fn parallel_pattern_detection(&self, lines: &[String]) -> Result<Vec<LogLine>> {
         use rayon::prelude::*;
 
         // This is where the real CPU work happens - parallel regex pattern detection

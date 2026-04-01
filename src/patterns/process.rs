@@ -1,22 +1,25 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
-
-    // PID patterns: [12345], pid=12345, (12345)
-static PID_BRACKET_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[pid=(\d+)\]|\[(\d+)\]").unwrap());
+// PID patterns: [12345], pid=12345, (12345)
+static PID_BRACKET_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[pid=(\d+)\]|\[(\d+)\]").unwrap());
 static PID_EQUALS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpid=(\d+)\b").unwrap());
 static PID_PAREN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\((\d+)\)").unwrap());
 
-    // Thread ID patterns
-static THREAD_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bThread-(\d+)\b").unwrap());
-static TID_HEX_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\btid=(0x[a-fA-F0-9]+)\b").unwrap());
-static THREAD_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[thread:([a-zA-Z0-9_-]+)\]").unwrap());
+// Thread ID patterns
+static THREAD_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bThread-(\d+)\b").unwrap());
+static TID_HEX_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\btid=(0x[a-fA-F0-9]+)\b").unwrap());
+static THREAD_NAME_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[thread:([a-zA-Z0-9_-]+)\]").unwrap());
 
-    // Generic numeric ID in various contexts
+// Generic numeric ID in various contexts
 static NUMERIC_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bid=(\d+)\b").unwrap());
 
-    // Kubernetes specific: process ID in log format
+// Kubernetes specific: process ID in log format
 static K8S_PROCESS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+(\d+)\s+").unwrap());
 
 pub struct ProcessDetector;
@@ -37,25 +40,35 @@ impl ProcessDetector {
                 }
             }
         }
-        result = PID_BRACKET_REGEX.replace_all(&result, "[pid=<PID>]").to_string();
+        result = PID_BRACKET_REGEX
+            .replace_all(&result, "[pid=<PID>]")
+            .to_string();
 
         // PID with equals like pid=12345
         for cap in PID_EQUALS_REGEX.captures_iter(&result) {
             let pid_str = cap.get(1).unwrap().as_str();
             if let Ok(pid) = pid_str.parse::<u32>() {
-                if Self::is_likely_pid(pid) && !tokens.iter().any(|t| matches!(t, Token::Pid(p) if *p == pid)) {
+                if Self::is_likely_pid(pid)
+                    && !tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Pid(p) if *p == pid))
+                {
                     tokens.push(Token::Pid(pid));
                 }
             }
         }
-        result = PID_EQUALS_REGEX.replace_all(&result, "pid=<PID>").to_string();
+        result = PID_EQUALS_REGEX
+            .replace_all(&result, "pid=<PID>")
+            .to_string();
 
         // Thread-specific patterns
         for cap in THREAD_ID_REGEX.captures_iter(&result) {
             let thread_str = cap.get(1).unwrap().as_str();
             tokens.push(Token::ThreadID(format!("Thread-{}", thread_str)));
         }
-        result = THREAD_ID_REGEX.replace_all(&result, "Thread-<TID>").to_string();
+        result = THREAD_ID_REGEX
+            .replace_all(&result, "Thread-<TID>")
+            .to_string();
 
         for cap in TID_HEX_REGEX.captures_iter(&result) {
             let tid_str = cap.get(1).unwrap().as_str();
@@ -67,24 +80,36 @@ impl ProcessDetector {
             let thread_name = cap.get(1).unwrap().as_str();
             tokens.push(Token::ThreadID(thread_name.to_string()));
         }
-        result = THREAD_NAME_REGEX.replace_all(&result, "[thread:<TID>]").to_string();
+        result = THREAD_NAME_REGEX
+            .replace_all(&result, "[thread:<TID>]")
+            .to_string();
 
         // Generic numeric IDs
         for cap in NUMERIC_ID_REGEX.captures_iter(&result) {
             let id_str = cap.get(1).unwrap().as_str();
             if let Ok(id) = id_str.parse::<u32>() {
-                if Self::is_likely_pid(id) && !tokens.iter().any(|t| matches!(t, Token::Pid(p) if *p == id)) {
+                if Self::is_likely_pid(id)
+                    && !tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Pid(p) if *p == id))
+                {
                     tokens.push(Token::Pid(id));
                 }
             }
         }
-        result = NUMERIC_ID_REGEX.replace_all(&result, "id=<PID>").to_string();
+        result = NUMERIC_ID_REGEX
+            .replace_all(&result, "id=<PID>")
+            .to_string();
 
         // Handle PIDs in parentheses (but be careful not to match ports or other numbers)
         for cap in PID_PAREN_REGEX.captures_iter(&result) {
             let pid_str = cap.get(1).unwrap().as_str();
             if let Ok(pid) = pid_str.parse::<u32>() {
-                if Self::is_likely_pid(pid) && !tokens.iter().any(|t| matches!(t, Token::Pid(p) if *p == pid)) {
+                if Self::is_likely_pid(pid)
+                    && !tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Pid(p) if *p == pid))
+                {
                     tokens.push(Token::Pid(pid));
                 }
             }
@@ -98,7 +123,7 @@ impl ProcessDetector {
         // PIDs are typically in a reasonable range
         // Avoid very small numbers that are likely not PIDs
         // and very large numbers that exceed typical OS limits
-        (1..=4194304).contains(&pid) // 2^22, typical Linux max PID
+        (1..=4_194_304).contains(&pid) // 2^22, typical Linux max PID
     }
 
     #[allow(dead_code)]

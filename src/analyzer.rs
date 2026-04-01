@@ -217,7 +217,7 @@ impl LogAnalyzer {
                 }
 
                 let similarity = normalizer.similarity_score(&log_lines[i], &log_lines[j]);
-                if similarity >= threshold as f64 {
+                if similarity >= f64::from(threshold) {
                     group.push(j);
                     processed[j] = true;
                 }

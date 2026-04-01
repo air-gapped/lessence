@@ -25,16 +25,17 @@ impl PatternPriority {
     /// Calculate effective priority score for ordering
     /// Lower scores = higher priority (processed first)
     pub fn effective_score(&self) -> i32 {
-        let base_score = -(self.specificity_score as i32); // Negative for reverse order
+        // specificity_score is always a small non-negative value (pattern count), safe to convert
+        let base_score = -i32::try_from(self.specificity_score).unwrap_or(0); // Negative for reverse order
 
         // Apply family modifiers
         let family_modifier = match self.format_family {
-            FormatFamily::Structured => 0,   // Highest priority
+            FormatFamily::Structured => 0, // Highest priority
             FormatFamily::Application => 100,
             FormatFamily::Regional => 200,
             FormatFamily::Database => 300,
             FormatFamily::Legacy => 400,
-            FormatFamily::Unix => 1000,      // Lowest priority
+            FormatFamily::Unix => 1000, // Lowest priority
         };
 
         // Unix timestamp penalty (even lower priority)
@@ -48,10 +49,10 @@ impl PatternPriority {
 /// Constitutional requirement: Unix timestamps must be lowest priority
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum FormatFamily {
-    Structured,     // ISO8601, RFC formats (highest priority)
-    Application,    // Java, Docker, web server formats
-    Regional,       // US, European date formats
-    Database,       // MySQL, PostgreSQL, Oracle formats
-    Legacy,         // Syslog, IBM, compact formats
-    Unix,          // Numeric timestamps (lowest priority)
+    Structured,  // ISO8601, RFC formats (highest priority)
+    Application, // Java, Docker, web server formats
+    Regional,    // US, European date formats
+    Database,    // MySQL, PostgreSQL, Oracle formats
+    Legacy,      // Syslog, IBM, compact formats
+    Unix,        // Numeric timestamps (lowest priority)
 }

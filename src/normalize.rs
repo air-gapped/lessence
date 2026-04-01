@@ -2,13 +2,12 @@ use ahash::AHasher;
 use anyhow::Result;
 use std::hash::{Hash, Hasher};
 
-
 use crate::config::Config;
 use crate::patterns::{
-    duration::DurationDetector, email::EmailPatternDetector, hash::HashDetector, json::JsonDetector, kubernetes::KubernetesDetector, names::NameDetector,
-    network::NetworkDetector, path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector,
-    timestamp::TimestampDetector, uuid::UuidDetector,
-    LogLine, Token,
+    duration::DurationDetector, email::EmailPatternDetector, hash::HashDetector,
+    json::JsonDetector, kubernetes::KubernetesDetector, names::NameDetector,
+    network::NetworkDetector, path::PathDetector, process::ProcessDetector,
+    quoted::QuotedStringDetector, timestamp::TimestampDetector, uuid::UuidDetector, LogLine, Token,
 };
 
 pub struct Normalizer {
@@ -36,13 +35,15 @@ impl Normalizer {
         if self.config.normalize_timestamps {
             if self.config.essence_mode {
                 // Constitutional essence mode: Timestamp tokenization for temporal independence
-                let (new_normalized, mut new_tokens) = TimestampDetector::detect_and_replace(&normalized);
+                let (new_normalized, mut new_tokens) =
+                    TimestampDetector::detect_and_replace(&normalized);
                 // In essence mode, keep <TIMESTAMP> tokens for grouping identical temporal-independent patterns
                 normalized = new_normalized;
                 tokens.append(&mut new_tokens);
             } else {
                 // Standard mode: Replace with <TIMESTAMP> tokens
-                let (new_normalized, mut new_tokens) = TimestampDetector::detect_and_replace(&normalized);
+                let (new_normalized, mut new_tokens) =
+                    TimestampDetector::detect_and_replace(&normalized);
                 normalized = new_normalized;
                 tokens.append(&mut new_tokens);
             }
@@ -50,7 +51,8 @@ impl Normalizer {
 
         // 2. EMAIL ADDRESSES (before paths to ensure emails in URLs are handled correctly)
         if self.config.normalize_emails {
-            let (new_normalized, mut new_tokens) = self.email_detector.detect_and_replace(&normalized);
+            let (new_normalized, mut new_tokens) =
+                self.email_detector.detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
@@ -110,7 +112,8 @@ impl Normalizer {
         // 9. KUBERNETES PATTERNS (namespaces, volumes, plugins, pod names)
         // PROTECTED DOMAIN: Must run before generic patterns to prevent pattern theft
         if self.config.normalize_kubernetes {
-            let (new_normalized, mut new_tokens) = KubernetesDetector::detect_and_replace(&normalized);
+            let (new_normalized, mut new_tokens) =
+                KubernetesDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
@@ -119,37 +122,51 @@ impl Normalizer {
 
         // HttpStatusClass - Groups HTTP status codes (200-299 → 2xx, etc.)
         // Fixes Nginx compression improvement: 72% → >85%
-        if true { // Always enabled for testing
-            let (new_normalized, mut new_tokens) = crate::patterns::http_status::HttpStatusDetector::detect_and_replace(&normalized);
+        if true {
+            // Always enabled for testing
+            let (new_normalized, mut new_tokens) =
+                crate::patterns::http_status::HttpStatusDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
 
         // BracketContext - Detects [error] [mod_jk] style patterns
         // Fixes Microservices compression improvement: 19% → >70%
-        if true { // Always enabled for testing
-            let (new_normalized, mut new_tokens) = crate::patterns::bracket_context::BracketContextDetector::detect_and_replace(&normalized);
+        if true {
+            // Always enabled for testing
+            let (new_normalized, mut new_tokens) =
+                crate::patterns::bracket_context::BracketContextDetector::detect_and_replace(
+                    &normalized,
+                );
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
 
         // KeyValuePair - Detects config=value, metrics patterns
-        if true { // Always enabled for testing
-            let (new_normalized, mut new_tokens) = crate::patterns::key_value::KeyValueDetector::detect_and_replace(&normalized);
+        if true {
+            // Always enabled for testing
+            let (new_normalized, mut new_tokens) =
+                crate::patterns::key_value::KeyValueDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
 
         // LogWithModule - Detects [level] module patterns for Apache/nginx
-        if true { // Always enabled for testing
-            let (new_normalized, mut new_tokens) = crate::patterns::log_module::LogWithModuleDetector::detect_and_replace(&normalized);
+        if true {
+            // Always enabled for testing
+            let (new_normalized, mut new_tokens) =
+                crate::patterns::log_module::LogWithModuleDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
 
         // StructuredMessage - Detects JSON/logfmt structured logging
-        if true { // Always enabled for testing
-            let (new_normalized, mut new_tokens) = crate::patterns::structured::StructuredMessageDetector::detect_and_replace(&normalized);
+        if true {
+            // Always enabled for testing
+            let (new_normalized, mut new_tokens) =
+                crate::patterns::structured::StructuredMessageDetector::detect_and_replace(
+                    &normalized,
+                );
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
@@ -157,7 +174,8 @@ impl Normalizer {
         // 10. DURATIONS & MEASUREMENTS (broad category including decimals, sizes, percentages, HTTP codes)
         // Runs LATE to avoid conflicts with more specific patterns above
         if self.config.normalize_durations {
-            let (new_normalized, mut new_tokens) = DurationDetector::detect_and_replace(&normalized);
+            let (new_normalized, mut new_tokens) =
+                DurationDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
@@ -170,7 +188,8 @@ impl Normalizer {
 
         // 12. QUOTED STRINGS (generic quoted variables - high priority for mount operations)
         // Must run after paths to catch normalized quoted paths properly
-        let (new_normalized, mut new_tokens) = QuotedStringDetector::detect_and_replace(&normalized);
+        let (new_normalized, mut new_tokens) =
+            QuotedStringDetector::detect_and_replace(&normalized);
         normalized = new_normalized;
         tokens.append(&mut new_tokens);
 
@@ -185,13 +204,13 @@ impl Normalizer {
         })
     }
 
-
     fn calculate_hash(&self, normalized: &str) -> u64 {
         let mut hasher = AHasher::default();
         normalized.hash(&mut hasher);
         hasher.finish()
     }
 
+    #[allow(clippy::cast_precision_loss)] // usize lengths → f64 for ratio calc
     pub fn similarity_score(&self, line1: &LogLine, line2: &LogLine) -> f64 {
         let s1 = &line1.normalized;
         let s2 = &line2.normalized;
@@ -227,7 +246,7 @@ impl Normalizer {
             }
         }
 
-        (matches as f64 / max_len as f64) * 100.0
+        (f64::from(matches) / max_len as f64) * 100.0
     }
 
     pub fn are_similar(&self, line1: &LogLine, line2: &LogLine) -> bool {
@@ -236,25 +255,23 @@ impl Normalizer {
             return true;
         }
 
-
         // If hashes don't match, check similarity score
         let score = self.similarity_score(line1, line2);
-        score >= self.config.threshold as f64
+        score >= f64::from(self.config.threshold)
     }
 
-    pub fn format_collapsed_line(
-        &self,
-        first: &LogLine,
-        last: &LogLine,
-        count: usize,
-    ) -> String {
+    pub fn format_collapsed_line(&self, first: &LogLine, last: &LogLine, count: usize) -> String {
         if self.config.compact {
             // Compact format: [+N similar, varying: TYPE]
             let variation_types = self.summarize_variation_types(&first.tokens, &last.tokens);
             if variation_types.is_empty() {
                 format!("[+{} similar]", count)
             } else {
-                format!("[+{} similar, varying: {}]", count, variation_types.join(", "))
+                format!(
+                    "[+{} similar, varying: {}]",
+                    count,
+                    variation_types.join(", ")
+                )
             }
         } else {
             format!(
@@ -285,7 +302,11 @@ impl Normalizer {
         Some(timestamp.to_string())
     }
 
-    fn summarize_variation_types(&self, first_tokens: &[Token], last_tokens: &[Token]) -> Vec<String> {
+    fn summarize_variation_types(
+        &self,
+        first_tokens: &[Token],
+        last_tokens: &[Token],
+    ) -> Vec<String> {
         let mut types = std::collections::HashSet::new();
 
         // Helper function to get token type name and value
@@ -298,12 +319,12 @@ impl Normalizer {
                 Token::Hash(_, v) => ("hash", v.clone()),
                 Token::Uuid(v) => ("UUID", v.clone()),
                 Token::Pid(v) => ("PID", v.to_string()),
-                Token::ThreadID(v) => ("thread", v.to_string()),
+                Token::ThreadID(v) => ("thread", v.clone()),
                 Token::Path(v) => ("path", v.clone()),
                 Token::Json(v) => ("json", v.clone()),
                 Token::Duration(v) => ("duration", v.clone()),
                 Token::Size(v) => ("size", v.clone()),
-                Token::Number(v) => ("number", v.to_string()),
+                Token::Number(v) => ("number", v.clone()),
                 Token::HttpStatus(v) => ("http_status", v.to_string()),
                 Token::QuotedString(v) => ("quoted_string", v.clone()),
                 Token::Name(v) => ("name", v.clone()),
@@ -313,16 +334,20 @@ impl Normalizer {
                 Token::PodName(v) => ("pod", v.clone()),
                 Token::HttpStatusClass(v) => ("http_status_class", v.clone()),
                 Token::BracketContext(v) => ("bracket_context", v.join(",")),
-                Token::KeyValuePair { key, value_type } => ("key_value_pair", format!("{}={}", key, value_type)),
+                Token::KeyValuePair { key, value_type } => {
+                    ("key_value_pair", format!("{}={}", key, value_type))
+                }
                 Token::Email(v) => ("email", v.clone()),
-                Token::LogWithModule { .. } => ("log_with_module", "".to_string()),
-                Token::StructuredMessage { .. } => ("structured_message", "".to_string()),
+                Token::LogWithModule { .. } => ("log_with_module", String::new()),
+                Token::StructuredMessage { .. } => ("structured_message", String::new()),
             }
         };
 
         // Create maps of token types to values for first and last
-        let mut first_values: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
-        let mut last_values: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+        let mut first_values: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut last_values: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
 
         for token in first_tokens {
             let (token_type, value) = get_token_info(token);
@@ -335,7 +360,11 @@ impl Normalizer {
         }
 
         // Find token types that actually vary between first and last
-        let all_types: std::collections::HashSet<&str> = first_values.keys().chain(last_values.keys()).copied().collect();
+        let all_types: std::collections::HashSet<&str> = first_values
+            .keys()
+            .chain(last_values.keys())
+            .copied()
+            .collect();
 
         for token_type in all_types {
             // In essence mode, ignore timestamp variations as they're tokenized for temporal independence
@@ -356,9 +385,7 @@ impl Normalizer {
         result.sort();
         result
     }
-
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -397,11 +424,17 @@ mod tests {
         let normalizer = Normalizer::new(config);
 
         let line1 = normalizer
-            .normalize_line("2025-01-20 10:15:01 [pid=12345] Connection failed to 192.168.1.100:8080".to_string())
+            .normalize_line(
+                "2025-01-20 10:15:01 [pid=12345] Connection failed to 192.168.1.100:8080"
+                    .to_string(),
+            )
             .unwrap();
 
         let line2 = normalizer
-            .normalize_line("2025-01-20 10:15:02 [pid=12346] Connection failed to 192.168.1.101:8081".to_string())
+            .normalize_line(
+                "2025-01-20 10:15:02 [pid=12346] Connection failed to 192.168.1.101:8081"
+                    .to_string(),
+            )
             .unwrap();
 
         assert!(normalizer.are_similar(&line1, &line2));
@@ -442,7 +475,10 @@ mod tests {
 
         // Even with timestamps/IPs/ports disabled, other always-on patterns
         // (durations, names, etc.) still normalize numbers and decimals
-        assert_eq!(line.normalized, "<NUMBER>-01-20 10:15:30 Connection to <DECIMAL>.<DECIMAL> failed");
+        assert_eq!(
+            line.normalized,
+            "<NUMBER>-01-20 10:15:30 Connection to <DECIMAL>.<DECIMAL> failed"
+        );
     }
 
     #[test]
@@ -516,7 +552,10 @@ mod tests {
 
         // Should normalize timestamp but NOT detect ports in the time
         assert_eq!(line1.normalized, "<TIMESTAMP> Connection failed");
-        assert!(line1.tokens.iter().any(|t| matches!(t, Token::Timestamp(_))));
+        assert!(line1
+            .tokens
+            .iter()
+            .any(|t| matches!(t, Token::Timestamp(_))));
         assert!(!line1.tokens.iter().any(|t| matches!(t, Token::Port(_))));
 
         // Test that actual ports ARE detected
