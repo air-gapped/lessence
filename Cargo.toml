@@ -88,6 +88,11 @@ path = "tests/contract/test_cli_validation.rs"
 name = "test_validation_errors"
 path = "tests/integration/test_validation_errors.rs"
 
+# JSON stats tests
+[[test]]
+name = "test_stats_json"
+path = "tests/integration/test_stats_json.rs"
+
 # Multi-format output tests
 [[test]]
 name = "test_markdown_output"

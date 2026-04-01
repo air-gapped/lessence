@@ -1,7 +1,9 @@
 use anyhow::Result;
 use std::io::{self, Write};
 use std::collections::HashMap;
+use std::time::Duration;
 use chrono::Utc;
+use serde::Serialize;
 
 use crate::config::Config;
 use crate::normalize::Normalizer;
@@ -117,6 +119,34 @@ pub struct FoldingStats {
     pub paths: usize,
     pub kubernetes: usize,
     pub emails: usize,  // Track email pattern detections
+}
+
+#[derive(Serialize)]
+struct StatsJson {
+    input_lines: usize,
+    output_lines: usize,
+    compression_ratio: f64,
+    collapsed_groups: usize,
+    lines_saved: usize,
+    patterns_detected: usize,
+    elapsed_ms: u64,
+    pattern_hits: PatternHits,
+}
+
+#[derive(Serialize)]
+struct PatternHits {
+    timestamps: usize,
+    ips: usize,
+    hashes: usize,
+    uuids: usize,
+    pids: usize,
+    durations: usize,
+    http_status: usize,
+    sizes: usize,
+    percentages: usize,
+    paths: usize,
+    kubernetes: usize,
+    emails: usize,
 }
 
 impl PatternFolder {
@@ -580,6 +610,44 @@ impl PatternFolder {
 
         writeln!(writer, "---")?;
 
+        Ok(())
+    }
+
+    pub fn print_stats_json(&self, elapsed: Duration) -> Result<()> {
+        let compression_ratio = if self.stats.total_lines > 0 {
+            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let stats_json = StatsJson {
+            input_lines: self.stats.total_lines,
+            output_lines: self.stats.output_lines,
+            compression_ratio,
+            collapsed_groups: self.stats.collapsed_groups,
+            lines_saved: self.stats.lines_saved,
+            patterns_detected: self.stats.patterns_detected,
+            elapsed_ms: elapsed.as_millis() as u64,
+            pattern_hits: PatternHits {
+                timestamps: self.stats.timestamps,
+                ips: self.stats.ips,
+                hashes: self.stats.hashes,
+                uuids: self.stats.uuids,
+                pids: self.stats.pids,
+                durations: self.stats.durations,
+                http_status: self.stats.http_status,
+                sizes: self.stats.sizes,
+                percentages: self.stats.percentages,
+                paths: self.stats.paths,
+                kubernetes: self.stats.kubernetes,
+                emails: self.stats.emails,
+            },
+        };
+
+        let stderr = io::stderr();
+        let mut handle = stderr.lock();
+        serde_json::to_writer(&mut handle, &stats_json)?;
+        writeln!(handle)?;
         Ok(())
     }
 

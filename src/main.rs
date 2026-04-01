@@ -3,6 +3,7 @@ use clap::Parser;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 
 mod analyzer;
 mod config;
@@ -157,6 +158,10 @@ struct Cli {
     #[arg(long, value_parser = validate_max_lines)]
     max_lines: Option<usize>,
 
+    /// Emit JSON statistics to stderr (replaces human-readable stats)
+    #[arg(long)]
+    stats_json: bool,
+
     /// Show only the N most frequent patterns, sorted by count
     #[arg(long)]
     top: Option<usize>,
@@ -261,8 +266,11 @@ fn main() -> Result<()> {
         max_lines: cli.max_lines,
         sanitize_pii: cli.sanitize_pii,  // Wire PII sanitization flag
         top_n: cli.top,
+        stats_json: cli.stats_json,
     };
 
+
+    let start_time = Instant::now();
 
     // For Markdown format, we need to process all logs first, then format
     let use_structured_output = matches!(config.output_format.as_str(), "markdown");
@@ -316,6 +324,9 @@ fn main() -> Result<()> {
         }
         let chained = readers.into_iter().flat_map(|r| r.lines());
         folder.process_summary_mode(chained, &mut io::stdout())?;
+        if config.stats_json {
+            folder.print_stats_json(start_time.elapsed())?;
+        }
         return Ok(());
     }
 
@@ -394,7 +405,9 @@ fn main() -> Result<()> {
         let shown = top_groups.len();
         eprintln!("(showing top {} of {} patterns, covering {}% of input lines)", shown, total_groups, coverage_pct);
 
-        if config.stats {
+        if config.stats_json {
+            folder.print_stats_json(start_time.elapsed())?;
+        } else if config.stats {
             folder.print_stats(&mut io::stdout())?;
         }
         return Ok(());
@@ -475,7 +488,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if config.stats {
+    if config.stats_json {
+        folder.print_stats_json(start_time.elapsed())?;
+    } else if config.stats {
         folder.print_stats(&mut io::stdout())?;
         if config.max_tokens.is_some() {
             println!("Output tokens: {}", output_tokens);

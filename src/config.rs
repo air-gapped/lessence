@@ -34,6 +34,7 @@ pub struct Config {
     pub max_lines: Option<usize>,        // --max-lines: stop processing after this many lines
     pub sanitize_pii: bool,              // --sanitize-pii: mask email addresses in output (default: false)
     pub top_n: Option<usize>,             // --top N: show only N most frequent patterns
+    pub stats_json: bool,                 // --stats-json: emit JSON stats to stderr
 }
 
 impl Default for Config {
@@ -71,6 +72,7 @@ impl Default for Config {
             max_lines: None,                   // No line count limit by default
             sanitize_pii: false,               // Disabled by default (backward compatibility)
             top_n: None,                       // No top-N filtering by default
+            stats_json: false,                 // No JSON stats by default
         }
     }
 }
