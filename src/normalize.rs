@@ -40,7 +40,7 @@ impl Normalizer {
         }
 
         // 2. EMAIL ADDRESSES (before paths to ensure emails in URLs are handled correctly)
-        if self.config.normalize_emails {
+        if self.config.normalize_emails && normalized.contains('@') {
             let (new_normalized, mut new_tokens) =
                 self.email_detector.detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -56,8 +56,7 @@ impl Normalizer {
         }
 
         // 4. JSON (structured data, Event objects, K8s objects)
-        // Separated from Paths for proper architectural separation
-        if self.config.normalize_json {
+        if self.config.normalize_json && normalized.contains('{') {
             let (new_normalized, mut new_tokens) = JsonDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);

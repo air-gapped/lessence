@@ -33,7 +33,28 @@ static HEX_56_REGEX: LazyLock<Regex> =
 pub struct HashDetector;
 
 impl HashDetector {
+    /// Quick check: does the text contain a run of 7+ hex characters?
+    /// If not, no hash/commit SHA can exist — skip all 9 regex scans.
+    fn has_hex_run(text: &str) -> bool {
+        let mut run = 0u32;
+        for b in text.bytes() {
+            if b.is_ascii_hexdigit() {
+                run += 1;
+                if run >= 7 {
+                    return true;
+                }
+            } else {
+                run = 0;
+            }
+        }
+        false
+    }
+
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
+        if !Self::has_hex_run(text) {
+            return (text.to_string(), Vec::new());
+        }
+
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
