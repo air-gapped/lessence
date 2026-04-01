@@ -162,6 +162,10 @@ struct Cli {
     #[arg(long)]
     top: Option<usize>,
 
+    /// Exit 1 if any input line matches this regex (for CI gating)
+    #[arg(long)]
+    fail_on_pattern: Option<String>,
+
     /// Generate shell completion script and exit
     #[arg(long)]
     completions: Option<clap_complete::Shell>,
@@ -234,8 +238,18 @@ fn main() -> Result<()> {
         sanitize_pii: cli.sanitize_pii,  // Wire PII sanitization flag
         top_n: cli.top,
         stats_json: cli.stats_json,
+        fail_pattern: cli.fail_on_pattern.clone(),
     };
 
+
+    // Compile fail-on-pattern regex early (exit 2 on invalid)
+    let fail_regex = config.fail_pattern.as_ref().map(|pat| {
+        regex::Regex::new(pat).unwrap_or_else(|e| {
+            eprintln!("lessence: invalid regex '{}': {}", pat, e);
+            std::process::exit(2);
+        })
+    });
+    let pattern_matched = std::cell::Cell::new(false);
 
     let start_time = Instant::now();
 
@@ -268,7 +282,14 @@ fn main() -> Result<()> {
                     continue;
                 }
             }
-            
+
+            // Check fail-on-pattern against raw line
+            if let Some(ref re) = fail_regex {
+                if re.is_match(&line) {
+                    pattern_matched.set(true);
+                }
+            }
+
             folder.process_line(&line)?;
         }
         // No need to flush - we just want the stats
@@ -277,6 +298,9 @@ fn main() -> Result<()> {
         let analysis = LogAnalyzer::from_folder_stats(&folder, &config)?;
         let json_output = serde_json::to_string_pretty(&analysis)?;
         println!("{}", json_output);
+        if pattern_matched.get() {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -289,10 +313,19 @@ fn main() -> Result<()> {
             eprintln!("lessence: no valid input");
             std::process::exit(1);
         }
-        let chained = readers.into_iter().flat_map(|r| r.lines());
+        let chained = readers.into_iter().flat_map(|r| r.lines()).inspect(|line| {
+            if let (Some(ref re), Ok(ref text)) = (&fail_regex, line) {
+                if re.is_match(text) {
+                    pattern_matched.set(true);
+                }
+            }
+        });
         folder.process_summary_mode(chained, &mut io::stdout())?;
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
+        }
+        if pattern_matched.get() {
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -319,6 +352,13 @@ fn main() -> Result<()> {
         if let Some(max_length) = config.max_line_length {
             if line.len() > max_length {
                 continue;
+            }
+        }
+
+        // Check fail-on-pattern against raw line (before normalization)
+        if let Some(ref re) = fail_regex {
+            if re.is_match(&line) {
+                pattern_matched.set(true);
             }
         }
 
@@ -363,6 +403,9 @@ fn main() -> Result<()> {
             folder.print_stats_json(start_time.elapsed())?;
         } else if config.stats {
             folder.print_stats(&mut io::stdout())?;
+        }
+        if pattern_matched.get() {
+            std::process::exit(1);
         }
         return Ok(());
     }
@@ -430,6 +473,9 @@ fn main() -> Result<()> {
             },
             _ => unreachable!("Should only reach here for markdown")
         }
+        if pattern_matched.get() {
+            std::process::exit(1);
+        }
         return Ok(());
     }
 
@@ -437,6 +483,10 @@ fn main() -> Result<()> {
         folder.print_stats_json(start_time.elapsed())?;
     } else if config.stats {
         folder.print_stats(&mut io::stdout())?;
+    }
+
+    if pattern_matched.get() {
+        std::process::exit(1);
     }
 
     Ok(())

@@ -89,6 +89,11 @@ path = "tests/contract/test_cli_validation.rs"
 name = "test_validation_errors"
 path = "tests/integration/test_validation_errors.rs"
 
+# CI exit code tests
+[[test]]
+name = "test_fail_on_pattern"
+path = "tests/integration/test_fail_on_pattern.rs"
+
 # JSON stats tests
 [[test]]
 name = "test_stats_json"

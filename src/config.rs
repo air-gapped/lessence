@@ -34,6 +34,7 @@ pub struct Config {
     pub sanitize_pii: bool,              // --sanitize-pii: mask email addresses in output (default: false)
     pub top_n: Option<usize>,             // --top N: show only N most frequent patterns
     pub stats_json: bool,                 // --stats-json: emit JSON stats to stderr
+    pub fail_pattern: Option<String>,     // --fail-on-pattern: exit 1 when regex matches input
 }
 
 impl Default for Config {
@@ -71,6 +72,7 @@ impl Default for Config {
             sanitize_pii: false,               // Disabled by default (backward compatibility)
             top_n: None,                       // No top-N filtering by default
             stats_json: false,                 // No JSON stats by default
+            fail_pattern: None,                // No fail pattern by default
         }
     }
 }
