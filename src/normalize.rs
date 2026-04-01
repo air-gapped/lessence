@@ -586,4 +586,218 @@ mod tests {
         assert!(line4.tokens.iter().any(|t| matches!(t, Token::IPv6(_))));
         assert!(line4.tokens.iter().any(|t| matches!(t, Token::Port(8080))));
     }
+
+    // --- similarity_score direct tests (mutant kills) ---
+
+    #[test]
+    fn test_similarity_score_identical() {
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer
+            .normalize_line("hello world".to_string())
+            .unwrap();
+        let score = normalizer.similarity_score(&line, &line);
+        assert!((score - 100.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_similarity_score_completely_different() {
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer.normalize_line("aaaa".to_string()).unwrap();
+        let b = normalizer.normalize_line("zzzz".to_string()).unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        assert!(
+            score < 1.0,
+            "Completely different strings should score near 0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_partial_match() {
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer.normalize_line("hello".to_string()).unwrap();
+        let b = normalizer.normalize_line("hella".to_string()).unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        // 4/5 chars match = 80.0
+        assert!(
+            (score - 80.0).abs() < f64::EPSILON,
+            "Expected 80.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_length_ratio_rejection() {
+        let normalizer = Normalizer::new(Config::default());
+        let short = normalizer.normalize_line("ab".to_string()).unwrap();
+        let long = normalizer.normalize_line("abcdefghij".to_string()).unwrap();
+        let score = normalizer.similarity_score(&short, &long);
+        // ratio = 2/10 = 0.2, below 0.7 threshold → returns 0.2 * 100 = 20.0
+        assert!(
+            (score - 20.0).abs() < f64::EPSILON,
+            "Expected 20.0 (ratio rejection), got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_empty_strings() {
+        let normalizer = Normalizer::new(Config::default());
+        let empty = LogLine {
+            original: String::new(),
+            normalized: String::new(),
+            tokens: vec![],
+            hash: 0,
+        };
+        let score = normalizer.similarity_score(&empty, &empty);
+        assert!(
+            (score - 100.0).abs() < f64::EPSILON,
+            "Empty vs empty should be 100.0"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_at_length_ratio_boundary() {
+        let normalizer = Normalizer::new(Config::default());
+        let ten_chars = normalizer.normalize_line("abcdefghij".to_string()).unwrap();
+
+        // 7/10 = 0.7, exactly at threshold → NOT rejected → char comparison: 7/10 = 70.0
+        let seven_match = normalizer.normalize_line("abcdefg".to_string()).unwrap();
+        let score = normalizer.similarity_score(&seven_match, &ten_chars);
+        assert!(
+            (score - 70.0).abs() < f64::EPSILON,
+            "At boundary (0.7), should use char comparison. Got {score}"
+        );
+
+        // 6/10 = 0.6, below threshold → rejected early → returns 0.6*100 = 60.0
+        let six_match = normalizer.normalize_line("abcdef".to_string()).unwrap();
+        let score_below = normalizer.similarity_score(&six_match, &ten_chars);
+        assert!(
+            (score_below - 60.0).abs() < f64::EPSILON,
+            "Below boundary, should return ratio*100=60.0. Got {score_below}"
+        );
+
+        // 7 chars but last differs → ratio=0.7, char comparison: 6/10 = 60.0
+        let seven_mismatch = normalizer.normalize_line("abcdefz".to_string()).unwrap();
+        let score_mismatch = normalizer.similarity_score(&seven_mismatch, &ten_chars);
+        assert!(
+            (score_mismatch - 60.0).abs() < f64::EPSILON,
+            "At boundary with mismatch, char comparison gives 60.0. Got {score_mismatch}"
+        );
+
+        // 7 chars, none match → ratio=0.7, NOT rejected, char comparison: 0/10 = 0.0
+        let seven_none = normalizer.normalize_line("xyzxyzx".to_string()).unwrap();
+        let score_none = normalizer.similarity_score(&seven_none, &ten_chars);
+        assert!(
+            score_none < 1.0,
+            "At boundary with zero char matches, should be ~0. Got {score_none}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_one_char_diff() {
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer.normalize_line("abcdefghij".to_string()).unwrap();
+        let b = normalizer.normalize_line("abcdefghix".to_string()).unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        // 9/10 chars match = 90.0
+        assert!(
+            (score - 90.0).abs() < f64::EPSILON,
+            "Expected 90.0, got {score}"
+        );
+    }
+
+    // --- summarize_variation_types direct tests (mutant kills) ---
+
+    #[test]
+    fn test_variation_types_different_ips() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = vec![Token::IPv4("10.0.0.1".to_string())];
+        let last = vec![Token::IPv4("10.0.0.2".to_string())];
+        let types = normalizer.summarize_variation_types(&first, &last);
+        assert_eq!(types, vec!["IP"]);
+    }
+
+    #[test]
+    fn test_variation_types_same_tokens_no_variation() {
+        let normalizer = Normalizer::new(Config::default());
+        let tokens = vec![Token::IPv4("10.0.0.1".to_string())];
+        let types = normalizer.summarize_variation_types(&tokens, &tokens);
+        assert!(types.is_empty(), "Same tokens should produce no variation");
+    }
+
+    #[test]
+    fn test_variation_types_essence_mode_skips_timestamps() {
+        let config = Config {
+            essence_mode: true,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let first = vec![Token::Timestamp("2025-01-01T00:00:00Z".to_string())];
+        let last = vec![Token::Timestamp("2025-01-02T00:00:00Z".to_string())];
+        let types = normalizer.summarize_variation_types(&first, &last);
+        assert!(
+            types.is_empty(),
+            "Essence mode should skip timestamp variations"
+        );
+    }
+
+    #[test]
+    fn test_variation_types_non_essence_includes_timestamps() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = vec![Token::Timestamp("2025-01-01T00:00:00Z".to_string())];
+        let last = vec![Token::Timestamp("2025-01-02T00:00:00Z".to_string())];
+        let types = normalizer.summarize_variation_types(&first, &last);
+        assert_eq!(types, vec!["timestamp"]);
+    }
+
+    #[test]
+    fn test_variation_types_multiple_types_sorted() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = vec![
+            Token::IPv4("10.0.0.1".to_string()),
+            Token::Uuid("aaa".to_string()),
+        ];
+        let last = vec![
+            Token::IPv4("10.0.0.2".to_string()),
+            Token::Uuid("bbb".to_string()),
+        ];
+        let types = normalizer.summarize_variation_types(&first, &last);
+        assert_eq!(types, vec!["IP", "UUID"]);
+    }
+
+    // --- normalize_line short-circuit tests (mutant kills) ---
+
+    #[test]
+    fn test_normalize_ips_only_flag() {
+        let config = Config {
+            normalize_ips: true,
+            normalize_ports: false,
+            normalize_fqdns: false,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let line = normalizer
+            .normalize_line("connect to 10.0.0.1:8080".to_string())
+            .unwrap();
+        assert!(
+            line.tokens.iter().any(|t| matches!(t, Token::IPv4(_))),
+            "IPs should be detected"
+        );
+    }
+
+    #[test]
+    fn test_normalize_ports_only_flag() {
+        let config = Config {
+            normalize_ips: false,
+            normalize_ports: true,
+            normalize_fqdns: false,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let line = normalizer
+            .normalize_line("connect to localhost:8080".to_string())
+            .unwrap();
+        assert!(
+            line.tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "Ports should be detected"
+        );
+    }
 }
