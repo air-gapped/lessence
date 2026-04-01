@@ -21,7 +21,7 @@ jobs:
     steps:
       - name: Release Please
         id: release
-        uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
+        uses: googleapis/release-please-action@16a9c90856f42705d54a6fda1823352bdc62cf38 # v4.4.0
         with:
           release-type: rust
 
@@ -83,7 +83,7 @@ jobs:
           fetch-depth: 0
 
       - name: Generate release notes
-        uses: anthropics/claude-code-action@725b9c36f61150e9be5b9ec02289a9a0cfc21c04 # v1
+        uses: anthropics/claude-code-action@bee87b3258c251f9279e5371b0cc3660f37f3f77 # v1
         env:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         with:
