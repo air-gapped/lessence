@@ -73,6 +73,19 @@ check: lint audit
 	cargo check
 
 #---------------------------------------------------------------------------
+# Release
+#---------------------------------------------------------------------------
+
+## fmt: Format all source files
+fmt:
+	cargo fmt
+
+## release-check: Verify everything is ready for release
+release-check: fmt lint test
+	cargo doc --no-deps
+	@echo "All checks passed — ready to release"
+
+#---------------------------------------------------------------------------
 # Help
 #---------------------------------------------------------------------------
 

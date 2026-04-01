@@ -1,0 +1,81 @@
+name: Release
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify Cargo.toml version matches tag
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          TAG_VERSION="${TAG_NAME#v}"
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "ERROR: Cargo.toml version ($CARGO_VERSION) != tag ($TAG_VERSION)"
+            exit 1
+          fi
+
+      - name: Create draft release
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$TAG_NAME" --draft --verify-tag --title "$TAG_NAME" --generate-notes
+
+  build-release:
+    needs: create-release
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      - name: Cache
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build and upload
+        uses: taiki-e/upload-rust-binary-action@0e34102c043ded9f2ca39f7af5cd99a540c61aff # v1
+        with:
+          bin: lessence
+          target: ${{ matrix.target }}
+          tar: unix
+          zip: windows
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}

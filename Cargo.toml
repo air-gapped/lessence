@@ -172,6 +172,14 @@ needless_pass_by_value = "warn"
 [lints.rust]
 unsafe_code = "forbid"
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [profile.release]
 lto = true
 codegen-units = 1
