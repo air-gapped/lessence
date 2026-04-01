@@ -769,7 +769,8 @@ impl PatternFolder {
         let mut first_timestamp: Option<String> = None;
         let mut last_timestamp: Option<String> = None;
 
-        let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
+        static ANSI_REGEX: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
 
         for (lines_processed, line) in lines.enumerate() {
             let line = line?;
@@ -794,7 +795,7 @@ impl PatternFolder {
             let line = if self.config.preserve_color {
                 line
             } else {
-                ansi_regex.replace_all(&line, "").to_string()
+                ANSI_REGEX.replace_all(&line, "").to_string()
             };
 
             // Extract timestamp for range tracking

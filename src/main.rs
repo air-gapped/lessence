@@ -19,10 +19,9 @@ use folder::PatternFolder;
 
 /// Strip ANSI escape codes from text
 fn strip_ansi_codes(text: &str) -> String {
-    // Regex pattern for ANSI escape sequences
-    // \x1b matches ESC, \[ matches [, then any sequence ending with a letter
-    let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
-    ansi_regex.replace_all(text, "").to_string()
+    static ANSI_REGEX: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
+    ANSI_REGEX.replace_all(text, "").to_string()
 }
 
 const VALID_PATTERNS: &[&str] = &[
