@@ -48,8 +48,11 @@ src/
 --essence                  Remove timestamps for pure content analysis
 --threads N                Thread count (default: auto, use 1 for single-threaded)
 --format text|markdown     Output format (default: text)
---no-stats                 Suppress statistics footer
+-q, --quiet                Suppress statistics footer (alias: --no-stats)
 --stats-json               Emit JSON statistics to stderr
+--top N                    Show only N most frequent patterns, sorted by count
+--fail-on-pattern REGEX    Exit 1 if any input line matches (for CI gating)
+--completions SHELL        Generate shell completions (bash/zsh/fish/elvish/powershell)
 --disable-patterns X,Y     Disable specific pattern detectors
 --threshold 85             Similarity percentage (0-100)
 --min-collapse 3           Minimum lines before folding (min: 2)

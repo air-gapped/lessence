@@ -84,8 +84,11 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 --essence                  Strip timestamps, see pure patterns
 --threads N                Thread count (default: all cores)
 --format text|markdown     Output format
---no-stats                 Hide statistics footer
+-q, --quiet                Hide statistics footer (alias: --no-stats)
 --stats-json               Emit JSON statistics to stderr
+--top N                    Show only N most frequent patterns by count
+--fail-on-pattern REGEX    Exit 1 if input matches (for CI gating)
+--completions SHELL        Generate shell completions (bash/zsh/fish)
 --threshold 85             Similarity % (0-100, lower = more grouping)
 --min-collapse 3           Min similar lines before folding (min: 2)
 --disable-patterns X,Y     Turn off specific detectors
