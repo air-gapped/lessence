@@ -32,7 +32,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@bfadeaba214680fb4ab63e710bcb2a6a17019fdc # v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-nextest
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -49,7 +49,7 @@ jobs:
         run: cargo build --release
 
       - name: Test
-        run: cargo test --release
+        run: cargo nextest run --release
 
       - name: Deny
         run: cargo deny check
