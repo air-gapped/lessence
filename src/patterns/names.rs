@@ -84,8 +84,8 @@ impl NameDetector {
             return false;
         }
 
-        let has_letters = suffix.chars().any(|c| c.is_alphabetic());
-        let has_numbers = suffix.chars().any(|c| c.is_numeric());
+        let has_letters = suffix.chars().any(char::is_alphabetic);
+        let has_numbers = suffix.chars().any(char::is_numeric);
         let all_lowercase = suffix.chars().all(|c| c.is_lowercase() || c.is_numeric());
 
         // Only accept if it has both letters and numbers (hash-like)

@@ -100,7 +100,7 @@ fn test_cargo_toml_keywords_are_optimized() {
         let keyword_strings: Vec<String> = keywords
             .iter()
             .filter_map(|k| k.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
 
         // Should contain relevant keywords

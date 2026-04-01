@@ -114,8 +114,8 @@ impl UuidDetector {
         }
 
         // Should contain at least some letters and/or numbers
-        let has_letters = text.chars().any(|c| c.is_alphabetic());
-        let has_numbers = text.chars().any(|c| c.is_numeric());
+        let has_letters = text.chars().any(char::is_alphabetic);
+        let has_numbers = text.chars().any(char::is_numeric);
 
         has_letters || has_numbers
     }

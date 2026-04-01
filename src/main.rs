@@ -271,7 +271,11 @@ fn main() -> Result<()> {
         }
         let mut folder = PatternFolder::new(config.clone());
         // Process all lines but don't output log content
-        for (lines_processed, line) in readers.into_iter().flat_map(|r| r.lines()).enumerate() {
+        for (lines_processed, line) in readers
+            .into_iter()
+            .flat_map(std::io::BufRead::lines)
+            .enumerate()
+        {
             let line = line?;
 
             // Security: Check line count limit
@@ -318,13 +322,16 @@ fn main() -> Result<()> {
             eprintln!("lessence: no valid input");
             std::process::exit(1);
         }
-        let chained = readers.into_iter().flat_map(|r| r.lines()).inspect(|line| {
-            if let (Some(ref re), Ok(ref text)) = (&fail_regex, line) {
-                if re.is_match(text) {
-                    pattern_matched.set(true);
+        let chained = readers
+            .into_iter()
+            .flat_map(std::io::BufRead::lines)
+            .inspect(|line| {
+                if let (Some(ref re), Ok(ref text)) = (&fail_regex, line) {
+                    if re.is_match(text) {
+                        pattern_matched.set(true);
+                    }
                 }
-            }
-        });
+            });
         folder.process_summary_mode(chained, &mut io::stdout())?;
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
@@ -342,7 +349,11 @@ fn main() -> Result<()> {
     }
     let mut stdout = io::stdout();
     let mut collected_outputs = Vec::new();
-    for (lines_processed, line) in readers.into_iter().flat_map(|r| r.lines()).enumerate() {
+    for (lines_processed, line) in readers
+        .into_iter()
+        .flat_map(std::io::BufRead::lines)
+        .enumerate()
+    {
         let mut line = line?;
 
         // Security: Check line count limit
