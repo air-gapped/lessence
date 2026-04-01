@@ -96,7 +96,8 @@ jobs:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          direct_prompt: |
+          claude_args: "--allowedTools 'Bash(gh:*),Bash(git:*),Read,Glob,Grep'"
+          prompt: |
             Generate user-facing release notes for lessence tag $TAG_NAME.
 
             Steps:
@@ -114,7 +115,5 @@ jobs:
             - Be specific and factual. Base notes ONLY on the commits and diff. Do not speculate.
             - Keep it concise: aim for 10-30 lines total
 
-            After generating, run:
-            gh release edit "$TAG_NAME" --notes-file /dev/stdin <<< "GENERATED_NOTES"
-
-            Replace GENERATED_NOTES with the actual notes you generated.
+            Write the notes to a file called release-notes.md, then run:
+            gh release edit "$TAG_NAME" --notes-file release-notes.md
