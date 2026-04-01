@@ -281,7 +281,7 @@ fn test_memory_allocation_performance() {
         // Periodic performance check
         if i % 1000 == 0 && i > 0 {
             let intermediate_duration = start.elapsed();
-            let ops_per_sec = (i as f64) / intermediate_duration.as_secs_f64();
+            let ops_per_sec = f64::from(i) / intermediate_duration.as_secs_f64();
 
             // Should maintain consistent performance (> 3k ops/sec in debug mode)
             assert!(

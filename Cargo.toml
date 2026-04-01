@@ -157,7 +157,6 @@ manual_strip = "allow"
 if_not_else = "allow"
 str_split_at_newline = "allow"
 match_wild_err_arm = "allow"
-cast_lossless = "allow"
 # Warnings we want to enforce
 needless_pass_by_value = "warn"
 
