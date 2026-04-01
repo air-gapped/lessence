@@ -1,5 +1,4 @@
 [advisories]
-unmaintained = "warn"
 
 [licenses]
 confidence-threshold = 0.93
