@@ -95,7 +95,7 @@ jobs:
         env:
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           direct_prompt: |
             Generate user-facing release notes for lessence tag $TAG_NAME.
 
