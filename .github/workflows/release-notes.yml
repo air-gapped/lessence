@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  id-token: write
 
 jobs:
   generate-notes:
@@ -27,39 +26,70 @@ jobs:
         id: tag
         run: |
           TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           if [ -z "$TAG" ]; then
             echo "No release found, skipping"
-            exit 1
+            exit 0
           fi
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
           echo "Found release: $TAG"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate release notes
-        uses: anthropics/claude-code-action@bee87b3258c251f9279e5371b0cc3660f37f3f77 # v1
+      - name: Generate and update release notes
+        if: steps.tag.outputs.tag_name
         env:
           TAG_NAME: ${{ steps.tag.outputs.tag_name }}
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: "--allowedTools 'Bash(gh:*),Bash(git:*),Read,Glob,Grep'"
-          prompt: |
-            Generate user-facing release notes for lessence tag $TAG_NAME.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get previous tag
+          PREV_TAG=$(git describe --tags --abbrev=0 "$TAG_NAME^" 2>/dev/null || echo "")
 
-            Steps:
-            1. Run: git log $(git describe --tags --abbrev=0 $TAG_NAME^)...$TAG_NAME --oneline
-            2. Run: git diff $(git describe --tags --abbrev=0 $TAG_NAME^)...$TAG_NAME --stat
-            3. Read CHANGELOG.md for the mechanical changelog
+          if [ -z "$PREV_TAG" ]; then
+            echo "First release, using full history"
+            COMMITS=$(git log "$TAG_NAME" --oneline)
+            STAT=$(git diff --stat "$TAG_NAME")
+          else
+            COMMITS=$(git log "$PREV_TAG".."$TAG_NAME" --oneline)
+            STAT=$(git diff --stat "$PREV_TAG".."$TAG_NAME")
+          fi
 
-            Write release notes following these rules:
-            - Audience: users and AI agents, not contributors
-            - Each entry explains the USER BENEFIT, not the implementation
-            - Group into: Features, Improvements, Bug Fixes, Breaking Changes (only non-empty sections)
-            - Reference PR numbers where available
-            - Do NOT include: dependency bumps, CI config changes, internal refactors, chore commits
-            - Do NOT use generic filler phrases like "exciting new features" or "we're thrilled"
-            - Be specific and factual. Base notes ONLY on the commits and diff. Do not speculate.
-            - Keep it concise: aim for 10-30 lines total
+          # Categorize commits
+          FEATURES=$(echo "$COMMITS" | grep -i "^[a-f0-9]* feat" || true)
+          FIXES=$(echo "$COMMITS" | grep -i "^[a-f0-9]* fix" || true)
+          PERF=$(echo "$COMMITS" | grep -i "^[a-f0-9]* perf" || true)
+          BREAKING=$(echo "$COMMITS" | grep -i "BREAKING\|removed\|remove" || true)
 
-            Write the notes to a file called release-notes.md, then run:
-            gh release edit "$TAG_NAME" --notes-file release-notes.md
+          # Build release notes
+          {
+            echo "## What's New"
+            echo ""
+            if [ -n "$FEATURES" ]; then
+              echo "### Features"
+              echo "$FEATURES" | sed 's/^[a-f0-9]* feat[:(]*/- /' | sed 's/):/: /'
+              echo ""
+            fi
+            if [ -n "$FIXES" ]; then
+              echo "### Bug Fixes"
+              echo "$FIXES" | sed 's/^[a-f0-9]* fix[:(]*/- /' | sed 's/):/: /'
+              echo ""
+            fi
+            if [ -n "$PERF" ]; then
+              echo "### Performance"
+              echo "$PERF" | sed 's/^[a-f0-9]* perf[:(]*/- /' | sed 's/):/: /'
+              echo ""
+            fi
+            if [ -n "$BREAKING" ]; then
+              echo "### Breaking Changes"
+              echo "$BREAKING" | sed 's/^[a-f0-9]* /- /'
+              echo ""
+            fi
+            echo "---"
+            echo ""
+            echo "**Full changelog**: [$PREV_TAG...$TAG_NAME](https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...$TAG_NAME)"
+          } > release-notes.md
+
+          echo "Generated release notes:"
+          cat release-notes.md
+
+          gh release edit "$TAG_NAME" --notes-file release-notes.md
+          echo "Updated release $TAG_NAME"
