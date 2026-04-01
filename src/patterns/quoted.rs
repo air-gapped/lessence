@@ -313,7 +313,7 @@ mod tests {
             // (content has both '\' and ':' which matches the escaped JSON heuristic)
             (
                 r#"error "path C:\Windows\System32\config invalid""#,
-                r#"error <ESCAPED_JSON>"#,
+                r"error <ESCAPED_JSON>",
             ),
         ];
 

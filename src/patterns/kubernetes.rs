@@ -187,8 +187,8 @@ impl KubernetesDetector {
             r#"([a-zA-Z]*[Nn]ame)="([^"]+)""#,
             // Field names ending with Name: or name: (with unquoted simple values)
             // Use word boundaries instead of requiring trailing space to avoid backtracking
-            r#"([a-zA-Z]*[Nn]ame):([a-zA-Z0-9-]+)\b"#,
-            r#"([a-zA-Z]*[Nn]ame)=([a-zA-Z0-9-]+)\b"#,
+            r"([a-zA-Z]*[Nn]ame):([a-zA-Z0-9-]+)\b",
+            r"([a-zA-Z]*[Nn]ame)=([a-zA-Z0-9-]+)\b",
         ];
 
         let mut result = text;

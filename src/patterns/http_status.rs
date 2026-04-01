@@ -16,7 +16,7 @@ static ACCESS_LOG_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 // Pattern for proxy logs: upstream_status -> downstream_status
 static PROXY_STATUS_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"(\d{3})\s*->\s*.*?(\d{3})"#).unwrap());
+    LazyLock::new(|| Regex::new(r"(\d{3})\s*->\s*.*?(\d{3})").unwrap());
 
 pub struct HttpStatusDetector;
 
