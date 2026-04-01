@@ -1,0 +1,62 @@
+name: Release Notes
+
+on:
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  generate-notes:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Find latest release tag
+        id: tag
+        run: |
+          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          if [ -z "$TAG" ]; then
+            echo "No release found, skipping"
+            exit 1
+          fi
+          echo "Found release: $TAG"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate release notes
+        uses: anthropics/claude-code-action@bee87b3258c251f9279e5371b0cc3660f37f3f77 # v1
+        env:
+          TAG_NAME: ${{ steps.tag.outputs.tag_name }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--allowedTools 'Bash(gh:*),Bash(git:*),Read,Glob,Grep'"
+          prompt: |
+            Generate user-facing release notes for lessence tag $TAG_NAME.
+
+            Steps:
+            1. Run: git log $(git describe --tags --abbrev=0 $TAG_NAME^)...$TAG_NAME --oneline
+            2. Run: git diff $(git describe --tags --abbrev=0 $TAG_NAME^)...$TAG_NAME --stat
+            3. Read CHANGELOG.md for the mechanical changelog
+
+            Write release notes following these rules:
+            - Audience: users and AI agents, not contributors
+            - Each entry explains the USER BENEFIT, not the implementation
+            - Group into: Features, Improvements, Bug Fixes, Breaking Changes (only non-empty sections)
+            - Reference PR numbers where available
+            - Do NOT include: dependency bumps, CI config changes, internal refactors, chore commits
+            - Do NOT use generic filler phrases like "exciting new features" or "we're thrilled"
+            - Be specific and factual. Base notes ONLY on the commits and diff. Do not speculate.
+            - Keep it concise: aim for 10-30 lines total
+
+            Write the notes to a file called release-notes.md, then run:
+            gh release edit "$TAG_NAME" --notes-file release-notes.md
