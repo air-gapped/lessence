@@ -16,7 +16,7 @@ use config::Config;
 use folder::PatternFolder;
 use analyzer::LogAnalyzer;
 
-/// Strip ANSI escape codes from text for LLM consumption
+/// Strip ANSI escape codes from text
 fn strip_ansi_codes(text: &str) -> String {
     // Regex pattern for ANSI escape sequences
     // \x1b matches ESC, \[ matches [, then any sequence ending with a letter
@@ -97,7 +97,7 @@ enum AnalysisMode {
     Summary,
     /// Enable adaptive pattern discovery for even better compression
     Adaptive,
-    /// Process logs and output JSON analysis report (for LLM agents)
+    /// Process logs and output JSON analysis report (for automation/CI)
     Preflight,
 }
 
@@ -121,11 +121,11 @@ struct Cli {
     #[arg(long)]
     no_stats: bool,
 
-    /// Preserve ANSI color codes (stripped by default for LLM optimization)
+    /// Preserve ANSI color codes (stripped by default)
     #[arg(long)]
     preserve_color: bool,
 
-    /// Maximum tokens to output (for LLM limits, supports K/M suffixes: 5K, 1M, default: unlimited)
+    /// Maximum tokens to output (supports K/M suffixes: 5K, 1M, default: unlimited)
     #[arg(long, value_parser = parse_token_count)]
     max_tokens: Option<usize>,
 
