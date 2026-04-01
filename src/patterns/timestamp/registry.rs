@@ -1,9 +1,9 @@
 // Central Pattern Registry with Deduplication
 // Constitutional requirement: 30+ patterns, thread-safe access
 
+use super::{FormatFamily, PatternPriority, PatternSource, TimestampFormat, TimestampPattern};
 use regex::Regex;
 use std::collections::HashMap;
-use super::{TimestampPattern, TimestampFormat, PatternSource, PatternPriority, FormatFamily};
 
 /// Central registry for all timestamp patterns with deduplication
 pub struct TimestampRegistry {
@@ -32,7 +32,11 @@ impl TimestampRegistry {
         Self::assign_pattern_priorities(&mut merged_patterns);
 
         // Sort by priority (highest first)
-        merged_patterns.sort_by(|a, b| a.priority.effective_score().cmp(&b.priority.effective_score()));
+        merged_patterns.sort_by(|a, b| {
+            a.priority
+                .effective_score()
+                .cmp(&b.priority.effective_score())
+        });
 
         TimestampRegistry {
             patterns: merged_patterns,
@@ -246,7 +250,8 @@ impl TimestampRegistry {
         vec![
             // Additional patterns from essence mode that aren't in timestamp.rs
             TimestampPattern {
-                regex: Regex::new(r"\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)").unwrap(),
+                regex: Regex::new(r"\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)")
+                    .unwrap(),
                 format_type: TimestampFormat::WindowsEvent,
                 priority: PatternPriority::new(55, FormatFamily::Regional),
                 source: PatternSource::OriginalEssence,
@@ -288,7 +293,8 @@ impl TimestampRegistry {
                 source: PatternSource::OriginalEssence,
             },
             TimestampPattern {
-                regex: Regex::new(r"\w{3},\s+\d{2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT").unwrap(),
+                regex: Regex::new(r"\w{3},\s+\d{2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT")
+                    .unwrap(),
                 format_type: TimestampFormat::RFC822,
                 priority: PatternPriority::new(80, FormatFamily::Structured),
                 source: PatternSource::OriginalEssence,
@@ -312,7 +318,7 @@ impl TimestampRegistry {
     /// Merge duplicate patterns into comprehensive versions
     fn merge_duplicate_patterns(
         timestamp_patterns: Vec<TimestampPattern>,
-        essence_patterns: Vec<TimestampPattern>
+        essence_patterns: Vec<TimestampPattern>,
     ) -> Vec<TimestampPattern> {
         let mut merged_patterns = Vec::new();
 
@@ -360,6 +366,4 @@ impl TimestampRegistry {
     pub fn get_patterns(&self) -> &[TimestampPattern] {
         &self.patterns
     }
-
-
 }

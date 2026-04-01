@@ -1,9 +1,9 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// Result of IPv6 pre-filter validation determining whether to proceed to regex execution
-/// 
+///
 /// The pre-filter performs lightweight structural validation to protect against ReDoS attacks
 /// by rejecting obviously malformed patterns before they reach the complex IPv6 regex.
 /// This provides defense-in-depth with <1% performance overhead while maintaining 100%
@@ -17,9 +17,7 @@ pub struct PlausibilityCheck {
 impl PlausibilityCheck {
     /// Create a PlausibilityCheck indicating the input should proceed to regex validation
     pub fn plausible() -> Self {
-        Self {
-            is_plausible: true,
-        }
+        Self { is_plausible: true }
     }
 
     /// Create a PlausibilityCheck indicating the input should be rejected
@@ -30,43 +28,53 @@ impl PlausibilityCheck {
     }
 }
 
-
-    // IPv4 address
-static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// IPv4 address
+static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
-    ).unwrap());
+    ).unwrap()
+});
 
-    // IPv6 address - RFC 4291 compliant (supports all compression forms)
-static IPV6_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// IPv6 address - RFC 4291 compliant (supports all compression forms)
+static IPV6_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"(?i)(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?::[0-9a-f]{1,4}){1,6}|::(?:ffff(?::0{1,4})?:)?(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])|(?:[0-9a-f]{1,4}:){6}(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])|::)"
-    ).unwrap());
+    ).unwrap()
+});
 
-    // Port numbers - only after hostnames, not in time formats or source file:line patterns
-    // Matches hostname:port but avoids HH:MM:SS patterns and file.go:1234] patterns
-    // Note: We'll filter out file:line patterns in the detection logic
-static PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"([a-zA-Z][a-zA-Z0-9.-]*):([1-9]\d{1,4})\b"
-    ).unwrap());
+// Port numbers - only after hostnames, not in time formats or source file:line patterns
+// Matches hostname:port but avoids HH:MM:SS patterns and file.go:1234] patterns
+// Note: We'll filter out file:line patterns in the detection logic
+static PORT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9.-]*):([1-9]\d{1,4})\b").unwrap());
 
-    // IPv4:Port combinations
-static IPV4_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// IPv4:Port combinations
+static IPV4_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?):(\d{1,5})\b"
-    ).unwrap());
+    ).unwrap()
+});
 
-    // IPv6:Port combinations in brackets: [2001:db8::1]:8080
-static IPV6_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\[([a-fA-F0-9:]+(?:%\w+)?)\]:(\d{1,5})\b"
-    ).unwrap());
+// IPv6:Port combinations in brackets: [2001:db8::1]:8080
+static IPV6_PORT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:]+(?:%\w+)?)\]:(\d{1,5})\b").unwrap());
 
-    // FQDN (experimental, be careful not to match code like module.function.method)
-static FQDN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// FQDN (experimental, be careful not to match code like module.function.method)
+static FQDN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\b"
-    ).unwrap());
+    ).unwrap()
+});
 
 pub struct NetworkDetector;
 
 impl NetworkDetector {
-    pub fn detect_and_replace(text: &str, normalize_ips: bool, normalize_ports: bool, normalize_fqdns: bool) -> (String, Vec<Token>) {
+    pub fn detect_and_replace(
+        text: &str,
+        normalize_ips: bool,
+        normalize_ports: bool,
+        normalize_fqdns: bool,
+    ) -> (String, Vec<Token>) {
         // ULTRA-FAST PRE-FILTER: Skip if no network indicators
         if !Self::has_network_indicators(text, normalize_ips, normalize_ports, normalize_fqdns) {
             return (text.to_string(), Vec::new());
@@ -90,7 +98,9 @@ impl NetworkDetector {
                     }
                 }
             }
-            result = IPV4_PORT_REGEX.replace_all(&result, "<IP>:<PORT>").to_string();
+            result = IPV4_PORT_REGEX
+                .replace_all(&result, "<IP>:<PORT>")
+                .to_string();
 
             // Handle IPv6:Port combinations: [2001:db8::1]:8080
             for cap in IPV6_PORT_REGEX.captures_iter(&result) {
@@ -104,12 +114,17 @@ impl NetworkDetector {
                     }
                 }
             }
-            result = IPV6_PORT_REGEX.replace_all(&result, "[<IP>]:<PORT>").to_string();
+            result = IPV6_PORT_REGEX
+                .replace_all(&result, "[<IP>]:<PORT>")
+                .to_string();
 
             // Handle standalone IPv4 addresses
             for cap in IPV4_REGEX.find_iter(&result) {
                 let ip_str = cap.as_str();
-                if !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == ip_str)) {
+                if !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::IPv4(s) if s == ip_str))
+                {
                     tokens.push(Token::IPv4(ip_str.to_string()));
                 }
             }
@@ -118,12 +133,12 @@ impl NetworkDetector {
             // Handle IPv6 addresses with pre-filter protection
             for cap in IPV6_REGEX.find_iter(&result) {
                 let ip_str = cap.as_str();
-                
+
                 let check = Self::is_plausible_ipv6(ip_str);
                 if !check.is_plausible {
                     continue;
                 }
-                
+
                 tokens.push(Token::IPv6(ip_str.to_string()));
             }
             result = IPV6_REGEX.replace_all(&result, "<IP>").to_string();
@@ -137,33 +152,52 @@ impl NetworkDetector {
                 let port_str = cap.get(2).unwrap().as_str();
 
                 // Skip if this looks like a source file:line pattern (ends with ])
-                if full_match.ends_with("]") || hostname.ends_with(".go") || hostname.ends_with(".rs")
-                   || hostname.ends_with(".py") || hostname.ends_with(".js") || hostname.ends_with(".java")
-                   || hostname.ends_with(".c") || hostname.ends_with(".cpp") || hostname.ends_with(".h") {
+                if full_match.ends_with("]")
+                    || hostname.ends_with(".go")
+                    || hostname.ends_with(".rs")
+                    || hostname.ends_with(".py")
+                    || hostname.ends_with(".js")
+                    || hostname.ends_with(".java")
+                    || hostname.ends_with(".c")
+                    || hostname.ends_with(".cpp")
+                    || hostname.ends_with(".h")
+                {
                     continue;
                 }
 
                 if let Ok(port) = port_str.parse::<u16>() {
-                    if !tokens.iter().any(|t| matches!(t, Token::Port(p) if *p == port)) {
+                    if !tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Port(p) if *p == port))
+                    {
                         tokens.push(Token::Port(port));
                     }
                 }
             }
 
             // Replace ports but skip file:line patterns
-            result = PORT_REGEX.replace_all(&result, |caps: &regex::Captures| {
-                let full_match = caps.get(0).unwrap().as_str();
-                let hostname = caps.get(1).unwrap().as_str();
+            result = PORT_REGEX
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let full_match = caps.get(0).unwrap().as_str();
+                    let hostname = caps.get(1).unwrap().as_str();
 
-                // Skip if this looks like a source file:line pattern
-                if full_match.ends_with("]") || hostname.ends_with(".go") || hostname.ends_with(".rs")
-                   || hostname.ends_with(".py") || hostname.ends_with(".js") || hostname.ends_with(".java")
-                   || hostname.ends_with(".c") || hostname.ends_with(".cpp") || hostname.ends_with(".h") {
-                    return full_match.to_string();
-                }
+                    // Skip if this looks like a source file:line pattern
+                    if full_match.ends_with("]")
+                        || hostname.ends_with(".go")
+                        || hostname.ends_with(".rs")
+                        || hostname.ends_with(".py")
+                        || hostname.ends_with(".js")
+                        || hostname.ends_with(".java")
+                        || hostname.ends_with(".c")
+                        || hostname.ends_with(".cpp")
+                        || hostname.ends_with(".h")
+                    {
+                        return full_match.to_string();
+                    }
 
-                format!("{}:<PORT>", hostname)
-            }).to_string();
+                    format!("{hostname}:<PORT>")
+                })
+                .to_string();
         }
 
         if normalize_fqdns {
@@ -171,7 +205,8 @@ impl NetworkDetector {
             for cap in FQDN_REGEX.find_iter(&result) {
                 let fqdn_str = cap.as_str();
                 // Basic heuristic to avoid matching code patterns
-                if fqdn_str.contains('.') && !fqdn_str.starts_with('.') && !fqdn_str.ends_with('.') {
+                if fqdn_str.contains('.') && !fqdn_str.starts_with('.') && !fqdn_str.ends_with('.')
+                {
                     tokens.push(Token::IPv4(fqdn_str.to_string())); // Reuse IPv4 token type for now
                 }
             }
@@ -192,7 +227,7 @@ impl NetworkDetector {
     }
 
     /// Lightweight pre-filter to validate IPv6 structural plausibility before regex execution
-    /// 
+    ///
     /// This function provides ReDoS protection by quickly rejecting obviously malformed patterns
     /// that could cause catastrophic backtracking in the complex IPv6 regex. It performs O(n)
     /// validation with minimal overhead (<1% for valid inputs).
@@ -217,7 +252,7 @@ impl NetworkDetector {
     /// # Examples
     /// ```
     /// use lessence::patterns::network::NetworkDetector;
-    /// 
+    ///
     /// // Valid IPv6 - passes pre-filter
     /// let check = NetworkDetector::is_plausible_ipv6("2001:db8::1");
     /// assert!(check.is_plausible);
@@ -228,47 +263,55 @@ impl NetworkDetector {
     /// ```
     pub fn is_plausible_ipv6(input: &str) -> PlausibilityCheck {
         let len = input.len();
-        
+
         if len < 2 {
             return PlausibilityCheck::rejected("too_short");
         }
-        
+
         if len > 100 {
             return PlausibilityCheck::rejected("too_long");
         }
-        
+
         let mut has_colon = false;
         let mut has_hex = false;
-        
+
         for ch in input.chars() {
             match ch {
                 ':' => has_colon = true,
-                '.' => {},
+                '.' => {}
                 '0'..='9' | 'a'..='f' | 'A'..='F' => has_hex = true,
                 _ => return PlausibilityCheck::rejected("invalid_characters"),
             }
         }
-        
+
         if !has_colon {
             return PlausibilityCheck::rejected("no_colons");
         }
-        
+
         if !has_hex && input != "::" {
             return PlausibilityCheck::rejected("no_hex_digits");
         }
-        
+
         PlausibilityCheck::plausible()
     }
 
     #[inline]
-    fn has_network_indicators(text: &str, normalize_ips: bool, normalize_ports: bool, normalize_fqdns: bool) -> bool {
+    fn has_network_indicators(
+        text: &str,
+        normalize_ips: bool,
+        normalize_ports: bool,
+        normalize_fqdns: bool,
+    ) -> bool {
         if normalize_ips && (text.contains('.') || text.contains(':')) {
             return true; // Potential IPv4 or IPv6
         }
         if normalize_ports && text.contains(':') {
             return true; // Potential port number
         }
-        if normalize_fqdns && (text.contains('.') && (text.contains("com") || text.contains("org") || text.contains("net"))) {
+        if normalize_fqdns
+            && (text.contains('.')
+                && (text.contains("com") || text.contains("org") || text.contains("net")))
+        {
             return true; // Potential FQDN
         }
         false

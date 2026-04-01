@@ -1,18 +1,18 @@
-pub mod timestamp;
-pub mod network;
-pub mod hash;
-pub mod process;
-pub mod uuid;
-pub mod path;
-pub mod email;
-pub mod json;
 pub mod duration;
-pub mod quoted;
-pub mod names;
+pub mod email;
+pub mod hash;
+pub mod json;
 pub mod kubernetes;
+pub mod names;
+pub mod network;
+pub mod path;
+pub mod process;
+pub mod quoted;
+pub mod timestamp;
+pub mod uuid;
 // New patterns from 001-read-the-current
-pub mod http_status;
 pub mod bracket_context;
+pub mod http_status;
 pub mod key_value;
 pub mod log_module;
 pub mod structured;
@@ -48,7 +48,6 @@ pub enum Token {
 
     // Email pattern
     Email(String),
-
 }
 
 #[derive(Debug, Clone, PartialEq)]

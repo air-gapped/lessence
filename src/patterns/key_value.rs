@@ -113,7 +113,7 @@ impl KeyValueDetector {
                         key: key.to_lowercase(),
                         value_type,
                     });
-                    format!(r#""{}": <KEY_VALUE>"#, key)
+                    format!(r#""{key}": <KEY_VALUE>"#)
                 } else {
                     caps.get(0).unwrap().as_str().to_string()
                 }

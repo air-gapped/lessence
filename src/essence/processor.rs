@@ -2,8 +2,7 @@
 // Constitutional timestamp removal/tokenization implementation
 
 use crate::essence::{
-    EssenceModeProcessor, TimestampMatch, TimestampFormat,
-    EssenceModeValidation
+    EssenceModeProcessor, EssenceModeValidation, TimestampFormat, TimestampMatch,
 };
 use crate::patterns::timestamp::TimestampDetector;
 
@@ -14,7 +13,6 @@ pub struct EssenceProcessor {
 }
 
 impl EssenceProcessor {
-
     /// Update timestamp replacement count (for future use)
     #[allow(dead_code)]
     fn increment_timestamps_replaced(&mut self) {
@@ -72,8 +70,8 @@ impl EssenceModeProcessor for EssenceProcessor {
         EssenceModeValidation {
             is_non_default: !self.enabled, // Should be disabled by default
             supports_all_formats: pattern_count >= 30, // Constitutional requirement
-            preserves_structure: true, // Structure preserved through unified detection
-            achieves_independence: true, // Temporal independence through <TIMESTAMP> tokenization
+            preserves_structure: true,     // Structure preserved through unified detection
+            achieves_independence: true,   // Temporal independence through <TIMESTAMP> tokenization
         }
     }
 }
@@ -83,12 +81,16 @@ pub fn detect_timestamps(line: &str) -> Vec<TimestampMatch> {
     use crate::patterns::timestamp::UnifiedTimestampDetector;
     let result = UnifiedTimestampDetector::detect_with_metadata(line);
 
-    result.matches.into_iter().map(|m| TimestampMatch {
-        original: m.original,
-        format_type: TimestampFormat::ISO8601Full, // Map to essence format enum
-        start_pos: m.start_pos,
-        end_pos: m.end_pos,
-    }).collect()
+    result
+        .matches
+        .into_iter()
+        .map(|m| TimestampMatch {
+            original: m.original,
+            format_type: TimestampFormat::ISO8601Full, // Map to essence format enum
+            start_pos: m.start_pos,
+            end_pos: m.end_pos,
+        })
+        .collect()
 }
 
 /// Tokenize all timestamps in a line using unified detector

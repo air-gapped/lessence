@@ -1,23 +1,22 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
 // HTTP status codes in common web server log formats
 // Matches patterns like: "GET /path HTTP/1.1" 200 1234 "-"
 // Also matches: "HTTP/1.1" 404 335 (response format)
-static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r#"(?:"[^"]*(?:HTTP/\d\.\d)"?\s+)(\d{3})(?:\s+\d+(?:\s+|$))"#
-).unwrap());
+static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:"[^"]*(?:HTTP/\d\.\d)"?\s+)(\d{3})(?:\s+\d+(?:\s+|$))"#).unwrap()
+});
 
 // Alternative pattern for access logs: method path protocol" status size
-static ACCESS_LOG_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r#""(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+[^"]*"\s+(\d{3})\s+\d+"#
-).unwrap());
+static ACCESS_LOG_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+[^"]*"\s+(\d{3})\s+\d+"#).unwrap()
+});
 
 // Pattern for proxy logs: upstream_status -> downstream_status
-static PROXY_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r#"(\d{3})\s*->\s*.*?(\d{3})"#
-).unwrap());
+static PROXY_STATUS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(\d{3})\s*->\s*.*?(\d{3})"#).unwrap());
 
 pub struct HttpStatusDetector;
 
@@ -41,71 +40,87 @@ impl HttpStatusDetector {
 
     fn has_http_indicators(text: &str) -> bool {
         // Fast byte-level checks for HTTP indicators
-        text.contains("HTTP/") ||
-        text.contains("GET ") ||
-        text.contains("POST ") ||
-        text.contains("PUT ") ||
-        text.contains("DELETE ") ||
-        text.contains("\" 2") ||
-        text.contains("\" 3") ||
-        text.contains("\" 4") ||
-        text.contains("\" 5")
+        text.contains("HTTP/")
+            || text.contains("GET ")
+            || text.contains("POST ")
+            || text.contains("PUT ")
+            || text.contains("DELETE ")
+            || text.contains("\" 2")
+            || text.contains("\" 3")
+            || text.contains("\" 4")
+            || text.contains("\" 5")
     }
 
     fn apply_access_log_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = ACCESS_LOG_STATUS_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let status_code = caps.get(1).unwrap().as_str();
-            if let Ok(status) = status_code.parse::<u16>() {
-                let class = Self::classify_status_code(status);
-                tokens.push(Token::HttpStatusClass(class.clone()));
-                format!("{}<HTTP_STATUS_{}>{}",
-                    &caps.get(0).unwrap().as_str()[..caps.get(1).unwrap().start() - caps.get(0).unwrap().start()],
-                    class.to_uppercase(),
-                    &caps.get(0).unwrap().as_str()[caps.get(1).unwrap().end() - caps.get(0).unwrap().start()..]
-                )
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+        *text = ACCESS_LOG_STATUS_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let status_code = caps.get(1).unwrap().as_str();
+                if let Ok(status) = status_code.parse::<u16>() {
+                    let class = Self::classify_status_code(status);
+                    tokens.push(Token::HttpStatusClass(class.clone()));
+                    format!(
+                        "{}<HTTP_STATUS_{}>{}",
+                        &caps.get(0).unwrap().as_str()
+                            [..caps.get(1).unwrap().start() - caps.get(0).unwrap().start()],
+                        class.to_uppercase(),
+                        &caps.get(0).unwrap().as_str()
+                            [caps.get(1).unwrap().end() - caps.get(0).unwrap().start()..]
+                    )
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn apply_http_status_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = HTTP_STATUS_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let status_code = caps.get(1).unwrap().as_str();
-            if let Ok(status) = status_code.parse::<u16>() {
-                let class = Self::classify_status_code(status);
-                tokens.push(Token::HttpStatusClass(class.clone()));
-                format!("{}<HTTP_STATUS_{}>{}",
-                    &caps.get(0).unwrap().as_str()[..caps.get(1).unwrap().start() - caps.get(0).unwrap().start()],
-                    class.to_uppercase(),
-                    &caps.get(0).unwrap().as_str()[caps.get(1).unwrap().end() - caps.get(0).unwrap().start()..]
-                )
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+        *text = HTTP_STATUS_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let status_code = caps.get(1).unwrap().as_str();
+                if let Ok(status) = status_code.parse::<u16>() {
+                    let class = Self::classify_status_code(status);
+                    tokens.push(Token::HttpStatusClass(class.clone()));
+                    format!(
+                        "{}<HTTP_STATUS_{}>{}",
+                        &caps.get(0).unwrap().as_str()
+                            [..caps.get(1).unwrap().start() - caps.get(0).unwrap().start()],
+                        class.to_uppercase(),
+                        &caps.get(0).unwrap().as_str()
+                            [caps.get(1).unwrap().end() - caps.get(0).unwrap().start()..]
+                    )
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn apply_proxy_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = PROXY_STATUS_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let upstream_status = caps.get(1).unwrap().as_str();
-            let downstream_status = caps.get(2).unwrap().as_str();
+        *text = PROXY_STATUS_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let upstream_status = caps.get(1).unwrap().as_str();
+                let downstream_status = caps.get(2).unwrap().as_str();
 
-            if let (Ok(upstream), Ok(downstream)) = (upstream_status.parse::<u16>(), downstream_status.parse::<u16>()) {
-                let upstream_class = Self::classify_status_code(upstream);
-                let downstream_class = Self::classify_status_code(downstream);
+                if let (Ok(upstream), Ok(downstream)) = (
+                    upstream_status.parse::<u16>(),
+                    downstream_status.parse::<u16>(),
+                ) {
+                    let upstream_class = Self::classify_status_code(upstream);
+                    let downstream_class = Self::classify_status_code(downstream);
 
-                tokens.push(Token::HttpStatusClass(upstream_class.clone()));
-                tokens.push(Token::HttpStatusClass(downstream_class.clone()));
+                    tokens.push(Token::HttpStatusClass(upstream_class.clone()));
+                    tokens.push(Token::HttpStatusClass(downstream_class.clone()));
 
-                format!("<HTTP_STATUS_{}> -> <HTTP_STATUS_{}>",
-                    upstream_class.to_uppercase(),
-                    downstream_class.to_uppercase()
-                )
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+                    format!(
+                        "<HTTP_STATUS_{}> -> <HTTP_STATUS_{}>",
+                        upstream_class.to_uppercase(),
+                        downstream_class.to_uppercase()
+                    )
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn classify_status_code(status: u16) -> String {
@@ -138,7 +153,8 @@ mod tests {
 
     #[test]
     fn test_apache_access_log_detection() {
-        let apache_line = r#"127.0.0.1 - - [25/Dec/2023:10:15:30 +0000] "POST /api/login HTTP/1.1" 401 256"#;
+        let apache_line =
+            r#"127.0.0.1 - - [25/Dec/2023:10:15:30 +0000] "POST /api/login HTTP/1.1" 401 256"#;
         let (result, tokens) = HttpStatusDetector::detect_and_replace(apache_line);
 
         assert_eq!(tokens.len(), 1);
@@ -150,7 +166,8 @@ mod tests {
 
     #[test]
     fn test_multiple_status_codes() {
-        let proxy_line = r#"Proxy response: "GET /api HTTP/1.1" 200 -> "GET /backend HTTP/1.1" 502"#;
+        let proxy_line =
+            r#"Proxy response: "GET /api HTTP/1.1" 200 -> "GET /backend HTTP/1.1" 502"#;
         let (result, tokens) = HttpStatusDetector::detect_and_replace(proxy_line);
 
         assert!(tokens.len() >= 2);

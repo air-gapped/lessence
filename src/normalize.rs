@@ -265,7 +265,7 @@ impl Normalizer {
             // Compact format: [+N similar, varying: TYPE]
             let variation_types = self.summarize_variation_types(&first.tokens, &last.tokens);
             if variation_types.is_empty() {
-                format!("[+{} similar]", count)
+                format!("[+{count} similar]")
             } else {
                 format!(
                     "[+{} similar, varying: {}]",
@@ -335,7 +335,7 @@ impl Normalizer {
                 Token::HttpStatusClass(v) => ("http_status_class", v.clone()),
                 Token::BracketContext(v) => ("bracket_context", v.join(",")),
                 Token::KeyValuePair { key, value_type } => {
-                    ("key_value_pair", format!("{}={}", key, value_type))
+                    ("key_value_pair", format!("{key}={value_type}"))
                 }
                 Token::Email(v) => ("email", v.clone()),
                 Token::LogWithModule { .. } => ("log_with_module", String::new()),

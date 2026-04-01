@@ -18,7 +18,7 @@ impl std::str::FromStr for OutputFormat {
                 "Error: Invalid format 'json'. Supported formats: text, markdown"
             )),
             _ => Err(anyhow::anyhow!(
-                "Error: Invalid format '{}'. Supported formats: text, markdown", s
+                "Error: Invalid format '{s}'. Supported formats: text, markdown"
             )),
         }
     }

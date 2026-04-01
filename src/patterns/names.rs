@@ -1,18 +1,28 @@
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 use super::Token;
 
 // Generic hyphenated names with variable suffixes
 // Matches patterns like: component-name-suffix, kube-api-access-suffix
-static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b([a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*)-([a-z0-9]{5,})\b")
-    .expect("Failed to compile hyphenated names regex"));
+static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*)-([a-z0-9]{5,})\b")
+        .expect("Failed to compile hyphenated names regex")
+});
 
 // Common prefixes that should be preserved (not treated as variable)
 static COMMON_PREFIXES: &[&str] = &[
-    "kube-api-access", "kube-proxy", "kube-controller", "kube-scheduler",
-    "nvidia-device-plugin", "nvidia-container-toolkit", "node-feature-discovery",
-    "container-runtime", "csi-rbdplugin", "virt-handler", "cilium-envoy"
+    "kube-api-access",
+    "kube-proxy",
+    "kube-controller",
+    "kube-scheduler",
+    "nvidia-device-plugin",
+    "nvidia-container-toolkit",
+    "node-feature-discovery",
+    "container-runtime",
+    "csi-rbdplugin",
+    "virt-handler",
+    "cilium-envoy",
 ];
 
 pub struct NameDetector;
@@ -28,27 +38,29 @@ impl NameDetector {
         let mut tokens = Vec::new();
 
         // Replace hyphenated names with variable suffixes
-        result = HYPHENATED_NAMES.replace_all(&result, |caps: &regex::Captures| {
-            let prefix = caps.get(1).unwrap().as_str();
-            let suffix = caps.get(2).unwrap().as_str();
-            let full_name = caps.get(0).unwrap().as_str();
+        result = HYPHENATED_NAMES
+            .replace_all(&result, |caps: &regex::Captures| {
+                let prefix = caps.get(1).unwrap().as_str();
+                let suffix = caps.get(2).unwrap().as_str();
+                let full_name = caps.get(0).unwrap().as_str();
 
-            // Check if this looks like a variable suffix (hash-like or random)
-            if Self::is_variable_suffix(suffix) {
-                // Check if the prefix is a known common pattern
-                if Self::is_common_prefix(prefix) {
-                    tokens.push(Token::Name(full_name.to_string()));
-                    format!("{}-<SUFFIX>", prefix)
+                // Check if this looks like a variable suffix (hash-like or random)
+                if Self::is_variable_suffix(suffix) {
+                    // Check if the prefix is a known common pattern
+                    if Self::is_common_prefix(prefix) {
+                        tokens.push(Token::Name(full_name.to_string()));
+                        format!("{prefix}-<SUFFIX>")
+                    } else {
+                        // Generic component name
+                        tokens.push(Token::Name(full_name.to_string()));
+                        "<COMPONENT>-<SUFFIX>".to_string()
+                    }
                 } else {
-                    // Generic component name
-                    tokens.push(Token::Name(full_name.to_string()));
-                    "<COMPONENT>-<SUFFIX>".to_string()
+                    // Keep original if suffix doesn't look variable
+                    full_name.to_string()
                 }
-            } else {
-                // Keep original if suffix doesn't look variable
-                full_name.to_string()
-            }
-        }).to_string();
+            })
+            .to_string();
 
         (result, tokens)
     }
@@ -65,8 +77,8 @@ impl NameDetector {
 
         // Exclude common English words that aren't variable
         let common_words = &[
-            "stable", "latest", "master", "worker", "server", "client",
-            "proxy", "cache", "store", "admin", "config", "service"
+            "stable", "latest", "master", "worker", "server", "client", "proxy", "cache", "store",
+            "admin", "config", "service",
         ];
         if common_words.contains(&suffix) {
             return false;
@@ -92,16 +104,22 @@ mod tests {
     #[test]
     fn test_hyphenated_name_detection() {
         let test_cases = vec![
-            ("pod pushprox-kube-proxy-client-9djm4", "pod <COMPONENT>-<SUFFIX>"),
-            ("volume kube-api-access-52r58", "volume kube-api-access-<SUFFIX>"),
+            (
+                "pod pushprox-kube-proxy-client-9djm4",
+                "pod <COMPONENT>-<SUFFIX>",
+            ),
+            (
+                "volume kube-api-access-52r58",
+                "volume kube-api-access-<SUFFIX>",
+            ),
             ("container cilium-kh8lj", "container <COMPONENT>-<SUFFIX>"),
             ("service nginx-stable", "service nginx-stable"), // Short suffix, unchanged
-            ("app my-service", "app my-service"), // Too short, unchanged
+            ("app my-service", "app my-service"),             // Too short, unchanged
         ];
 
         for (input, expected) in test_cases {
             let (result, _tokens) = NameDetector::detect_and_replace(input);
-            assert_eq!(result, expected, "Failed for input: {}", input);
+            assert_eq!(result, expected, "Failed for input: {input}");
         }
     }
 
@@ -110,7 +128,7 @@ mod tests {
         assert!(NameDetector::is_variable_suffix("9djm4")); // mixed alphanumeric
         assert!(NameDetector::is_variable_suffix("52r58")); // mixed alphanumeric
         assert!(NameDetector::is_variable_suffix("kh8lj")); // mixed alphanumeric
-        // "abcde" is all letters with no numbers — the code requires both letters AND numbers
+                                                            // "abcde" is all letters with no numbers — the code requires both letters AND numbers
         assert!(!NameDetector::is_variable_suffix("abcde"));
 
         assert!(!NameDetector::is_variable_suffix("abc")); // too short

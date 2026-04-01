@@ -94,7 +94,7 @@ impl LogAnalyzer {
 
             // Progress indicator for very large files
             if total_lines % 50000 == 0 {
-                eprintln!("Analyzed {} lines...", total_lines);
+                eprintln!("Analyzed {total_lines} lines...");
             }
         }
 
@@ -363,10 +363,10 @@ impl LogAnalyzer {
         Ok(AnalysisResult {
             total_lines: stats.total_lines,
             estimated_compression: CompressionEstimates {
-                default: format!("{:.1}% compression", compression_ratio),
-                with_paths: format!("{:.1}% compression", compression_ratio),
-                with_numbers: format!("{:.1}% compression", compression_ratio),
-                aggressive: format!("{:.1}% compression", compression_ratio),
+                default: format!("{compression_ratio:.1}% compression"),
+                with_paths: format!("{compression_ratio:.1}% compression"),
+                with_numbers: format!("{compression_ratio:.1}% compression"),
+                aggressive: format!("{compression_ratio:.1}% compression"),
             },
             pattern_distribution: patterns,
             recommendations,

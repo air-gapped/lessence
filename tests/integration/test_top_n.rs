@@ -8,7 +8,12 @@ fn lessence_bin() -> Command {
 #[test]
 fn test_top_n_shows_exactly_n_groups() {
     let output = lessence_bin()
-        .args(["--top", "2", "--no-stats", "tests/fixtures/nginx_sample.log"])
+        .args([
+            "--top",
+            "2",
+            "--no-stats",
+            "tests/fixtures/nginx_sample.log",
+        ])
         .output()
         .expect("Failed to run");
 
@@ -16,14 +21,25 @@ fn test_top_n_shows_exactly_n_groups() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Count groups by counting [Nx] prefixes
-    let group_count = stdout.lines().filter(|l| l.starts_with('[') && l.contains("x]")).count();
-    assert_eq!(group_count, 2, "Should show exactly 2 groups. Got:\n{}", stdout);
+    let group_count = stdout
+        .lines()
+        .filter(|l| l.starts_with('[') && l.contains("x]"))
+        .count();
+    assert_eq!(
+        group_count, 2,
+        "Should show exactly 2 groups. Got:\n{stdout}"
+    );
 }
 
 #[test]
 fn test_top_n_sorted_descending() {
     let output = lessence_bin()
-        .args(["--top", "5", "--no-stats", "tests/fixtures/nginx_sample.log"])
+        .args([
+            "--top",
+            "5",
+            "--no-stats",
+            "tests/fixtures/nginx_sample.log",
+        ])
         .output()
         .expect("Failed to run");
 
@@ -49,8 +65,7 @@ fn test_top_n_sorted_descending() {
     for i in 1..counts.len() {
         assert!(
             counts[i - 1] >= counts[i],
-            "Counts should be descending: {:?}",
-            counts
+            "Counts should be descending: {counts:?}"
         );
     }
 }
@@ -58,20 +73,27 @@ fn test_top_n_sorted_descending() {
 #[test]
 fn test_top_n_larger_than_groups_shows_all() {
     let output = lessence_bin()
-        .args(["--top", "100", "--no-stats", "tests/fixtures/nginx_sample.log"])
+        .args([
+            "--top",
+            "100",
+            "--no-stats",
+            "tests/fixtures/nginx_sample.log",
+        ])
         .output()
         .expect("Failed to run");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.is_empty(), "Should produce output even when N > total groups");
+    assert!(
+        !stdout.is_empty(),
+        "Should produce output even when N > total groups"
+    );
 
     // Coverage footer should show on stderr
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("showing top"),
-        "Should show coverage footer on stderr. Got: {}",
-        stderr
+        "Should show coverage footer on stderr. Got: {stderr}"
     );
 }
 
@@ -86,8 +108,13 @@ fn test_without_top_output_unchanged() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let has_count_prefix = stdout.lines().any(|l| l.starts_with('[') && l.contains("x]"));
-    assert!(!has_count_prefix, "Without --top, should not have [Nx] count prefixes");
+    let has_count_prefix = stdout
+        .lines()
+        .any(|l| l.starts_with('[') && l.contains("x]"));
+    assert!(
+        !has_count_prefix,
+        "Without --top, should not have [Nx] count prefixes"
+    );
 }
 
 #[test]
@@ -117,26 +144,35 @@ fn test_top_n_with_stdin() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    let group_count = stdout.lines().filter(|l| l.starts_with('[') && l.contains("x]")).count();
-    assert_eq!(group_count, 2, "Should show exactly 2 groups from stdin. Got:\n{}", stdout);
+    let group_count = stdout
+        .lines()
+        .filter(|l| l.starts_with('[') && l.contains("x]"))
+        .count();
+    assert_eq!(
+        group_count, 2,
+        "Should show exactly 2 groups from stdin. Got:\n{stdout}"
+    );
 }
 
 #[test]
 fn test_top_n_coverage_footer() {
     let output = lessence_bin()
-        .args(["--top", "1", "--no-stats", "tests/fixtures/nginx_sample.log"])
+        .args([
+            "--top",
+            "1",
+            "--no-stats",
+            "tests/fixtures/nginx_sample.log",
+        ])
         .output()
         .expect("Failed to run");
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("showing top 1 of"),
-        "Footer should show 'showing top 1 of N patterns'. Got: {}",
-        stderr
+        "Footer should show 'showing top 1 of N patterns'. Got: {stderr}"
     );
     assert!(
         stderr.contains("% of input lines"),
-        "Footer should show coverage percentage. Got: {}",
-        stderr
+        "Footer should show coverage percentage. Got: {stderr}"
     );
 }

@@ -1,27 +1,33 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
-
-    // JSON structured logs with level and component/service
-static JSON_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// JSON structured logs with level and component/service
+static JSON_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r#"\{"[^"]*(?:level|severity|lvl)"[^"]*:\s*"(error|warn|warning|info|information|debug|trace|fatal|critical)"[^}]*"(?:component|service|module|logger|source)"[^"]*:\s*"([^"]+)"[^}]*\}"#
-    ).unwrap());
+    ).unwrap()
+});
 
-    // Alternative JSON order: component first, then level
-static JSON_STRUCTURED_ALT_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// Alternative JSON order: component first, then level
+static JSON_STRUCTURED_ALT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r#"\{"[^"]*"(?:component|service|module|logger|source)"[^"]*:\s*"([^"]+)"[^}]*"(?:level|severity|lvl)"[^"]*:\s*"(error|warn|warning|info|information|debug|trace|fatal|critical)"[^}]*\}"#
-    ).unwrap());
+    ).unwrap()
+});
 
-    // Logfmt style: level=info component=api-gateway msg="message"
-static LOGFMT_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
+// Logfmt style: level=info component=api-gateway msg="message"
+static LOGFMT_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
         r"(?:level|severity|lvl)=(error|warn|warning|info|information|debug|trace|fatal|critical)\s+(?:component|service|module|logger|source)=([^\s]+)"
-    ).unwrap());
+    ).unwrap()
+});
 
-    // Docker/Container structured logs
-static CONTAINER_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r#"\{"[^}]*"log":\s*"[^"]*\[(INFO|ERROR|WARN|DEBUG)\]\s+([^:]+):[^"]*"[^}]*\}"#
-    ).unwrap());
+// Docker/Container structured logs
+static CONTAINER_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\{"[^}]*"log":\s*"[^"]*\[(INFO|ERROR|WARN|DEBUG)\]\s+([^:]+):[^"]*"[^}]*\}"#)
+        .unwrap()
+});
 
 pub struct StructuredMessageDetector;
 
@@ -99,134 +105,193 @@ impl StructuredMessageDetector {
     }
 
     fn apply_container_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = CONTAINER_STRUCTURED_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let level = caps.get(1).unwrap().as_str();
-            let component = caps.get(2).unwrap().as_str();
+        *text = CONTAINER_STRUCTURED_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let level = caps.get(1).unwrap().as_str();
+                let component = caps.get(2).unwrap().as_str();
 
-            if Self::is_application_component(component) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-                r#"{"log": "<STRUCTURED_MESSAGE>"}"#.to_string()
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+                if Self::is_application_component(component) {
+                    tokens.push(Token::StructuredMessage {
+                        component: component.to_lowercase(),
+                        level: level.to_lowercase(),
+                    });
+                    r#"{"log": "<STRUCTURED_MESSAGE>"}"#.to_string()
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = JSON_STRUCTURED_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let level = caps.get(1).unwrap().as_str();
-            let component = caps.get(2).unwrap().as_str();
+        *text = JSON_STRUCTURED_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let level = caps.get(1).unwrap().as_str();
+                let component = caps.get(2).unwrap().as_str();
 
-            if Self::is_valid_structured_log(component, level) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-                "<STRUCTURED_MESSAGE>".to_string()
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+                if Self::is_valid_structured_log(component, level) {
+                    tokens.push(Token::StructuredMessage {
+                        component: component.to_lowercase(),
+                        level: level.to_lowercase(),
+                    });
+                    "<STRUCTURED_MESSAGE>".to_string()
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn apply_json_alt_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = JSON_STRUCTURED_ALT_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let component = caps.get(1).unwrap().as_str();
-            let level = caps.get(2).unwrap().as_str();
+        *text = JSON_STRUCTURED_ALT_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let component = caps.get(1).unwrap().as_str();
+                let level = caps.get(2).unwrap().as_str();
 
-            if Self::is_valid_structured_log(component, level) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-                "<STRUCTURED_MESSAGE>".to_string()
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+                if Self::is_valid_structured_log(component, level) {
+                    tokens.push(Token::StructuredMessage {
+                        component: component.to_lowercase(),
+                        level: level.to_lowercase(),
+                    });
+                    "<STRUCTURED_MESSAGE>".to_string()
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn apply_logfmt_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = LOGFMT_STRUCTURED_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let level = caps.get(1).unwrap().as_str();
-            let component = caps.get(2).unwrap().as_str();
+        *text = LOGFMT_STRUCTURED_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let level = caps.get(1).unwrap().as_str();
+                let component = caps.get(2).unwrap().as_str();
 
-            if Self::is_valid_structured_log(component, level) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-                "<STRUCTURED_MESSAGE>".to_string()
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+                if Self::is_valid_structured_log(component, level) {
+                    tokens.push(Token::StructuredMessage {
+                        component: component.to_lowercase(),
+                        level: level.to_lowercase(),
+                    });
+                    "<STRUCTURED_MESSAGE>".to_string()
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn is_application_component(component: &str) -> bool {
         let app_components = [
-            "application", "database", "cache", "auth", "payment",
-            "notification", "user", "order", "inventory", "billing",
-            "analytics", "monitoring", "logging", "metrics"
+            "application",
+            "database",
+            "cache",
+            "auth",
+            "payment",
+            "notification",
+            "user",
+            "order",
+            "inventory",
+            "billing",
+            "analytics",
+            "monitoring",
+            "logging",
+            "metrics",
         ];
 
-        app_components.iter().any(|&app_comp| component.contains(app_comp)) ||
-        component.ends_with("-service") ||
-        component.ends_with("_service") ||
-        component.ends_with("-api") ||
-        component.ends_with("_api") ||
-        component.ends_with("-client") ||
-        component.ends_with("_client")
+        app_components
+            .iter()
+            .any(|&app_comp| component.contains(app_comp))
+            || component.ends_with("-service")
+            || component.ends_with("_service")
+            || component.ends_with("-api")
+            || component.ends_with("_api")
+            || component.ends_with("-client")
+            || component.ends_with("_client")
     }
 
     fn is_microservice_component(component: &str) -> bool {
         // Common microservice naming patterns
-        component.contains("service") ||
-        component.contains("api") ||
-        component.contains("gateway") ||
-        component.contains("proxy") ||
-        component.contains("balancer") ||
-        component.contains("registry") ||
-        component.contains("discovery") ||
-        component.contains("config") ||
-        component.contains("auth") ||
-        component.contains("user") ||
-        component.contains("payment") ||
-        component.contains("order") ||
-        component.contains("inventory") ||
-        component.contains("notification")
+        component.contains("service")
+            || component.contains("api")
+            || component.contains("gateway")
+            || component.contains("proxy")
+            || component.contains("balancer")
+            || component.contains("registry")
+            || component.contains("discovery")
+            || component.contains("config")
+            || component.contains("auth")
+            || component.contains("user")
+            || component.contains("payment")
+            || component.contains("order")
+            || component.contains("inventory")
+            || component.contains("notification")
     }
 
     fn is_framework_component(component: &str) -> bool {
         let framework_components = [
-            "spring", "hibernate", "jackson", "slf4j", "logback",
-            "jersey", "servlet", "tomcat", "jetty", "netty",
-            "akka", "vertx", "reactor", "rxjava", "guava"
+            "spring",
+            "hibernate",
+            "jackson",
+            "slf4j",
+            "logback",
+            "jersey",
+            "servlet",
+            "tomcat",
+            "jetty",
+            "netty",
+            "akka",
+            "vertx",
+            "reactor",
+            "rxjava",
+            "guava",
         ];
 
-        framework_components.iter().any(|&framework| component.contains(framework)) ||
-        component.contains('.') && !component.contains(' ')  // Package-style names
+        framework_components
+            .iter()
+            .any(|&framework| component.contains(framework))
+            || component.contains('.') && !component.contains(' ') // Package-style names
     }
 
     fn is_infrastructure_component(component: &str) -> bool {
         let infra_components = [
-            "nginx", "apache", "haproxy", "envoy", "traefik",
-            "consul", "vault", "nomad", "prometheus", "grafana",
-            "elasticsearch", "logstash", "kibana", "fluentd",
-            "redis", "memcached", "mongodb", "postgresql", "mysql"
+            "nginx",
+            "apache",
+            "haproxy",
+            "envoy",
+            "traefik",
+            "consul",
+            "vault",
+            "nomad",
+            "prometheus",
+            "grafana",
+            "elasticsearch",
+            "logstash",
+            "kibana",
+            "fluentd",
+            "redis",
+            "memcached",
+            "mongodb",
+            "postgresql",
+            "mysql",
         ];
 
-        infra_components.iter().any(|&infra| component.contains(infra))
+        infra_components
+            .iter()
+            .any(|&infra| component.contains(infra))
     }
 
     fn is_valid_structured_log(component: &str, level: &str) -> bool {
         // Validate log level
         let valid_levels = [
-            "error", "warn", "warning", "info", "information",
-            "debug", "trace", "fatal", "critical"
+            "error",
+            "warn",
+            "warning",
+            "info",
+            "information",
+            "debug",
+            "trace",
+            "fatal",
+            "critical",
         ];
 
         if !valid_levels.contains(&level.to_lowercase().as_str()) {
@@ -242,7 +307,7 @@ impl StructuredMessageDetector {
         (component.len() >= 3 &&
          component.len() <= 50 &&
          component.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') &&
-         !component.chars().all(|c| c.is_ascii_digit()))  // Not just numbers
+         !component.chars().all(|c| c.is_ascii_digit())) // Not just numbers
     }
 }
 
@@ -277,7 +342,8 @@ mod tests {
 
     #[test]
     fn test_logfmt_structured_detection() {
-        let logfmt_line = "time=2024-01-01T10:00:00Z level=info component=api-gateway msg=\"Request received\"";
+        let logfmt_line =
+            "time=2024-01-01T10:00:00Z level=info component=api-gateway msg=\"Request received\"";
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(logfmt_line);
 
         if !tokens.is_empty() {
@@ -337,15 +403,17 @@ mod tests {
             let (_result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
             // Should not detect structured logging in data JSON
-            let has_structured = tokens.iter().any(|token| {
-                matches!(token, Token::StructuredMessage { .. })
-            });
+            let has_structured = tokens
+                .iter()
+                .any(|token| matches!(token, Token::StructuredMessage { .. }));
 
             if has_structured {
                 // If detected, should be valid
                 for token in &tokens {
                     if let Token::StructuredMessage { component, level } = token {
-                        assert!(StructuredMessageDetector::is_valid_structured_log(component, level));
+                        assert!(StructuredMessageDetector::is_valid_structured_log(
+                            component, level
+                        ));
                     }
                 }
             }
@@ -357,7 +425,8 @@ mod tests {
         let multi_line = r#"Received: {"level":"info","component":"api","msg":"Request"} Processing: {"level":"debug","component":"handler","msg":"Validation"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(multi_line);
 
-        let structured_count = tokens.iter()
+        let structured_count = tokens
+            .iter()
             .filter(|token| matches!(token, Token::StructuredMessage { .. }))
             .count();
 

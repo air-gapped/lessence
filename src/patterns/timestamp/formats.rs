@@ -1,8 +1,8 @@
 // Timestamp Format Definitions and Pattern Structures
 // Constitutional requirement: All 30+ timestamp formats without shortcuts
 
+use super::{FormatFamily, PatternPriority};
 use regex::Regex;
-use super::{PatternPriority, FormatFamily};
 
 /// Individual timestamp pattern with metadata
 #[derive(Debug, Clone)]
@@ -141,8 +141,7 @@ impl TimestampFormat {
             | TimestampFormat::UnixBracketed
             | TimestampFormat::UnixPrefixed => FormatFamily::Unix,
 
-            TimestampFormat::TimeOnly
-            | TimestampFormat::Duration => FormatFamily::Legacy,
+            TimestampFormat::TimeOnly | TimestampFormat::Duration => FormatFamily::Legacy,
         }
     }
 
@@ -191,8 +190,7 @@ impl TimestampFormat {
             | TimestampFormat::UnixTimestampNs => 10,
 
             // Lowest: Prefixed unix (more specific but still risky)
-            TimestampFormat::UnixBracketed
-            | TimestampFormat::UnixPrefixed => 20,
+            TimestampFormat::UnixBracketed | TimestampFormat::UnixPrefixed => 20,
 
             // Default for remaining formats
             _ => 40,

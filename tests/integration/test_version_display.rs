@@ -10,18 +10,24 @@ fn test_version_shows_lessence_name() {
         .output()
         .expect("lessence binary should exist");
 
-    assert!(output.status.success(),
-        "lessence --version should execute successfully");
+    assert!(
+        output.status.success(),
+        "lessence --version should execute successfully"
+    );
 
     let version_output = String::from_utf8_lossy(&output.stdout);
 
     // Check for "lessence" in version output
-    assert!(version_output.to_lowercase().contains("lessence"),
-        "Version output should contain 'lessence', got: {}", version_output);
+    assert!(
+        version_output.to_lowercase().contains("lessence"),
+        "Version output should contain 'lessence', got: {version_output}"
+    );
 
     // Ensure no old "logfold" references
-    assert!(!version_output.to_lowercase().contains("logfold"),
-        "Version output should not contain 'logfold', got: {}", version_output);
+    assert!(
+        !version_output.to_lowercase().contains("logfold"),
+        "Version output should not contain 'logfold', got: {version_output}"
+    );
 }
 
 #[test]
@@ -36,8 +42,10 @@ fn test_version_format() {
 
     // Should contain version number pattern (x.y.z)
     let version_regex = regex::Regex::new(r"\d+\.\d+\.\d+").unwrap();
-    assert!(version_regex.is_match(&version_output),
-        "Version should contain semantic version number, got: {}", version_output);
+    assert!(
+        version_regex.is_match(&version_output),
+        "Version should contain semantic version number, got: {version_output}"
+    );
 }
 
 #[test]
@@ -51,8 +59,9 @@ fn test_version_short_flag() {
     // -V should work the same as --version
     if output.status.success() {
         let version_output = String::from_utf8_lossy(&output.stdout);
-        assert!(version_output.to_lowercase().contains("lessence") ||
-                !version_output.trim().is_empty(),
-            "Short version flag should work, got: {}", version_output);
+        assert!(
+            version_output.to_lowercase().contains("lessence") || !version_output.trim().is_empty(),
+            "Short version flag should work, got: {version_output}"
+        );
     }
 }

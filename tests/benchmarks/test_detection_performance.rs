@@ -1,8 +1,8 @@
 // Performance Benchmark: Detection Performance (T044)
 // Measures runtime performance of unified timestamp detection
 
+use lessence::patterns::timestamp::{TimestampDetector, UnifiedTimestampDetector};
 use std::time::Instant;
-use lessence::patterns::timestamp::{UnifiedTimestampDetector, TimestampDetector};
 
 #[test]
 fn test_single_timestamp_detection_speed() {
@@ -19,15 +19,20 @@ fn test_single_timestamp_detection_speed() {
         // Run detection many times to measure performance
         for _ in 0..1000 {
             let result = UnifiedTimestampDetector::detect_with_metadata(input);
-            assert!(!result.matches.is_empty(), "Should detect timestamp in: {}", input);
+            assert!(
+                !result.matches.is_empty(),
+                "Should detect timestamp in: {input}"
+            );
         }
 
         let duration = start.elapsed();
         let per_operation = duration.as_nanos() / 1000;
 
         // Each detection should be fast (< 250μs per operation in debug mode)
-        assert!(per_operation < 250_000,
-            "Detection too slow for '{}': {}ns per operation", input, per_operation);
+        assert!(
+            per_operation < 250_000,
+            "Detection too slow for '{input}': {per_operation}ns per operation"
+        );
     }
 }
 
@@ -45,8 +50,10 @@ fn test_multiple_timestamp_detection_speed() {
     let per_operation = duration.as_nanos() / 500;
 
     // Multiple timestamp detection should still be fast (< 1000μs in debug mode)
-    assert!(per_operation < 1_000_000,
-        "Multiple detection too slow: {}ns per operation", per_operation);
+    assert!(
+        per_operation < 1_000_000,
+        "Multiple detection too slow: {per_operation}ns per operation"
+    );
 }
 
 #[test]
@@ -64,15 +71,21 @@ fn test_no_match_performance() {
         // Fast path should be very fast for non-matching input
         for _ in 0..2000 {
             let result = UnifiedTimestampDetector::detect_with_metadata(input);
-            assert_eq!(result.matches.len(), 0, "Should not detect false positives in: {}", input);
+            assert_eq!(
+                result.matches.len(),
+                0,
+                "Should not detect false positives in: {input}"
+            );
         }
 
         let duration = start.elapsed();
         let per_operation = duration.as_nanos() / 2000;
 
         // Non-matching input should be very fast (< 50μs)
-        assert!(per_operation < 50_000,
-            "No-match detection too slow for '{}': {}ns per operation", input, per_operation);
+        assert!(
+            per_operation < 50_000,
+            "No-match detection too slow for '{input}': {per_operation}ns per operation"
+        );
     }
 }
 
@@ -84,15 +97,21 @@ fn test_overlap_resolution_performance() {
 
     for _ in 0..1000 {
         let result = UnifiedTimestampDetector::detect_with_metadata(overlapping_input);
-        assert_eq!(result.matches.len(), 1, "Should resolve overlaps to single match");
+        assert_eq!(
+            result.matches.len(),
+            1,
+            "Should resolve overlaps to single match"
+        );
     }
 
     let duration = start.elapsed();
     let per_operation = duration.as_nanos() / 1000;
 
     // Overlap resolution should not significantly slow down detection (< 500μs in debug mode)
-    assert!(per_operation < 500_000,
-        "Overlap resolution too slow: {}ns per operation", per_operation);
+    assert!(
+        per_operation < 500_000,
+        "Overlap resolution too slow: {per_operation}ns per operation"
+    );
 }
 
 #[test]
@@ -110,15 +129,20 @@ fn test_long_text_performance() {
         let result = UnifiedTimestampDetector::detect_with_metadata(&long_input);
         // Very long lines may return 0 matches due to line length security limits,
         // or 1 match if within limits. Either is acceptable.
-        assert!(result.matches.len() <= 1, "Should find at most 1 timestamp in long text");
+        assert!(
+            result.matches.len() <= 1,
+            "Should find at most 1 timestamp in long text"
+        );
     }
 
     let duration = start.elapsed();
     let per_operation = duration.as_millis() / 100;
 
     // Long text processing should complete in reasonable time (< 10ms)
-    assert!(per_operation < 10,
-        "Long text detection too slow: {}ms per operation", per_operation);
+    assert!(
+        per_operation < 10,
+        "Long text detection too slow: {per_operation}ms per operation"
+    );
 }
 
 #[test]
@@ -144,8 +168,10 @@ fn test_backward_compatibility_performance() {
 
     // Compatibility layer should not add significant overhead (< 2x slower)
     let overhead_ratio = compat_duration.as_nanos() as f64 / new_duration.as_nanos() as f64;
-    assert!(overhead_ratio < 2.0,
-        "Compatibility layer too slow: {}x overhead", overhead_ratio);
+    assert!(
+        overhead_ratio < 2.0,
+        "Compatibility layer too slow: {overhead_ratio}x overhead"
+    );
 }
 
 #[test]
@@ -173,8 +199,10 @@ fn test_constitutional_unix_timestamp_penalty_performance() {
 
     // Performance should be comparable (priority logic shouldn't add major overhead)
     let ratio = unix_duration.as_nanos() as f64 / iso_duration.as_nanos() as f64;
-    assert!(ratio < 3.0,
-        "Unix penalty performance impact too high: {}x slower", ratio);
+    assert!(
+        ratio < 3.0,
+        "Unix penalty performance impact too high: {ratio}x slower"
+    );
 }
 
 #[test]
@@ -185,21 +213,27 @@ fn test_pattern_priority_performance() {
 
     for _ in 0..1000 {
         let result = UnifiedTimestampDetector::detect_with_metadata(mixed_input);
-        assert_eq!(result.matches.len(), 2, "Should detect both distinct timestamps");
+        assert_eq!(
+            result.matches.len(),
+            2,
+            "Should detect both distinct timestamps"
+        );
     }
 
     let duration = start.elapsed();
     let per_operation = duration.as_nanos() / 1000;
 
     // Priority resolution should be efficient (< 500μs in debug mode)
-    assert!(per_operation < 500_000,
-        "Priority resolution too slow: {}ns per operation", per_operation);
+    assert!(
+        per_operation < 500_000,
+        "Priority resolution too slow: {per_operation}ns per operation"
+    );
 }
 
 #[test]
 fn test_concurrent_detection_performance() {
-    use std::thread;
     use std::sync::Arc;
+    use std::thread;
 
     let input = Arc::new("2025-09-29T10:15:30Z Concurrent detection test".to_string());
     let start = Instant::now();
@@ -226,8 +260,11 @@ fn test_concurrent_detection_performance() {
     let total_duration = start.elapsed();
 
     // 1000 total operations across 4 threads should complete quickly
-    assert!(total_duration.as_millis() < 1000,
-        "Concurrent detection too slow: {}ms for 1000 operations", total_duration.as_millis());
+    assert!(
+        total_duration.as_millis() < 1000,
+        "Concurrent detection too slow: {}ms for 1000 operations",
+        total_duration.as_millis()
+    );
 }
 
 #[test]
@@ -247,8 +284,10 @@ fn test_memory_allocation_performance() {
             let ops_per_sec = (i as f64) / intermediate_duration.as_secs_f64();
 
             // Should maintain consistent performance (> 3k ops/sec in debug mode)
-            assert!(ops_per_sec > 3000.0,
-                "Performance degradation at iteration {}: {} ops/sec", i, ops_per_sec);
+            assert!(
+                ops_per_sec > 3000.0,
+                "Performance degradation at iteration {i}: {ops_per_sec} ops/sec"
+            );
         }
     }
 
@@ -256,8 +295,10 @@ fn test_memory_allocation_performance() {
     let final_ops_per_sec = 5000.0 / final_duration.as_secs_f64();
 
     // Should maintain high throughput throughout (> 3k ops/sec in debug mode)
-    assert!(final_ops_per_sec > 3000.0,
-        "Final performance too low: {} ops/sec", final_ops_per_sec);
+    assert!(
+        final_ops_per_sec > 3000.0,
+        "Final performance too low: {final_ops_per_sec} ops/sec"
+    );
 }
 
 #[test]
@@ -277,7 +318,10 @@ fn test_scalability_with_pattern_count() {
 
         for _ in 0..200 {
             let result = UnifiedTimestampDetector::detect_with_metadata(input);
-            assert!(!result.matches.is_empty(), "Should detect timestamp in: {}", input);
+            assert!(
+                !result.matches.is_empty(),
+                "Should detect timestamp in: {input}"
+            );
         }
 
         total_duration += start.elapsed();
@@ -286,6 +330,8 @@ fn test_scalability_with_pattern_count() {
     let avg_per_operation = total_duration.as_nanos() / (inputs.len() as u128 * 200);
 
     // Average across all pattern types should be reasonable (< 500μs in debug mode)
-    assert!(avg_per_operation < 500_000,
-        "Average detection across pattern types too slow: {}ns per operation", avg_per_operation);
+    assert!(
+        avg_per_operation < 500_000,
+        "Average detection across pattern types too slow: {avg_per_operation}ns per operation"
+    );
 }

@@ -531,8 +531,7 @@ impl PatternFolder {
         writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
         writeln!(
             writer,
-            "- **Compressed**: {} lines ({:.1}% reduction)",
-            output_lines, compression_ratio
+            "- **Compressed**: {output_lines} lines ({compression_ratio:.1}% reduction)"
         )?;
         writeln!(
             writer,
@@ -644,20 +643,17 @@ impl PatternFolder {
         if compression_ratio > 90.0 {
             writeln!(
                 writer,
-                "- **High compression ratio** ({:.1}%) indicates many repetitive patterns",
-                compression_ratio
+                "- **High compression ratio** ({compression_ratio:.1}%) indicates many repetitive patterns"
             )?;
         } else if compression_ratio > 70.0 {
             writeln!(
                 writer,
-                "- **Moderate compression ratio** ({:.1}%) indicates some repetitive patterns",
-                compression_ratio
+                "- **Moderate compression ratio** ({compression_ratio:.1}%) indicates some repetitive patterns"
             )?;
         } else {
             writeln!(
                 writer,
-                "- **Low compression ratio** ({:.1}%) indicates diverse log content",
-                compression_ratio
+                "- **Low compression ratio** ({compression_ratio:.1}%) indicates diverse log content"
             )?;
         }
 
@@ -820,15 +816,15 @@ impl PatternFolder {
         println!("=== lessence Summary Mode ===");
 
         if let (Some(first), Some(last)) = (&first_timestamp, &last_timestamp) {
-            println!("Time range: {} → {}", first, last);
+            println!("Time range: {first} → {last}");
         }
         println!();
 
-        println!("=== Unique Patterns ({} total) ===", total_unique_patterns);
+        println!("=== Unique Patterns ({total_unique_patterns} total) ===");
 
         let patterns_output = sorted_patterns.len();
         for (pattern, count) in sorted_patterns {
-            println!("[{}x] {}", count, pattern);
+            println!("[{count}x] {pattern}");
         }
 
         // Output compression stats
@@ -881,8 +877,7 @@ impl PatternFolder {
         writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
         writeln!(
             writer,
-            "- **Compressed**: {} unique patterns",
-            patterns_output
+            "- **Compressed**: {patterns_output} unique patterns"
         )?;
         writeln!(
             writer,
@@ -1091,8 +1086,7 @@ mod tests {
         let output = results.join("\n");
         assert!(
             output.contains("similar"),
-            "Expected 'similar' in compact output, got: {}",
-            output
+            "Expected 'similar' in compact output, got: {output}"
         );
 
         Ok(())

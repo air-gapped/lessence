@@ -7,9 +7,9 @@ pub use crate::patterns::Token;
 
 // Re-export unified interfaces
 pub use detector::UnifiedTimestampDetector;
+pub use formats::{PatternSource, TimestampFormat, TimestampPattern};
+pub use priority::{FormatFamily, PatternPriority};
 pub use registry::TimestampRegistry;
-pub use formats::{TimestampPattern, TimestampFormat, PatternSource};
-pub use priority::{PatternPriority, FormatFamily};
 
 // Compatibility layer for old API
 pub struct TimestampDetector;
@@ -23,9 +23,9 @@ impl TimestampDetector {
 
 // Module structure
 pub mod detector;
-pub mod registry;
 pub mod formats;
 pub mod priority;
+pub mod registry;
 
 /// Detection result with comprehensive metadata
 #[derive(Debug, Clone)]

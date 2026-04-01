@@ -11,19 +11,22 @@ fn test_lessence_binary_exists() {
 
     match output {
         Ok(result) => {
-            assert!(result.status.success(),
-                "lessence binary should execute successfully");
+            assert!(
+                result.status.success(),
+                "lessence binary should execute successfully"
+            );
 
             let version_output = String::from_utf8_lossy(&result.stdout);
-            assert!(version_output.contains("lessence"),
-                "Version output should contain 'lessence', got: {}", version_output);
+            assert!(
+                version_output.contains("lessence"),
+                "Version output should contain 'lessence', got: {version_output}"
+            );
         }
         Err(_) => {
             panic!("lessence binary should exist at ./target/release/lessence");
         }
     }
 }
-
 
 #[test]
 fn test_lessence_binary_help() {
@@ -33,10 +36,11 @@ fn test_lessence_binary_help() {
         .output()
         .expect("lessence binary should exist");
 
-    assert!(output.status.success(),
-        "lessence --help should execute successfully");
+    assert!(
+        output.status.success(),
+        "lessence --help should execute successfully"
+    );
 
     let help_output = String::from_utf8_lossy(&output.stdout);
-    assert!(!help_output.is_empty(),
-        "Help output should not be empty");
+    assert!(!help_output.is_empty(), "Help output should not be empty");
 }

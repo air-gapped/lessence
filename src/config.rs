@@ -84,21 +84,21 @@ pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
         num_str
             .parse::<usize>()
             .map(|n| n * 1024)
-            .map_err(|_| format!("Invalid number before 'K': {}", num_str))
+            .map_err(|_| format!("Invalid number before 'K': {num_str}"))
     } else if let Some(num_str) = input.strip_suffix('M').or_else(|| input.strip_suffix('m')) {
         num_str
             .parse::<usize>()
             .map(|n| n * 1024 * 1024)
-            .map_err(|_| format!("Invalid number before 'M': {}", num_str))
+            .map_err(|_| format!("Invalid number before 'M': {num_str}"))
     } else if let Some(num_str) = input.strip_suffix('G').or_else(|| input.strip_suffix('g')) {
         num_str
             .parse::<usize>()
             .map(|n| n * 1024 * 1024 * 1024)
-            .map_err(|_| format!("Invalid number before 'G': {}", num_str))
+            .map_err(|_| format!("Invalid number before 'G': {num_str}"))
     } else {
         input
             .parse::<usize>()
-            .map_err(|_| format!("Invalid number: {}", input))
+            .map_err(|_| format!("Invalid number: {input}"))
     }
 }
 

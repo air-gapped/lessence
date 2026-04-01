@@ -1,14 +1,14 @@
-use std::process::{Command, Stdio};
 use std::io::Write;
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 #[test]
 fn test_validation_fails_fast_no_stdin_read() {
     // Validation should happen before stdin reading
     // Even with large input, error should be instant
-    
+
     let start = Instant::now();
-    
+
     let mut child = Command::new("cargo")
         .args(["run", "--release", "--", "--threads", "0"])
         .stdin(Stdio::piped())
@@ -26,19 +26,17 @@ fn test_validation_fails_fast_no_stdin_read() {
         }
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
     let duration = start.elapsed();
 
-    assert!(
-        !output.status.success(),
-        "Should exit with error"
-    );
+    assert!(!output.status.success(), "Should exit with error");
 
     // Validation should be instant (<1 second even with large input)
     assert!(
         duration.as_secs() < 5,
-        "Validation should fail fast (took {:?}, expected <5s)",
-        duration
+        "Validation should fail fast (took {duration:?}, expected <5s)"
     );
 }
 
@@ -50,22 +48,33 @@ fn test_pattern_error_lists_all_valid_patterns() {
         .expect("Failed to run command");
 
     assert!(!output.status.success(), "Should exit with error");
-    
+
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
     // Verify all 15 pattern names are listed
     let expected_patterns = vec![
-        "timestamp", "hash", "network", "uuid", "email", "path", "duration",
-        "json", "kubernetes", "http-status", "brackets", "key-value",
-        "process", "quoted-string", "name", "decimal"
+        "timestamp",
+        "hash",
+        "network",
+        "uuid",
+        "email",
+        "path",
+        "duration",
+        "json",
+        "kubernetes",
+        "http-status",
+        "brackets",
+        "key-value",
+        "process",
+        "quoted-string",
+        "name",
+        "decimal",
     ];
-    
+
     for pattern in expected_patterns {
         assert!(
             stderr.contains(pattern),
-            "Error should list pattern '{}'. Got: {}",
-            pattern,
-            stderr
+            "Error should list pattern '{pattern}'. Got: {stderr}"
         );
     }
 }
@@ -84,7 +93,9 @@ fn test_validation_accepts_large_valid_values() {
         stdin.write_all(b"test\n").ok();
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
 
     // Should accept very large valid values (system will limit threads naturally)
     assert!(

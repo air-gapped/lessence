@@ -1,6 +1,6 @@
-use std::sync::LazyLock;
+use super::{HashType, Token};
 use regex::Regex;
-use super::{Token, HashType};
+use std::sync::LazyLock;
 
 // MD5: 32 hex characters
 static MD5_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{32}\b").unwrap());
@@ -9,19 +9,26 @@ static MD5_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{
 static SHA1_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{40}\b").unwrap());
 
 // SHA256: 64 hex characters
-static SHA256_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{64}\b").unwrap());
+static SHA256_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{64}\b").unwrap());
 
 // SHA512: 128 hex characters
-static SHA512_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{128}\b").unwrap());
+static SHA512_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{128}\b").unwrap());
 
 // Git commit hash: 7-40 hex characters (but not overlapping with above)
-static GIT_HASH_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{7,39}\b").unwrap());
+static GIT_HASH_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{7,39}\b").unwrap());
 
 // Generic hex strings of notable lengths (avoid short ones that might be numbers)
-static HEX_16_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{16}\b").unwrap());
-static HEX_24_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{24}\b").unwrap());
-static HEX_48_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{48}\b").unwrap());
-static HEX_56_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{56}\b").unwrap());
+static HEX_16_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{16}\b").unwrap());
+static HEX_24_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{24}\b").unwrap());
+static HEX_48_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{48}\b").unwrap());
+static HEX_56_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{56}\b").unwrap());
 
 pub struct HashDetector;
 
@@ -91,7 +98,10 @@ impl HashDetector {
         // Git commit hashes (7-39 chars, after longer ones are processed)
         for cap in GIT_HASH_REGEX.find_iter(&result) {
             let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::Generic(hash_str.len()), hash_str.to_string()));
+            tokens.push(Token::Hash(
+                HashType::Generic(hash_str.len()),
+                hash_str.to_string(),
+            ));
         }
         result = GIT_HASH_REGEX.replace_all(&result, "<HASH>").to_string();
 
@@ -154,7 +164,8 @@ mod tests {
 
     #[test]
     fn test_multiple_hashes() {
-        let text = "MD5: 5d41402abc4b2a76b9719d911017c592 SHA1: 356a192b7913b04c54574d18c28d46e6395428ab";
+        let text =
+            "MD5: 5d41402abc4b2a76b9719d911017c592 SHA1: 356a192b7913b04c54574d18c28d46e6395428ab";
         let (result, tokens) = HashDetector::detect_and_replace(text);
         assert_eq!(result, "MD5: <HASH> SHA1: <HASH>");
         assert_eq!(tokens.len(), 2);

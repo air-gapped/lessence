@@ -6,7 +6,10 @@ fn test_plain_text_output_format() {
     // Test that --format text produces plain text (current default behavior)
     let output = Command::new("./target/release/lessence")
         .args(["--format", "text", "--no-stats"])
-        .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+        .stdin(
+            std::fs::File::open("tests/fixtures/nginx_sample.log")
+                .expect("nginx_sample.log not found"),
+        )
         .output()
         .expect("Failed to execute lessence");
 
@@ -16,12 +19,17 @@ fn test_plain_text_output_format() {
 
     // Should be plain text without markup
     assert!(!text_output.contains("<"), "Should not contain HTML tags");
-    assert!(!text_output.contains("#"), "Should not contain markdown headers");
+    assert!(
+        !text_output.contains("#"),
+        "Should not contain markdown headers"
+    );
     assert!(!text_output.contains("{"), "Should not contain JSON braces");
 
     // Should contain folded line indicators
-    assert!(text_output.contains("similar") || text_output.contains("+"),
-        "Should indicate folded lines");
+    assert!(
+        text_output.contains("similar") || text_output.contains("+"),
+        "Should indicate folded lines"
+    );
 
     // Should be minimal overhead - just the compressed content
     let lines: Vec<&str> = text_output.lines().collect();
@@ -35,7 +43,10 @@ fn test_text_minimal_overhead() {
     // Test that text format has minimal overhead
     let output = Command::new("./target/release/lessence")
         .args(["--format", "text", "--no-stats"])
-        .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+        .stdin(
+            std::fs::File::open("tests/fixtures/nginx_sample.log")
+                .expect("nginx_sample.log not found"),
+        )
         .output()
         .expect("Failed to execute lessence");
 
@@ -49,7 +60,10 @@ fn test_text_minimal_overhead() {
     // Compare with default output (should be same or very similar)
     let default_output = Command::new("./target/release/lessence")
         .args(["--no-stats"])
-        .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+        .stdin(
+            std::fs::File::open("tests/fixtures/nginx_sample.log")
+                .expect("nginx_sample.log not found"),
+        )
         .output()
         .expect("Failed to execute lessence");
 
@@ -58,7 +72,10 @@ fn test_text_minimal_overhead() {
 
     // Text format should be similar to default (minimal overhead)
     let line_diff = (line_count as i32 - default_line_count as i32).abs();
-    assert!(line_diff <= 2, "Text format should have minimal overhead vs default");
+    assert!(
+        line_diff <= 2,
+        "Text format should have minimal overhead vs default"
+    );
 
     println!("✅ Text minimal overhead validation passed");
 }

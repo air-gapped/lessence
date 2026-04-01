@@ -1,16 +1,14 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
 // Single bracket context: [error], [info], [upstream]
-static SINGLE_BRACKET_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"\[([a-zA-Z][a-zA-Z0-9_.-]*)\]"
-).unwrap());
+static SINGLE_BRACKET_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[([a-zA-Z][a-zA-Z0-9_.-]*)\]").unwrap());
 
 // Chained bracket contexts: [error] [mod_jk], [info] [upstream] [cluster]
-static CHAINED_BRACKET_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"(?:\[([a-zA-Z][a-zA-Z0-9_.-]*)\]\s*){2,}"
-).unwrap());
+static CHAINED_BRACKET_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\[([a-zA-Z][a-zA-Z0-9_.-]*)\]\s*){2,}").unwrap());
 
 pub struct BracketContextDetector;
 
@@ -88,28 +86,32 @@ impl BracketContextDetector {
 
         // Replace chained patterns
         if !processed_indices.is_empty() {
-            *text = CHAINED_BRACKET_REGEX.replace_all(text, |caps: &regex::Captures| {
-                let contexts = Self::extract_contexts_from_chain(caps.get(0).unwrap().as_str());
-                if contexts.len() >= 2 && Self::are_logging_contexts(&contexts) {
-                    "<BRACKET_CONTEXT>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            }).to_string();
+            *text = CHAINED_BRACKET_REGEX
+                .replace_all(text, |caps: &regex::Captures| {
+                    let contexts = Self::extract_contexts_from_chain(caps.get(0).unwrap().as_str());
+                    if contexts.len() >= 2 && Self::are_logging_contexts(&contexts) {
+                        "<BRACKET_CONTEXT>".to_string()
+                    } else {
+                        caps.get(0).unwrap().as_str().to_string()
+                    }
+                })
+                .to_string();
         }
     }
 
     fn apply_single_bracket_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = SINGLE_BRACKET_REGEX.replace_all(text, |caps: &regex::Captures| {
-            let context = caps.get(1).unwrap().as_str();
+        *text = SINGLE_BRACKET_REGEX
+            .replace_all(text, |caps: &regex::Captures| {
+                let context = caps.get(1).unwrap().as_str();
 
-            if Self::is_logging_context(context) {
-                tokens.push(Token::BracketContext(vec![context.to_lowercase()]));
-                "<BRACKET_CONTEXT>".to_string()
-            } else {
-                caps.get(0).unwrap().as_str().to_string()
-            }
-        }).to_string();
+                if Self::is_logging_context(context) {
+                    tokens.push(Token::BracketContext(vec![context.to_lowercase()]));
+                    "<BRACKET_CONTEXT>".to_string()
+                } else {
+                    caps.get(0).unwrap().as_str().to_string()
+                }
+            })
+            .to_string();
     }
 
     fn extract_contexts_from_chain(chain: &str) -> Vec<String> {
@@ -124,23 +126,60 @@ impl BracketContextDetector {
 
         // Common log levels
         let log_levels = [
-            "error", "err", "warn", "warning", "info", "information",
-            "debug", "trace", "fatal", "crit", "critical", "notice",
-            "emerg", "emergency", "alert"
+            "error",
+            "err",
+            "warn",
+            "warning",
+            "info",
+            "information",
+            "debug",
+            "trace",
+            "fatal",
+            "crit",
+            "critical",
+            "notice",
+            "emerg",
+            "emergency",
+            "alert",
         ];
 
         // Common logging components
         let log_components = [
-            "upstream", "downstream", "proxy", "ssl", "tls", "auth",
-            "config", "listener", "cluster", "backend", "frontend",
-            "handler", "worker", "manager", "service", "client",
-            "server", "connection", "request", "response", "session"
+            "upstream",
+            "downstream",
+            "proxy",
+            "ssl",
+            "tls",
+            "auth",
+            "config",
+            "listener",
+            "cluster",
+            "backend",
+            "frontend",
+            "handler",
+            "worker",
+            "manager",
+            "service",
+            "client",
+            "server",
+            "connection",
+            "request",
+            "response",
+            "session",
         ];
 
         // Apache/Nginx modules
         let web_modules = [
-            "mod_jk", "mod_ssl", "mod_rewrite", "mod_security", "mod_proxy",
-            "ngx_http", "core", "main", "event", "http"
+            "mod_jk",
+            "mod_ssl",
+            "mod_rewrite",
+            "mod_security",
+            "mod_proxy",
+            "ngx_http",
+            "core",
+            "main",
+            "event",
+            "http",
         ];
 
         // NOTE: Kubernetes contexts removed to prevent pattern theft
@@ -148,8 +187,8 @@ impl BracketContextDetector {
 
         // System components
         let system_contexts = [
-            "kernel", "systemd", "init", "cron", "syslog", "audit",
-            "security", "firewall", "network", "storage", "memory"
+            "kernel", "systemd", "init", "cron", "syslog", "audit", "security", "firewall",
+            "network", "storage", "memory",
         ];
 
         log_levels.contains(&lower_context.as_str()) ||
@@ -183,7 +222,8 @@ mod tests {
 
     #[test]
     fn test_apache_mod_jk_detection() {
-        let apache_line = "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6";
+        let apache_line =
+            "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6";
         let (result, tokens) = BracketContextDetector::detect_and_replace(apache_line);
 
         assert!(!tokens.is_empty());
@@ -202,7 +242,8 @@ mod tests {
 
     #[test]
     fn test_envoy_chained_contexts() {
-        let envoy_line = "envoy[12345] [info] [upstream] cluster 'user-service' setting health check";
+        let envoy_line =
+            "envoy[12345] [info] [upstream] cluster 'user-service' setting health check";
         let (result, tokens) = BracketContextDetector::detect_and_replace(envoy_line);
 
         assert!(!tokens.is_empty());

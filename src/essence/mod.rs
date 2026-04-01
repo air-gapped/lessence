@@ -30,10 +30,10 @@ pub trait EssenceModeProcessor {
 /// Validation result for essence mode constitutional compliance
 #[derive(Debug, Clone)]
 pub struct EssenceModeValidation {
-    pub is_non_default: bool,           // Must be disabled by default
-    pub supports_all_formats: bool,     // Must support ALL timestamp formats
-    pub preserves_structure: bool,      // Must preserve log structure
-    pub achieves_independence: bool,    // Must achieve temporal independence
+    pub is_non_default: bool,        // Must be disabled by default
+    pub supports_all_formats: bool,  // Must support ALL timestamp formats
+    pub preserves_structure: bool,   // Must preserve log structure
+    pub achieves_independence: bool, // Must achieve temporal independence
 }
 
 impl EssenceModeValidation {
@@ -73,58 +73,58 @@ pub struct TimestampMatch {
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum TimestampFormat {
     // ISO 8601 variants
-    ISO8601Full,        // 2025-09-28T10:15:00Z
-    ISO8601NoZ,         // 2025-09-28T10:15:00
-    ISO8601Date,        // 2025-09-28
-    ISO8601Time,        // 10:15:00
+    ISO8601Full, // 2025-09-28T10:15:00Z
+    ISO8601NoZ,  // 2025-09-28T10:15:00
+    ISO8601Date, // 2025-09-28
+    ISO8601Time, // 10:15:00
 
     // RFC 3339 variants
-    RFC3339,            // 2025-09-28T10:15:00.123Z
-    RFC3339NoZ,         // 2025-09-28T10:15:00.123
+    RFC3339,    // 2025-09-28T10:15:00.123Z
+    RFC3339NoZ, // 2025-09-28T10:15:00.123
 
     // Syslog formats
-    SyslogBSD,          // Sep 28 10:15:00
-    SyslogRFC5424,      // 2025-09-28T10:15:00.123456Z
+    SyslogBSD,     // Sep 28 10:15:00
+    SyslogRFC5424, // 2025-09-28T10:15:00.123456Z
 
     // Apache/Nginx formats
-    ApacheCommon,       // [28/Sep/2025:10:15:00 +0000]
-    ApacheError,        // [Sun Sep 28 10:15:00.123456 2025]
-    NginxAccess,        // 28/Sep/2025:10:15:00 +0000
+    ApacheCommon, // [28/Sep/2025:10:15:00 +0000]
+    ApacheError,  // [Sun Sep 28 10:15:00.123456 2025]
+    NginxAccess,  // 28/Sep/2025:10:15:00 +0000
 
     // Application-specific formats
-    JavaSimpleDate,     // Sep 28, 2025 10:15:00 AM
-    KubernetesLog,      // 2025-09-28T10:15:00.123456789Z
-    ElasticsearchLog,   // 2025-09-28 10:15:00,123
-    DockerLog,          // 2025-09-28T10:15:00.123456789Z
+    JavaSimpleDate,   // Sep 28, 2025 10:15:00 AM
+    KubernetesLog,    // 2025-09-28T10:15:00.123456789Z
+    ElasticsearchLog, // 2025-09-28 10:15:00,123
+    DockerLog,        // 2025-09-28T10:15:00.123456789Z
 
     // Unix timestamps
-    UnixTimestamp,      // 1727515000
-    UnixTimestampMs,    // 1727515000123
-    UnixTimestampNs,    // 1727515000123456789
+    UnixTimestamp,   // 1727515000
+    UnixTimestampMs, // 1727515000123
+    UnixTimestampNs, // 1727515000123456789
 
     // Database formats
-    MySQLTimestamp,     // 2025-09-28 10:15:00
+    MySQLTimestamp,      // 2025-09-28 10:15:00
     PostgreSQLTimestamp, // 2025-09-28 10:15:00.123456
 
     // Windows formats
-    WindowsEvent,       // 9/28/2025 10:15:00 AM
-    WindowsIIS,         // 2025-09-28 10:15:00
+    WindowsEvent, // 9/28/2025 10:15:00 AM
+    WindowsIIS,   // 2025-09-28 10:15:00
 
     // Custom application formats
-    GitCommit,          // Sep 28 10:15:00 2025
-    Aws,                // 2025-09-28T10:15:00.000Z
-    Gcp,                // 2025-09-28T10:15:00.123456Z
-    Azure,              // 2025-09-28T10:15:00.1234567Z
+    GitCommit, // Sep 28 10:15:00 2025
+    Aws,       // 2025-09-28T10:15:00.000Z
+    Gcp,       // 2025-09-28T10:15:00.123456Z
+    Azure,     // 2025-09-28T10:15:00.1234567Z
 
     // Relative time formats
-    RelativeTime,       // "2 hours ago", "yesterday"
-    Duration,           // "1h2m3s", "5 minutes"
+    RelativeTime, // "2 hours ago", "yesterday"
+    Duration,     // "1h2m3s", "5 minutes"
 
     // Other common formats
-    CFormat,            // Sep 28 10:15:00
-    RFC822,             // Sun, 28 Sep 2025 10:15:00 GMT
-    RFC850,             // Sunday, 28-Sep-25 10:15:00 GMT
-    Ansic,              // Sun Sep 28 10:15:00 2025
+    CFormat, // Sep 28 10:15:00
+    RFC822,  // Sun, 28 Sep 2025 10:15:00 GMT
+    RFC850,  // Sunday, 28-Sep-25 10:15:00 GMT
+    Ansic,   // Sun Sep 28 10:15:00 2025
 }
 
 /// Essence mode error types
@@ -140,16 +140,16 @@ impl std::fmt::Display for EssenceModeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EssenceModeError::InvalidConfiguration(msg) => {
-                write!(f, "Invalid essence mode configuration: {}", msg)
+                write!(f, "Invalid essence mode configuration: {msg}")
             }
             EssenceModeError::PatternCompilationError(msg) => {
-                write!(f, "Pattern compilation error: {}", msg)
+                write!(f, "Pattern compilation error: {msg}")
             }
             EssenceModeError::ProcessingError(msg) => {
-                write!(f, "Processing error: {}", msg)
+                write!(f, "Processing error: {msg}")
             }
             EssenceModeError::ConstitutionalViolation(msg) => {
-                write!(f, "Constitutional violation in essence mode: {}", msg)
+                write!(f, "Constitutional violation in essence mode: {msg}")
             }
         }
     }

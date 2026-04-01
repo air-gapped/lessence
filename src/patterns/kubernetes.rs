@@ -5,7 +5,11 @@ pub struct KubernetesDetector;
 impl KubernetesDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         // FAST PATH: Skip if no kubernetes indicators
-        if !text.contains("kube") && !text.contains("namespace") && !text.contains("pod") && !text.contains("volume") {
+        if !text.contains("kube")
+            && !text.contains("namespace")
+            && !text.contains("pod")
+            && !text.contains("volume")
+        {
             return (text.to_string(), Vec::new());
         }
 
@@ -57,14 +61,19 @@ impl KubernetesDetector {
                         }
                     }
                 }
-                result = re.replace_all(&result, |caps: &regex::Captures| {
-                    let namespace = caps.get(1).unwrap().as_str();
-                    if Self::is_common_k8s_namespace(namespace) {
-                        caps.get(0).unwrap().as_str().replace(namespace, "<NAMESPACE>")
-                    } else {
-                        caps.get(0).unwrap().as_str().to_string()
-                    }
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        let namespace = caps.get(1).unwrap().as_str();
+                        if Self::is_common_k8s_namespace(namespace) {
+                            caps.get(0)
+                                .unwrap()
+                                .as_str()
+                                .replace(namespace, "<NAMESPACE>")
+                        } else {
+                            caps.get(0).unwrap().as_str().to_string()
+                        }
+                    })
+                    .to_string();
             }
         }
 
@@ -96,13 +105,21 @@ impl KubernetesDetector {
                         }
                     }
                 }
-                result = re.replace_all(&result, |caps: &regex::Captures| {
-                    if caps.get(0).unwrap().as_str().contains("kube-api-access") {
-                        caps.get(0).unwrap().as_str().replace("kube-api-access-", "kube-api-access-<SUFFIX>")
-                    } else {
-                        caps.get(0).unwrap().as_str().replace(caps.get(1).unwrap().as_str(), "<VOLUME_NAME>")
-                    }
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        if caps.get(0).unwrap().as_str().contains("kube-api-access") {
+                            caps.get(0)
+                                .unwrap()
+                                .as_str()
+                                .replace("kube-api-access-", "kube-api-access-<SUFFIX>")
+                        } else {
+                            caps.get(0)
+                                .unwrap()
+                                .as_str()
+                                .replace(caps.get(1).unwrap().as_str(), "<VOLUME_NAME>")
+                        }
+                    })
+                    .to_string();
             }
         }
 
@@ -122,7 +139,9 @@ impl KubernetesDetector {
                     tokens.push(Token::PluginType(plugin.as_str().to_string()));
                 }
             }
-            result = re.replace_all(&result, r#"plugin type="<PLUGIN>""#).to_string();
+            result = re
+                .replace_all(&result, r#"plugin type="<PLUGIN>""#)
+                .to_string();
         }
 
         (result, tokens)
@@ -147,11 +166,13 @@ impl KubernetesDetector {
                         tokens.push(Token::PodName(pod_name.as_str().to_string()));
                     }
                 }
-                result = re.replace_all(&result, |caps: &regex::Captures| {
-                    let full_match = caps.get(0).unwrap().as_str();
-                    let pod_name = caps.get(caps.len() - 1).unwrap().as_str();
-                    full_match.replace(pod_name, "<POD_NAME>")
-                }).to_string();
+                result = re
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        let full_match = caps.get(0).unwrap().as_str();
+                        let pod_name = caps.get(caps.len() - 1).unwrap().as_str();
+                        full_match.replace(pod_name, "<POD_NAME>")
+                    })
+                    .to_string();
             }
         }
 
@@ -178,28 +199,31 @@ impl KubernetesDetector {
                 let captures: Vec<_> = re.captures_iter(&result).collect();
                 for capture in captures {
                     if let Some(value) = capture.get(2) {
-                        tokens.push(Token::KubernetesNamespace(value.as_str().to_string())); // Reuse namespace token for simplicity
+                        tokens.push(Token::KubernetesNamespace(value.as_str().to_string()));
+                        // Reuse namespace token for simplicity
                     }
                 }
-                result = re.replace_all(&result, |caps: &regex::Captures| {
-                    let field_name = caps.get(1).unwrap().as_str();
-                    let full_match = caps.get(0).unwrap().as_str();
-                    if full_match.contains('=') {
-                        // Handle name= pattern
-                        if full_match.contains('"') {
-                            format!("{}=\"<K8S_NAME>\"", field_name)
+                result = re
+                    .replace_all(&result, |caps: &regex::Captures| {
+                        let field_name = caps.get(1).unwrap().as_str();
+                        let full_match = caps.get(0).unwrap().as_str();
+                        if full_match.contains('=') {
+                            // Handle name= pattern
+                            if full_match.contains('"') {
+                                format!("{field_name}=\"<K8S_NAME>\"")
+                            } else {
+                                format!("{field_name}=<K8S_NAME>")
+                            }
                         } else {
-                            format!("{}=<K8S_NAME>", field_name)
+                            // Handle Name: pattern
+                            if full_match.contains('"') {
+                                format!("{field_name}: \"<K8S_NAME>\"")
+                            } else {
+                                format!("{field_name}: <K8S_NAME>")
+                            }
                         }
-                    } else {
-                        // Handle Name: pattern
-                        if full_match.contains('"') {
-                            format!("{}: \"<K8S_NAME>\"", field_name)
-                        } else {
-                            format!("{}: <K8S_NAME>", field_name)
-                        }
-                    }
-                }).to_string();
+                    })
+                    .to_string();
             }
         }
 
@@ -208,11 +232,23 @@ impl KubernetesDetector {
 
     /// Check if a namespace is a common Kubernetes namespace that should be normalized
     fn is_common_k8s_namespace(namespace: &str) -> bool {
-        matches!(namespace,
-            "kube-system" | "kube-public" | "kube-node-lease" | "default" |
-            "gpu-operator" | "rook-ceph" | "kubevirt" | "traefik" |
-            "cilium-test-1" | "cattle-monitoring-system" | "keycloak" |
-            "monitoring" | "logging" | "istio-system" | "cert-manager"
+        matches!(
+            namespace,
+            "kube-system"
+                | "kube-public"
+                | "kube-node-lease"
+                | "default"
+                | "gpu-operator"
+                | "rook-ceph"
+                | "kubevirt"
+                | "traefik"
+                | "cilium-test-1"
+                | "cattle-monitoring-system"
+                | "keycloak"
+                | "monitoring"
+                | "logging"
+                | "istio-system"
+                | "cert-manager"
         )
     }
 }
@@ -228,7 +264,9 @@ mod tests {
 
         assert!(result.contains("pod <NAMESPACE>/"));
         assert!(!result.contains("gpu-operator"));
-        assert!(tokens.iter().any(|t| matches!(t, Token::KubernetesNamespace(_))));
+        assert!(tokens
+            .iter()
+            .any(|t| matches!(t, Token::KubernetesNamespace(_))));
     }
 
     #[test]

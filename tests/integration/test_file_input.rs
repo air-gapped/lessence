@@ -26,7 +26,9 @@ fn test_file_arg_matches_stdin() {
     if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(&input).ok();
     }
-    let stdin_output = child.wait_with_output().expect("Failed to read stdin output");
+    let stdin_output = child
+        .wait_with_output()
+        .expect("Failed to read stdin output");
 
     assert_eq!(
         String::from_utf8_lossy(&file_output.stdout),
@@ -58,7 +60,9 @@ fn test_no_args_reads_stdin() {
         .expect("Failed to spawn");
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(b"hello world\nhello world\nhello world\n").ok();
+        stdin
+            .write_all(b"hello world\nhello world\nhello world\n")
+            .ok();
     }
     let output = child.wait_with_output().expect("Failed to read output");
 
@@ -75,17 +79,22 @@ fn test_nonexistent_file_warns_and_continues() {
         .output()
         .expect("Failed to run");
 
-    assert!(output.status.success(), "Should succeed with at least one valid file");
+    assert!(
+        output.status.success(),
+        "Should succeed with at least one valid file"
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("nonexistent_file.log"),
-        "Should warn about missing file on stderr. Got: {}",
-        stderr
+        "Should warn about missing file on stderr. Got: {stderr}"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(!stdout.is_empty(), "Should still produce output from valid file");
+    assert!(
+        !stdout.is_empty(),
+        "Should still produce output from valid file"
+    );
 }
 
 #[test]
@@ -113,7 +122,9 @@ fn test_dash_reads_stdin() {
         .expect("Failed to spawn");
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(b"stdin line one\nstdin line two\nstdin line three\n").ok();
+        stdin
+            .write_all(b"stdin line one\nstdin line two\nstdin line three\n")
+            .ok();
     }
     let output = child.wait_with_output().expect("Failed to read output");
 

@@ -165,16 +165,11 @@ mod tests {
 
         for case in test_cases {
             let (normalized, tokens) = detector.detect_and_replace(case);
-            assert_eq!(
-                normalized, case,
-                "Should not modify invalid email: {}",
-                case
-            );
+            assert_eq!(normalized, case, "Should not modify invalid email: {case}");
             assert_eq!(
                 tokens.len(),
                 0,
-                "Should not detect tokens for invalid email: {}",
-                case
+                "Should not detect tokens for invalid email: {case}"
             );
         }
     }
@@ -215,17 +210,17 @@ mod tests {
         ];
 
         for (email, should_detect) in test_cases {
-            let (normalized, tokens) = detector.detect_and_replace(&format!("Email: {}", email));
+            let (normalized, tokens) = detector.detect_and_replace(&format!("Email: {email}"));
 
             if should_detect {
                 assert_eq!(normalized, "Email: <EMAIL>");
                 assert_eq!(tokens.len(), 1);
                 match &tokens[0] {
                     Token::Email(detected) => assert_eq!(detected, email),
-                    _ => panic!("Expected Email token for: {}", email),
+                    _ => panic!("Expected Email token for: {email}"),
                 }
             } else {
-                assert_eq!(normalized, format!("Email: {}", email));
+                assert_eq!(normalized, format!("Email: {email}"));
                 assert_eq!(tokens.len(), 0);
             }
         }

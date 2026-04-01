@@ -68,8 +68,7 @@ fn test_exits_2_on_invalid_regex() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("invalid regex"),
-        "Should print error message: {}",
-        stderr
+        "Should print error message: {stderr}"
     );
 }
 

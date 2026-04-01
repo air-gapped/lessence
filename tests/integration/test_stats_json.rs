@@ -17,7 +17,7 @@ fn test_stats_json_emits_valid_json_on_stderr() {
 
     if let Some(mut stdin) = child.stdin.take() {
         for i in 0..10 {
-            writeln!(stdin, "ERROR connection refused to 10.0.0.{}:8080", i).ok();
+            writeln!(stdin, "ERROR connection refused to 10.0.0.{i}:8080").ok();
         }
     }
     let output = child.wait_with_output().expect("Failed to read output");
@@ -25,7 +25,7 @@ fn test_stats_json_emits_valid_json_on_stderr() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let json: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|e| panic!("Invalid JSON on stderr: {}\nContent: {}", e, stderr));
+        .unwrap_or_else(|e| panic!("Invalid JSON on stderr: {e}\nContent: {stderr}"));
     assert!(json.is_object(), "Expected JSON object on stderr");
 }
 
@@ -47,10 +47,7 @@ fn test_no_stats_with_stats_json_still_emits_json() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let json: serde_json::Value = serde_json::from_str(&stderr).unwrap_or_else(|e| {
-        panic!(
-            "--no-stats --stats-json should still emit JSON: {}\nContent: {}",
-            e, stderr
-        )
+        panic!("--no-stats --stats-json should still emit JSON: {e}\nContent: {stderr}")
     });
     assert!(json["input_lines"].is_number());
 }
@@ -88,7 +85,7 @@ fn test_stats_json_suppresses_human_readable_stats() {
 
     // Stderr should contain JSON, not human-readable stats
     let json: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|e| panic!("Expected JSON on stderr: {}\nContent: {}", e, stderr));
+        .unwrap_or_else(|e| panic!("Expected JSON on stderr: {e}\nContent: {stderr}"));
     assert!(json.is_object());
 }
 
@@ -113,7 +110,7 @@ fn test_stats_json_contains_all_required_fields() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     let json: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|e| panic!("Invalid JSON: {}\nContent: {}", e, stderr));
+        .unwrap_or_else(|e| panic!("Invalid JSON: {e}\nContent: {stderr}"));
 
     // Top-level fields
     assert!(json["input_lines"].is_number(), "Missing input_lines");
@@ -150,7 +147,7 @@ fn test_stats_json_contains_all_required_fields() {
         "kubernetes",
         "emails",
     ] {
-        assert!(hits[field].is_number(), "Missing pattern_hits.{}", field);
+        assert!(hits[field].is_number(), "Missing pattern_hits.{field}");
     }
 
     // Verify input_lines is correct

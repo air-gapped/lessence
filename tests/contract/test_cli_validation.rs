@@ -1,5 +1,5 @@
-use std::process::{Command, Stdio};
 use std::io::Write;
+use std::process::{Command, Stdio};
 
 #[test]
 fn test_min_collapse_rejects_zero() {
@@ -8,13 +8,15 @@ fn test_min_collapse_rejects_zero() {
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for --min-collapse 0");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for --min-collapse 0"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("must be at least 2"),
-        "Error message should explain minimum value. Got: {}",
-        stderr
+        "Error message should explain minimum value. Got: {stderr}"
     );
 }
 
@@ -25,13 +27,15 @@ fn test_min_collapse_rejects_one() {
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for --min-collapse 1");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for --min-collapse 1"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("must be at least 2"),
-        "Error message should explain minimum value. Got: {}",
-        stderr
+        "Error message should explain minimum value. Got: {stderr}"
     );
 }
 
@@ -42,18 +46,19 @@ fn test_threads_rejects_zero() {
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for --threads 0");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for --threads 0"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("must be at least 1"),
-        "Error message should explain minimum value. Got: {}",
-        stderr
+        "Error message should explain minimum value. Got: {stderr}"
     );
     assert!(
         stderr.contains("single-threaded mode"),
-        "Error should mention --threads 1 option. Got: {}",
-        stderr
+        "Error should mention --threads 1 option. Got: {stderr}"
     );
 }
 
@@ -64,13 +69,15 @@ fn test_max_lines_rejects_zero() {
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for --max-lines 0");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for --max-lines 0"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("must be at least 1"),
-        "Error message should explain minimum value. Got: {}",
-        stderr
+        "Error message should explain minimum value. Got: {stderr}"
     );
 }
 
@@ -81,8 +88,11 @@ fn test_max_lines_rejects_negative() {
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for --max-lines -100");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for --max-lines -100"
+    );
+
     // Clap will reject negative numbers during parsing
     assert!(
         !output.status.success(),
@@ -93,46 +103,67 @@ fn test_max_lines_rejects_negative() {
 #[test]
 fn test_disable_patterns_rejects_invalid_name() {
     let output = Command::new("cargo")
-        .args(["run", "--release", "--", "--disable-patterns", "invalidpattern"])
+        .args([
+            "run",
+            "--release",
+            "--",
+            "--disable-patterns",
+            "invalidpattern",
+        ])
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for invalid pattern");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for invalid pattern"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("unknown pattern 'invalidpattern'"),
-        "Error should identify invalid pattern. Got: {}",
-        stderr
+        "Error should identify invalid pattern. Got: {stderr}"
     );
     assert!(
         stderr.contains("Valid patterns:"),
-        "Error should list valid patterns. Got: {}",
-        stderr
+        "Error should list valid patterns. Got: {stderr}"
     );
 }
 
 #[test]
 fn test_disable_patterns_rejects_mixed_valid_invalid() {
     let output = Command::new("cargo")
-        .args(["run", "--release", "--", "--disable-patterns", "timestamp,badpattern,email"])
+        .args([
+            "run",
+            "--release",
+            "--",
+            "--disable-patterns",
+            "timestamp,badpattern,email",
+        ])
         .output()
         .expect("Failed to run command");
 
-    assert!(!output.status.success(), "Should exit with error for mixed valid/invalid patterns");
-    
+    assert!(
+        !output.status.success(),
+        "Should exit with error for mixed valid/invalid patterns"
+    );
+
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("unknown pattern 'badpattern'"),
-        "Error should identify which pattern is invalid. Got: {}",
-        stderr
+        "Error should identify which pattern is invalid. Got: {stderr}"
     );
 }
 
 #[test]
 fn test_disable_patterns_accepts_valid_names() {
     let mut child = Command::new("cargo")
-        .args(["run", "--release", "--", "--disable-patterns", "timestamp,email"])
+        .args([
+            "run",
+            "--release",
+            "--",
+            "--disable-patterns",
+            "timestamp,email",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -143,7 +174,9 @@ fn test_disable_patterns_accepts_valid_names() {
         stdin.write_all(b"test\n").ok();
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
 
     assert!(
         output.status.success(),
@@ -166,7 +199,9 @@ fn test_min_collapse_accepts_two() {
         stdin.write_all(b"a\na\na\n").ok();
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
 
     assert!(
         output.status.success(),
@@ -189,7 +224,9 @@ fn test_threads_accepts_one() {
         stdin.write_all(b"test\n").ok();
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
 
     assert!(
         output.status.success(),
@@ -212,7 +249,9 @@ fn test_max_lines_accepts_one() {
         stdin.write_all(b"line1\nline2\n").ok();
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
 
     assert!(
         output.status.success(),
@@ -224,7 +263,13 @@ fn test_max_lines_accepts_one() {
 #[test]
 fn test_pattern_validation_case_insensitive() {
     let mut child = Command::new("cargo")
-        .args(["run", "--release", "--", "--disable-patterns", "TIMESTAMP,Email"])
+        .args([
+            "run",
+            "--release",
+            "--",
+            "--disable-patterns",
+            "TIMESTAMP,Email",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -235,7 +280,9 @@ fn test_pattern_validation_case_insensitive() {
         stdin.write_all(b"test\n").ok();
     }
 
-    let output = child.wait_with_output().expect("Failed to wait for command");
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for command");
 
     assert!(
         output.status.success(),

@@ -64,7 +64,7 @@ impl ProcessDetector {
         // Thread-specific patterns
         for cap in THREAD_ID_REGEX.captures_iter(&result) {
             let thread_str = cap.get(1).unwrap().as_str();
-            tokens.push(Token::ThreadID(format!("Thread-{}", thread_str)));
+            tokens.push(Token::ThreadID(format!("Thread-{thread_str}")));
         }
         result = THREAD_ID_REGEX
             .replace_all(&result, "Thread-<TID>")

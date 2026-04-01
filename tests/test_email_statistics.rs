@@ -17,7 +17,10 @@ fn test_email_statistics_shown_in_report() {
         .output()
         .expect("Failed to build release binary");
 
-    assert!(build_output.status.success(), "Failed to build release binary");
+    assert!(
+        build_output.status.success(),
+        "Failed to build release binary"
+    );
 
     // Test input with 3 email addresses
     let test_input = "2025-09-26T10:15:00Z User john@company.com logged in from 192.168.1.100\n\
@@ -31,7 +34,11 @@ fn test_email_statistics_shown_in_report() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(test_input.as_bytes())?;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(test_input.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute lessence");
@@ -41,17 +48,22 @@ fn test_email_statistics_shown_in_report() {
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
 
     // Verify Pattern Distribution includes Email Addresses row
-    assert!(output_str.contains("Email Addresses"),
-            "Pattern Distribution should include 'Email Addresses' row");
+    assert!(
+        output_str.contains("Email Addresses"),
+        "Pattern Distribution should include 'Email Addresses' row"
+    );
 
     // Verify email count is correct (3 emails in input)
-    assert!(output_str.contains("Email Addresses | 3 |") ||
-            output_str.contains("Email Addresses | 3|"),
-            "Email count should be 3, got: {}", output_str);
+    assert!(
+        output_str.contains("Email Addresses | 3 |") || output_str.contains("Email Addresses | 3|"),
+        "Email count should be 3, got: {output_str}"
+    );
 
     // Verify email description is correct
-    assert!(output_str.contains("RFC 5322 email addresses, user accounts"),
-            "Email description should be 'RFC 5322 email addresses, user accounts'");
+    assert!(
+        output_str.contains("RFC 5322 email addresses, user accounts"),
+        "Email description should be 'RFC 5322 email addresses, user accounts'"
+    );
 
     println!("✅ Email statistics are shown correctly in Pattern Distribution");
 }
@@ -68,7 +80,10 @@ fn test_email_statistics_hidden_when_zero() {
         .output()
         .expect("Failed to build release binary");
 
-    assert!(build_output.status.success(), "Failed to build release binary");
+    assert!(
+        build_output.status.success(),
+        "Failed to build release binary"
+    );
 
     // Test input with NO email addresses
     let test_input = "2025-09-26T10:15:00Z Server started on port 8080\n\
@@ -80,7 +95,11 @@ fn test_email_statistics_hidden_when_zero() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(test_input.as_bytes())?;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(test_input.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute lessence");
@@ -90,8 +109,10 @@ fn test_email_statistics_hidden_when_zero() {
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
 
     // Verify Pattern Distribution does NOT include Email Addresses row
-    assert!(!output_str.contains("Email Addresses"),
-            "Pattern Distribution should NOT include 'Email Addresses' row when count is 0");
+    assert!(
+        !output_str.contains("Email Addresses"),
+        "Pattern Distribution should NOT include 'Email Addresses' row when count is 0"
+    );
 
     println!("✅ Email statistics are hidden correctly when count is 0");
 }
@@ -108,7 +129,10 @@ fn test_email_statistics_in_essence_mode() {
         .output()
         .expect("Failed to build release binary");
 
-    assert!(build_output.status.success(), "Failed to build release binary");
+    assert!(
+        build_output.status.success(),
+        "Failed to build release binary"
+    );
 
     // Test input with 4 email addresses
     let test_input = "2025-09-26T10:15:00Z User john@company.com logged in\n\
@@ -123,7 +147,11 @@ fn test_email_statistics_in_essence_mode() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(test_input.as_bytes())?;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(test_input.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute lessence");
@@ -133,17 +161,22 @@ fn test_email_statistics_in_essence_mode() {
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
 
     // Verify essence mode output contains <EMAIL> tokens
-    assert!(output_str.contains("<EMAIL>"),
-            "Essence mode output should contain <EMAIL> tokens");
+    assert!(
+        output_str.contains("<EMAIL>"),
+        "Essence mode output should contain <EMAIL> tokens"
+    );
 
     // Verify Pattern Distribution includes Email Addresses row
-    assert!(output_str.contains("Email Addresses"),
-            "Pattern Distribution should include 'Email Addresses' row in essence mode");
+    assert!(
+        output_str.contains("Email Addresses"),
+        "Pattern Distribution should include 'Email Addresses' row in essence mode"
+    );
 
     // Verify email count is correct (4 emails in input)
-    assert!(output_str.contains("Email Addresses | 4 |") ||
-            output_str.contains("Email Addresses | 4|"),
-            "Email count should be 4 in essence mode");
+    assert!(
+        output_str.contains("Email Addresses | 4 |") || output_str.contains("Email Addresses | 4|"),
+        "Email count should be 4 in essence mode"
+    );
 
     println!("✅ Email statistics work correctly in essence mode");
 }
@@ -160,7 +193,10 @@ fn test_email_not_grouped_with_percentages() {
         .output()
         .expect("Failed to build release binary");
 
-    assert!(build_output.status.success(), "Failed to build release binary");
+    assert!(
+        build_output.status.success(),
+        "Failed to build release binary"
+    );
 
     // Test input with emails and numbers
     let test_input = "2025-09-26T10:15:00Z CPU usage: 85% for user@domain.com\n\
@@ -172,7 +208,11 @@ fn test_email_not_grouped_with_percentages() {
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
-            child.stdin.as_mut().unwrap().write_all(test_input.as_bytes())?;
+            child
+                .stdin
+                .as_mut()
+                .unwrap()
+                .write_all(test_input.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute lessence");
@@ -182,20 +222,27 @@ fn test_email_not_grouped_with_percentages() {
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
 
     // Verify both Email Addresses and Numbers/Percentages appear as separate categories
-    assert!(output_str.contains("Email Addresses"),
-            "Pattern Distribution should include 'Email Addresses' category");
+    assert!(
+        output_str.contains("Email Addresses"),
+        "Pattern Distribution should include 'Email Addresses' category"
+    );
 
-    assert!(output_str.contains("Numbers/Percentages") || output_str.contains("Numbers"),
-            "Pattern Distribution should include 'Numbers/Percentages' category");
+    assert!(
+        output_str.contains("Numbers/Percentages") || output_str.contains("Numbers"),
+        "Pattern Distribution should include 'Numbers/Percentages' category"
+    );
 
     // Verify they have different counts (not grouped together)
     // Email count should be 2, percentage count should be 2 (separate)
-    let email_line = output_str.lines()
+    let email_line = output_str
+        .lines()
         .find(|line| line.contains("Email Addresses"))
         .expect("Should find Email Addresses line");
 
-    assert!(email_line.contains("| 2 |") || email_line.contains("|2|"),
-            "Email count should be 2 (not grouped with percentages)");
+    assert!(
+        email_line.contains("| 2 |") || email_line.contains("|2|"),
+        "Email count should be 2 (not grouped with percentages)"
+    );
 
     println!("✅ Email patterns are tracked separately from percentages/numbers");
 }
@@ -209,20 +256,25 @@ fn test_email_not_grouped_with_percentages() {
 fn test_email_in_pattern_order_documentation() {
     use std::fs;
 
-    let readme = fs::read_to_string("README.md")
-        .expect("Failed to read README.md");
+    let readme = fs::read_to_string("README.md").expect("Failed to read README.md");
 
     // README should list detected patterns including email
-    assert!(readme.contains("email"), "README.md should mention email in detected patterns");
+    assert!(
+        readme.contains("email"),
+        "README.md should mention email in detected patterns"
+    );
 
     // Verify ordering: timestamp before email before path
-    let pattern_line = readme.lines()
+    let pattern_line = readme
+        .lines()
         .find(|l| l.contains("timestamp") && l.contains("email") && l.contains("path"))
         .expect("README.md should have a line listing pattern order");
 
     let ts_pos = pattern_line.find("timestamp").unwrap();
     let em_pos = pattern_line.find("email").unwrap();
     let pa_pos = pattern_line.find("path").unwrap();
-    assert!(ts_pos < em_pos && em_pos < pa_pos,
-            "Pattern order should be: timestamp, email, path");
+    assert!(
+        ts_pos < em_pos && em_pos < pa_pos,
+        "Pattern order should be: timestamp, email, path"
+    );
 }

@@ -8,8 +8,11 @@ fn ensure_release_build() {
         .output()
         .expect("Failed to build release binary");
 
-    assert!(build_output.status.success(), "Failed to build release binary: {}",
-        String::from_utf8_lossy(&build_output.stderr));
+    assert!(
+        build_output.status.success(),
+        "Failed to build release binary: {}",
+        String::from_utf8_lossy(&build_output.stderr)
+    );
 }
 
 #[test]
@@ -20,12 +23,18 @@ fn test_text_format_default() {
     // Test with default format (no --format flag)
     let output = Command::new("./target/release/lessence")
         .args(["--no-stats"])
-        .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+        .stdin(
+            std::fs::File::open("tests/fixtures/nginx_sample.log")
+                .expect("nginx_sample.log not found"),
+        )
         .output()
         .expect("Failed to execute lessence");
 
-    assert!(output.status.success(), "lessence execution failed: {}",
-        String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "lessence execution failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let text_output = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
 
@@ -34,23 +43,41 @@ fn test_text_format_default() {
     assert!(!lines.is_empty(), "Text output should not be empty");
 
     // Should not be JSON (no braces) or Markdown (no # headers)
-    assert!(!text_output.starts_with('{'), "Default output should not be JSON");
-    assert!(!text_output.contains("# Log Analysis"), "Default output should not be Markdown");
+    assert!(
+        !text_output.starts_with('{'),
+        "Default output should not be JSON"
+    );
+    assert!(
+        !text_output.contains("# Log Analysis"),
+        "Default output should not be Markdown"
+    );
 
     // Should contain compressed log patterns with folding indicators
-    let has_folded_content = lines.iter().any(|line| line.contains("+") && line.contains("similar"));
+    let has_folded_content = lines
+        .iter()
+        .any(|line| line.contains("+") && line.contains("similar"));
 
     // Test explicit --format text flag produces same result
     let explicit_output = Command::new("./target/release/lessence")
         .args(["--format", "text", "--no-stats"])
-        .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+        .stdin(
+            std::fs::File::open("tests/fixtures/nginx_sample.log")
+                .expect("nginx_sample.log not found"),
+        )
         .output()
         .expect("Failed to execute lessence");
 
-    assert!(explicit_output.status.success(), "lessence execution failed");
+    assert!(
+        explicit_output.status.success(),
+        "lessence execution failed"
+    );
 
-    let explicit_text_output = str::from_utf8(&explicit_output.stdout).expect("Invalid UTF-8 output");
-    assert_eq!(text_output, explicit_text_output, "Default and explicit text format should be identical");
+    let explicit_text_output =
+        str::from_utf8(&explicit_output.stdout).expect("Invalid UTF-8 output");
+    assert_eq!(
+        text_output, explicit_text_output,
+        "Default and explicit text format should be identical"
+    );
 
     println!("✅ Text format (default) validation passed");
     println!("  Output lines: {}", lines.len());
@@ -66,37 +93,60 @@ fn test_markdown_format_flag() {
 
     let output = Command::new("./target/release/lessence")
         .args(["--format", "markdown", "--no-stats"])
-        .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+        .stdin(
+            std::fs::File::open("tests/fixtures/nginx_sample.log")
+                .expect("nginx_sample.log not found"),
+        )
         .output()
         .expect("Failed to execute lessence");
 
-    assert!(output.status.success(), "lessence execution failed: {}",
-        String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "lessence execution failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let markdown_output = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
     let lines = markdown_output.lines().collect::<Vec<_>>();
 
     // Validate markdown structure
-    assert!(lines.iter().any(|line| line.starts_with("# Log Analysis")),
-        "Should contain main header '# Log Analysis'");
+    assert!(
+        lines.iter().any(|line| line.starts_with("# Log Analysis")),
+        "Should contain main header '# Log Analysis'"
+    );
 
-    assert!(lines.iter().any(|line| line.starts_with("## Summary")),
-        "Should contain summary section '## Summary'");
+    assert!(
+        lines.iter().any(|line| line.starts_with("## Summary")),
+        "Should contain summary section '## Summary'"
+    );
 
-    assert!(lines.iter().any(|line| line.starts_with("## Compressed Logs")),
-        "Should contain compressed logs section '## Compressed Logs'");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line.starts_with("## Compressed Logs")),
+        "Should contain compressed logs section '## Compressed Logs'"
+    );
 
     // Validate summary content
     let has_original_lines = lines.iter().any(|line| line.contains("**Original lines**"));
-    let has_compressed_lines = lines.iter().any(|line| line.contains("**Compressed lines**"));
-    let has_compression_ratio = lines.iter().any(|line| line.contains("**Compression ratio**"));
+    let has_compressed_lines = lines
+        .iter()
+        .any(|line| line.contains("**Compressed lines**"));
+    let has_compression_ratio = lines
+        .iter()
+        .any(|line| line.contains("**Compression ratio**"));
 
     assert!(has_original_lines, "Should contain original lines count");
-    assert!(has_compressed_lines, "Should contain compressed lines count");
+    assert!(
+        has_compressed_lines,
+        "Should contain compressed lines count"
+    );
     assert!(has_compression_ratio, "Should contain compression ratio");
 
     // Validate folded entries are properly formatted
-    let has_folded_entries = lines.iter().any(|line| line.starts_with("### Entry") && line.contains("(Folded)"));
+    let has_folded_entries = lines
+        .iter()
+        .any(|line| line.starts_with("### Entry") && line.contains("(Folded)"));
     let has_code_blocks = lines.iter().any(|line| line.trim() == "```");
 
     if has_folded_entries {
@@ -104,11 +154,14 @@ fn test_markdown_format_flag() {
     }
 
     // Should not be JSON
-    assert!(!markdown_output.starts_with('{'), "Markdown output should not be JSON");
+    assert!(
+        !markdown_output.starts_with('{'),
+        "Markdown output should not be JSON"
+    );
 
     println!("✅ Markdown format validation passed");
     println!("  Total lines: {}", lines.len());
-    println!("  Has folded entries: {}", has_folded_entries);
+    println!("  Has folded entries: {has_folded_entries}");
 }
 
 #[test]
@@ -119,7 +172,7 @@ fn test_format_compression_quality() {
     let formats = vec!["text", "markdown"];
 
     for format in formats {
-        println!("Testing compression quality for format: {}", format);
+        println!("Testing compression quality for format: {format}");
 
         let Ok(file) = std::fs::File::open("examples/kubelet.log") else {
             eprintln!("Skipping: examples/kubelet.log not available");
@@ -132,12 +185,16 @@ fn test_format_compression_quality() {
             .output()
             .expect("Failed to execute lessence");
 
-        assert!(output.status.success(), "lessence execution failed for format {}: {}",
-            format, String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "lessence execution failed for format {}: {}",
+            format,
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         // Read original file to get input line count
-        let original_content = std::fs::read_to_string("examples/kubelet.log")
-            .expect("Failed to read kubelet.log");
+        let original_content =
+            std::fs::read_to_string("examples/kubelet.log").expect("Failed to read kubelet.log");
         let input_lines = original_content.lines().count();
 
         let output_str = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
@@ -159,27 +216,32 @@ fn test_format_compression_quality() {
                     }
                 }
                 compressed_lines
-            },
+            }
             "text" => output_str.lines().count(),
-            _ => panic!("Unexpected format: {}", format)
+            _ => panic!("Unexpected format: {format}"),
         };
 
         // Calculate compression ratio
-        let compression_ratio = ((input_lines - effective_compressed_lines) as f64 / input_lines as f64) * 100.0;
+        let compression_ratio =
+            ((input_lines - effective_compressed_lines) as f64 / input_lines as f64) * 100.0;
 
-        println!("  Format: {}", format);
-        println!("    Input lines: {}", input_lines);
-        println!("    Effective compressed lines: {}", effective_compressed_lines);
-        println!("    Compression ratio: {:.2}%", compression_ratio);
+        println!("  Format: {format}");
+        println!("    Input lines: {input_lines}");
+        println!("    Effective compressed lines: {effective_compressed_lines}");
+        println!("    Compression ratio: {compression_ratio:.2}%");
 
         // Constitutional compliance requirement: ≥98.4% compression (≤1,101 lines from kubelet.log)
-        assert!(effective_compressed_lines <= 1101,
-            "❌ CONSTITUTIONAL VIOLATION for {}: {} > 1,101 lines", format, effective_compressed_lines);
+        assert!(
+            effective_compressed_lines <= 1101,
+            "❌ CONSTITUTIONAL VIOLATION for {format}: {effective_compressed_lines} > 1,101 lines"
+        );
 
-        assert!(compression_ratio >= 98.4,
-            "❌ CONSTITUTIONAL VIOLATION for {}: {:.2}% < 98.4% compression", format, compression_ratio);
+        assert!(
+            compression_ratio >= 98.4,
+            "❌ CONSTITUTIONAL VIOLATION for {format}: {compression_ratio:.2}% < 98.4% compression"
+        );
 
-        println!("  ✅ Constitutional compliance PASSED for {}", format);
+        println!("  ✅ Constitutional compliance PASSED for {format}");
     }
 }
 
@@ -193,7 +255,10 @@ fn test_format_selection_errors() {
     for invalid_format in invalid_formats {
         let output = Command::new("./target/release/lessence")
             .args(["--format", invalid_format, "--no-stats"])
-            .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
+            .stdin(
+                std::fs::File::open("tests/fixtures/nginx_sample.log")
+                    .expect("nginx_sample.log not found"),
+            )
             .output()
             .expect("Failed to execute lessence");
 
@@ -201,15 +266,19 @@ fn test_format_selection_errors() {
         if !output.status.success() {
             // Expected behavior: command fails with error
             let stderr = String::from_utf8_lossy(&output.stderr);
-            println!("Expected error for format '{}': {}", invalid_format, stderr);
+            println!("Expected error for format '{invalid_format}': {stderr}");
         } else {
             // Alternative behavior: falls back to text format
             let stdout = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
-            assert!(!stdout.starts_with('{'),
-                "Invalid format '{}' should not produce JSON", invalid_format);
-            assert!(!stdout.contains("# Log Analysis"),
-                "Invalid format '{}' should not produce Markdown", invalid_format);
-            println!("Format '{}' fell back to text format", invalid_format);
+            assert!(
+                !stdout.starts_with('{'),
+                "Invalid format '{invalid_format}' should not produce JSON"
+            );
+            assert!(
+                !stdout.contains("# Log Analysis"),
+                "Invalid format '{invalid_format}' should not produce Markdown"
+            );
+            println!("Format '{invalid_format}' fell back to text format");
         }
     }
 

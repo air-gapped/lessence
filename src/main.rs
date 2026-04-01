@@ -47,12 +47,11 @@ const VALID_PATTERNS: &[&str] = &[
 fn validate_min_collapse(s: &str) -> Result<usize, String> {
     let value = s
         .parse::<usize>()
-        .map_err(|_| format!("invalid number: '{}'", s))?;
+        .map_err(|_| format!("invalid number: '{s}'"))?;
 
     if value < 2 {
         return Err(format!(
-            "'{}' must be at least 2 (minimum meaningful folding group)",
-            value
+            "'{value}' must be at least 2 (minimum meaningful folding group)"
         ));
     }
     Ok(value)
@@ -61,12 +60,11 @@ fn validate_min_collapse(s: &str) -> Result<usize, String> {
 fn validate_threads(s: &str) -> Result<usize, String> {
     let value = s
         .parse::<usize>()
-        .map_err(|_| format!("invalid number: '{}'", s))?;
+        .map_err(|_| format!("invalid number: '{s}'"))?;
 
     if value < 1 {
         return Err(format!(
-            "'{}' must be at least 1 (use --threads 1 for single-threaded mode)",
-            value
+            "'{value}' must be at least 1 (use --threads 1 for single-threaded mode)"
         ));
     }
     Ok(value)
@@ -75,10 +73,10 @@ fn validate_threads(s: &str) -> Result<usize, String> {
 fn validate_max_lines(s: &str) -> Result<usize, String> {
     let value = s
         .parse::<usize>()
-        .map_err(|_| format!("invalid number: '{}'", s))?;
+        .map_err(|_| format!("invalid number: '{s}'"))?;
 
     if value < 1 {
-        return Err(format!("'{}' must be at least 1", value));
+        return Err(format!("'{value}' must be at least 1"));
     }
     Ok(value)
 }
@@ -252,7 +250,7 @@ fn main() -> Result<()> {
     // Compile fail-on-pattern regex early (exit 2 on invalid)
     let fail_regex = config.fail_pattern.as_ref().map(|pat| {
         regex::Regex::new(pat).unwrap_or_else(|e| {
-            eprintln!("lessence: invalid regex '{}': {}", pat, e);
+            eprintln!("lessence: invalid regex '{pat}': {e}");
             std::process::exit(2);
         })
     });
@@ -304,7 +302,7 @@ fn main() -> Result<()> {
         // Output JSON analysis only
         let analysis = LogAnalyzer::from_folder_stats(&folder, &config)?;
         let json_output = serde_json::to_string_pretty(&analysis)?;
-        println!("{}", json_output);
+        println!("{json_output}");
         if pattern_matched.get() {
             std::process::exit(1);
         }
@@ -350,7 +348,7 @@ fn main() -> Result<()> {
         // Security: Check line count limit
         if let Some(max_lines) = config.max_lines {
             if lines_processed >= max_lines {
-                eprintln!("Line limit of {} reached, stopping processing", max_lines);
+                eprintln!("Line limit of {max_lines} reached, stopping processing");
                 break;
             }
         }
@@ -380,7 +378,7 @@ fn main() -> Result<()> {
             } else if use_structured_output {
                 collected_outputs.push(output);
             } else {
-                match writeln!(stdout, "{}", output) {
+                match writeln!(stdout, "{output}") {
                     Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                         std::process::exit(0);
@@ -395,7 +393,7 @@ fn main() -> Result<()> {
     if let Some(n) = config.top_n {
         let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
         for (count, formatted) in &top_groups {
-            match writeln!(stdout, "[{}x] {}", count, formatted) {
+            match writeln!(stdout, "[{count}x] {formatted}") {
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     std::process::exit(0);
@@ -405,8 +403,7 @@ fn main() -> Result<()> {
         }
         let shown = top_groups.len();
         eprintln!(
-            "(showing top {} of {} patterns, covering {}% of input lines)",
-            shown, total_groups, coverage_pct
+            "(showing top {shown} of {total_groups} patterns, covering {coverage_pct}% of input lines)"
         );
 
         if config.stats_json {
@@ -425,7 +422,7 @@ fn main() -> Result<()> {
         if use_structured_output {
             collected_outputs.push(output);
         } else {
-            match writeln!(stdout, "{}", output) {
+            match writeln!(stdout, "{output}") {
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     std::process::exit(0);
@@ -453,7 +450,7 @@ fn main() -> Result<()> {
                 let mut handle = stdout.lock();
 
                 let write_line = |handle: &mut io::StdoutLock, s: String| -> Result<()> {
-                    match writeln!(handle, "{}", s) {
+                    match writeln!(handle, "{s}") {
                         Ok(_) => Ok(()),
                         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                             std::process::exit(0);
@@ -474,15 +471,15 @@ fn main() -> Result<()> {
                 write_line(&mut handle, "## Summary\n".to_string())?;
                 write_line(
                     &mut handle,
-                    format!("- **Original lines**: {}", original_lines),
+                    format!("- **Original lines**: {original_lines}"),
                 )?;
                 write_line(
                     &mut handle,
-                    format!("- **Compressed lines**: {}", compressed_lines),
+                    format!("- **Compressed lines**: {compressed_lines}"),
                 )?;
                 write_line(
                     &mut handle,
-                    format!("- **Compression ratio**: {:.1}%\n", compression_ratio),
+                    format!("- **Compression ratio**: {compression_ratio:.1}%\n"),
                 )?;
                 write_line(&mut handle, "## Compressed Logs\n".to_string())?;
 
@@ -493,7 +490,7 @@ fn main() -> Result<()> {
                         write_line(&mut handle, output.clone())?;
                         write_line(&mut handle, "```\n".to_string())?;
                     } else {
-                        write_line(&mut handle, format!("{}\n", output))?;
+                        write_line(&mut handle, format!("{output}\n"))?;
                     }
                 }
             }

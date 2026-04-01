@@ -1,5 +1,5 @@
-use std::process::Command;
 use std::io::Write;
+use std::process::Command;
 
 #[test]
 fn test_sanitize_pii_text_format() {
@@ -9,17 +9,22 @@ fn test_sanitize_pii_text_format() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .expect("Failed to spawn lessence");
-    
+
     {
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
-        stdin.write_all(b"User alice@example.com logged in\n").unwrap();
+        stdin
+            .write_all(b"User alice@example.com logged in\n")
+            .unwrap();
     }
-    
+
     let output = child.wait_with_output().expect("Failed to read output");
     let stdout = String::from_utf8(output.stdout).unwrap();
-    
+
     assert!(stdout.contains("<EMAIL>"), "Should contain <EMAIL> token");
-    assert!(!stdout.contains("alice@example.com"), "Should NOT contain plain email");
+    assert!(
+        !stdout.contains("alice@example.com"),
+        "Should NOT contain plain email"
+    );
 }
 
 // JSON format was removed; test_sanitize_pii_json_format deleted as no longer applicable.
@@ -32,17 +37,22 @@ fn test_sanitize_pii_markdown_format() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    
+
     {
         let stdin = child.stdin.as_mut().unwrap();
-        stdin.write_all(b"support@example.com ticket created\n").unwrap();
+        stdin
+            .write_all(b"support@example.com ticket created\n")
+            .unwrap();
     }
-    
+
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    
+
     assert!(stdout.contains("<EMAIL>"), "Markdown should have <EMAIL>");
-    assert!(!stdout.contains("support@example.com"), "Markdown should NOT have plain email");
+    assert!(
+        !stdout.contains("support@example.com"),
+        "Markdown should NOT have plain email"
+    );
 }
 
 #[test]
@@ -70,7 +80,7 @@ fn run_lessence(args: &[&str], input: &[u8]) -> String {
     cmd.args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped());
-    
+
     let mut child = cmd.spawn().unwrap();
     child.stdin.as_mut().unwrap().write_all(input).unwrap();
     let output = child.wait_with_output().unwrap();
@@ -86,16 +96,19 @@ fn test_sanitize_pii_with_email_disabled() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    
+
     {
         let stdin = child.stdin.as_mut().unwrap();
         stdin.write_all(b"user@example.com logged in\n").unwrap();
     }
-    
+
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
-    
+
     // Email detection disabled → no tokens → no masking
     // This is expected behavior (document in quickstart troubleshooting)
-    assert!(stdout.contains("user@example.com"), "Email not detected, so not masked");
+    assert!(
+        stdout.contains("user@example.com"),
+        "Email not detected, so not masked"
+    );
 }

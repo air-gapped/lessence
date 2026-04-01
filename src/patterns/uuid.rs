@@ -1,37 +1,33 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
+// Standard UUID format: 8-4-4-4-12 hex digits
+static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+        .unwrap()
+});
 
-    // Standard UUID format: 8-4-4-4-12 hex digits
-static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
-    ).unwrap());
+// UUID without hyphens (sometimes used)
+static UUID_NO_HYPHENS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]{32}\b").unwrap());
 
-    // UUID without hyphens (sometimes used)
-static UUID_NO_HYPHENS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\b[0-9a-fA-F]{32}\b"
-    ).unwrap());
+// Request ID patterns
+static REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:req|request)[-_]?(?:id)?[=:]?\s*([a-zA-Z0-9-_]+)\b").unwrap()
+});
 
-    // Request ID patterns
-static REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\b(?:req|request)[-_]?(?:id)?[=:]?\s*([a-zA-Z0-9-_]+)\b"
-    ).unwrap());
+// Trace ID patterns
+static TRACE_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\btrace[=:]([a-zA-Z0-9-_]+)\b").unwrap());
 
-    // Trace ID patterns
-static TRACE_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\btrace[=:]([a-zA-Z0-9-_]+)\b"
-    ).unwrap());
+// Session ID patterns
+static SESSION_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bsession[=:]([a-zA-Z0-9-_]+)\b").unwrap());
 
-    // Session ID patterns
-static SESSION_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\bsession[=:]([a-zA-Z0-9-_]+)\b"
-    ).unwrap());
-
-    // Correlation ID patterns
-static CORRELATION_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-        r"\bcorrelation[-_]?id[=:]([a-zA-Z0-9-_]+)\b"
-    ).unwrap());
+// Correlation ID patterns
+static CORRELATION_ID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bcorrelation[-_]?id[=:]([a-zA-Z0-9-_]+)\b").unwrap());
 
 pub struct UuidDetector;
 
@@ -59,7 +55,9 @@ impl UuidDetector {
                 tokens.push(Token::Uuid(req_id.to_string()));
             }
         }
-        result = REQUEST_ID_REGEX.replace_all(&result, "request_id=<UUID>").to_string();
+        result = REQUEST_ID_REGEX
+            .replace_all(&result, "request_id=<UUID>")
+            .to_string();
 
         // Trace IDs
         for cap in TRACE_ID_REGEX.captures_iter(&result) {
@@ -68,7 +66,9 @@ impl UuidDetector {
                 tokens.push(Token::Uuid(trace_id.to_string()));
             }
         }
-        result = TRACE_ID_REGEX.replace_all(&result, "trace=<UUID>").to_string();
+        result = TRACE_ID_REGEX
+            .replace_all(&result, "trace=<UUID>")
+            .to_string();
 
         // Session IDs
         for cap in SESSION_ID_REGEX.captures_iter(&result) {
@@ -77,7 +77,9 @@ impl UuidDetector {
                 tokens.push(Token::Uuid(session_id.to_string()));
             }
         }
-        result = SESSION_ID_REGEX.replace_all(&result, "session=<UUID>").to_string();
+        result = SESSION_ID_REGEX
+            .replace_all(&result, "session=<UUID>")
+            .to_string();
 
         // Correlation IDs
         for cap in CORRELATION_ID_REGEX.captures_iter(&result) {
@@ -86,7 +88,9 @@ impl UuidDetector {
                 tokens.push(Token::Uuid(correlation_id.to_string()));
             }
         }
-        result = CORRELATION_ID_REGEX.replace_all(&result, "correlation_id=<UUID>").to_string();
+        result = CORRELATION_ID_REGEX
+            .replace_all(&result, "correlation_id=<UUID>")
+            .to_string();
 
         // UUIDs without hyphens (but avoid overlap with other hash patterns)
         for cap in UUID_NO_HYPHENS_REGEX.find_iter(&result) {
@@ -96,7 +100,9 @@ impl UuidDetector {
                 tokens.push(Token::Uuid(uuid_str.to_string()));
             }
         }
-        result = UUID_NO_HYPHENS_REGEX.replace_all(&result, "<UUID>").to_string();
+        result = UUID_NO_HYPHENS_REGEX
+            .replace_all(&result, "<UUID>")
+            .to_string();
 
         (result, tokens)
     }
