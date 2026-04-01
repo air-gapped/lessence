@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.1.2](https://github.com/air-gapped/lessence/compare/v0.1.1...v0.1.2) (2026-04-01)
+
+
+### Bug Fixes
+
+* add id-token permission for claude oauth in release notes ([c0d8601](https://github.com/air-gapped/lessence/commit/c0d86018a1929916a9c4ac2928ba82f28298d2e6))
+* add workflow_dispatch trigger and id-token to release notes ([d2addbc](https://github.com/air-gapped/lessence/commit/d2addbca60840009751d7e77449f558e529cda2d))
+* move release notes to separate workflow_run trigger ([988ee50](https://github.com/air-gapped/lessence/commit/988ee50652f15316126f5f78106323ae7af46a9c))
+* replace claude-code-action with bash script for release notes ([f807033](https://github.com/air-gapped/lessence/commit/f807033d2d2ddf0dba0e6a88acc2d8dcb3b599ae))
+
+
+### Performance Improvements
+
+* add content-aware pre-filters to skip wasteful detector calls ([670d963](https://github.com/air-gapped/lessence/commit/670d96383c326f19c0168a40647944a62b966d15))
+* optimize grouping pipeline — 45% faster parallel, 54% faster worst-case ([3905872](https://github.com/air-gapped/lessence/commit/3905872f1bdcd6e8ae1d507c5223818477f1539e))
+
 ## [0.1.1](https://github.com/air-gapped/lessence/compare/v0.1.0...v0.1.1) (2026-04-01)
 
 
