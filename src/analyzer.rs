@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Read};
 
 use crate::config::Config;
 use crate::normalize::Normalizer;
-use crate::patterns::{Token, LogLine};
+use crate::patterns::{LogLine, Token};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AnalysisResult {
@@ -84,7 +84,11 @@ impl LogAnalyzer {
             let log_line = normalizer.normalize_line(line)?;
 
             // Update pattern counts and samples
-            Self::update_pattern_counts(&log_line.tokens, &mut pattern_counts, &mut sample_patterns);
+            Self::update_pattern_counts(
+                &log_line.tokens,
+                &mut pattern_counts,
+                &mut sample_patterns,
+            );
 
             log_lines.push(log_line);
 
@@ -99,7 +103,7 @@ impl LogAnalyzer {
             total_lines,
             &log_lines,
             &normalizer,
-            &pattern_counts
+            &pattern_counts,
         );
 
         // Generate recommendations
@@ -120,11 +124,10 @@ impl LogAnalyzer {
         })
     }
 
-
     fn update_pattern_counts(
         tokens: &[Token],
         counts: &mut PatternDistribution,
-        samples: &mut SamplePatterns
+        samples: &mut SamplePatterns,
     ) {
         for token in tokens {
             match token {
@@ -159,7 +162,7 @@ impl LogAnalyzer {
         total_lines: usize,
         log_lines: &[LogLine],
         normalizer: &Normalizer,
-        _patterns: &PatternDistribution
+        _patterns: &PatternDistribution,
     ) -> CompressionEstimates {
         // Simulate actual compression by grouping similar lines
         let default_compressed = Self::simulate_compression(log_lines, normalizer, 85, 4);
@@ -171,26 +174,31 @@ impl LogAnalyzer {
         let aggressive_ratio = 1.0 - (aggressive_compressed as f64 / total_lines as f64);
 
         CompressionEstimates {
-            default: format!("{:.1}% ({} lines)",
+            default: format!(
+                "{:.1}% ({} lines)",
                 default_ratio * 100.0,
                 default_compressed
             ),
-            with_paths: format!("{:.1}% ({} lines)",
-                paths_ratio * 100.0,
-                paths_compressed
-            ),
-            with_numbers: format!("{:.1}% ({} lines)",
+            with_paths: format!("{:.1}% ({} lines)", paths_ratio * 100.0, paths_compressed),
+            with_numbers: format!(
+                "{:.1}% ({} lines)",
                 aggressive_ratio * 100.0,
                 aggressive_compressed
             ),
-            aggressive: format!("{:.1}% ({} lines)",
+            aggressive: format!(
+                "{:.1}% ({} lines)",
                 aggressive_ratio * 100.0,
                 aggressive_compressed
             ),
         }
     }
 
-    fn simulate_compression(log_lines: &[LogLine], normalizer: &Normalizer, threshold: u8, min_collapse: usize) -> usize {
+    fn simulate_compression(
+        log_lines: &[LogLine],
+        normalizer: &Normalizer,
+        threshold: u8,
+        min_collapse: usize,
+    ) -> usize {
         let mut groups: Vec<Vec<usize>> = Vec::new();
         let mut processed = vec![false; log_lines.len()];
 
@@ -219,24 +227,38 @@ impl LogAnalyzer {
         }
 
         // Count output lines (groups with min_collapse+ lines become 1 summary line)
-        groups.iter().map(|group| {
-            if group.len() >= min_collapse {
-                1 // Summary line
-            } else {
-                group.len() // Original lines
-            }
-        }).sum()
+        groups
+            .iter()
+            .map(|group| {
+                if group.len() >= min_collapse {
+                    1 // Summary line
+                } else {
+                    group.len() // Original lines
+                }
+            })
+            .sum()
     }
 
-    fn simulate_compression_with_paths(log_lines: &[LogLine], _normalizer: &Normalizer, threshold: u8, min_collapse: usize) -> usize {
+    fn simulate_compression_with_paths(
+        log_lines: &[LogLine],
+        _normalizer: &Normalizer,
+        threshold: u8,
+        min_collapse: usize,
+    ) -> usize {
         // Create a config with paths enabled for simulation
-        let paths_config = Config { normalize_paths: true, ..Config::default() };
+        let paths_config = Config {
+            normalize_paths: true,
+            ..Config::default()
+        };
         let paths_normalizer = Normalizer::new(paths_config);
 
         // Re-normalize with paths enabled
-        let path_normalized: Vec<LogLine> = log_lines.iter()
+        let path_normalized: Vec<LogLine> = log_lines
+            .iter()
             .map(|line| {
-                paths_normalizer.normalize_line(line.original.clone()).unwrap_or_else(|_| line.clone())
+                paths_normalizer
+                    .normalize_line(line.original.clone())
+                    .unwrap_or_else(|_| line.clone())
             })
             .collect();
 
@@ -248,33 +270,44 @@ impl LogAnalyzer {
 
         // Path analysis
         if patterns.paths > total_lines / 4 {
-            recommendations.push("--paths: High path repetition detected, consider enabling for better compression".to_string());
+            recommendations.push(
+                "--paths: High path repetition detected, consider enabling for better compression"
+                    .to_string(),
+            );
         } else if patterns.paths > 0 {
-            recommendations.push("--paths: Some paths detected, review samples before enabling".to_string());
+            recommendations
+                .push("--paths: Some paths detected, review samples before enabling".to_string());
         }
 
         // High timestamp frequency
         if patterns.timestamps > total_lines * 8 / 10 {
-            recommendations.push("High timestamp frequency - excellent for default compression".to_string());
+            recommendations
+                .push("High timestamp frequency - excellent for default compression".to_string());
         }
 
         // IP analysis
         if patterns.ips > total_lines / 2 {
-            recommendations.push("Many IP addresses detected - good candidate for lessence".to_string());
+            recommendations
+                .push("Many IP addresses detected - good candidate for lessence".to_string());
         }
 
         // Hash analysis
         if patterns.hashes > total_lines / 3 {
-            recommendations.push("High hash frequency detected - significant compression possible".to_string());
+            recommendations.push(
+                "High hash frequency detected - significant compression possible".to_string(),
+            );
         }
 
         // General recommendations
         if patterns.timestamps + patterns.ips + patterns.hashes < total_lines / 10 {
-            recommendations.push("Warning: Low pattern repetition detected, compression may be minimal".to_string());
+            recommendations.push(
+                "Warning: Low pattern repetition detected, compression may be minimal".to_string(),
+            );
         }
 
         if recommendations.is_empty() {
-            recommendations.push("Standard compression recommended - use default settings".to_string());
+            recommendations
+                .push("Standard compression recommended - use default settings".to_string());
         }
 
         recommendations
@@ -288,7 +321,10 @@ impl LogAnalyzer {
     }
 
     /// Create analysis result from processed folder statistics (for preflight mode)
-    pub fn from_folder_stats(folder: &crate::folder::PatternFolder, _config: &Config) -> Result<AnalysisResult> {
+    pub fn from_folder_stats(
+        folder: &crate::folder::PatternFolder,
+        _config: &Config,
+    ) -> Result<AnalysisResult> {
         let stats = folder.get_stats();
 
         let patterns = PatternDistribution {
@@ -311,14 +347,17 @@ impl LogAnalyzer {
 
         let recommendations = vec![
             format!("Compression achieved: {:.1}%", compression_ratio),
-            format!("Output size: {} lines (from {} original)", output_lines, stats.total_lines),
+            format!(
+                "Output size: {} lines (from {} original)",
+                output_lines, stats.total_lines
+            ),
             if compression_ratio > 90.0 {
                 "Excellent compression - highly recommended for processing".to_string()
             } else if compression_ratio > 70.0 {
                 "Good compression - recommended for processing".to_string()
             } else {
                 "Low compression - consider if processing is beneficial".to_string()
-            }
+            },
         ];
 
         Ok(AnalysisResult {

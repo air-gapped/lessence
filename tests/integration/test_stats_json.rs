@@ -46,8 +46,12 @@ fn test_no_stats_with_stats_json_still_emits_json() {
     assert!(output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let json: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|e| panic!("--no-stats --stats-json should still emit JSON: {}\nContent: {}", e, stderr));
+    let json: serde_json::Value = serde_json::from_str(&stderr).unwrap_or_else(|e| {
+        panic!(
+            "--no-stats --stats-json should still emit JSON: {}\nContent: {}",
+            e, stderr
+        )
+    });
     assert!(json["input_lines"].is_number());
 }
 
@@ -73,8 +77,14 @@ fn test_stats_json_suppresses_human_readable_stats() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Stdout should not contain the markdown stats footer
-    assert!(!stdout.contains("lessence Compression Report"), "Human stats should not appear on stdout");
-    assert!(!stdout.contains("Pattern Distribution"), "Human stats should not appear on stdout");
+    assert!(
+        !stdout.contains("lessence Compression Report"),
+        "Human stats should not appear on stdout"
+    );
+    assert!(
+        !stdout.contains("Pattern Distribution"),
+        "Human stats should not appear on stdout"
+    );
 
     // Stderr should contain JSON, not human-readable stats
     let json: serde_json::Value = serde_json::from_str(&stderr)
@@ -108,17 +118,38 @@ fn test_stats_json_contains_all_required_fields() {
     // Top-level fields
     assert!(json["input_lines"].is_number(), "Missing input_lines");
     assert!(json["output_lines"].is_number(), "Missing output_lines");
-    assert!(json["compression_ratio"].is_f64(), "Missing compression_ratio");
-    assert!(json["collapsed_groups"].is_number(), "Missing collapsed_groups");
+    assert!(
+        json["compression_ratio"].is_f64(),
+        "Missing compression_ratio"
+    );
+    assert!(
+        json["collapsed_groups"].is_number(),
+        "Missing collapsed_groups"
+    );
     assert!(json["lines_saved"].is_number(), "Missing lines_saved");
-    assert!(json["patterns_detected"].is_number(), "Missing patterns_detected");
+    assert!(
+        json["patterns_detected"].is_number(),
+        "Missing patterns_detected"
+    );
     assert!(json["elapsed_ms"].is_number(), "Missing elapsed_ms");
 
     // pattern_hits object with all categories (even zero)
     let hits = &json["pattern_hits"];
     assert!(hits.is_object(), "Missing pattern_hits object");
-    for field in &["timestamps", "ips", "hashes", "uuids", "pids", "durations",
-                   "http_status", "sizes", "percentages", "paths", "kubernetes", "emails"] {
+    for field in &[
+        "timestamps",
+        "ips",
+        "hashes",
+        "uuids",
+        "pids",
+        "durations",
+        "http_status",
+        "sizes",
+        "percentages",
+        "paths",
+        "kubernetes",
+        "emails",
+    ] {
         assert!(hits[field].is_number(), "Missing pattern_hits.{}", field);
     }
 
@@ -126,5 +157,8 @@ fn test_stats_json_contains_all_required_fields() {
     assert_eq!(json["input_lines"].as_u64().unwrap(), 6);
 
     // Verify elapsed_ms is present (as_u64 returns Some for non-negative)
-    assert!(json["elapsed_ms"].as_u64().is_some(), "elapsed_ms should be a non-negative integer");
+    assert!(
+        json["elapsed_ms"].as_u64().is_some(),
+        "elapsed_ms should be a non-negative integer"
+    );
 }

@@ -1,20 +1,15 @@
 // Unified Timestamp Detection Engine
 // Constitutional requirement: Replace both timestamp.rs and essence/processor.rs
 
+use super::{DetectionResult, TimestampMatch, TimestampRegistry, Token};
 use std::sync::LazyLock;
-use super::{
-    TimestampRegistry, DetectionResult, TimestampMatch,
-    Token
-};
 
 /// Central timestamp pattern detection system
 /// Replaces both src/patterns/timestamp.rs and src/essence/processor.rs patterns
 pub struct UnifiedTimestampDetector;
 
 /// Static registry for efficient pattern access
-static TIMESTAMP_REGISTRY: LazyLock<TimestampRegistry> = LazyLock::new(|| {
-    TimestampRegistry::new()
-});
+static TIMESTAMP_REGISTRY: LazyLock<TimestampRegistry> = LazyLock::new(TimestampRegistry::new);
 
 impl UnifiedTimestampDetector {
     /// Primary detection interface - replaces TimestampDetector::detect_and_replace
@@ -29,7 +24,9 @@ impl UnifiedTimestampDetector {
         let result = Self::detect_with_metadata(text);
 
         // Convert to legacy format for compatibility
-        let tokens = result.matches.iter()
+        let tokens = result
+            .matches
+            .iter()
             .map(|m| Token::Timestamp(m.original.clone()))
             .collect();
 
@@ -83,8 +80,8 @@ impl UnifiedTimestampDetector {
 
     /// Fast pre-filter for timestamp indicators
     fn has_timestamp_indicators(text: &str) -> bool {
-        text.contains(':') && (
-            text.contains("20") || // Years 20xx
+        text.contains(':')
+            && (text.contains("20") || // Years 20xx
             text.contains("19") || // Years 19xx
             text.contains('-') ||  // Date separators
             text.contains('T') ||  // ISO 8601 separator
@@ -98,8 +95,7 @@ impl UnifiedTimestampDetector {
             text.contains("Jan") || text.contains("Feb") || text.contains("Mar") ||
             text.contains("Apr") || text.contains("May") || text.contains("Jun") ||
             text.contains("Jul") || text.contains("Aug") || text.contains("Sep") ||
-            text.contains("Oct") || text.contains("Nov") || text.contains("Dec")
-        )
+            text.contains("Oct") || text.contains("Nov") || text.contains("Dec"))
     }
 
     /// Resolve overlapping matches using longest-match-first rule
@@ -110,7 +106,9 @@ impl UnifiedTimestampDetector {
 
         // Sort by priority first (most specific patterns first)
         matches.sort_by(|a, b| {
-            a.priority.effective_score().cmp(&b.priority.effective_score())
+            a.priority
+                .effective_score()
+                .cmp(&b.priority.effective_score())
         });
 
         let mut resolved = Vec::new();
@@ -120,9 +118,11 @@ impl UnifiedTimestampDetector {
             let candidate_range = candidate.start_pos..candidate.end_pos;
 
             // Check if this candidate overlaps with any already selected match
-            let overlaps = used_positions.iter().any(|used_range: &std::ops::Range<usize>| {
-                candidate_range.start < used_range.end && candidate_range.end > used_range.start
-            });
+            let overlaps = used_positions
+                .iter()
+                .any(|used_range: &std::ops::Range<usize>| {
+                    candidate_range.start < used_range.end && candidate_range.end > used_range.start
+                });
 
             if !overlaps {
                 used_positions.push(candidate_range);

@@ -25,16 +25,16 @@ pub struct Config {
     #[allow(dead_code)]
     pub adaptive_max_group_size: usize,
     // Constitutional CLI flags
-    pub essence_mode: bool,           // --essence: timestamp removal/tokenization for temporal independence
-    pub thread_count: Option<usize>,  // --threads: number of threads (1=single-threaded, None=auto-detect)
-    
+    pub essence_mode: bool, // --essence: timestamp removal/tokenization for temporal independence
+    pub thread_count: Option<usize>, // --threads: number of threads (1=single-threaded, None=auto-detect)
+
     // Security & ReDoS Protection (Constitutional Principle X)
-    pub max_line_length: Option<usize>,  // --max-line-length: skip lines exceeding this length (default: 1MB)
-    pub max_lines: Option<usize>,        // --max-lines: stop processing after this many lines
-    pub sanitize_pii: bool,              // --sanitize-pii: mask email addresses in output (default: false)
-    pub top_n: Option<usize>,             // --top N: show only N most frequent patterns
-    pub stats_json: bool,                 // --stats-json: emit JSON stats to stderr
-    pub fail_pattern: Option<String>,     // --fail-on-pattern: exit 1 when regex matches input
+    pub max_line_length: Option<usize>, // --max-line-length: skip lines exceeding this length (default: 1MB)
+    pub max_lines: Option<usize>,       // --max-lines: stop processing after this many lines
+    pub sanitize_pii: bool, // --sanitize-pii: mask email addresses in output (default: false)
+    pub top_n: Option<usize>, // --top N: show only N most frequent patterns
+    pub stats_json: bool,   // --stats-json: emit JSON stats to stderr
+    pub fail_pattern: Option<String>, // --fail-on-pattern: exit 1 when regex matches input
 }
 
 impl Default for Config {
@@ -63,37 +63,41 @@ impl Default for Config {
             adaptive_min_group_size: 10,
             adaptive_max_group_size: 1000,
             // Constitutional CLI flags defaults
-            essence_mode: false,               // Essence mode disabled by default
-            thread_count: None,                // Auto-detect threads by default (1=single-threaded)
-            
+            essence_mode: false, // Essence mode disabled by default
+            thread_count: None,  // Auto-detect threads by default (1=single-threaded)
+
             // Security defaults (Constitutional Principle X)
             max_line_length: Some(1024 * 1024), // 1MB default line length limit
-            max_lines: None,                   // No line count limit by default
-            sanitize_pii: false,               // Disabled by default (backward compatibility)
-            top_n: None,                       // No top-N filtering by default
-            stats_json: false,                 // No JSON stats by default
-            fail_pattern: None,                // No fail pattern by default
+            max_lines: None,                    // No line count limit by default
+            sanitize_pii: false,                // Disabled by default (backward compatibility)
+            top_n: None,                        // No top-N filtering by default
+            stats_json: false,                  // No JSON stats by default
+            fail_pattern: None,                 // No fail pattern by default
         }
     }
 }
 
 pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
     let input = input.trim();
-    
+
     if let Some(num_str) = input.strip_suffix('K').or_else(|| input.strip_suffix('k')) {
-        num_str.parse::<usize>()
+        num_str
+            .parse::<usize>()
             .map(|n| n * 1024)
             .map_err(|_| format!("Invalid number before 'K': {}", num_str))
     } else if let Some(num_str) = input.strip_suffix('M').or_else(|| input.strip_suffix('m')) {
-        num_str.parse::<usize>()
+        num_str
+            .parse::<usize>()
             .map(|n| n * 1024 * 1024)
             .map_err(|_| format!("Invalid number before 'M': {}", num_str))
     } else if let Some(num_str) = input.strip_suffix('G').or_else(|| input.strip_suffix('g')) {
-        num_str.parse::<usize>()
+        num_str
+            .parse::<usize>()
             .map(|n| n * 1024 * 1024 * 1024)
             .map_err(|_| format!("Invalid number before 'G': {}", num_str))
     } else {
-        input.parse::<usize>()
+        input
+            .parse::<usize>()
             .map_err(|_| format!("Invalid number: {}", input))
     }
 }
@@ -105,7 +109,10 @@ mod tests {
     #[test]
     fn test_default_config_thread_count_is_none() {
         let config = Config::default();
-        assert!(config.thread_count.is_none(), "Default thread_count should be None (auto-detect)");
+        assert!(
+            config.thread_count.is_none(),
+            "Default thread_count should be None (auto-detect)"
+        );
     }
 
     #[test]
@@ -116,14 +123,21 @@ mod tests {
         };
         // Test will fail until single_thread field is removed
         // This validates that thread_count == Some(1) replaces single_thread
-        assert_eq!(config.thread_count, Some(1), "Single-threaded mode should be detected via thread_count == Some(1)");
+        assert_eq!(
+            config.thread_count,
+            Some(1),
+            "Single-threaded mode should be detected via thread_count == Some(1)"
+        );
     }
 
     #[test]
     fn test_auto_detect_mode_detection() {
         let config = Config::default();
         // Auto-detect mode = thread_count is None
-        assert!(config.thread_count.is_none(), "Auto-detect mode when thread_count is None");
+        assert!(
+            config.thread_count.is_none(),
+            "Auto-detect mode when thread_count is None"
+        );
     }
 
     #[test]
@@ -132,7 +146,11 @@ mod tests {
             thread_count: Some(4),
             ..Default::default()
         };
-        assert_eq!(config.thread_count, Some(4), "Multi-threaded mode with explicit count");
+        assert_eq!(
+            config.thread_count,
+            Some(4),
+            "Multi-threaded mode with explicit count"
+        );
     }
 
     #[test]

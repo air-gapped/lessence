@@ -6,16 +6,16 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 mod analyzer;
+mod cli;
 mod config;
 mod folder;
 mod normalize;
-mod patterns;
 mod output;
-mod cli;
+mod patterns;
 
+use analyzer::LogAnalyzer;
 use config::Config;
 use folder::PatternFolder;
-use analyzer::LogAnalyzer;
 
 /// Strip ANSI escape codes from text
 fn strip_ansi_codes(text: &str) -> String {
@@ -45,29 +45,38 @@ const VALID_PATTERNS: &[&str] = &[
 ];
 
 fn validate_min_collapse(s: &str) -> Result<usize, String> {
-    let value = s.parse::<usize>()
+    let value = s
+        .parse::<usize>()
         .map_err(|_| format!("invalid number: '{}'", s))?;
-    
+
     if value < 2 {
-        return Err(format!("'{}' must be at least 2 (minimum meaningful folding group)", value));
+        return Err(format!(
+            "'{}' must be at least 2 (minimum meaningful folding group)",
+            value
+        ));
     }
     Ok(value)
 }
 
 fn validate_threads(s: &str) -> Result<usize, String> {
-    let value = s.parse::<usize>()
+    let value = s
+        .parse::<usize>()
         .map_err(|_| format!("invalid number: '{}'", s))?;
-    
+
     if value < 1 {
-        return Err(format!("'{}' must be at least 1 (use --threads 1 for single-threaded mode)", value));
+        return Err(format!(
+            "'{}' must be at least 1 (use --threads 1 for single-threaded mode)",
+            value
+        ));
     }
     Ok(value)
 }
 
 fn validate_max_lines(s: &str) -> Result<usize, String> {
-    let value = s.parse::<usize>()
+    let value = s
+        .parse::<usize>()
         .map_err(|_| format!("invalid number: '{}'", s))?;
-    
+
     if value < 1 {
         return Err(format!("'{}' must be at least 1", value));
     }
@@ -76,11 +85,11 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
 
 fn validate_pattern_names(s: &str) -> Result<String, String> {
     let pattern = s.trim().to_lowercase();
-    
+
     if pattern.is_empty() {
         return Ok(pattern);
     }
-    
+
     if !VALID_PATTERNS.contains(&pattern.as_str()) {
         return Err(format!(
             "unknown pattern '{}'. Valid patterns: {}",
@@ -88,7 +97,7 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
             VALID_PATTERNS.join(", ")
         ));
     }
-    
+
     Ok(pattern)
 }
 
@@ -112,7 +121,6 @@ struct Cli {
     /// Minimum lines before folding
     #[arg(long, default_value_t = 3, value_parser = validate_min_collapse)]
     min_collapse: usize,
-
 
     /// Disable specific pattern groups: timestamp,hash,network,uuid,email,path,duration (comma-separated)
     #[arg(long, value_delimiter = ',', value_parser = validate_pattern_names)]
@@ -235,12 +243,11 @@ fn main() -> Result<()> {
         // Security & ReDoS Protection flags (Constitutional Principle X)
         max_line_length: cli.max_line_length.or(Some(1024 * 1024)), // 1MB default
         max_lines: cli.max_lines,
-        sanitize_pii: cli.sanitize_pii,  // Wire PII sanitization flag
+        sanitize_pii: cli.sanitize_pii, // Wire PII sanitization flag
         top_n: cli.top,
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),
     };
-
 
     // Compile fail-on-pattern regex early (exit 2 on invalid)
     let fail_regex = config.fail_pattern.as_ref().map(|pat| {
@@ -275,7 +282,7 @@ fn main() -> Result<()> {
                     break;
                 }
             }
-            
+
             // Security: Check line length limit
             if let Some(max_length) = config.max_line_length {
                 if line.len() > max_length {
@@ -374,10 +381,10 @@ fn main() -> Result<()> {
                 collected_outputs.push(output);
             } else {
                 match writeln!(stdout, "{}", output) {
-                    Ok(_) => {},
+                    Ok(_) => {}
                     Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                         std::process::exit(0);
-                    },
+                    }
                     Err(e) => return Err(e.into()),
                 }
             }
@@ -389,15 +396,18 @@ fn main() -> Result<()> {
         let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
         for (count, formatted) in &top_groups {
             match writeln!(stdout, "[{}x] {}", count, formatted) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     std::process::exit(0);
-                },
+                }
                 Err(e) => return Err(e.into()),
             }
         }
         let shown = top_groups.len();
-        eprintln!("(showing top {} of {} patterns, covering {}% of input lines)", shown, total_groups, coverage_pct);
+        eprintln!(
+            "(showing top {} of {} patterns, covering {}% of input lines)",
+            shown, total_groups, coverage_pct
+        );
 
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
@@ -416,10 +426,10 @@ fn main() -> Result<()> {
             collected_outputs.push(output);
         } else {
             match writeln!(stdout, "{}", output) {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     std::process::exit(0);
-                },
+                }
                 Err(e) => return Err(e.into()),
             }
         }
@@ -429,7 +439,7 @@ fn main() -> Result<()> {
     if use_structured_output {
         let stats = folder.get_stats();
         let original_lines = stats.total_lines;
-        let compressed_lines = stats.output_lines;  // Use tracked output lines (not collected_outputs.len())
+        let compressed_lines = stats.output_lines; // Use tracked output lines (not collected_outputs.len())
         let compression_ratio = if original_lines > 0 {
             100.0 * (original_lines - compressed_lines) as f64 / original_lines as f64
         } else {
@@ -441,23 +451,39 @@ fn main() -> Result<()> {
                 use std::io::Write;
                 let stdout = io::stdout();
                 let mut handle = stdout.lock();
-                
+
                 let write_line = |handle: &mut io::StdoutLock, s: String| -> Result<()> {
                     match writeln!(handle, "{}", s) {
                         Ok(_) => Ok(()),
                         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                             std::process::exit(0);
-                        },
+                        }
                         Err(e) => Err(e.into()),
                     }
                 };
-                
+
                 write_line(&mut handle, "# Log Analysis".to_string())?;
-                write_line(&mut handle, format!("*Generated by lessence v{} on {}*\n", env!("CARGO_PKG_VERSION"), chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")))?;
+                write_line(
+                    &mut handle,
+                    format!(
+                        "*Generated by lessence v{} on {}*\n",
+                        env!("CARGO_PKG_VERSION"),
+                        chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+                    ),
+                )?;
                 write_line(&mut handle, "## Summary\n".to_string())?;
-                write_line(&mut handle, format!("- **Original lines**: {}", original_lines))?;
-                write_line(&mut handle, format!("- **Compressed lines**: {}", compressed_lines))?;
-                write_line(&mut handle, format!("- **Compression ratio**: {:.1}%\n", compression_ratio))?;
+                write_line(
+                    &mut handle,
+                    format!("- **Original lines**: {}", original_lines),
+                )?;
+                write_line(
+                    &mut handle,
+                    format!("- **Compressed lines**: {}", compressed_lines),
+                )?;
+                write_line(
+                    &mut handle,
+                    format!("- **Compression ratio**: {:.1}%\n", compression_ratio),
+                )?;
                 write_line(&mut handle, "## Compressed Logs\n".to_string())?;
 
                 for (i, output) in collected_outputs.iter().enumerate() {
@@ -470,8 +496,8 @@ fn main() -> Result<()> {
                         write_line(&mut handle, format!("{}\n", output))?;
                     }
                 }
-            },
-            _ => unreachable!("Should only reach here for markdown")
+            }
+            _ => unreachable!("Should only reach here for markdown"),
         }
         if pattern_matched.get() {
             std::process::exit(1);

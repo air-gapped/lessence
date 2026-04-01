@@ -1,33 +1,33 @@
 use anyhow::Result;
-use std::io::{self, Write};
-use std::collections::HashMap;
-use std::time::Duration;
 use chrono::Utc;
 use serde::Serialize;
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::time::Duration;
 
 use crate::config::Config;
 use crate::normalize::Normalizer;
 use crate::patterns::{LogLine, Token};
 
 /// Apply PII masking to original text by replacing email addresses with <EMAIL> tokens
-/// 
+///
 /// Takes the original log line text and detected tokens, returns masked text with
 /// all Token::Email instances replaced with the literal "<EMAIL>" string.
-/// 
+///
 /// # Arguments
 /// * `original` - Original log line text (may contain email addresses)
 /// * `tokens` - Detected pattern tokens (including Token::Email variants)
-/// 
+///
 /// # Returns
 /// Modified string with all detected emails replaced by <EMAIL> tokens
-/// 
+///
 /// # Performance
 /// O(n × m) where n = text length, m = email count
 /// Expected overhead: <1% of total line processing time
 pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
     let mut result = original.to_string();
     let mut email_ranges = Vec::new();
-    
+
     // Collect all email token positions
     for token in tokens {
         if let Token::Email(email) = token {
@@ -40,15 +40,15 @@ pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
             }
         }
     }
-    
+
     // Sort ranges in reverse order (replace from end to preserve indices)
     email_ranges.sort_by(|a, b| b.0.cmp(&a.0));
-    
+
     // Replace each email with <EMAIL> token
     for (start, end) in email_ranges {
         result.replace_range(start..end, "<EMAIL>");
     }
-    
+
     result
 }
 
@@ -102,7 +102,7 @@ pub struct PatternFolder {
 #[derive(Debug, Default)]
 pub struct FoldingStats {
     pub total_lines: usize,
-    pub output_lines: usize,  // Actual compressed output lines (excluding summary)
+    pub output_lines: usize, // Actual compressed output lines (excluding summary)
     pub collapsed_groups: usize,
     pub lines_saved: usize,
     pub patterns_detected: usize,
@@ -118,7 +118,7 @@ pub struct FoldingStats {
     pub percentages: usize,
     pub paths: usize,
     pub kubernetes: usize,
-    pub emails: usize,  // Track email pattern detections
+    pub emails: usize, // Track email pattern detections
 }
 
 #[derive(Serialize)]
@@ -199,7 +199,8 @@ impl PatternFolder {
             self.buffer[index].add_line(normalized_line);
         } else {
             // Create a new group at current position
-            self.buffer.push(PatternGroup::new(normalized_line, self.position_counter));
+            self.buffer
+                .push(PatternGroup::new(normalized_line, self.position_counter));
         }
 
         // Smart flushing: flush groups that are old enough to be safe
@@ -248,7 +249,6 @@ impl PatternFolder {
         Ok(None)
     }
 
-
     pub fn finish(&mut self) -> Result<Vec<String>> {
         // Constitutional compliance: Process any remaining batch
         if !self.batch_buffer.is_empty() {
@@ -284,10 +284,8 @@ impl PatternFolder {
         }
 
         // Collect all groups with their counts
-        let mut groups_with_counts: Vec<(usize, PatternGroup)> = self.buffer
-            .drain(..)
-            .map(|g| (g.count(), g))
-            .collect();
+        let mut groups_with_counts: Vec<(usize, PatternGroup)> =
+            self.buffer.drain(..).map(|g| (g.count(), g)).collect();
 
         // Sort by count descending
         groups_with_counts.sort_by(|a, b| b.0.cmp(&a.0));
@@ -296,10 +294,8 @@ impl PatternFolder {
         let total_input_lines = self.stats.total_lines;
 
         // Take top N
-        let top_groups: Vec<(usize, PatternGroup)> = groups_with_counts
-            .into_iter()
-            .take(n)
-            .collect();
+        let top_groups: Vec<(usize, PatternGroup)> =
+            groups_with_counts.into_iter().take(n).collect();
 
         let lines_covered: usize = top_groups.iter().map(|(c, _)| c).sum();
 
@@ -311,11 +307,15 @@ impl PatternFolder {
         }
 
         // Store total_input_lines for coverage calc
-        Ok((output, total_groups, if total_input_lines > 0 {
-            (lines_covered as f64 / total_input_lines as f64 * 100.0) as usize
-        } else {
-            0
-        }))
+        Ok((
+            output,
+            total_groups,
+            if total_input_lines > 0 {
+                (lines_covered as f64 / total_input_lines as f64 * 100.0) as usize
+            } else {
+                0
+            },
+        ))
     }
 
     /// Determine if buffer should be flushed based on memory management
@@ -326,8 +326,6 @@ impl PatternFolder {
         self.buffer.len() > CONSTITUTIONAL_FLUSH_THRESHOLD
     }
 
-
-
     /// Apply second similarity pass to merge groups that are similar but have different patterns
     #[allow(dead_code)]
     fn apply_second_similarity_pass(&mut self) -> Result<()> {
@@ -335,12 +333,12 @@ impl PatternFolder {
             return Ok(());
         }
 
-
         let mut merged_any = true;
         let mut iterations = 0;
 
         // Keep trying to merge until no more merges are possible
-        while merged_any && iterations < 10 { // Prevent infinite loops
+        while merged_any && iterations < 10 {
+            // Prevent infinite loops
             merged_any = false;
             iterations += 1;
 
@@ -368,7 +366,6 @@ impl PatternFolder {
                     // Check if they're similar enough to merge
                     let similarity = self.normalizer.similarity_score(group1_first, group2_first);
                     if similarity >= self.config.threshold as f64 {
-
                         // Merge group j into group i
                         let group_to_merge = self.buffer.remove(j);
                         for line in group_to_merge.lines {
@@ -384,7 +381,6 @@ impl PatternFolder {
                 i += 1;
             }
         }
-
 
         Ok(())
     }
@@ -406,8 +402,10 @@ impl PatternFolder {
                 Token::Json(_) => self.stats.paths += 1, // Group with paths for stats
                 Token::QuotedString(_) => self.stats.percentages += 1, // Group with percentages for now
                 Token::Name(_) => self.stats.percentages += 1, // Group with generic patterns
-                Token::KubernetesNamespace(_) | Token::VolumeName(_) |
-                Token::PluginType(_) | Token::PodName(_) => self.stats.kubernetes += 1,
+                Token::KubernetesNamespace(_)
+                | Token::VolumeName(_)
+                | Token::PluginType(_)
+                | Token::PodName(_) => self.stats.kubernetes += 1,
                 // New patterns from 001-read-the-current
                 Token::HttpStatusClass(_) => self.stats.http_status += 1,
                 Token::BracketContext(_) => self.stats.percentages += 1, // Group with generic patterns
@@ -418,7 +416,6 @@ impl PatternFolder {
             }
         }
     }
-
 
     fn format_group(&mut self, group: PatternGroup) -> Result<String> {
         if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
@@ -440,7 +437,7 @@ impl PatternFolder {
                 // Standard mode: use original text (with optional PII masking)
                 &group.first().original
             };
-            
+
             // Apply PII masking if enabled
             let first_line_output = if self.config.sanitize_pii && !self.config.essence_mode {
                 apply_pii_masking(first_line, &group.first().tokens)
@@ -465,9 +462,10 @@ impl PatternFolder {
                 // (after timestamp tokenization, truly similar lines should have identical normalized text)
                 if !self.config.essence_mode || first_line != last_line {
                     result.push('\n');
-                    
+
                     // Apply PII masking if enabled
-                    let last_line_output = if self.config.sanitize_pii && !self.config.essence_mode {
+                    let last_line_output = if self.config.sanitize_pii && !self.config.essence_mode
+                    {
                         apply_pii_masking(last_line, &group.last().tokens)
                     } else {
                         last_line.to_string()
@@ -495,7 +493,7 @@ impl PatternFolder {
                     if i > 0 {
                         result.push('\n');
                     }
-                    
+
                     // Apply PII masking if enabled
                     let line_output = if self.config.sanitize_pii {
                         apply_pii_masking(&line.original, &line.tokens)
@@ -522,13 +520,31 @@ impl PatternFolder {
         // Output markdown report
         writeln!(writer, "\n---")?;
         writeln!(writer, "# lessence Compression Report")?;
-        writeln!(writer, "*Generated by lessence v{} on {}*", env!("CARGO_PKG_VERSION"), Utc::now().format("%Y-%m-%d %H:%M:%S UTC"))?;
+        writeln!(
+            writer,
+            "*Generated by lessence v{} on {}*",
+            env!("CARGO_PKG_VERSION"),
+            Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        )?;
         writeln!(writer)?;
         writeln!(writer, "## Summary")?;
         writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
-        writeln!(writer, "- **Compressed**: {} lines ({:.1}% reduction)", output_lines, compression_ratio)?;
-        writeln!(writer, "- **Patterns detected**: {} across {} categories", self.stats.patterns_detected, self.count_active_pattern_types())?;
-        writeln!(writer, "- **Collapsed groups**: {} ({} lines saved)", self.stats.collapsed_groups, self.stats.lines_saved)?;
+        writeln!(
+            writer,
+            "- **Compressed**: {} lines ({:.1}% reduction)",
+            output_lines, compression_ratio
+        )?;
+        writeln!(
+            writer,
+            "- **Patterns detected**: {} across {} categories",
+            self.stats.patterns_detected,
+            self.count_active_pattern_types()
+        )?;
+        writeln!(
+            writer,
+            "- **Collapsed groups**: {} ({} lines saved)",
+            self.stats.collapsed_groups, self.stats.lines_saved
+        )?;
         writeln!(writer)?;
 
         // Pattern distribution table
@@ -537,40 +553,88 @@ impl PatternFolder {
         writeln!(writer, "|--------------|-------|-------------|")?;
 
         if self.stats.timestamps > 0 {
-            writeln!(writer, "| Timestamps | {} | Log timestamps, dates, times |", self.stats.timestamps)?;
+            writeln!(
+                writer,
+                "| Timestamps | {} | Log timestamps, dates, times |",
+                self.stats.timestamps
+            )?;
         }
         if self.stats.ips > 0 {
-            writeln!(writer, "| IP Addresses | {} | IPv4, IPv6, ports, network addresses |", self.stats.ips)?;
+            writeln!(
+                writer,
+                "| IP Addresses | {} | IPv4, IPv6, ports, network addresses |",
+                self.stats.ips
+            )?;
         }
         if self.stats.hashes > 0 {
-            writeln!(writer, "| Hashes | {} | Pod UIDs, container IDs, volume names, checksums |", self.stats.hashes)?;
+            writeln!(
+                writer,
+                "| Hashes | {} | Pod UIDs, container IDs, volume names, checksums |",
+                self.stats.hashes
+            )?;
         }
         if self.stats.uuids > 0 {
-            writeln!(writer, "| UUIDs | {} | Request IDs, trace IDs, unique identifiers |", self.stats.uuids)?;
+            writeln!(
+                writer,
+                "| UUIDs | {} | Request IDs, trace IDs, unique identifiers |",
+                self.stats.uuids
+            )?;
         }
         if self.stats.durations > 0 {
-            writeln!(writer, "| Durations | {} | Timeouts, latencies, elapsed times |", self.stats.durations)?;
+            writeln!(
+                writer,
+                "| Durations | {} | Timeouts, latencies, elapsed times |",
+                self.stats.durations
+            )?;
         }
         if self.stats.pids > 0 {
-            writeln!(writer, "| Process IDs | {} | PIDs, thread IDs, process identifiers |", self.stats.pids)?;
+            writeln!(
+                writer,
+                "| Process IDs | {} | PIDs, thread IDs, process identifiers |",
+                self.stats.pids
+            )?;
         }
         if self.stats.sizes > 0 {
-            writeln!(writer, "| File Sizes | {} | Memory usage, file sizes, data volumes |", self.stats.sizes)?;
+            writeln!(
+                writer,
+                "| File Sizes | {} | Memory usage, file sizes, data volumes |",
+                self.stats.sizes
+            )?;
         }
         if self.stats.percentages > 0 {
-            writeln!(writer, "| Numbers/Percentages | {} | CPU usage, percentages, metrics |", self.stats.percentages)?;
+            writeln!(
+                writer,
+                "| Numbers/Percentages | {} | CPU usage, percentages, metrics |",
+                self.stats.percentages
+            )?;
         }
         if self.stats.http_status > 0 {
-            writeln!(writer, "| HTTP Status | {} | Response codes, error codes |", self.stats.http_status)?;
+            writeln!(
+                writer,
+                "| HTTP Status | {} | Response codes, error codes |",
+                self.stats.http_status
+            )?;
         }
         if self.stats.paths > 0 {
-            writeln!(writer, "| File Paths | {} | File paths, URLs, directories |", self.stats.paths)?;
+            writeln!(
+                writer,
+                "| File Paths | {} | File paths, URLs, directories |",
+                self.stats.paths
+            )?;
         }
         if self.stats.kubernetes > 0 {
-            writeln!(writer, "| Kubernetes | {} | Namespaces, volumes, plugins, pod names |", self.stats.kubernetes)?;
+            writeln!(
+                writer,
+                "| Kubernetes | {} | Namespaces, volumes, plugins, pod names |",
+                self.stats.kubernetes
+            )?;
         }
         if self.stats.emails > 0 {
-            writeln!(writer, "| Email Addresses | {} | RFC 5322 email addresses, user accounts |", self.stats.emails)?;
+            writeln!(
+                writer,
+                "| Email Addresses | {} | RFC 5322 email addresses, user accounts |",
+                self.stats.emails
+            )?;
         }
 
         writeln!(writer)?;
@@ -578,11 +642,23 @@ impl PatternFolder {
         // Analysis guidance
         writeln!(writer, "## Recommendations for Analysis")?;
         if compression_ratio > 90.0 {
-            writeln!(writer, "- **High compression ratio** ({:.1}%) indicates many repetitive patterns", compression_ratio)?;
+            writeln!(
+                writer,
+                "- **High compression ratio** ({:.1}%) indicates many repetitive patterns",
+                compression_ratio
+            )?;
         } else if compression_ratio > 70.0 {
-            writeln!(writer, "- **Moderate compression ratio** ({:.1}%) indicates some repetitive patterns", compression_ratio)?;
+            writeln!(
+                writer,
+                "- **Moderate compression ratio** ({:.1}%) indicates some repetitive patterns",
+                compression_ratio
+            )?;
         } else {
-            writeln!(writer, "- **Low compression ratio** ({:.1}%) indicates diverse log content", compression_ratio)?;
+            writeln!(
+                writer,
+                "- **Low compression ratio** ({:.1}%) indicates diverse log content",
+                compression_ratio
+            )?;
         }
 
         writeln!(writer, "- **Search strategy**: Use compressed output to identify error types, then grep original logs for details")?;
@@ -638,17 +714,39 @@ impl PatternFolder {
 
     fn count_active_pattern_types(&self) -> usize {
         let mut count = 0;
-        if self.stats.timestamps > 0 { count += 1; }
-        if self.stats.ips > 0 { count += 1; }
-        if self.stats.hashes > 0 { count += 1; }
-        if self.stats.uuids > 0 { count += 1; }
-        if self.stats.durations > 0 { count += 1; }
-        if self.stats.pids > 0 { count += 1; }
-        if self.stats.sizes > 0 { count += 1; }
-        if self.stats.percentages > 0 { count += 1; }
-        if self.stats.http_status > 0 { count += 1; }
-        if self.stats.paths > 0 { count += 1; }
-        if self.stats.kubernetes > 0 { count += 1; }
+        if self.stats.timestamps > 0 {
+            count += 1;
+        }
+        if self.stats.ips > 0 {
+            count += 1;
+        }
+        if self.stats.hashes > 0 {
+            count += 1;
+        }
+        if self.stats.uuids > 0 {
+            count += 1;
+        }
+        if self.stats.durations > 0 {
+            count += 1;
+        }
+        if self.stats.pids > 0 {
+            count += 1;
+        }
+        if self.stats.sizes > 0 {
+            count += 1;
+        }
+        if self.stats.percentages > 0 {
+            count += 1;
+        }
+        if self.stats.http_status > 0 {
+            count += 1;
+        }
+        if self.stats.paths > 0 {
+            count += 1;
+        }
+        if self.stats.kubernetes > 0 {
+            count += 1;
+        }
         count
     }
 
@@ -673,7 +771,7 @@ impl PatternFolder {
                     break;
                 }
             }
-            
+
             self.stats.total_lines += 1;
 
             // Security: Check line length limit (Constitutional Principle X)
@@ -707,7 +805,9 @@ impl PatternFolder {
             }
 
             // Count this pattern
-            *pattern_counts.entry(normalized_line.normalized).or_insert(0) += 1;
+            *pattern_counts
+                .entry(normalized_line.normalized)
+                .or_insert(0) += 1;
         }
 
         // Sort patterns by frequency (highest first)
@@ -768,7 +868,8 @@ impl PatternFolder {
         patterns_output: usize,
     ) -> Result<()> {
         let dedup_ratio = if self.stats.total_lines > 0 {
-            ((self.stats.total_lines - total_patterns) as f64 / self.stats.total_lines as f64) * 100.0
+            ((self.stats.total_lines - total_patterns) as f64 / self.stats.total_lines as f64)
+                * 100.0
         } else {
             0.0
         };
@@ -778,9 +879,22 @@ impl PatternFolder {
         writeln!(writer)?;
         writeln!(writer, "## Summary")?;
         writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
-        writeln!(writer, "- **Compressed**: {} unique patterns", patterns_output)?;
-        writeln!(writer, "- **Pattern reduction**: {} total → {} unique ({:.1}% deduplication)", self.stats.total_lines, total_patterns, dedup_ratio)?;
-        writeln!(writer, "- **Patterns detected**: {} across {} categories", self.stats.patterns_detected, self.count_active_pattern_types())?;
+        writeln!(
+            writer,
+            "- **Compressed**: {} unique patterns",
+            patterns_output
+        )?;
+        writeln!(
+            writer,
+            "- **Pattern reduction**: {} total → {} unique ({:.1}% deduplication)",
+            self.stats.total_lines, total_patterns, dedup_ratio
+        )?;
+        writeln!(
+            writer,
+            "- **Patterns detected**: {} across {} categories",
+            self.stats.patterns_detected,
+            self.count_active_pattern_types()
+        )?;
         writeln!(writer)?;
 
         writeln!(writer, "## Pattern Distribution")?;
@@ -788,36 +902,80 @@ impl PatternFolder {
         writeln!(writer, "|--------------|-------|-------------|")?;
 
         if self.stats.timestamps > 0 {
-            writeln!(writer, "| Timestamps | {} | Log timestamps, dates, times |", self.stats.timestamps)?;
+            writeln!(
+                writer,
+                "| Timestamps | {} | Log timestamps, dates, times |",
+                self.stats.timestamps
+            )?;
         }
         if self.stats.ips > 0 {
-            writeln!(writer, "| IP Addresses | {} | IPv4, IPv6, ports, network addresses |", self.stats.ips)?;
+            writeln!(
+                writer,
+                "| IP Addresses | {} | IPv4, IPv6, ports, network addresses |",
+                self.stats.ips
+            )?;
         }
         if self.stats.hashes > 0 {
-            writeln!(writer, "| Hashes | {} | Pod UIDs, container IDs, volume names, checksums |", self.stats.hashes)?;
+            writeln!(
+                writer,
+                "| Hashes | {} | Pod UIDs, container IDs, volume names, checksums |",
+                self.stats.hashes
+            )?;
         }
         if self.stats.uuids > 0 {
-            writeln!(writer, "| UUIDs | {} | Request IDs, trace IDs, unique identifiers |", self.stats.uuids)?;
+            writeln!(
+                writer,
+                "| UUIDs | {} | Request IDs, trace IDs, unique identifiers |",
+                self.stats.uuids
+            )?;
         }
         if self.stats.durations > 0 {
-            writeln!(writer, "| Durations | {} | Timeouts, latencies, elapsed times |", self.stats.durations)?;
+            writeln!(
+                writer,
+                "| Durations | {} | Timeouts, latencies, elapsed times |",
+                self.stats.durations
+            )?;
         }
         if self.stats.pids > 0 {
-            writeln!(writer, "| Process IDs | {} | PIDs, thread IDs, process identifiers |", self.stats.pids)?;
+            writeln!(
+                writer,
+                "| Process IDs | {} | PIDs, thread IDs, process identifiers |",
+                self.stats.pids
+            )?;
         }
         if self.stats.paths > 0 {
-            writeln!(writer, "| File Paths | {} | File paths, URLs, directories |", self.stats.paths)?;
+            writeln!(
+                writer,
+                "| File Paths | {} | File paths, URLs, directories |",
+                self.stats.paths
+            )?;
         }
         if self.stats.kubernetes > 0 {
-            writeln!(writer, "| Kubernetes | {} | Namespaces, volumes, plugins, pod names |", self.stats.kubernetes)?;
+            writeln!(
+                writer,
+                "| Kubernetes | {} | Namespaces, volumes, plugins, pod names |",
+                self.stats.kubernetes
+            )?;
         }
 
         writeln!(writer)?;
         writeln!(writer, "## Recommendations for Analysis")?;
-        writeln!(writer, "- Focus on high-frequency patterns first (top of the list)")?;
-        writeln!(writer, "- Use pattern frequencies to prioritize debugging efforts")?;
-        writeln!(writer, "- Search original logs with normalized patterns for specific instances")?;
-        writeln!(writer, "- Each `[Nx]` indicates N occurrences of that exact error pattern")?;
+        writeln!(
+            writer,
+            "- Focus on high-frequency patterns first (top of the list)"
+        )?;
+        writeln!(
+            writer,
+            "- Use pattern frequencies to prioritize debugging efforts"
+        )?;
+        writeln!(
+            writer,
+            "- Search original logs with normalized patterns for specific instances"
+        )?;
+        writeln!(
+            writer,
+            "- Each `[Nx]` indicates N occurrences of that exact error pattern"
+        )?;
         writeln!(writer, "---")?;
 
         Ok(())
@@ -870,7 +1028,8 @@ impl PatternFolder {
         if let Some(index) = match_index {
             self.buffer[index].add_line(normalized_line);
         } else {
-            self.buffer.push(PatternGroup::new(normalized_line, self.position_counter));
+            self.buffer
+                .push(PatternGroup::new(normalized_line, self.position_counter));
         }
 
         Ok(())
@@ -930,7 +1089,11 @@ mod tests {
 
         // Check that output contains compact folding format (default is compact=true)
         let output = results.join("\n");
-        assert!(output.contains("similar"), "Expected 'similar' in compact output, got: {}", output);
+        assert!(
+            output.contains("similar"),
+            "Expected 'similar' in compact output, got: {}",
+            output
+        );
 
         Ok(())
     }
@@ -962,6 +1125,4 @@ mod tests {
 
         Ok(())
     }
-
-
 }
