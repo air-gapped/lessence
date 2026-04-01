@@ -2,42 +2,32 @@ name: Release
 
 permissions:
   contents: write
+  pull-requests: write
 
 on:
   push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
 jobs:
-  create-release:
+  release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Verify Cargo.toml version matches tag
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
-          TAG_VERSION="${TAG_NAME#v}"
-          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "ERROR: Cargo.toml version ($CARGO_VERSION) != tag ($TAG_VERSION)"
-            exit 1
-          fi
-
-      - name: Create draft release
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "$TAG_NAME" --draft --verify-tag --title "$TAG_NAME" --generate-notes
+      - name: Release Please
+        id: release
+        uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
+        with:
+          release-type: rust
 
   build-release:
-    needs: create-release
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -79,3 +69,44 @@ jobs:
           zip: windows
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  release-notes:
+    needs: [release-please, build-release]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Generate release notes
+        uses: anthropics/claude-code-action@725b9c36f61150e9be5b9ec02289a9a0cfc21c04 # v1
+        env:
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          direct_prompt: |
+            Generate user-facing release notes for lessence tag $TAG_NAME.
+
+            Steps:
+            1. Run: git log $(git describe --tags --abbrev=0 $TAG_NAME^)...$TAG_NAME --oneline
+            2. Run: git diff $(git describe --tags --abbrev=0 $TAG_NAME^)...$TAG_NAME --stat
+            3. Read CHANGELOG.md for the mechanical changelog
+
+            Write release notes following these rules:
+            - Audience: users and AI agents, not contributors
+            - Each entry explains the USER BENEFIT, not the implementation
+            - Group into: Features, Improvements, Bug Fixes, Breaking Changes (only non-empty sections)
+            - Reference PR numbers where available
+            - Do NOT include: dependency bumps, CI config changes, internal refactors, chore commits
+            - Do NOT use generic filler phrases like "exciting new features" or "we're thrilled"
+            - Be specific and factual. Base notes ONLY on the commits and diff. Do not speculate.
+            - Keep it concise: aim for 10-30 lines total
+
+            After generating, run:
+            gh release edit "$TAG_NAME" --notes-file /dev/stdin <<< "GENERATED_NOTES"
+
+            Replace GENERATED_NOTES with the actual notes you generated.
