@@ -1,4 +1,5 @@
 target/
+mutants.out*/
 examples/
 .blocklist
 .ideas/

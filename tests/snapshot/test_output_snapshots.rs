@@ -57,8 +57,8 @@ fn test_stats_json_format() {
 
     let (_, stderr) = run_lessence(input, &["--stats-json", "-q"]);
     // Parse and re-serialize to normalize field order and remove timing
-    let mut json: serde_json::Value = serde_json::from_str(&stderr)
-        .expect("stats-json should produce valid JSON");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&stderr).expect("stats-json should produce valid JSON");
     // Zero out elapsed_ms since it varies
     json["elapsed_ms"] = serde_json::Value::Number(0.into());
     let normalized = serde_json::to_string_pretty(&json).unwrap();
