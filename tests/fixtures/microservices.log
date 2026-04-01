@@ -1,0 +1,53 @@
+# Microservices Architecture Logs
+
+# Service Mesh (Istio) Health Checks
+2025-01-20T10:20:01.001Z envoy[12345] [info] [upstream] cluster 'user-service.default.svc.cluster.local|8080': setting health check config update
+2025-01-20T10:20:01.101Z envoy[12346] [info] [upstream] cluster 'user-service.default.svc.cluster.local|8080': setting health check config update
+2025-01-20T10:20:01.201Z envoy[12347] [info] [upstream] cluster 'user-service.default.svc.cluster.local|8080': setting health check config update
+2025-01-20T10:20:01.301Z envoy[12348] [info] [upstream] cluster 'user-service.default.svc.cluster.local|8080': setting health check config update
+2025-01-20T10:20:01.401Z envoy[12349] [info] [upstream] cluster 'user-service.default.svc.cluster.local|8080': setting health check config update
+
+# Circuit Breaker Pattern
+2025-01-20 10:20:02,123 [hystrix-payment-service-1] WARN CircuitBreaker - Circuit breaker for payment-service is HALF_OPEN, attempt_count=1, failure_rate=65%
+2025-01-20 10:20:02,456 [hystrix-payment-service-2] WARN CircuitBreaker - Circuit breaker for payment-service is HALF_OPEN, attempt_count=2, failure_rate=67%
+2025-01-20 10:20:02,789 [hystrix-payment-service-3] WARN CircuitBreaker - Circuit breaker for payment-service is HALF_OPEN, attempt_count=3, failure_rate=70%
+2025-01-20 10:20:03,012 [hystrix-payment-service-4] ERROR CircuitBreaker - Circuit breaker for payment-service is OPEN, failure_rate=75% exceeded threshold=70%
+2025-01-20 10:20:03,345 [hystrix-payment-service-5] ERROR CircuitBreaker - Circuit breaker for payment-service is OPEN, failure_rate=78% exceeded threshold=70%
+
+# Kafka Consumer Lag Monitoring
+20/01/2025 10:20:04.100 [kafka-consumer-user-events-1] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=0 lag=1250 threshold=1000
+20/01/2025 10:20:04.200 [kafka-consumer-user-events-2] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=1 lag=1350 threshold=1000
+20/01/2025 10:20:04.300 [kafka-consumer-user-events-3] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=2 lag=1450 threshold=1000
+20/01/2025 10:20:04.400 [kafka-consumer-user-events-4] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=3 lag=1550 threshold=1000
+20/01/2025 10:20:04.500 [kafka-consumer-user-events-5] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=4 lag=1650 threshold=1000
+
+# Distributed Tracing Spans
+{"timestamp":"2025-01-20T10:20:05.100Z","service":"api-gateway","trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","operation":"http_request","duration_ms":45,"status":"ok"}
+{"timestamp":"2025-01-20T10:20:05.200Z","service":"api-gateway","trace_id":"5af93g4688c45eb7b4df030e1f1f5847","span_id":"11g178bb1cb013c8","operation":"http_request","duration_ms":52,"status":"ok"}
+{"timestamp":"2025-01-20T10:20:05.300Z","service":"api-gateway","trace_id":"6bg04h5799d56fc8c5eg141f2g2g6958","span_id":"22h289cc2dc124d9","operation":"http_request","duration_ms":38,"status":"ok"}
+{"timestamp":"2025-01-20T10:20:05.400Z","service":"api-gateway","trace_id":"7ch15i6800e67gd9d6fh252g3h3h7069","span_id":"33i390dd3ed235ea","operation":"http_request","duration_ms":67,"status":"ok"}
+
+# Database Connection Pool Stats
+[2025-01-20 10:20:06.123] [pool-stats-reporter] INFO HikariCP - user-db-pool - Pool stats (total=10, active=8, idle=2, waiting=5)
+[2025-01-20 10:20:11.234] [pool-stats-reporter] INFO HikariCP - user-db-pool - Pool stats (total=10, active=9, idle=1, waiting=8)
+[2025-01-20 10:20:16.345] [pool-stats-reporter] INFO HikariCP - user-db-pool - Pool stats (total=10, active=10, idle=0, waiting=12)
+[2025-01-20 10:20:21.456] [pool-stats-reporter] INFO HikariCP - user-db-pool - Pool stats (total=10, active=10, idle=0, waiting=15)
+[2025-01-20 10:20:26.567] [pool-stats-reporter] INFO HikariCP - user-db-pool - Pool stats (total=10, active=10, idle=0, waiting=18)
+
+# Prometheus Metrics Export
+Mon, 20 Jan 2025 10:20:07 +0000 prometheus-exporter[9876] INFO Exported metric: http_requests_total{method="GET",status="200"} 1245 @1642677607
+Mon, 20 Jan 2025 10:20:08 +0000 prometheus-exporter[9876] INFO Exported metric: http_requests_total{method="GET",status="200"} 1246 @1642677608
+Mon, 20 Jan 2025 10:20:09 +0000 prometheus-exporter[9876] INFO Exported metric: http_requests_total{method="GET",status="200"} 1247 @1642677609
+Mon, 20 Jan 2025 10:20:10 +0000 prometheus-exporter[9876] INFO Exported metric: http_requests_total{method="GET",status="200"} 1248 @1642677610
+Mon, 20 Jan 2025 10:20:11 +0000 prometheus-exporter[9876] INFO Exported metric: http_requests_total{method="GET",status="200"} 1249 @1642677611
+
+# Auto-scaling Events
+I0120 10:20:08.100123    1 horizontal_pod_autoscaler.go:123] HPA recommendation for deployment/user-service: current=3 desired=5 (target CPU: 70%, current CPU: 85%)
+I0120 10:20:08.200456    1 horizontal_pod_autoscaler.go:123] HPA recommendation for deployment/order-service: current=2 desired=4 (target CPU: 70%, current CPU: 82%)
+I0120 10:20:08.300789    1 horizontal_pod_autoscaler.go:123] HPA recommendation for deployment/payment-service: current=1 desired=3 (target CPU: 70%, current CPU: 88%)
+I0120 10:20:08.400012    1 horizontal_pod_autoscaler.go:123] HPA recommendation for deployment/notification-service: current=2 desired=3 (target CPU: 70%, current CPU: 75%)
+
+# Unique successful events (should not be collapsed)
+2025-01-20 10:20:09.500 INFO OrderService - Order completed successfully: order_id=ord_789012, payment_method=credit_card, total=$89.99, processing_time=2.3s
+2025-01-20 10:20:10.600 INFO NotificationService - Email sent successfully: template=order_confirmation, recipient=user@example.com, delivery_time=450ms
+2025-01-20 10:20:11.700 INFO UserService - Profile updated successfully: user_id=usr_345678, fields=["email","phone"], validation_time=120ms

@@ -1,0 +1,63 @@
+#!/bin/sh
+# Pre-commit hook: blocklist + gitleaks
+
+set -e
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    NC='\033[0m'
+else
+    RED=''
+    GREEN=''
+    NC=''
+fi
+
+fail() {
+    echo "${RED}FAILED:${NC} $1"
+    exit 1
+}
+
+pass() {
+    echo "${GREEN}OK:${NC} $1"
+}
+
+# Large file check (1MB limit)
+MAX_SIZE=1048576
+for file in $(git diff --cached --name-only --diff-filter=ACM); do
+    if [ -f "$file" ]; then
+        size=$(wc -c < "$file" | tr -d ' ')
+        if [ "$size" -gt "$MAX_SIZE" ]; then
+            fail "$file is $(($size / 1024))KB (max 1MB)"
+        fi
+    fi
+done
+pass "no large files"
+
+# Blocklist check (private domains, hostnames, etc.)
+if [ -f ".blocklist" ]; then
+    for file in $(git diff --cached --name-only --diff-filter=ACM); do
+        if [ -f "$file" ]; then
+            while IFS= read -r pattern || [ -n "$pattern" ]; do
+                case "$pattern" in
+                    ""|\#*) continue ;;
+                esac
+                if grep -qF "$pattern" "$file" 2>/dev/null; then
+                    fail "blocklisted pattern '$pattern' found in $file"
+                fi
+            done < .blocklist
+        fi
+    done
+    pass "blocklist"
+fi
+
+# Gitleaks
+if command -v gitleaks >/dev/null 2>&1; then
+    if ! gitleaks protect --staged --no-banner; then
+        fail "gitleaks found secrets"
+    fi
+    pass "gitleaks"
+fi
+
+echo ""
+echo "${GREEN}All checks passed${NC}"

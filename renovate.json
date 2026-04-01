@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "minimumReleaseAge": "3 days",
+  "allowScripts": false,
+  "allowPlugins": false,
+  "exposeAllEnv": false,
+  "packageRules": [
+    {
+      "description": "Automerge minor/patch for stable Rust deps after cooldown",
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchCurrentVersion": "!/^0/",
+      "automerge": true,
+      "semanticCommitType": "chore"
+    },
+    {
+      "description": "Never automerge GitHub Actions — require human review",
+      "matchManagers": ["github-actions"],
+      "automerge": false
+    }
+  ]
+}

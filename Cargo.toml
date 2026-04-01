@@ -1,0 +1,116 @@
+[package]
+name = "lessence"
+version = "2.0.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Compress repetitive logs while preserving all unique information"
+license = "MIT"
+repository = "https://github.com/air-gapped/lessence"
+readme = "README.md"
+keywords = ["log-compression", "cli", "log-analysis", "devops", "deduplication"]
+categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "lessence"
+path = "src/main.rs"
+
+[dependencies]
+regex = "1.10"
+clap = { version = "4.0", features = ["derive"] }
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+ahash = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+colored = "2.0"
+rayon = "1.11.0"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+tempfile = "3.0"
+toml = "0.8"
+regex = "1.10"
+
+# Integration tests
+[[test]]
+name = "test_nginx_compression"
+path = "tests/integration/test_nginx_compression.rs"
+
+[[test]]
+name = "test_microservices_compression"
+path = "tests/integration/test_microservices_compression.rs"
+
+[[test]]
+name = "test_constitutional_compliance"
+path = "tests/integration/test_constitutional_compliance.rs"
+
+[[test]]
+name = "test_cli_formats"
+path = "tests/integration/test_cli_formats.rs"
+
+# Contract tests for rename validation
+[[test]]
+name = "test_binary_name"
+path = "tests/integration/test_binary_name.rs"
+
+[[test]]
+name = "test_help_text"
+path = "tests/integration/test_help_text.rs"
+
+[[test]]
+name = "test_version_display"
+path = "tests/integration/test_version_display.rs"
+
+[[test]]
+name = "test_cargo_validation"
+path = "tests/integration/test_cargo_validation.rs"
+
+[[test]]
+name = "test_documentation"
+path = "tests/integration/test_documentation.rs"
+
+# CLI validation tests
+[[test]]
+name = "test_cli_validation"
+path = "tests/contract/test_cli_validation.rs"
+
+[[test]]
+name = "test_validation_errors"
+path = "tests/integration/test_validation_errors.rs"
+
+# Multi-format output tests
+[[test]]
+name = "test_markdown_output"
+path = "tests/unit/test_markdown_output.rs"
+
+[[test]]
+name = "test_text_output"
+path = "tests/unit/test_text_output.rs"
+
+# Performance validation tests
+[[test]]
+name = "test_detection_performance"
+path = "tests/benchmarks/test_detection_performance.rs"
+
+# Security tests
+[[test]]
+name = "test_ipv6_evil_patterns"
+path = "tests/security/test_ipv6_evil_patterns.rs"
+
+# Benchmarks will be added later
+# [[bench]]
+# name = "pattern_detection"
+# harness = false
+#
+# [[bench]]
+# name = "folding_performance"
+# harness = false
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+debug = true

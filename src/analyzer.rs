@@ -1,0 +1,478 @@
+use anyhow::Result;
+#[allow(dead_code)]
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader, Read};
+
+use crate::config::Config;
+use crate::normalize::Normalizer;
+use crate::patterns::{Token, LogLine};
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AnalysisResult {
+    pub total_lines: usize,
+    pub estimated_compression: CompressionEstimates,
+    pub pattern_distribution: PatternDistribution,
+    pub token_estimates: TokenEstimates,
+    pub recommendations: Vec<String>,
+    pub sample_patterns: SamplePatterns,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CompressionEstimates {
+    pub default: String,
+    pub with_paths: String,
+    pub with_numbers: String,
+    pub aggressive: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PatternDistribution {
+    pub timestamps: usize,
+    pub ips: usize,
+    pub paths: usize,
+    pub hashes: usize,
+    pub numbers: usize,
+    pub uuids: usize,
+    pub pids: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TokenEstimates {
+    pub original: usize,
+    pub compressed_default: usize,
+    pub compressed_with_paths: usize,
+    pub compressed_aggressive: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SamplePatterns {
+    pub paths: Vec<String>,
+    pub numbers: Vec<String>,
+    pub timestamps: Vec<String>,
+    pub ips: Vec<String>,
+}
+
+pub struct LogAnalyzer;
+
+impl LogAnalyzer {
+    #[allow(dead_code)]
+    pub fn analyze<R: Read>(reader: R, config: &Config) -> Result<AnalysisResult> {
+        let buf_reader = BufReader::new(reader);
+        let mut total_lines = 0;
+        let mut pattern_counts = PatternDistribution {
+            timestamps: 0,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+
+        let mut sample_patterns = SamplePatterns {
+            paths: Vec::new(),
+            numbers: Vec::new(),
+            timestamps: Vec::new(),
+            ips: Vec::new(),
+        };
+
+        let mut original_tokens = 0;
+        let mut log_lines = Vec::new();
+        let normalizer = Normalizer::new(config.clone());
+
+        // Analyze each line
+        for line in buf_reader.lines() {
+            let mut line = line?;
+            total_lines += 1;
+
+            // Strip ANSI color codes by default (unless --preserve-color)
+            if !config.preserve_color {
+                line = Self::strip_ansi_codes(&line);
+            }
+
+            // Count original tokens
+            original_tokens += Self::count_tokens(&line);
+
+            // Normalize the line using the proper normalizer
+            let log_line = normalizer.normalize_line(line)?;
+
+            // Update pattern counts and samples
+            Self::update_pattern_counts(&log_line.tokens, &mut pattern_counts, &mut sample_patterns);
+
+            log_lines.push(log_line);
+
+            // Progress indicator for very large files
+            if total_lines % 50000 == 0 {
+                eprintln!("Analyzed {} lines...", total_lines);
+            }
+        }
+
+        // Calculate compression estimates
+        let compression_estimates = Self::calculate_compression_estimates(
+            total_lines,
+            &log_lines,
+            &normalizer,
+            &pattern_counts
+        );
+
+        // Calculate token estimates
+        let token_estimates = Self::calculate_token_estimates(
+            original_tokens,
+            &log_lines,
+            &normalizer,
+            &pattern_counts
+        );
+
+        // Generate recommendations
+        let recommendations = Self::generate_recommendations(&pattern_counts, total_lines);
+
+        // Limit sample sizes
+        sample_patterns.paths.truncate(5);
+        sample_patterns.numbers.truncate(5);
+        sample_patterns.timestamps.truncate(3);
+        sample_patterns.ips.truncate(5);
+
+        Ok(AnalysisResult {
+            total_lines,
+            estimated_compression: compression_estimates,
+            pattern_distribution: pattern_counts,
+            token_estimates,
+            recommendations,
+            sample_patterns,
+        })
+    }
+
+
+    fn update_pattern_counts(
+        tokens: &[Token],
+        counts: &mut PatternDistribution,
+        samples: &mut SamplePatterns
+    ) {
+        for token in tokens {
+            match token {
+                Token::Timestamp(ts) => {
+                    counts.timestamps += 1;
+                    if samples.timestamps.len() < 5 && !samples.timestamps.contains(ts) {
+                        samples.timestamps.push(ts.clone());
+                    }
+                }
+                Token::IPv4(ip) | Token::IPv6(ip) => {
+                    counts.ips += 1;
+                    if samples.ips.len() < 5 && !samples.ips.contains(ip) {
+                        samples.ips.push(ip.clone());
+                    }
+                }
+                Token::Port(_) => counts.ips += 1, // Count ports with IPs
+                Token::Hash(_, _) => counts.hashes += 1,
+                Token::UUID(_) => counts.uuids += 1,
+                Token::PID(_) => counts.pids += 1,
+                Token::Path(path) => {
+                    counts.paths += 1;
+                    if samples.paths.len() < 5 && !samples.paths.contains(path) {
+                        samples.paths.push(path.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn calculate_compression_estimates(
+        total_lines: usize,
+        log_lines: &[LogLine],
+        normalizer: &Normalizer,
+        _patterns: &PatternDistribution
+    ) -> CompressionEstimates {
+        // Simulate actual compression by grouping similar lines
+        let default_compressed = Self::simulate_compression(log_lines, normalizer, 85, 4);
+        let paths_compressed = Self::simulate_compression_with_paths(log_lines, normalizer, 85, 4);
+        let aggressive_compressed = Self::simulate_compression(log_lines, normalizer, 70, 3);
+
+        let default_ratio = 1.0 - (default_compressed as f64 / total_lines as f64);
+        let paths_ratio = 1.0 - (paths_compressed as f64 / total_lines as f64);
+        let aggressive_ratio = 1.0 - (aggressive_compressed as f64 / total_lines as f64);
+
+        CompressionEstimates {
+            default: format!("{:.1}% ({} lines)",
+                default_ratio * 100.0,
+                default_compressed
+            ),
+            with_paths: format!("{:.1}% ({} lines)",
+                paths_ratio * 100.0,
+                paths_compressed
+            ),
+            with_numbers: format!("{:.1}% ({} lines)",
+                aggressive_ratio * 100.0,
+                aggressive_compressed
+            ),
+            aggressive: format!("{:.1}% ({} lines)",
+                aggressive_ratio * 100.0,
+                aggressive_compressed
+            ),
+        }
+    }
+
+    fn simulate_compression(log_lines: &[LogLine], normalizer: &Normalizer, threshold: u8, min_collapse: usize) -> usize {
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut processed = vec![false; log_lines.len()];
+
+        for i in 0..log_lines.len() {
+            if processed[i] {
+                continue;
+            }
+
+            let mut group = vec![i];
+            processed[i] = true;
+
+            // Find similar lines
+            for j in (i + 1)..log_lines.len() {
+                if processed[j] {
+                    continue;
+                }
+
+                let similarity = normalizer.similarity_score(&log_lines[i], &log_lines[j]);
+                if similarity >= threshold as f64 {
+                    group.push(j);
+                    processed[j] = true;
+                }
+            }
+
+            groups.push(group);
+        }
+
+        // Count output lines (groups with min_collapse+ lines become 1 summary line)
+        groups.iter().map(|group| {
+            if group.len() >= min_collapse {
+                1 // Summary line
+            } else {
+                group.len() // Original lines
+            }
+        }).sum()
+    }
+
+    fn simulate_compression_with_paths(log_lines: &[LogLine], _normalizer: &Normalizer, threshold: u8, min_collapse: usize) -> usize {
+        // Create a config with paths enabled for simulation
+        let mut paths_config = Config::default();
+        paths_config.normalize_paths = true;
+        let paths_normalizer = Normalizer::new(paths_config);
+
+        // Re-normalize with paths enabled
+        let path_normalized: Vec<LogLine> = log_lines.iter()
+            .map(|line| {
+                paths_normalizer.normalize_line(line.original.clone()).unwrap_or_else(|_| line.clone())
+            })
+            .collect();
+
+        Self::simulate_compression(&path_normalized, &paths_normalizer, threshold, min_collapse)
+    }
+
+    fn calculate_token_estimates(
+        original_tokens: usize,
+        log_lines: &[LogLine],
+        normalizer: &Normalizer,
+        _patterns: &PatternDistribution
+    ) -> TokenEstimates {
+        // Simulate actual compressed output and count tokens
+        let default_output = Self::simulate_compression_output(log_lines, normalizer, 85, 4, false);
+        let paths_output = Self::simulate_compression_output(log_lines, normalizer, 85, 4, true);
+        let aggressive_output = Self::simulate_compression_output(log_lines, normalizer, 70, 3, false);
+
+        let default_tokens: usize = default_output.iter().map(|line| Self::count_tokens(line)).sum();
+        let paths_tokens: usize = paths_output.iter().map(|line| Self::count_tokens(line)).sum();
+        let aggressive_tokens: usize = aggressive_output.iter().map(|line| Self::count_tokens(line)).sum();
+
+        TokenEstimates {
+            original: original_tokens,
+            compressed_default: default_tokens,
+            compressed_with_paths: paths_tokens,
+            compressed_aggressive: aggressive_tokens,
+        }
+    }
+
+    fn simulate_compression_output(
+        log_lines: &[LogLine],
+        _normalizer: &Normalizer,
+        threshold: u8,
+        min_collapse: usize,
+        with_paths: bool
+    ) -> Vec<String> {
+        let lines_to_process = if with_paths {
+            let mut paths_config = Config::default();
+            paths_config.normalize_paths = true;
+            let paths_normalizer = Normalizer::new(paths_config);
+
+            log_lines.iter()
+                .map(|line| {
+                    paths_normalizer.normalize_line(line.original.clone()).unwrap_or_else(|_| line.clone())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            log_lines.to_vec()
+        };
+
+        let mut output = Vec::new();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        let mut processed = vec![false; lines_to_process.len()];
+
+        let sim_normalizer = if with_paths {
+            let mut paths_config = Config::default();
+            paths_config.normalize_paths = true;
+            Normalizer::new(paths_config)
+        } else {
+            Normalizer::new(Config::default())
+        };
+
+        // Group similar lines
+        for i in 0..lines_to_process.len() {
+            if processed[i] {
+                continue;
+            }
+
+            let mut group = vec![i];
+            processed[i] = true;
+
+            for j in (i + 1)..lines_to_process.len() {
+                if processed[j] {
+                    continue;
+                }
+
+                let similarity = sim_normalizer.similarity_score(&lines_to_process[i], &lines_to_process[j]);
+                if similarity >= threshold as f64 {
+                    group.push(j);
+                    processed[j] = true;
+                }
+            }
+
+            groups.push(group);
+        }
+
+        // Generate output (similar to actual compression)
+        for group in groups {
+            if group.len() >= min_collapse {
+                // Create summary line (similar to actual lessence output)
+                let first_line = &lines_to_process[group[0]];
+                let summary = format!("[...collapsed {} similar lines...]", group.len());
+                output.push(first_line.original.clone());
+                output.push(summary);
+            } else {
+                // Keep original lines
+                for &idx in &group {
+                    output.push(lines_to_process[idx].original.clone());
+                }
+            }
+        }
+
+        output
+    }
+
+    fn generate_recommendations(patterns: &PatternDistribution, total_lines: usize) -> Vec<String> {
+        let mut recommendations = Vec::new();
+
+        // Path analysis
+        if patterns.paths > total_lines / 4 {
+            recommendations.push("--paths: High path repetition detected, consider enabling for better compression".to_string());
+        } else if patterns.paths > 0 {
+            recommendations.push("--paths: Some paths detected, review samples before enabling".to_string());
+        }
+
+        // High timestamp frequency
+        if patterns.timestamps > total_lines * 8 / 10 {
+            recommendations.push("High timestamp frequency - excellent for default compression".to_string());
+        }
+
+        // IP analysis
+        if patterns.ips > total_lines / 2 {
+            recommendations.push("Many IP addresses detected - good candidate for lessence".to_string());
+        }
+
+        // Hash analysis
+        if patterns.hashes > total_lines / 3 {
+            recommendations.push("High hash frequency detected - significant compression possible".to_string());
+        }
+
+        // General recommendations
+        if patterns.timestamps + patterns.ips + patterns.hashes < total_lines / 10 {
+            recommendations.push("Warning: Low pattern repetition detected, compression may be minimal".to_string());
+        }
+
+        if recommendations.is_empty() {
+            recommendations.push("Standard compression recommended - use default settings".to_string());
+        }
+
+        recommendations
+    }
+
+    fn count_tokens(text: &str) -> usize {
+        // Rough token estimation (words + punctuation)
+        text.split_whitespace().count() + text.chars().filter(|c| c.is_ascii_punctuation()).count()
+    }
+
+    fn strip_ansi_codes(text: &str) -> String {
+        // Regex pattern for ANSI escape sequences
+        // \x1b matches ESC, \[ matches [, then any sequence ending with a letter
+        let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
+        ansi_regex.replace_all(text, "").to_string()
+    }
+
+    /// Create analysis result from processed folder statistics (for preflight mode)
+    pub fn from_folder_stats(folder: &crate::folder::PatternFolder, _config: &Config) -> Result<AnalysisResult> {
+        let stats = folder.get_stats();
+
+        let patterns = PatternDistribution {
+            timestamps: stats.timestamps,
+            ips: stats.ips,
+            paths: stats.paths,
+            hashes: stats.hashes,
+            numbers: stats.durations, // Use durations as numbers
+            uuids: stats.uuids,
+            pids: stats.pids,
+        };
+
+        let compression_ratio = if stats.total_lines > 0 {
+            (stats.lines_saved as f64 / stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let output_lines = stats.total_lines - stats.lines_saved;
+        let estimated_original_tokens = stats.total_lines * 50;
+        let estimated_compressed_tokens = output_lines * 50;
+
+        let recommendations = vec![
+            format!("Compression achieved: {:.1}%", compression_ratio),
+            format!("Output size: {} lines (from {} original)", output_lines, stats.total_lines),
+            format!("Estimated tokens: {} (from {} original)", estimated_compressed_tokens, estimated_original_tokens),
+            if compression_ratio > 90.0 {
+                "Excellent compression - highly recommended for processing".to_string()
+            } else if compression_ratio > 70.0 {
+                "Good compression - recommended for processing".to_string()
+            } else {
+                "Low compression - consider if processing is beneficial".to_string()
+            }
+        ];
+
+        Ok(AnalysisResult {
+            total_lines: stats.total_lines,
+            estimated_compression: CompressionEstimates {
+                default: format!("{:.1}% compression", compression_ratio),
+                with_paths: format!("{:.1}% compression", compression_ratio),
+                with_numbers: format!("{:.1}% compression", compression_ratio),
+                aggressive: format!("{:.1}% compression", compression_ratio),
+            },
+            pattern_distribution: patterns,
+            token_estimates: TokenEstimates {
+                original: estimated_original_tokens,
+                compressed_default: estimated_compressed_tokens,
+                compressed_with_paths: estimated_compressed_tokens,
+                compressed_aggressive: estimated_compressed_tokens,
+            },
+            recommendations,
+            sample_patterns: SamplePatterns {
+                paths: vec![],
+                numbers: vec![],
+                timestamps: vec![],
+                ips: vec![],
+            },
+        })
+    }
+}

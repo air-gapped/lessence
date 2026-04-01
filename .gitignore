@@ -1,0 +1,12 @@
+target/
+examples/
+.blocklist
+.ideas/
+*.log
+!tests/fixtures/*.log
+.DS_Store
+.idea/
+.env*
+*.rs.bk
+*.rlib
+*.prof*
