@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -162,6 +162,10 @@ struct Cli {
     #[arg(long)]
     top: Option<usize>,
 
+    /// Generate shell completion script and exit
+    #[arg(long)]
+    completions: Option<clap_complete::Shell>,
+
     /// Input files (reads stdin if none given, use - for explicit stdin)
     #[arg(value_name = "FILE")]
     files: Vec<PathBuf>,
@@ -187,6 +191,13 @@ fn open_inputs(files: &[PathBuf]) -> Vec<Box<dyn BufRead>> {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // Handle --completions before anything else
+    if let Some(shell) = cli.completions {
+        let mut cmd = Cli::command();
+        clap_complete::generate(shell, &mut cmd, "lessence", &mut io::stdout());
+        return Ok(());
+    }
 
     // Validate output format before creating config
     cli.format.parse::<output::OutputFormat>()?;

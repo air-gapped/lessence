@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 regex = "1.10"
 clap = { version = "4.0", features = ["derive"] }
+clap_complete = "4"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 ahash = "0.8"
