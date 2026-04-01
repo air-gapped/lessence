@@ -657,12 +657,25 @@ impl PatternFolder {
             )?;
         }
 
-        writeln!(writer, "- **Search strategy**: Use compressed output to identify error types, then grep original logs for details")?;
-        writeln!(writer, "- **Variation indicators**: Pay attention to `[+N similar, varying: X, Y]` to understand what changes between similar errors")?;
-        writeln!(writer, "- **Focus areas**: Unique error messages that couldn't be compressed likely indicate distinct issues")?;
+        writeln!(
+            writer,
+            "- **Search strategy**: Use compressed output to identify error types, then grep original logs for details"
+        )?;
+        writeln!(
+            writer,
+            "- **Variation indicators**: Pay attention to `[+N similar, varying: X, Y]` to understand what changes between similar errors"
+        )?;
+        writeln!(
+            writer,
+            "- **Focus areas**: Unique error messages that couldn't be compressed likely indicate distinct issues"
+        )?;
 
         if self.stats.collapsed_groups > 50 {
-            writeln!(writer, "- **High pattern repetition**: {} collapsed groups suggest systematic issues worth investigating", self.stats.collapsed_groups)?;
+            writeln!(
+                writer,
+                "- **High pattern repetition**: {} collapsed groups suggest systematic issues worth investigating",
+                self.stats.collapsed_groups
+            )?;
         }
 
         writeln!(writer, "---")?;
@@ -762,19 +775,19 @@ impl PatternFolder {
             let line = line?;
 
             // Security: Check line count limit (Constitutional Principle X)
-            if let Some(max_lines) = self.config.max_lines {
-                if lines_processed >= max_lines {
-                    break;
-                }
+            if let Some(max_lines) = self.config.max_lines
+                && lines_processed >= max_lines
+            {
+                break;
             }
 
             self.stats.total_lines += 1;
 
             // Security: Check line length limit (Constitutional Principle X)
-            if let Some(max_length) = self.config.max_line_length {
-                if line.len() > max_length {
-                    continue;
-                }
+            if let Some(max_length) = self.config.max_line_length
+                && line.len() > max_length
+            {
+                continue;
             }
 
             // Strip ANSI if needed
@@ -845,12 +858,11 @@ impl PatternFolder {
         ];
 
         for pattern in &timestamp_patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                if let Some(captures) = re.captures(line) {
-                    if let Some(timestamp) = captures.get(1) {
-                        return Some(timestamp.as_str().to_string());
-                    }
-                }
+            if let Ok(re) = regex::Regex::new(pattern)
+                && let Some(captures) = re.captures(line)
+                && let Some(timestamp) = captures.get(1)
+            {
+                return Some(timestamp.as_str().to_string());
             }
         }
         None

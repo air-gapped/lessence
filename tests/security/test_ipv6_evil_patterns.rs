@@ -204,11 +204,27 @@ fn test_pre_filter_fast_rejection() {
     use lessence::patterns::network::NetworkDetector;
 
     let obviously_malformed = vec![
-        ("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::", "repeated_colons", "no_hex_digits"),
+        (
+            "::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::",
+            "repeated_colons",
+            "no_hex_digits",
+        ),
         (":", "just_colon", "too_short"),
-        ("ghijklmnopqrstuvwxyz:ghijklmnopqrstuvwxyz:ghijklmnopqrstuvwxyz", "non_hex_chars", "invalid_characters"),
-        ("2001:0db8:85a3:0000:0000:8a2e:0370:7334@#$%^&*()", "mixed_invalid_chars", "invalid_characters"),
-        ("2001:0db8:85a3:0000:0000:8a2e:0370:7334<>:\"{}|\\?/", "special_chars", "invalid_characters"),
+        (
+            "ghijklmnopqrstuvwxyz:ghijklmnopqrstuvwxyz:ghijklmnopqrstuvwxyz",
+            "non_hex_chars",
+            "invalid_characters",
+        ),
+        (
+            "2001:0db8:85a3:0000:0000:8a2e:0370:7334@#$%^&*()",
+            "mixed_invalid_chars",
+            "invalid_characters",
+        ),
+        (
+            "2001:0db8:85a3:0000:0000:8a2e:0370:7334<>:\"{}|\\?/",
+            "special_chars",
+            "invalid_characters",
+        ),
     ];
 
     for (sample, description, _expected_reason) in &obviously_malformed {

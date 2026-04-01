@@ -165,13 +165,12 @@ impl NetworkDetector {
                     continue;
                 }
 
-                if let Ok(port) = port_str.parse::<u16>() {
-                    if !tokens
+                if let Ok(port) = port_str.parse::<u16>()
+                    && !tokens
                         .iter()
                         .any(|t| matches!(t, Token::Port(p) if *p == port))
-                    {
-                        tokens.push(Token::Port(port));
-                    }
+                {
+                    tokens.push(Token::Port(port));
                 }
             }
 

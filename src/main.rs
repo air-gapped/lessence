@@ -279,24 +279,24 @@ fn main() -> Result<()> {
             let line = line?;
 
             // Security: Check line count limit
-            if let Some(max_lines) = config.max_lines {
-                if lines_processed >= max_lines {
-                    break;
-                }
+            if let Some(max_lines) = config.max_lines
+                && lines_processed >= max_lines
+            {
+                break;
             }
 
             // Security: Check line length limit
-            if let Some(max_length) = config.max_line_length {
-                if line.len() > max_length {
-                    continue;
-                }
+            if let Some(max_length) = config.max_line_length
+                && line.len() > max_length
+            {
+                continue;
             }
 
             // Check fail-on-pattern against raw line
-            if let Some(ref re) = fail_regex {
-                if re.is_match(&line) {
-                    pattern_matched.set(true);
-                }
+            if let Some(ref re) = fail_regex
+                && re.is_match(&line)
+            {
+                pattern_matched.set(true);
             }
 
             folder.process_line(&line)?;
@@ -326,10 +326,10 @@ fn main() -> Result<()> {
             .into_iter()
             .flat_map(std::io::BufRead::lines)
             .inspect(|line| {
-                if let (Some(ref re), Ok(ref text)) = (&fail_regex, line) {
-                    if re.is_match(text) {
-                        pattern_matched.set(true);
-                    }
+                if let (Some(re), Ok(text)) = (&fail_regex, line)
+                    && re.is_match(text)
+                {
+                    pattern_matched.set(true);
                 }
             });
         folder.process_summary_mode(chained, &mut io::stdout())?;
@@ -357,25 +357,25 @@ fn main() -> Result<()> {
         let mut line = line?;
 
         // Security: Check line count limit
-        if let Some(max_lines) = config.max_lines {
-            if lines_processed >= max_lines {
-                eprintln!("Line limit of {max_lines} reached, stopping processing");
-                break;
-            }
+        if let Some(max_lines) = config.max_lines
+            && lines_processed >= max_lines
+        {
+            eprintln!("Line limit of {max_lines} reached, stopping processing");
+            break;
         }
 
         // Security: Check line length limit (Constitutional Principle X)
-        if let Some(max_length) = config.max_line_length {
-            if line.len() > max_length {
-                continue;
-            }
+        if let Some(max_length) = config.max_line_length
+            && line.len() > max_length
+        {
+            continue;
         }
 
         // Check fail-on-pattern against raw line (before normalization)
-        if let Some(ref re) = fail_regex {
-            if re.is_match(&line) {
-                pattern_matched.set(true);
-            }
+        if let Some(ref re) = fail_regex
+            && re.is_match(&line)
+        {
+            pattern_matched.set(true);
         }
 
         // Strip ANSI color codes by default (unless --preserve-color)

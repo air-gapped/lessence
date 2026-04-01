@@ -33,10 +33,10 @@ impl ProcessDetector {
         for cap in PID_BRACKET_REGEX.captures_iter(text) {
             if let Some(pid_match) = cap.get(1).or_else(|| cap.get(2)) {
                 let pid_str = pid_match.as_str();
-                if let Ok(pid) = pid_str.parse::<u32>() {
-                    if Self::is_likely_pid(pid) {
-                        tokens.push(Token::Pid(pid));
-                    }
+                if let Ok(pid) = pid_str.parse::<u32>()
+                    && Self::is_likely_pid(pid)
+                {
+                    tokens.push(Token::Pid(pid));
                 }
             }
         }
@@ -47,14 +47,13 @@ impl ProcessDetector {
         // PID with equals like pid=12345
         for cap in PID_EQUALS_REGEX.captures_iter(&result) {
             let pid_str = cap.get(1).unwrap().as_str();
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                if Self::is_likely_pid(pid)
-                    && !tokens
-                        .iter()
-                        .any(|t| matches!(t, Token::Pid(p) if *p == pid))
-                {
-                    tokens.push(Token::Pid(pid));
-                }
+            if let Ok(pid) = pid_str.parse::<u32>()
+                && Self::is_likely_pid(pid)
+                && !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Pid(p) if *p == pid))
+            {
+                tokens.push(Token::Pid(pid));
             }
         }
         result = PID_EQUALS_REGEX
@@ -87,14 +86,13 @@ impl ProcessDetector {
         // Generic numeric IDs
         for cap in NUMERIC_ID_REGEX.captures_iter(&result) {
             let id_str = cap.get(1).unwrap().as_str();
-            if let Ok(id) = id_str.parse::<u32>() {
-                if Self::is_likely_pid(id)
-                    && !tokens
-                        .iter()
-                        .any(|t| matches!(t, Token::Pid(p) if *p == id))
-                {
-                    tokens.push(Token::Pid(id));
-                }
+            if let Ok(id) = id_str.parse::<u32>()
+                && Self::is_likely_pid(id)
+                && !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Pid(p) if *p == id))
+            {
+                tokens.push(Token::Pid(id));
             }
         }
         result = NUMERIC_ID_REGEX
@@ -104,14 +102,13 @@ impl ProcessDetector {
         // Handle PIDs in parentheses (but be careful not to match ports or other numbers)
         for cap in PID_PAREN_REGEX.captures_iter(&result) {
             let pid_str = cap.get(1).unwrap().as_str();
-            if let Ok(pid) = pid_str.parse::<u32>() {
-                if Self::is_likely_pid(pid)
-                    && !tokens
-                        .iter()
-                        .any(|t| matches!(t, Token::Pid(p) if *p == pid))
-                {
-                    tokens.push(Token::Pid(pid));
-                }
+            if let Ok(pid) = pid_str.parse::<u32>()
+                && Self::is_likely_pid(pid)
+                && !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Pid(p) if *p == pid))
+            {
+                tokens.push(Token::Pid(pid));
             }
         }
         result = PID_PAREN_REGEX.replace_all(&result, "(<PID>)").to_string();
@@ -130,12 +127,11 @@ impl ProcessDetector {
     pub fn extract_k8s_process_id(text: &str) -> Option<u32> {
         // Special handling for Kubernetes log format like "I0920 10:23:46.386231       1 policy_source.go:224]"
         // The number after the timestamp is the process ID
-        if let Some(cap) = K8S_PROCESS_REGEX.captures(text) {
-            if let Ok(pid) = cap.get(1).unwrap().as_str().parse::<u32>() {
-                if Self::is_likely_pid(pid) {
-                    return Some(pid);
-                }
-            }
+        if let Some(cap) = K8S_PROCESS_REGEX.captures(text)
+            && let Ok(pid) = cap.get(1).unwrap().as_str().parse::<u32>()
+            && Self::is_likely_pid(pid)
+        {
+            return Some(pid);
         }
         None
     }

@@ -99,10 +99,10 @@ impl KubernetesDetector {
             if let Ok(re) = regex::Regex::new(pattern) {
                 let captures: Vec<_> = re.captures_iter(&result).collect();
                 for capture in captures {
-                    if capture.len() > 1 {
-                        if let Some(volume) = capture.get(1) {
-                            tokens.push(Token::VolumeName(volume.as_str().to_string()));
-                        }
+                    if capture.len() > 1
+                        && let Some(volume) = capture.get(1)
+                    {
+                        tokens.push(Token::VolumeName(volume.as_str().to_string()));
                     }
                 }
                 result = re
@@ -264,9 +264,11 @@ mod tests {
 
         assert!(result.contains("pod <NAMESPACE>/"));
         assert!(!result.contains("gpu-operator"));
-        assert!(tokens
-            .iter()
-            .any(|t| matches!(t, Token::KubernetesNamespace(_))));
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::KubernetesNamespace(_)))
+        );
     }
 
     #[test]

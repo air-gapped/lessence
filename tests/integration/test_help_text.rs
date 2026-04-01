@@ -47,8 +47,10 @@ fn test_help_text_contains_seo_description() {
         .filter(|term| help_text.to_lowercase().contains(&term.to_lowercase()))
         .collect();
 
-    assert!(!found_terms.is_empty(),
-        "Help text should contain SEO terms like 'log compression', 'essence', 'intelligent', or 'LLM', got: {help_text}");
+    assert!(
+        !found_terms.is_empty(),
+        "Help text should contain SEO terms like 'log compression', 'essence', 'intelligent', or 'LLM', got: {help_text}"
+    );
 }
 
 #[test]

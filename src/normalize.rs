@@ -4,10 +4,10 @@ use std::hash::{Hash, Hasher};
 
 use crate::config::Config;
 use crate::patterns::{
-    duration::DurationDetector, email::EmailPatternDetector, hash::HashDetector,
+    LogLine, Token, duration::DurationDetector, email::EmailPatternDetector, hash::HashDetector,
     json::JsonDetector, kubernetes::KubernetesDetector, names::NameDetector,
     network::NetworkDetector, path::PathDetector, process::ProcessDetector,
-    quoted::QuotedStringDetector, timestamp::TimestampDetector, uuid::UuidDetector, LogLine, Token,
+    quoted::QuotedStringDetector, timestamp::TimestampDetector, uuid::UuidDetector,
 };
 
 pub struct Normalizer {
@@ -552,10 +552,12 @@ mod tests {
 
         // Should normalize timestamp but NOT detect ports in the time
         assert_eq!(line1.normalized, "<TIMESTAMP> Connection failed");
-        assert!(line1
-            .tokens
-            .iter()
-            .any(|t| matches!(t, Token::Timestamp(_))));
+        assert!(
+            line1
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::Timestamp(_)))
+        );
         assert!(!line1.tokens.iter().any(|t| matches!(t, Token::Port(_))));
 
         // Test that actual ports ARE detected

@@ -11,7 +11,7 @@ pub mod patterns;
 
 pub use analyzer::LogAnalyzer;
 pub use config::Config;
-pub use folder::{apply_pii_masking, PatternFolder};
+pub use folder::{PatternFolder, apply_pii_masking};
 
 pub fn should_process_line(line: &str, config: &Config) -> bool {
     if let Some(max_length) = config.max_line_length {

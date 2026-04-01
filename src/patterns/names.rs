@@ -128,7 +128,7 @@ mod tests {
         assert!(NameDetector::is_variable_suffix("9djm4")); // mixed alphanumeric
         assert!(NameDetector::is_variable_suffix("52r58")); // mixed alphanumeric
         assert!(NameDetector::is_variable_suffix("kh8lj")); // mixed alphanumeric
-                                                            // "abcde" is all letters with no numbers — the code requires both letters AND numbers
+        // "abcde" is all letters with no numbers — the code requires both letters AND numbers
         assert!(!NameDetector::is_variable_suffix("abcde"));
 
         assert!(!NameDetector::is_variable_suffix("abc")); // too short

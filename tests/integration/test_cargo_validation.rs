@@ -35,17 +35,17 @@ fn test_cargo_toml_binary_name_is_lessence() {
         .expect("Cargo.toml should be valid TOML");
 
     // Check binary name
-    if let Some(bin_section) = cargo_toml.get("bin") {
-        if let Some(bin_array) = bin_section.as_array() {
-            let lessence_bin = bin_array
-                .iter()
-                .find(|bin| bin.get("name").and_then(|n| n.as_str()) == Some("lessence"));
+    if let Some(bin_section) = cargo_toml.get("bin")
+        && let Some(bin_array) = bin_section.as_array()
+    {
+        let lessence_bin = bin_array
+            .iter()
+            .find(|bin| bin.get("name").and_then(|n| n.as_str()) == Some("lessence"));
 
-            assert!(
-                lessence_bin.is_some(),
-                "Binary section should contain 'lessence' binary"
-            );
-        }
+        assert!(
+            lessence_bin.is_some(),
+            "Binary section should contain 'lessence' binary"
+        );
     }
 }
 
