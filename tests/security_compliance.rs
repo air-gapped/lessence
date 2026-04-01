@@ -159,13 +159,13 @@ fn test_security_performance_overhead() {
 
     let config_with_security = Config {
         max_line_length: Some(10 * 1024 * 1024),
-        max_lines: Some(1000000),
+        max_lines: Some(1_000_000),
         sanitize_pii: true,
         ..Default::default()
     };
 
     let test_line = "User admin@example.com logged in from 192.168.1.100";
-    let iterations = 100000;
+    let iterations = 100_000;
 
     let start = Instant::now();
     for _ in 0..iterations {
