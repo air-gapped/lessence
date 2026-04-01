@@ -171,7 +171,7 @@ impl PatternFolder {
         if self.config.thread_count != Some(1) {
             self.batch_buffer.push(line.to_string());
 
-            if self.batch_buffer.len() >= 100 {
+            if self.batch_buffer.len() >= 10_000 {
                 self.process_batch()?;
             }
 

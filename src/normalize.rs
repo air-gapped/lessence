@@ -26,27 +26,17 @@ impl Normalizer {
 
     pub fn normalize_line(&self, original: String) -> Result<LogLine> {
         let mut normalized = original.clone();
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(8);
 
         // Apply normalizations in optimized order (most specific to least specific)
         // This prevents conflicts and maximizes pattern detection accuracy
 
         // 1. TIMESTAMPS (highest priority - most specific format)
         if self.config.normalize_timestamps {
-            if self.config.essence_mode {
-                // Constitutional essence mode: Timestamp tokenization for temporal independence
-                let (new_normalized, mut new_tokens) =
-                    TimestampDetector::detect_and_replace(&normalized);
-                // In essence mode, keep <TIMESTAMP> tokens for grouping identical temporal-independent patterns
-                normalized = new_normalized;
-                tokens.append(&mut new_tokens);
-            } else {
-                // Standard mode: Replace with <TIMESTAMP> tokens
-                let (new_normalized, mut new_tokens) =
-                    TimestampDetector::detect_and_replace(&normalized);
-                normalized = new_normalized;
-                tokens.append(&mut new_tokens);
-            }
+            let (new_normalized, mut new_tokens) =
+                TimestampDetector::detect_and_replace(&normalized);
+            normalized = new_normalized;
+            tokens.append(&mut new_tokens);
         }
 
         // 2. EMAIL ADDRESSES (before paths to ensure emails in URLs are handled correctly)
@@ -121,9 +111,7 @@ impl Normalizer {
         // NEW PATTERNS FROM 001-READ-THE-CURRENT (Now correctly placed AFTER Kubernetes)
 
         // HttpStatusClass - Groups HTTP status codes (200-299 → 2xx, etc.)
-        // Fixes Nginx compression improvement: 72% → >85%
-        if true {
-            // Always enabled for testing
+        {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::http_status::HttpStatusDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -131,9 +119,7 @@ impl Normalizer {
         }
 
         // BracketContext - Detects [error] [mod_jk] style patterns
-        // Fixes Microservices compression improvement: 19% → >70%
-        if true {
-            // Always enabled for testing
+        if normalized.contains('[') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::bracket_context::BracketContextDetector::detect_and_replace(
                     &normalized,
@@ -143,8 +129,7 @@ impl Normalizer {
         }
 
         // KeyValuePair - Detects config=value, metrics patterns
-        if true {
-            // Always enabled for testing
+        if normalized.contains('=') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::key_value::KeyValueDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -152,8 +137,7 @@ impl Normalizer {
         }
 
         // LogWithModule - Detects [level] module patterns for Apache/nginx
-        if true {
-            // Always enabled for testing
+        if normalized.contains('[') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::log_module::LogWithModuleDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -161,8 +145,7 @@ impl Normalizer {
         }
 
         // StructuredMessage - Detects JSON/logfmt structured logging
-        if true {
-            // Always enabled for testing
+        if normalized.contains('{') || normalized.contains('=') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::structured::StructuredMessageDetector::detect_and_replace(
                     &normalized,
@@ -188,10 +171,12 @@ impl Normalizer {
 
         // 12. QUOTED STRINGS (generic quoted variables - high priority for mount operations)
         // Must run after paths to catch normalized quoted paths properly
-        let (new_normalized, mut new_tokens) =
-            QuotedStringDetector::detect_and_replace(&normalized);
-        normalized = new_normalized;
-        tokens.append(&mut new_tokens);
+        if normalized.contains('"') || normalized.contains('\'') {
+            let (new_normalized, mut new_tokens) =
+                QuotedStringDetector::detect_and_replace(&normalized);
+            normalized = new_normalized;
+            tokens.append(&mut new_tokens);
+        }
 
         // Generate hash for fast comparison
         let hash = self.calculate_hash(&normalized);
@@ -235,13 +220,14 @@ impl Normalizer {
             return length_ratio * 100.0;
         }
 
-        // Fast character overlap check
-        let mut matches = 0;
-        let s1_chars: Vec<char> = s1.chars().collect();
-        let s2_chars: Vec<char> = s2.chars().collect();
+        // Fast byte-level overlap check (no allocation — works on &[u8] directly)
+        let b1 = s1.as_bytes();
+        let b2 = s2.as_bytes();
+        let compare_len = min_len;
+        let mut matches: u32 = 0;
 
-        for (i, &c1) in s1_chars.iter().enumerate() {
-            if i < s2_chars.len() && c1 == s2_chars[i] {
+        for i in 0..compare_len {
+            if b1[i] == b2[i] {
                 matches += 1;
             }
         }
