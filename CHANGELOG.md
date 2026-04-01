@@ -3,7 +3,7 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
 ## [Unreleased]
 
@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Hidden clippy lint masked by `RUSTFLAGS` cache invalidation
 - Doc comments with unescaped `<EMAIL>` breaking rustdoc
 
-## [2.0.0] - 2026-03-31
+## [0.1.0] - 2026-03-31
 
 ### Added
 - Initial public release as `lessence`
@@ -56,5 +56,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - ReDoS protection on all regex patterns
 - Security input limits (`--max-line-length`, `--max-lines`)
 
-[Unreleased]: https://github.com/air-gapped/lessence/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/air-gapped/lessence/releases/tag/v2.0.0
+[Unreleased]: https://github.com/air-gapped/lessence/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/air-gapped/lessence/releases/tag/v0.1.0
