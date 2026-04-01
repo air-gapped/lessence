@@ -119,7 +119,7 @@ struct Cli {
     disable_patterns: Vec<String>,
 
     /// Disable statistics output (enabled by default)
-    #[arg(long)]
+    #[arg(short = 'q', long = "quiet", alias = "no-stats")]
     no_stats: bool,
 
     /// Preserve ANSI color codes (stripped by default)
