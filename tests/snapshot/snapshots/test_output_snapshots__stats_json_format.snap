@@ -1,0 +1,28 @@
+---
+source: tests/snapshot/test_output_snapshots.rs
+assertion_line: 65
+expression: normalized
+---
+{
+  "collapsed_groups": 1,
+  "compression_ratio": 0.0,
+  "elapsed_ms": 0,
+  "input_lines": 4,
+  "lines_saved": 0,
+  "output_lines": 4,
+  "pattern_hits": {
+    "durations": 0,
+    "emails": 0,
+    "hashes": 0,
+    "http_status": 0,
+    "ips": 0,
+    "kubernetes": 0,
+    "paths": 0,
+    "percentages": 0,
+    "pids": 0,
+    "sizes": 0,
+    "timestamps": 0,
+    "uuids": 0
+  },
+  "patterns_detected": 0
+}

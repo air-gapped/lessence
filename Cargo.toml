@@ -30,6 +30,8 @@ criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3.0"
 toml = "0.8"
 regex = "1.10"
+insta = "1"
+proptest = "1"
 
 # Integration tests
 [[test]]
@@ -116,6 +118,16 @@ path = "tests/benchmarks/test_detection_performance.rs"
 [[test]]
 name = "test_ipv6_evil_patterns"
 path = "tests/security/test_ipv6_evil_patterns.rs"
+
+# Snapshot tests
+[[test]]
+name = "test_output_snapshots"
+path = "tests/snapshot/test_output_snapshots.rs"
+
+# Property-based tests
+[[test]]
+name = "test_normalizer_properties"
+path = "tests/property/test_normalizer_properties.rs"
 
 # Benchmarks will be added later
 # [[bench]]

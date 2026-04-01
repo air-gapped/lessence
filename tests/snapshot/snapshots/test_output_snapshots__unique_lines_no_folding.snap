@@ -1,0 +1,8 @@
+---
+source: tests/snapshot/test_output_snapshots.rs
+assertion_line: 75
+expression: stdout
+---
+ERROR database connection failed
+WARN disk space low on /dev/sda1
+INFO deployment v2.3.1 started

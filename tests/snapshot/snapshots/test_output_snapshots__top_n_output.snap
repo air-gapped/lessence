@@ -1,0 +1,11 @@
+---
+source: tests/snapshot/test_output_snapshots.rs
+assertion_line: 48
+expression: stdout
+---
+[10x] ERROR connection refused to 10.0.0.0:8080
+[+8 similar, varying: IP]
+ERROR connection refused to 10.0.0.9:8080
+[5x] WARN timeout after 30s
+[+3 similar]
+WARN timeout after 30s
