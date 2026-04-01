@@ -44,7 +44,7 @@ fn test_basic_email_detection() {
     );
 
     // Should output first line, folded indicator, and last line
-    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() >= 2, "Should have at least 2 lines of output");
 }
 
@@ -95,7 +95,7 @@ fn test_email_with_mixed_patterns() {
     );
 
     // Should significantly compress the output
-    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(
         lines.len() < 4,
         "Should compress to fewer than 4 lines of output"
@@ -173,7 +173,7 @@ fn test_email_validation_no_false_positives() {
 
     // Lines have similar structure so some folding is expected.
     // The key validation is that invalid email patterns are preserved in output.
-    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(
         lines.len() <= 4,
         "Should not produce more output than input"
@@ -209,7 +209,7 @@ fn test_email_url_pattern_order() {
 
     // Lines have similar structure (all have email-like patterns and timestamps)
     // so folding is expected. Just verify the output is valid and compressed.
-    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(
         lines.len() <= 3,
         "Should not produce more output than input"
@@ -264,7 +264,7 @@ fn test_email_performance_impact() {
     );
 
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let output_lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let output_lines: Vec<&str> = stdout.lines().collect();
 
     // Should achieve significant compression
     assert!(
@@ -306,7 +306,7 @@ fn test_complex_email_formats() {
     assert!(stdout.contains("email"), "Should indicate email variation");
 
     // Should compress to fewer lines
-    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() < 4, "Should compress complex email patterns");
 }
 
@@ -341,7 +341,7 @@ fn test_integration_with_existing_patterns() {
     // with varying timestamp, email, IP, and hash
     assert!(stdout.contains("similar"), "Should contain folded output");
 
-    let lines: Vec<&str> = stdout.trim().split('\n').collect();
+    let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() <= 3, "Should compress to at most 3 lines");
 
     // Should indicate multiple varying types
