@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUSTFLAGS: "-D warnings"
+
 jobs:
   test:
     strategy:
@@ -24,9 +27,13 @@ jobs:
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
+          components: clippy
 
       - name: Cache
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Clippy
+        run: cargo clippy --all-targets
 
       - name: Build
         run: cargo build --release

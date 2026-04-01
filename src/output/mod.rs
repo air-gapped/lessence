@@ -7,8 +7,10 @@ pub enum OutputFormat {
     Markdown,
 }
 
-impl OutputFormat {
-    pub fn from_str(s: &str) -> anyhow::Result<Self> {
+impl std::str::FromStr for OutputFormat {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
         match s.to_lowercase().as_str() {
             "text" | "plain" => Ok(OutputFormat::Text),
             "markdown" | "md" => Ok(OutputFormat::Markdown),
@@ -20,5 +22,4 @@ impl OutputFormat {
             )),
         }
     }
-
 }

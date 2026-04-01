@@ -108,7 +108,7 @@ impl StructuredMessageDetector {
                     component: component.to_lowercase(),
                     level: level.to_lowercase(),
                 });
-                format!(r#"{{"log": "<STRUCTURED_MESSAGE>"}}"#)
+                r#"{"log": "<STRUCTURED_MESSAGE>"}"#.to_string()
             } else {
                 caps.get(0).unwrap().as_str().to_string()
             }
@@ -334,7 +334,7 @@ mod tests {
         ];
 
         for test_case in non_log_cases {
-            let (result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
+            let (_result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
             // Should not detect structured logging in data JSON
             let has_structured = tokens.iter().any(|token| {

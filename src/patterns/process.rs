@@ -32,7 +32,7 @@ impl ProcessDetector {
                 let pid_str = pid_match.as_str();
                 if let Ok(pid) = pid_str.parse::<u32>() {
                     if Self::is_likely_pid(pid) {
-                        tokens.push(Token::PID(pid));
+                        tokens.push(Token::Pid(pid));
                     }
                 }
             }
@@ -43,8 +43,8 @@ impl ProcessDetector {
         for cap in PID_EQUALS_REGEX.captures_iter(&result) {
             let pid_str = cap.get(1).unwrap().as_str();
             if let Ok(pid) = pid_str.parse::<u32>() {
-                if Self::is_likely_pid(pid) && !tokens.iter().any(|t| matches!(t, Token::PID(p) if *p == pid)) {
-                    tokens.push(Token::PID(pid));
+                if Self::is_likely_pid(pid) && !tokens.iter().any(|t| matches!(t, Token::Pid(p) if *p == pid)) {
+                    tokens.push(Token::Pid(pid));
                 }
             }
         }
@@ -73,8 +73,8 @@ impl ProcessDetector {
         for cap in NUMERIC_ID_REGEX.captures_iter(&result) {
             let id_str = cap.get(1).unwrap().as_str();
             if let Ok(id) = id_str.parse::<u32>() {
-                if Self::is_likely_pid(id) && !tokens.iter().any(|t| matches!(t, Token::PID(p) if *p == id)) {
-                    tokens.push(Token::PID(id));
+                if Self::is_likely_pid(id) && !tokens.iter().any(|t| matches!(t, Token::Pid(p) if *p == id)) {
+                    tokens.push(Token::Pid(id));
                 }
             }
         }
@@ -84,8 +84,8 @@ impl ProcessDetector {
         for cap in PID_PAREN_REGEX.captures_iter(&result) {
             let pid_str = cap.get(1).unwrap().as_str();
             if let Ok(pid) = pid_str.parse::<u32>() {
-                if Self::is_likely_pid(pid) && !tokens.iter().any(|t| matches!(t, Token::PID(p) if *p == pid)) {
-                    tokens.push(Token::PID(pid));
+                if Self::is_likely_pid(pid) && !tokens.iter().any(|t| matches!(t, Token::Pid(p) if *p == pid)) {
+                    tokens.push(Token::Pid(pid));
                 }
             }
         }
@@ -98,7 +98,7 @@ impl ProcessDetector {
         // PIDs are typically in a reasonable range
         // Avoid very small numbers that are likely not PIDs
         // and very large numbers that exceed typical OS limits
-        pid >= 1 && pid <= 4194304 // 2^22, typical Linux max PID
+        (1..=4194304).contains(&pid) // 2^22, typical Linux max PID
     }
 
     #[allow(dead_code)]
@@ -126,7 +126,7 @@ mod tests {
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
         assert_eq!(result, "[pid=<PID>] Process started");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::PID(12345)));
+        assert!(matches!(tokens[0], Token::Pid(12345)));
     }
 
     #[test]
@@ -135,7 +135,7 @@ mod tests {
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
         assert_eq!(result, "[pid=<PID>] Error occurred");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::PID(12345)));
+        assert!(matches!(tokens[0], Token::Pid(12345)));
     }
 
     #[test]

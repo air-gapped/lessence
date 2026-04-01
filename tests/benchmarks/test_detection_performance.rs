@@ -19,7 +19,7 @@ fn test_single_timestamp_detection_speed() {
         // Run detection many times to measure performance
         for _ in 0..1000 {
             let result = UnifiedTimestampDetector::detect_with_metadata(input);
-            assert!(result.matches.len() >= 1, "Should detect timestamp in: {}", input);
+            assert!(!result.matches.is_empty(), "Should detect timestamp in: {}", input);
         }
 
         let duration = start.elapsed();
@@ -130,7 +130,7 @@ fn test_backward_compatibility_performance() {
     let start_new = Instant::now();
     for _ in 0..1000 {
         let result = UnifiedTimestampDetector::detect_with_metadata(input);
-        assert!(result.matches.len() >= 1);
+        assert!(!result.matches.is_empty());
     }
     let new_duration = start_new.elapsed();
 
@@ -138,7 +138,7 @@ fn test_backward_compatibility_performance() {
     let start_compat = Instant::now();
     for _ in 0..1000 {
         let (_result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(tokens.len() >= 1);
+        assert!(!tokens.is_empty());
     }
     let compat_duration = start_compat.elapsed();
 
@@ -212,7 +212,7 @@ fn test_concurrent_detection_performance() {
         let handle = thread::spawn(move || {
             for _ in 0..250 {
                 let result = UnifiedTimestampDetector::detect_with_metadata(&input_clone);
-                assert!(result.matches.len() >= 1);
+                assert!(!result.matches.is_empty());
             }
         });
         handles.push(handle);
@@ -239,7 +239,7 @@ fn test_memory_allocation_performance() {
     let start = Instant::now();
     for i in 0..5000 {
         let result = UnifiedTimestampDetector::detect_with_metadata(input);
-        assert!(result.matches.len() >= 1);
+        assert!(!result.matches.is_empty());
 
         // Periodic performance check
         if i % 1000 == 0 && i > 0 {
@@ -277,7 +277,7 @@ fn test_scalability_with_pattern_count() {
 
         for _ in 0..200 {
             let result = UnifiedTimestampDetector::detect_with_metadata(input);
-            assert!(result.matches.len() >= 1, "Should detect timestamp in: {}", input);
+            assert!(!result.matches.is_empty(), "Should detect timestamp in: {}", input);
         }
 
         total_duration += start.elapsed();

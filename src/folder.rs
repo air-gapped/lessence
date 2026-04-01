@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::io::{Write, BufRead};
+use std::io::{self, Write};
 use std::collections::HashMap;
 use chrono::Utc;
 
@@ -329,8 +329,8 @@ impl PatternFolder {
                 Token::IPv4(_) | Token::IPv6(_) => self.stats.ips += 1,
                 Token::Port(_) => self.stats.ips += 1, // Count ports with IPs
                 Token::Hash(_, _) => self.stats.hashes += 1,
-                Token::UUID(_) => self.stats.uuids += 1,
-                Token::PID(_) | Token::ThreadID(_) => self.stats.pids += 1,
+                Token::Uuid(_) => self.stats.uuids += 1,
+                Token::Pid(_) | Token::ThreadID(_) => self.stats.pids += 1,
                 Token::Duration(_) => self.stats.durations += 1,
                 Token::Size(_) => self.stats.sizes += 1,
                 Token::Number(_) => self.stats.percentages += 1, // Numbers often include percentages
@@ -557,23 +557,27 @@ impl PatternFolder {
     }
 
     /// Process all lines in summary mode: collect unique patterns with counts and timestamp range
-    pub fn process_summary_mode<R: BufRead, W: Write>(&mut self, reader: R, writer: &mut W) -> Result<()> {
+    pub fn process_summary_mode<I, W>(&mut self, lines: I, writer: &mut W) -> Result<()>
+    where
+        I: Iterator<Item = io::Result<String>>,
+        W: Write,
+    {
         let mut pattern_counts: HashMap<String, usize> = HashMap::new();
         let mut first_timestamp: Option<String> = None;
         let mut last_timestamp: Option<String> = None;
         let mut output_tokens = 0;
-        let mut lines_processed = 0;
 
-        for line in reader.lines() {
+        let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
+
+        for (lines_processed, line) in lines.enumerate() {
             let line = line?;
-            
+
             // Security: Check line count limit (Constitutional Principle X)
             if let Some(max_lines) = self.config.max_lines {
                 if lines_processed >= max_lines {
                     break;
                 }
             }
-            lines_processed += 1;
             
             self.stats.total_lines += 1;
 
@@ -586,7 +590,6 @@ impl PatternFolder {
 
             // Strip ANSI if needed
             let line = if !self.config.preserve_color {
-                let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap();
                 ansi_regex.replace_all(&line, "").to_string()
             } else {
                 line
@@ -881,8 +884,10 @@ mod tests {
 
     #[test]
     fn test_folding_with_finish() -> Result<()> {
-        let mut config = Config::default();
-        config.min_collapse = 2; // Lower threshold for testing
+        let config = Config {
+            min_collapse: 2, // Lower threshold for testing
+            ..Config::default()
+        };
 
         let mut folder = PatternFolder::new(config);
 

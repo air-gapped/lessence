@@ -296,8 +296,8 @@ impl Normalizer {
                 Token::IPv6(v) => ("IP", v.clone()),
                 Token::Port(v) => ("port", v.to_string()),
                 Token::Hash(_, v) => ("hash", v.clone()),
-                Token::UUID(v) => ("UUID", v.clone()),
-                Token::PID(v) => ("PID", v.to_string()),
+                Token::Uuid(v) => ("UUID", v.clone()),
+                Token::Pid(v) => ("PID", v.to_string()),
                 Token::ThreadID(v) => ("thread", v.to_string()),
                 Token::Path(v) => ("path", v.clone()),
                 Token::Json(v) => ("json", v.clone()),
@@ -326,12 +326,12 @@ impl Normalizer {
 
         for token in first_tokens {
             let (token_type, value) = get_token_info(token);
-            first_values.entry(token_type).or_insert_with(Vec::new).push(value);
+            first_values.entry(token_type).or_default().push(value);
         }
 
         for token in last_tokens {
             let (token_type, value) = get_token_info(token);
-            last_values.entry(token_type).or_insert_with(Vec::new).push(value);
+            last_values.entry(token_type).or_default().push(value);
         }
 
         // Find token types that actually vary between first and last
@@ -427,10 +427,12 @@ mod tests {
 
     #[test]
     fn test_disabled_normalization() {
-        let mut config = Config::default();
-        config.normalize_timestamps = false;
-        config.normalize_ips = false;
-        config.normalize_ports = false;
+        let config = Config {
+            normalize_timestamps: false,
+            normalize_ips: false,
+            normalize_ports: false,
+            ..Config::default()
+        };
 
         let normalizer = Normalizer::new(config);
 

@@ -10,6 +10,12 @@ pub struct TimestampRegistry {
     patterns: Vec<TimestampPattern>,
 }
 
+impl Default for TimestampRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TimestampRegistry {
     /// Initialize registry with patterns from both source implementations
     /// Constitutional requirement: Merge all patterns without loss
@@ -259,13 +265,13 @@ impl TimestampRegistry {
             },
             TimestampPattern {
                 regex: Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z").unwrap(),
-                format_type: TimestampFormat::AWS,
+                format_type: TimestampFormat::Aws,
                 priority: PatternPriority::new(85, FormatFamily::Application),
                 source: PatternSource::OriginalEssence,
             },
             TimestampPattern {
                 regex: Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z").unwrap(),
-                format_type: TimestampFormat::GCP,
+                format_type: TimestampFormat::Gcp,
                 priority: PatternPriority::new(85, FormatFamily::Application),
                 source: PatternSource::OriginalEssence,
             },
@@ -277,7 +283,7 @@ impl TimestampRegistry {
             },
             TimestampPattern {
                 regex: Regex::new(r"\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}").unwrap(),
-                format_type: TimestampFormat::ANSIC,
+                format_type: TimestampFormat::Ansic,
                 priority: PatternPriority::new(50, FormatFamily::Legacy),
                 source: PatternSource::OriginalEssence,
             },
@@ -323,14 +329,15 @@ impl TimestampRegistry {
         for essence_pattern in essence_patterns {
             let key = essence_pattern.regex.as_str().to_string();
 
-            if pattern_map.contains_key(&key) {
-                // Duplicate found - mark as merged
-                if let Some(existing) = pattern_map.get_mut(&key) {
-                    existing.source = PatternSource::Merged;
+            match pattern_map.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut entry) => {
+                    // Duplicate found - mark as merged
+                    entry.get_mut().source = PatternSource::Merged;
                 }
-            } else {
-                // Unique pattern from essence mode
-                pattern_map.insert(key, essence_pattern);
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    // Unique pattern from essence mode
+                    entry.insert(essence_pattern);
+                }
             }
         }
 

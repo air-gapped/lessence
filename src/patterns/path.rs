@@ -148,7 +148,7 @@ impl PathDetector {
 
         // Common file path indicators
         let has_extension = path.contains('.') &&
-            path.split('/').last().unwrap_or("").contains('.');
+            path.split('/').next_back().unwrap_or("").contains('.');
         let has_multiple_segments = path.matches('/').count() > 1;
         let has_common_dirs = path.contains("/var/") ||
             path.contains("/usr/") ||

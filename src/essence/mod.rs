@@ -112,8 +112,8 @@ pub enum TimestampFormat {
 
     // Custom application formats
     GitCommit,          // Sep 28 10:15:00 2025
-    AWS,                // 2025-09-28T10:15:00.000Z
-    GCP,                // 2025-09-28T10:15:00.123456Z
+    Aws,                // 2025-09-28T10:15:00.000Z
+    Gcp,                // 2025-09-28T10:15:00.123456Z
     Azure,              // 2025-09-28T10:15:00.1234567Z
 
     // Relative time formats
@@ -124,7 +124,7 @@ pub enum TimestampFormat {
     CFormat,            // Sep 28 10:15:00
     RFC822,             // Sun, 28 Sep 2025 10:15:00 GMT
     RFC850,             // Sunday, 28-Sep-25 10:15:00 GMT
-    ANSIC,              // Sun Sep 28 10:15:00 2025
+    Ansic,              // Sun Sep 28 10:15:00 2025
 }
 
 /// Essence mode error types

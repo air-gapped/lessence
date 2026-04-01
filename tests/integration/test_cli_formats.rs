@@ -4,7 +4,7 @@ use std::str;
 /// Build the release binary if it doesn't exist or is out of date
 fn ensure_release_build() {
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -19,7 +19,7 @@ fn test_text_format_default() {
 
     // Test with default format (no --format flag)
     let output = Command::new("./target/release/lessence")
-        .args(&["--no-stats"])
+        .args(["--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -42,7 +42,7 @@ fn test_text_format_default() {
 
     // Test explicit --format text flag produces same result
     let explicit_output = Command::new("./target/release/lessence")
-        .args(&["--format", "text", "--no-stats"])
+        .args(["--format", "text", "--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -65,7 +65,7 @@ fn test_markdown_format_flag() {
     ensure_release_build();
 
     let output = Command::new("./target/release/lessence")
-        .args(&["--format", "markdown", "--no-stats"])
+        .args(["--format", "markdown", "--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -127,7 +127,7 @@ fn test_format_compression_quality() {
         };
 
         let output = Command::new("./target/release/lessence")
-            .args(&["--format", format, "--no-stats"])
+            .args(["--format", format, "--no-stats"])
             .stdin(file)
             .output()
             .expect("Failed to execute lessence");
@@ -192,7 +192,7 @@ fn test_format_selection_errors() {
 
     for invalid_format in invalid_formats {
         let output = Command::new("./target/release/lessence")
-            .args(&["--format", invalid_format, "--no-stats"])
+            .args(["--format", invalid_format, "--no-stats"])
             .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
             .output()
             .expect("Failed to execute lessence");

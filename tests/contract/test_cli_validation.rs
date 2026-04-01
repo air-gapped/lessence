@@ -4,7 +4,7 @@ use std::io::Write;
 #[test]
 fn test_min_collapse_rejects_zero() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--min-collapse", "0"])
+        .args(["run", "--release", "--", "--min-collapse", "0"])
         .output()
         .expect("Failed to run command");
 
@@ -21,7 +21,7 @@ fn test_min_collapse_rejects_zero() {
 #[test]
 fn test_min_collapse_rejects_one() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--min-collapse", "1"])
+        .args(["run", "--release", "--", "--min-collapse", "1"])
         .output()
         .expect("Failed to run command");
 
@@ -38,7 +38,7 @@ fn test_min_collapse_rejects_one() {
 #[test]
 fn test_threads_rejects_zero() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--threads", "0"])
+        .args(["run", "--release", "--", "--threads", "0"])
         .output()
         .expect("Failed to run command");
 
@@ -60,7 +60,7 @@ fn test_threads_rejects_zero() {
 #[test]
 fn test_max_lines_rejects_zero() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--max-lines", "0"])
+        .args(["run", "--release", "--", "--max-lines", "0"])
         .output()
         .expect("Failed to run command");
 
@@ -77,13 +77,12 @@ fn test_max_lines_rejects_zero() {
 #[test]
 fn test_max_lines_rejects_negative() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--max-lines", "-100"])
+        .args(["run", "--release", "--", "--max-lines", "-100"])
         .output()
         .expect("Failed to run command");
 
     assert!(!output.status.success(), "Should exit with error for --max-lines -100");
     
-    let stderr = String::from_utf8_lossy(&output.stderr);
     // Clap will reject negative numbers during parsing
     assert!(
         !output.status.success(),
@@ -94,7 +93,7 @@ fn test_max_lines_rejects_negative() {
 #[test]
 fn test_disable_patterns_rejects_invalid_name() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--disable-patterns", "invalidpattern"])
+        .args(["run", "--release", "--", "--disable-patterns", "invalidpattern"])
         .output()
         .expect("Failed to run command");
 
@@ -116,7 +115,7 @@ fn test_disable_patterns_rejects_invalid_name() {
 #[test]
 fn test_disable_patterns_rejects_mixed_valid_invalid() {
     let output = Command::new("cargo")
-        .args(&["run", "--release", "--", "--disable-patterns", "timestamp,badpattern,email"])
+        .args(["run", "--release", "--", "--disable-patterns", "timestamp,badpattern,email"])
         .output()
         .expect("Failed to run command");
 
@@ -133,7 +132,7 @@ fn test_disable_patterns_rejects_mixed_valid_invalid() {
 #[test]
 fn test_disable_patterns_accepts_valid_names() {
     let mut child = Command::new("cargo")
-        .args(&["run", "--release", "--", "--disable-patterns", "timestamp,email"])
+        .args(["run", "--release", "--", "--disable-patterns", "timestamp,email"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -156,7 +155,7 @@ fn test_disable_patterns_accepts_valid_names() {
 #[test]
 fn test_min_collapse_accepts_two() {
     let mut child = Command::new("cargo")
-        .args(&["run", "--release", "--", "--min-collapse", "2"])
+        .args(["run", "--release", "--", "--min-collapse", "2"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -179,7 +178,7 @@ fn test_min_collapse_accepts_two() {
 #[test]
 fn test_threads_accepts_one() {
     let mut child = Command::new("cargo")
-        .args(&["run", "--release", "--", "--threads", "1"])
+        .args(["run", "--release", "--", "--threads", "1"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -202,7 +201,7 @@ fn test_threads_accepts_one() {
 #[test]
 fn test_max_lines_accepts_one() {
     let mut child = Command::new("cargo")
-        .args(&["run", "--release", "--", "--max-lines", "1"])
+        .args(["run", "--release", "--", "--max-lines", "1"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -225,7 +224,7 @@ fn test_max_lines_accepts_one() {
 #[test]
 fn test_pattern_validation_case_insensitive() {
     let mut child = Command::new("cargo")
-        .args(&["run", "--release", "--", "--disable-patterns", "TIMESTAMP,Email"])
+        .args(["run", "--release", "--", "--disable-patterns", "TIMESTAMP,Email"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

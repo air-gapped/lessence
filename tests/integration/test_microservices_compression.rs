@@ -5,7 +5,7 @@ use std::str;
 fn test_microservices_compression_improvement() {
     // Build the release binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -13,7 +13,7 @@ fn test_microservices_compression_improvement() {
 
     // Test compression on microservices.log
     let output = Command::new("./target/release/lessence")
-        .args(&["--no-stats"])
+        .args(["--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/microservices.log").expect("microservices.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -47,7 +47,7 @@ fn test_microservices_baseline_without_new_patterns() {
     // Used for comparison to validate improvement
 
     let output = Command::new("./target/release/lessence")
-        .args(&["--no-stats"])
+        .args(["--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/microservices.log").expect("microservices.log not found"))
         .output()
         .expect("Failed to execute lessence");

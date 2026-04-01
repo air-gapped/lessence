@@ -164,8 +164,8 @@ impl LogAnalyzer {
                 }
                 Token::Port(_) => counts.ips += 1, // Count ports with IPs
                 Token::Hash(_, _) => counts.hashes += 1,
-                Token::UUID(_) => counts.uuids += 1,
-                Token::PID(_) => counts.pids += 1,
+                Token::Uuid(_) => counts.uuids += 1,
+                Token::Pid(_) => counts.pids += 1,
                 Token::Path(path) => {
                     counts.paths += 1;
                     if samples.paths.len() < 5 && !samples.paths.contains(path) {
@@ -252,8 +252,7 @@ impl LogAnalyzer {
 
     fn simulate_compression_with_paths(log_lines: &[LogLine], _normalizer: &Normalizer, threshold: u8, min_collapse: usize) -> usize {
         // Create a config with paths enabled for simulation
-        let mut paths_config = Config::default();
-        paths_config.normalize_paths = true;
+        let paths_config = Config { normalize_paths: true, ..Config::default() };
         let paths_normalizer = Normalizer::new(paths_config);
 
         // Re-normalize with paths enabled
@@ -297,8 +296,7 @@ impl LogAnalyzer {
         with_paths: bool
     ) -> Vec<String> {
         let lines_to_process = if with_paths {
-            let mut paths_config = Config::default();
-            paths_config.normalize_paths = true;
+            let paths_config = Config { normalize_paths: true, ..Config::default() };
             let paths_normalizer = Normalizer::new(paths_config);
 
             log_lines.iter()
@@ -315,8 +313,7 @@ impl LogAnalyzer {
         let mut processed = vec![false; lines_to_process.len()];
 
         let sim_normalizer = if with_paths {
-            let mut paths_config = Config::default();
-            paths_config.normalize_paths = true;
+            let paths_config = Config { normalize_paths: true, ..Config::default() };
             Normalizer::new(paths_config)
         } else {
             Normalizer::new(Config::default())

@@ -48,7 +48,7 @@ impl UuidDetector {
         // Standard UUIDs first
         for cap in UUID_REGEX.find_iter(text) {
             let uuid_str = cap.as_str();
-            tokens.push(Token::UUID(uuid_str.to_string()));
+            tokens.push(Token::Uuid(uuid_str.to_string()));
         }
         result = UUID_REGEX.replace_all(&result, "<UUID>").to_string();
 
@@ -56,7 +56,7 @@ impl UuidDetector {
         for cap in REQUEST_ID_REGEX.captures_iter(&result) {
             let req_id = cap.get(1).unwrap().as_str();
             if Self::is_likely_id(req_id) {
-                tokens.push(Token::UUID(req_id.to_string()));
+                tokens.push(Token::Uuid(req_id.to_string()));
             }
         }
         result = REQUEST_ID_REGEX.replace_all(&result, "request_id=<UUID>").to_string();
@@ -65,7 +65,7 @@ impl UuidDetector {
         for cap in TRACE_ID_REGEX.captures_iter(&result) {
             let trace_id = cap.get(1).unwrap().as_str();
             if Self::is_likely_id(trace_id) {
-                tokens.push(Token::UUID(trace_id.to_string()));
+                tokens.push(Token::Uuid(trace_id.to_string()));
             }
         }
         result = TRACE_ID_REGEX.replace_all(&result, "trace=<UUID>").to_string();
@@ -74,7 +74,7 @@ impl UuidDetector {
         for cap in SESSION_ID_REGEX.captures_iter(&result) {
             let session_id = cap.get(1).unwrap().as_str();
             if Self::is_likely_id(session_id) {
-                tokens.push(Token::UUID(session_id.to_string()));
+                tokens.push(Token::Uuid(session_id.to_string()));
             }
         }
         result = SESSION_ID_REGEX.replace_all(&result, "session=<UUID>").to_string();
@@ -83,7 +83,7 @@ impl UuidDetector {
         for cap in CORRELATION_ID_REGEX.captures_iter(&result) {
             let correlation_id = cap.get(1).unwrap().as_str();
             if Self::is_likely_id(correlation_id) {
-                tokens.push(Token::UUID(correlation_id.to_string()));
+                tokens.push(Token::Uuid(correlation_id.to_string()));
             }
         }
         result = CORRELATION_ID_REGEX.replace_all(&result, "correlation_id=<UUID>").to_string();
@@ -93,7 +93,7 @@ impl UuidDetector {
             let uuid_str = cap.as_str();
             // Only treat as UUID if it has mixed letters and numbers (not pure hex hash)
             if Self::looks_like_uuid_no_hyphens(uuid_str) {
-                tokens.push(Token::UUID(uuid_str.to_string()));
+                tokens.push(Token::Uuid(uuid_str.to_string()));
             }
         }
         result = UUID_NO_HYPHENS_REGEX.replace_all(&result, "<UUID>").to_string();
@@ -154,7 +154,7 @@ mod tests {
         // and captures the remaining "uest" as a request ID, replacing "request" with "request_id=<UUID>"
         assert_eq!(result, "Processing request_id=<UUID> <UUID>");
         assert_eq!(tokens.len(), 2);
-        assert!(matches!(tokens[0], Token::UUID(_)));
+        assert!(matches!(tokens[0], Token::Uuid(_)));
     }
 
     #[test]
@@ -163,7 +163,7 @@ mod tests {
         let (result, tokens) = UuidDetector::detect_and_replace(text);
         assert_eq!(result, "request_id=<UUID> started processing");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::UUID(_)));
+        assert!(matches!(tokens[0], Token::Uuid(_)));
     }
 
     #[test]
@@ -172,7 +172,7 @@ mod tests {
         let (result, tokens) = UuidDetector::detect_and_replace(text);
         assert_eq!(result, "trace=<UUID> span completed");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::UUID(_)));
+        assert!(matches!(tokens[0], Token::Uuid(_)));
     }
 
     #[test]
@@ -181,7 +181,7 @@ mod tests {
         let (result, tokens) = UuidDetector::detect_and_replace(text);
         assert_eq!(result, "session=<UUID> authenticated");
         assert_eq!(tokens.len(), 1);
-        assert!(matches!(tokens[0], Token::UUID(_)));
+        assert!(matches!(tokens[0], Token::Uuid(_)));
     }
 
     #[test]

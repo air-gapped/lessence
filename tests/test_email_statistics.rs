@@ -13,7 +13,7 @@ use std::process::Command;
 fn test_email_statistics_shown_in_report() {
     // Build the release binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -64,7 +64,7 @@ fn test_email_statistics_shown_in_report() {
 #[test]
 fn test_email_statistics_hidden_when_zero() {
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -104,7 +104,7 @@ fn test_email_statistics_hidden_when_zero() {
 #[test]
 fn test_email_statistics_in_essence_mode() {
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -117,7 +117,7 @@ fn test_email_statistics_in_essence_mode() {
                       2025-09-26T10:15:03Z User mike@company.com logged in\n";
 
     let output = Command::new("./target/release/lessence")
-        .args(&["--essence"])
+        .args(["--essence"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -156,7 +156,7 @@ fn test_email_statistics_in_essence_mode() {
 #[test]
 fn test_email_not_grouped_with_percentages() {
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 

@@ -141,7 +141,7 @@ impl KeyValueDetector {
         if value.ends_with("ms") || value.ends_with("us") || value.ends_with("ns") {
             return "duration".to_string();
         }
-        if value.ends_with('s') && value.chars().rev().nth(1).map_or(false, |c| c.is_ascii_digit()) {
+        if value.ends_with('s') && value.chars().rev().nth(1).is_some_and(|c| c.is_ascii_digit()) {
             return "duration".to_string();
         }
 

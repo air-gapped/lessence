@@ -132,7 +132,7 @@ mod tests {
         println!("Tokens: {:?}", tokens);
 
         assert!(result.contains("<DURATION_FIELD>"));
-        assert_eq!(tokens.len() >= 1, true);
+        assert!(!tokens.is_empty());
     }
 
     #[test]

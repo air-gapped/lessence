@@ -8,7 +8,7 @@ fn test_constitutional_compliance_kubelet() {
 
     // Build the release binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -21,7 +21,7 @@ fn test_constitutional_compliance_kubelet() {
     };
 
     let output = Command::new("./target/release/lessence")
-        .args(&["--no-stats"])
+        .args(["--no-stats"])
         .stdin(file)
         .output()
         .expect("Failed to execute lessence");
@@ -53,7 +53,7 @@ fn test_constitutional_compliance_kubelet() {
         "❌ CONSTITUTIONAL VIOLATION: {:.2}% < 98.4% compression", compression_ratio);
 
     // Validate we're within expected range (current baseline: ~1,094 lines)
-    assert!(output_lines >= 1000 && output_lines <= 1100,
+    assert!((1000..=1100).contains(&output_lines),
         "Output {} outside expected range [1000, 1100]", output_lines);
 
     println!("✅ Constitutional compliance PASSED");
@@ -67,7 +67,7 @@ fn test_processing_speed_requirement() {
 
     // Build the release binary first
     let build_output = Command::new("cargo")
-        .args(&["build", "--release"])
+        .args(["build", "--release"])
         .output()
         .expect("Failed to build release binary");
 
@@ -82,7 +82,7 @@ fn test_processing_speed_requirement() {
     let start = Instant::now();
 
     let output = Command::new("./target/release/lessence")
-        .args(&["--no-stats"])
+        .args(["--no-stats"])
         .stdin(file)
         .output()
         .expect("Failed to execute lessence");

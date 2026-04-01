@@ -106,8 +106,10 @@ mod tests {
 
     #[test]
     fn test_single_threaded_mode_detection() {
-        let mut config = Config::default();
-        config.thread_count = Some(1);
+        let config = Config {
+            thread_count: Some(1),
+            ..Default::default()
+        };
         // Test will fail until single_thread field is removed
         // This validates that thread_count == Some(1) replaces single_thread
         assert_eq!(config.thread_count, Some(1), "Single-threaded mode should be detected via thread_count == Some(1)");
@@ -122,8 +124,10 @@ mod tests {
 
     #[test]
     fn test_multi_thread_mode_detection() {
-        let mut config = Config::default();
-        config.thread_count = Some(4);
+        let config = Config {
+            thread_count: Some(4),
+            ..Default::default()
+        };
         assert_eq!(config.thread_count, Some(4), "Multi-threaded mode with explicit count");
     }
 
@@ -132,8 +136,10 @@ mod tests {
         // This test documents the validation requirement
         // Actual validation happens at CLI parsing level
         // Zero thread count should be rejected (validated in main.rs)
-        let mut config = Config::default();
-        config.thread_count = Some(0);
+        let config = Config {
+            thread_count: Some(0),
+            ..Default::default()
+        };
         // This configuration is invalid but Config doesn't enforce it
         // Validation must happen at CLI level
         assert_eq!(config.thread_count, Some(0));

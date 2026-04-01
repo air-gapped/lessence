@@ -12,7 +12,7 @@ fn test_basic_email_detection() {
 
     let output = Command::new("sh")
         .arg("-c")
-        .arg(&format!("./target/release/lessence --no-stats < {}", temp_file.path().display()))
+        .arg(format!("./target/release/lessence --no-stats < {}", temp_file.path().display()))
         .output()
         .expect("Failed to execute lessence");
 
@@ -38,7 +38,7 @@ fn test_email_with_mixed_patterns() {
 
     let output = Command::new("sh")
         .arg("-c")
-        .arg(&format!("./target/release/lessence --no-stats < {}", temp_file.path().display()))
+        .arg(format!("./target/release/lessence --no-stats < {}", temp_file.path().display()))
         .output()
         .expect("Failed to execute lessence");
 

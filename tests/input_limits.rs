@@ -13,8 +13,8 @@ fn test_line_length_limit_enforcement() {
     let huge_result = lessence::should_process_line(&huge_line, &config);
     let normal_result = lessence::should_process_line(normal_line, &config);
     
-    assert_eq!(huge_result, false, "Line exceeding max_line_length should be skipped");
-    assert_eq!(normal_result, true, "Normal line should be processed");
+    assert!(!huge_result, "Line exceeding max_line_length should be skipped");
+    assert!(normal_result, "Normal line should be processed");
 }
 
 #[test]
@@ -68,9 +68,8 @@ fn test_no_limit_allows_all_lines() {
     
     let huge_line = "A".repeat(10 * 1024 * 1024); // 10MB
     
-    assert_eq!(
+    assert!(
         lessence::should_process_line(&huge_line, &config),
-        true,
         "Without max_line_length, all lines should be processed"
     );
 }

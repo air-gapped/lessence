@@ -5,7 +5,7 @@ use std::str;
 fn test_markdown_output_format() {
     // Test that --format markdown produces valid markdown
     let output = Command::new("./target/release/lessence")
-        .args(&["--format", "markdown", "--no-stats"])
+        .args(["--format", "markdown", "--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -34,7 +34,7 @@ fn test_markdown_output_format() {
 fn test_markdown_readability_features() {
     // Test readability features specific to markdown
     let output = Command::new("./target/release/lessence")
-        .args(&["--format", "markdown", "--no-stats"])
+        .args(["--format", "markdown", "--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");

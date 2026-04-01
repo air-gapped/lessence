@@ -5,7 +5,7 @@ use std::str;
 fn test_plain_text_output_format() {
     // Test that --format text produces plain text (current default behavior)
     let output = Command::new("./target/release/lessence")
-        .args(&["--format", "text", "--no-stats"])
+        .args(["--format", "text", "--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -34,7 +34,7 @@ fn test_plain_text_output_format() {
 fn test_text_minimal_overhead() {
     // Test that text format has minimal overhead
     let output = Command::new("./target/release/lessence")
-        .args(&["--format", "text", "--no-stats"])
+        .args(["--format", "text", "--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");
@@ -48,7 +48,7 @@ fn test_text_minimal_overhead() {
 
     // Compare with default output (should be same or very similar)
     let default_output = Command::new("./target/release/lessence")
-        .args(&["--no-stats"])
+        .args(["--no-stats"])
         .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").expect("nginx_sample.log not found"))
         .output()
         .expect("Failed to execute lessence");

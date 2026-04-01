@@ -80,10 +80,10 @@ pub enum TimestampFormat {
     WindowsEvent,
     WindowsIIS,
     GitCommit,
-    AWS,
-    GCP,
+    Aws,
+    Gcp,
     Azure,
-    ANSIC,
+    Ansic,
     RFC822,
 }
 
@@ -112,8 +112,8 @@ impl TimestampFormat {
             | TimestampFormat::ApacheCommon
             | TimestampFormat::ApacheError
             | TimestampFormat::NginxAccess
-            | TimestampFormat::AWS
-            | TimestampFormat::GCP
+            | TimestampFormat::Aws
+            | TimestampFormat::Gcp
             | TimestampFormat::Azure => FormatFamily::Application,
 
             TimestampFormat::USDate
@@ -133,7 +133,7 @@ impl TimestampFormat {
             | TimestampFormat::IBMFormat
             | TimestampFormat::CompactFormat
             | TimestampFormat::GitCommit
-            | TimestampFormat::ANSIC => FormatFamily::Legacy,
+            | TimestampFormat::Ansic => FormatFamily::Legacy,
 
             TimestampFormat::UnixTimestamp
             | TimestampFormat::UnixTimestampMs

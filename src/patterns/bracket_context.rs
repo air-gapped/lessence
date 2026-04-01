@@ -249,7 +249,7 @@ mod tests {
     #[test]
     fn test_mixed_bracket_types() {
         let mixed_line = "[error] Processing (failed) with {result: null}";
-        let (result, tokens) = BracketContextDetector::detect_and_replace(mixed_line);
+        let (_result, tokens) = BracketContextDetector::detect_and_replace(mixed_line);
 
         // Should only detect square brackets [error], not () or {}
         assert_eq!(tokens.len(), 1);
