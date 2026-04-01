@@ -157,6 +157,10 @@ struct Cli {
     #[arg(long, value_parser = validate_max_lines)]
     max_lines: Option<usize>,
 
+    /// Show only the N most frequent patterns, sorted by count
+    #[arg(long)]
+    top: Option<usize>,
+
     /// Input files (reads stdin if none given, use - for explicit stdin)
     #[arg(value_name = "FILE")]
     files: Vec<PathBuf>,
@@ -256,11 +260,13 @@ fn main() -> Result<()> {
         max_line_length: cli.max_line_length.or(Some(1024 * 1024)), // 1MB default
         max_lines: cli.max_lines,
         sanitize_pii: cli.sanitize_pii,  // Wire PII sanitization flag
+        top_n: cli.top,
     };
 
 
     // For Markdown format, we need to process all logs first, then format
     let use_structured_output = matches!(config.output_format.as_str(), "markdown");
+    let use_top_n = config.top_n.is_some();
 
     // Handle preflight mode: process logs but only output JSON analysis
     if config.preflight {
@@ -345,28 +351,53 @@ fn main() -> Result<()> {
         }
 
         if let Some(output) = folder.process_line(&line)? {
-            // Check token limit before outputting
-            if let Some(max_tokens) = config.max_tokens {
-                let tokens = folder.count_tokens(&output);
-                if output_tokens + tokens > max_tokens {
-                    eprintln!("Token limit of {} reached, truncating output", max_tokens);
-                    break;
-                }
-                output_tokens += tokens;
-            }
-
-            if use_structured_output {
-                collected_outputs.push(output);
+            if use_top_n {
+                // In top-N mode, discard incremental output — we'll use finish_top_n()
             } else {
-                match writeln!(stdout, "{}", output) {
-                    Ok(_) => {},
-                    Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                        std::process::exit(0);
-                    },
-                    Err(e) => return Err(e.into()),
+                // Check token limit before outputting
+                if let Some(max_tokens) = config.max_tokens {
+                    let tokens = folder.count_tokens(&output);
+                    if output_tokens + tokens > max_tokens {
+                        eprintln!("Token limit of {} reached, truncating output", max_tokens);
+                        break;
+                    }
+                    output_tokens += tokens;
+                }
+
+                if use_structured_output {
+                    collected_outputs.push(output);
+                } else {
+                    match writeln!(stdout, "{}", output) {
+                        Ok(_) => {},
+                        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                            std::process::exit(0);
+                        },
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             }
         }
+    }
+
+    // Handle top-N mode: sort all groups by frequency and emit top N
+    if let Some(n) = config.top_n {
+        let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
+        for (count, formatted) in &top_groups {
+            match writeln!(stdout, "[{}x] {}", count, formatted) {
+                Ok(_) => {},
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                    std::process::exit(0);
+                },
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let shown = top_groups.len();
+        eprintln!("(showing top {} of {} patterns, covering {}% of input lines)", shown, total_groups, coverage_pct);
+
+        if config.stats {
+            folder.print_stats(&mut io::stdout())?;
+        }
+        return Ok(());
     }
 
     // Flush any remaining buffered lines (respecting token limits)

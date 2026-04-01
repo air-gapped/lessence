@@ -245,6 +245,49 @@ impl PatternFolder {
         Ok(output)
     }
 
+    /// Finish processing and return the top N groups by frequency.
+    /// Returns (count, formatted_output) pairs sorted by count descending,
+    /// plus (total_groups, total_lines_covered_by_shown).
+    pub fn finish_top_n(&mut self, n: usize) -> Result<(Vec<(usize, String)>, usize, usize)> {
+        if !self.batch_buffer.is_empty() {
+            self.process_batch()?;
+        }
+
+        // Collect all groups with their counts
+        let mut groups_with_counts: Vec<(usize, PatternGroup)> = self.buffer
+            .drain(..)
+            .map(|g| (g.count(), g))
+            .collect();
+
+        // Sort by count descending
+        groups_with_counts.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let total_groups = groups_with_counts.len();
+        let total_input_lines = self.stats.total_lines;
+
+        // Take top N
+        let top_groups: Vec<(usize, PatternGroup)> = groups_with_counts
+            .into_iter()
+            .take(n)
+            .collect();
+
+        let lines_covered: usize = top_groups.iter().map(|(c, _)| c).sum();
+
+        let mut output = Vec::new();
+        for (count, group) in top_groups {
+            let formatted = self.format_group(group)?;
+            self.stats.output_lines += formatted.lines().count();
+            output.push((count, formatted));
+        }
+
+        // Store total_input_lines for coverage calc
+        Ok((output, total_groups, if total_input_lines > 0 {
+            (lines_covered as f64 / total_input_lines as f64 * 100.0) as usize
+        } else {
+            0
+        }))
+    }
+
     /// Determine if buffer should be flushed based on memory management
     fn should_flush_buffer(&self) -> bool {
         // Constitutional flush threshold: Use dynamic memory management instead of arbitrary limits
