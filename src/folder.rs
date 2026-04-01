@@ -9,17 +9,17 @@ use crate::config::Config;
 use crate::normalize::Normalizer;
 use crate::patterns::{LogLine, Token};
 
-/// Apply PII masking to original text by replacing email addresses with <EMAIL> tokens
+/// Apply PII masking to original text by replacing email addresses with `<EMAIL>` tokens
 ///
 /// Takes the original log line text and detected tokens, returns masked text with
-/// all Token::Email instances replaced with the literal "<EMAIL>" string.
+/// all Token::Email instances replaced with the literal `<EMAIL>` string.
 ///
 /// # Arguments
 /// * `original` - Original log line text (may contain email addresses)
 /// * `tokens` - Detected pattern tokens (including Token::Email variants)
 ///
 /// # Returns
-/// Modified string with all detected emails replaced by <EMAIL> tokens
+/// Modified string with all detected emails replaced by `<EMAIL>` tokens
 ///
 /// # Performance
 /// O(n × m) where n = text length, m = email count

@@ -1,19 +1,21 @@
-use std::sync::LazyLock;
-use regex::Regex;
 use crate::patterns::Token;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// RFC 5322 compliant email regex pattern with ReDoS protection
 /// Simplified pattern: uses bounded quantifiers {0,63} and {0,253} per RFC 5322 limits
 /// Validation layer (validate_email) provides defense-in-depth for edge cases
-static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(
-    r"\b[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}@[a-zA-Z0-9][a-zA-Z0-9.-]{0,253}\.[a-zA-Z]{2,}\b"
-).unwrap());
+static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}@[a-zA-Z0-9][a-zA-Z0-9.-]{0,253}\.[a-zA-Z]{2,}\b",
+    )
+    .unwrap()
+});
 
 /// Email pattern detector for RFC 5322 compliant email addresses
 pub struct EmailPatternDetector {
     regex: Regex,
 }
-
 
 impl EmailPatternDetector {
     /// Create new email pattern detector
@@ -26,7 +28,7 @@ impl EmailPatternDetector {
     /// Detect and replace email addresses in text
     ///
     /// Returns: (normalized_text, detected_tokens)
-    /// Replaces all valid emails with "<EMAIL>" token
+    /// Replaces all valid emails with `<EMAIL>` token
     pub fn detect_and_replace(&self, text: &str) -> (String, Vec<Token>) {
         let mut tokens = Vec::new();
         let mut normalized = text.to_string();
@@ -133,9 +135,8 @@ mod tests {
     #[test]
     fn test_multiple_emails_detection() {
         let detector = EmailPatternDetector::new().unwrap();
-        let (normalized, tokens) = detector.detect_and_replace(
-            "Forward from alice@company.com to bob@company.com"
-        );
+        let (normalized, tokens) =
+            detector.detect_and_replace("Forward from alice@company.com to bob@company.com");
 
         assert_eq!(normalized, "Forward from <EMAIL> to <EMAIL>");
         assert_eq!(tokens.len(), 2);
@@ -154,18 +155,27 @@ mod tests {
     fn test_no_false_positives() {
         let detector = EmailPatternDetector::new().unwrap();
         let test_cases = vec![
-            "@domain.com",           // Missing local part
-            "user@",                 // Missing domain
-            "user@.com",            // Invalid domain
-            "not-an-email",         // No @ symbol
-            "user@domain@extra",    // Multiple @ symbols
-            "user@domain",          // No TLD
+            "@domain.com",       // Missing local part
+            "user@",             // Missing domain
+            "user@.com",         // Invalid domain
+            "not-an-email",      // No @ symbol
+            "user@domain@extra", // Multiple @ symbols
+            "user@domain",       // No TLD
         ];
 
         for case in test_cases {
             let (normalized, tokens) = detector.detect_and_replace(case);
-            assert_eq!(normalized, case, "Should not modify invalid email: {}", case);
-            assert_eq!(tokens.len(), 0, "Should not detect tokens for invalid email: {}", case);
+            assert_eq!(
+                normalized, case,
+                "Should not modify invalid email: {}",
+                case
+            );
+            assert_eq!(
+                tokens.len(),
+                0,
+                "Should not detect tokens for invalid email: {}",
+                case
+            );
         }
     }
 
