@@ -152,7 +152,7 @@ impl NetworkDetector {
                 let port_str = cap.get(2).unwrap().as_str();
 
                 // Skip if this looks like a source file:line pattern (ends with ])
-                if full_match.ends_with("]")
+                if full_match.ends_with(']')
                     || hostname.ends_with(".go")
                     || hostname.ends_with(".rs")
                     || hostname.ends_with(".py")
@@ -182,7 +182,7 @@ impl NetworkDetector {
                     let hostname = caps.get(1).unwrap().as_str();
 
                     // Skip if this looks like a source file:line pattern
-                    if full_match.ends_with("]")
+                    if full_match.ends_with(']')
                         || hostname.ends_with(".go")
                         || hostname.ends_with(".rs")
                         || hostname.ends_with(".py")

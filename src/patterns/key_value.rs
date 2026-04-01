@@ -344,7 +344,7 @@ impl KeyValueDetector {
         key.starts_with("min_") ||
         // Value patterns that suggest configuration
         value.ends_with("ms") ||
-        value.ends_with("%") ||
+        value.ends_with('%') ||
         value.ends_with("MB") ||
         value.ends_with("KB") ||
         value.ends_with("GB")

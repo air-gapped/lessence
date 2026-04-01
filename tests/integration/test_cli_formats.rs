@@ -55,7 +55,7 @@ fn test_text_format_default() {
     // Should contain compressed log patterns with folding indicators
     let has_folded_content = lines
         .iter()
-        .any(|line| line.contains("+") && line.contains("similar"));
+        .any(|line| line.contains('+') && line.contains("similar"));
 
     // Test explicit --format text flag produces same result
     let explicit_output = Command::new("./target/release/lessence")

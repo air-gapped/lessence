@@ -18,16 +18,16 @@ fn test_plain_text_output_format() {
     let text_output = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
 
     // Should be plain text without markup
-    assert!(!text_output.contains("<"), "Should not contain HTML tags");
+    assert!(!text_output.contains('<'), "Should not contain HTML tags");
     assert!(
-        !text_output.contains("#"),
+        !text_output.contains('#'),
         "Should not contain markdown headers"
     );
-    assert!(!text_output.contains("{"), "Should not contain JSON braces");
+    assert!(!text_output.contains('{'), "Should not contain JSON braces");
 
     // Should contain folded line indicators
     assert!(
-        text_output.contains("similar") || text_output.contains("+"),
+        text_output.contains("similar") || text_output.contains('+'),
         "Should indicate folded lines"
     );
 

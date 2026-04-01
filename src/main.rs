@@ -484,7 +484,7 @@ fn main() -> Result<()> {
                 write_line(&mut handle, "## Compressed Logs\n".to_string())?;
 
                 for (i, output) in collected_outputs.iter().enumerate() {
-                    if output.contains("+") && output.contains("similar") {
+                    if output.contains('+') && output.contains("similar") {
                         write_line(&mut handle, format!("### Entry {} (Folded)\n", i + 1))?;
                         write_line(&mut handle, "```".to_string())?;
                         write_line(&mut handle, output.clone())?;

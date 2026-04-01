@@ -278,7 +278,7 @@ impl LogWithModuleDetector {
         ];
 
         syslog_daemons.contains(&daemon) ||
-        daemon.ends_with("d") ||  // Most daemons end with 'd'
+        daemon.ends_with('d') ||  // Most daemons end with 'd'
         daemon.contains("_service") ||
         daemon.contains("-service")
     }

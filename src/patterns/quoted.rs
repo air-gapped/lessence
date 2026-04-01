@@ -77,10 +77,10 @@ impl QuotedStringDetector {
                 normalized_content = new_normalized;
 
                 // Check for escaped JSON FIRST (highest priority)
-                if quoted_content.contains(r#"\"#)
-                    && (quoted_content.contains(":")
-                        || quoted_content.contains("{")
-                        || quoted_content.contains("["))
+                if quoted_content.contains('\\')
+                    && (quoted_content.contains(':')
+                        || quoted_content.contains('{')
+                        || quoted_content.contains('['))
                 {
                     // This is escaped JSON or structured data - normalize it
                     tokens.push(Token::QuotedString(quoted_string.to_string()));
