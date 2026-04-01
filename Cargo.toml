@@ -69,6 +69,11 @@ path = "tests/integration/test_cargo_validation.rs"
 name = "test_documentation"
 path = "tests/integration/test_documentation.rs"
 
+# File input tests
+[[test]]
+name = "test_file_input"
+path = "tests/integration/test_file_input.rs"
+
 # CLI validation tests
 [[test]]
 name = "test_cli_validation"

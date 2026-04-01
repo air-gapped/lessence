@@ -1,6 +1,8 @@
 use anyhow::Result;
 use clap::Parser;
+use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::PathBuf;
 
 mod analyzer;
 mod config;
@@ -154,6 +156,10 @@ struct Cli {
     /// Maximum number of lines to process (stop after this count, default: no limit)
     #[arg(long, value_parser = validate_max_lines)]
     max_lines: Option<usize>,
+
+    /// Input files (reads stdin if none given, use - for explicit stdin)
+    #[arg(value_name = "FILE")]
+    files: Vec<PathBuf>,
 }
 
 fn parse_token_count(s: &str) -> Result<usize, String> {
@@ -195,11 +201,29 @@ fn parse_token_count(s: &str) -> Result<usize, String> {
     Err(format!("Invalid token count format: '{}'. Use numbers or suffixes like 5K, 1M", s))
 }
 
+fn open_inputs(files: &[PathBuf]) -> Vec<Box<dyn BufRead>> {
+    if files.is_empty() {
+        return vec![Box::new(BufReader::new(io::stdin().lock()))];
+    }
+    let mut readers: Vec<Box<dyn BufRead>> = Vec::new();
+    for path in files {
+        if path.as_os_str() == "-" {
+            readers.push(Box::new(BufReader::new(io::stdin().lock())));
+        } else {
+            match File::open(path) {
+                Ok(f) => readers.push(Box::new(BufReader::new(f))),
+                Err(e) => eprintln!("lessence: {}: {}", path.display(), e),
+            }
+        }
+    }
+    readers
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Validate output format before creating config
-    output::OutputFormat::from_str(&cli.format)?;
+    cli.format.parse::<output::OutputFormat>()?;
 
     let config = Config {
         threshold: cli.threshold,
@@ -240,22 +264,22 @@ fn main() -> Result<()> {
 
     // Handle preflight mode: process logs but only output JSON analysis
     if config.preflight {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
+        let readers = open_inputs(&cli.files);
+        if readers.is_empty() {
+            eprintln!("lessence: no valid input");
+            std::process::exit(1);
+        }
         let mut folder = PatternFolder::new(config.clone());
-        let mut lines_processed = 0;
-
         // Process all lines but don't output log content
-        for line in reader.lines() {
+        for (lines_processed, line) in readers.into_iter().flat_map(|r| r.lines()).enumerate() {
             let line = line?;
-            
+
             // Security: Check line count limit
             if let Some(max_lines) = config.max_lines {
                 if lines_processed >= max_lines {
                     break;
                 }
             }
-            lines_processed += 1;
             
             // Security: Check line length limit
             if let Some(max_length) = config.max_line_length {
@@ -279,30 +303,34 @@ fn main() -> Result<()> {
 
     // Handle summary mode separately
     if config.summary {
-        let stdin = io::stdin();
-        let reader = BufReader::new(stdin);
-        folder.process_summary_mode(reader, &mut io::stdout())?;
+        let readers = open_inputs(&cli.files);
+        if readers.is_empty() {
+            eprintln!("lessence: no valid input");
+            std::process::exit(1);
+        }
+        let chained = readers.into_iter().flat_map(|r| r.lines());
+        folder.process_summary_mode(chained, &mut io::stdout())?;
         return Ok(());
     }
 
-    let stdin = io::stdin();
-    let reader = BufReader::new(stdin);
+    let readers = open_inputs(&cli.files);
+    if readers.is_empty() {
+        eprintln!("lessence: no valid input");
+        std::process::exit(1);
+    }
     let mut stdout = io::stdout();
     let mut output_tokens = 0;
     let mut collected_outputs = Vec::new();
-    let mut lines_processed = 0;
-
-    for line in reader.lines() {
+    for (lines_processed, line) in readers.into_iter().flat_map(|r| r.lines()).enumerate() {
         let mut line = line?;
 
-        // Security: Check line count limit (Constitutional Principle X)
+        // Security: Check line count limit
         if let Some(max_lines) = config.max_lines {
             if lines_processed >= max_lines {
                 eprintln!("Line limit of {} reached, stopping processing", max_lines);
                 break;
             }
         }
-        lines_processed += 1;
 
         // Security: Check line length limit (Constitutional Principle X)
         if let Some(max_length) = config.max_line_length {
