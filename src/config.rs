@@ -18,7 +18,6 @@ pub struct Config {
     pub stats: bool,
     pub preserve_color: bool,
     pub compact: bool,
-    pub max_tokens: Option<usize>,
     pub preflight: bool,
     pub summary: bool,
     #[allow(dead_code)]
@@ -58,7 +57,6 @@ impl Default for Config {
             stats: true,
             preserve_color: false,
             compact: true,
-            max_tokens: None,
             preflight: false,
             summary: false,
             adaptive_min_group_size: 10,

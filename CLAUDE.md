@@ -48,8 +48,8 @@ src/
 --essence                  Remove timestamps for pure content analysis
 --threads N                Thread count (default: auto, use 1 for single-threaded)
 --format text|markdown     Output format (default: text)
---max-tokens 15K           Limit output tokens (K/M suffixes)
 --no-stats                 Suppress statistics footer
+--stats-json               Emit JSON statistics to stderr
 --disable-patterns X,Y     Disable specific pattern detectors
 --threshold 85             Similarity percentage (0-100)
 --min-collapse 3           Minimum lines before folding (min: 2)

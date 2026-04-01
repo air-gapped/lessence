@@ -12,7 +12,6 @@ pub struct AnalysisResult {
     pub total_lines: usize,
     pub estimated_compression: CompressionEstimates,
     pub pattern_distribution: PatternDistribution,
-    pub token_estimates: TokenEstimates,
     pub recommendations: Vec<String>,
     pub sample_patterns: SamplePatterns,
 }
@@ -34,14 +33,6 @@ pub struct PatternDistribution {
     pub numbers: usize,
     pub uuids: usize,
     pub pids: usize,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TokenEstimates {
-    pub original: usize,
-    pub compressed_default: usize,
-    pub compressed_with_paths: usize,
-    pub compressed_aggressive: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -76,7 +67,6 @@ impl LogAnalyzer {
             ips: Vec::new(),
         };
 
-        let mut original_tokens = 0;
         let mut log_lines = Vec::new();
         let normalizer = Normalizer::new(config.clone());
 
@@ -89,9 +79,6 @@ impl LogAnalyzer {
             if !config.preserve_color {
                 line = Self::strip_ansi_codes(&line);
             }
-
-            // Count original tokens
-            original_tokens += Self::count_tokens(&line);
 
             // Normalize the line using the proper normalizer
             let log_line = normalizer.normalize_line(line)?;
@@ -115,14 +102,6 @@ impl LogAnalyzer {
             &pattern_counts
         );
 
-        // Calculate token estimates
-        let token_estimates = Self::calculate_token_estimates(
-            original_tokens,
-            &log_lines,
-            &normalizer,
-            &pattern_counts
-        );
-
         // Generate recommendations
         let recommendations = Self::generate_recommendations(&pattern_counts, total_lines);
 
@@ -136,7 +115,6 @@ impl LogAnalyzer {
             total_lines,
             estimated_compression: compression_estimates,
             pattern_distribution: pattern_counts,
-            token_estimates,
             recommendations,
             sample_patterns,
         })
@@ -265,103 +243,6 @@ impl LogAnalyzer {
         Self::simulate_compression(&path_normalized, &paths_normalizer, threshold, min_collapse)
     }
 
-    fn calculate_token_estimates(
-        original_tokens: usize,
-        log_lines: &[LogLine],
-        normalizer: &Normalizer,
-        _patterns: &PatternDistribution
-    ) -> TokenEstimates {
-        // Simulate actual compressed output and count tokens
-        let default_output = Self::simulate_compression_output(log_lines, normalizer, 85, 4, false);
-        let paths_output = Self::simulate_compression_output(log_lines, normalizer, 85, 4, true);
-        let aggressive_output = Self::simulate_compression_output(log_lines, normalizer, 70, 3, false);
-
-        let default_tokens: usize = default_output.iter().map(|line| Self::count_tokens(line)).sum();
-        let paths_tokens: usize = paths_output.iter().map(|line| Self::count_tokens(line)).sum();
-        let aggressive_tokens: usize = aggressive_output.iter().map(|line| Self::count_tokens(line)).sum();
-
-        TokenEstimates {
-            original: original_tokens,
-            compressed_default: default_tokens,
-            compressed_with_paths: paths_tokens,
-            compressed_aggressive: aggressive_tokens,
-        }
-    }
-
-    fn simulate_compression_output(
-        log_lines: &[LogLine],
-        _normalizer: &Normalizer,
-        threshold: u8,
-        min_collapse: usize,
-        with_paths: bool
-    ) -> Vec<String> {
-        let lines_to_process = if with_paths {
-            let paths_config = Config { normalize_paths: true, ..Config::default() };
-            let paths_normalizer = Normalizer::new(paths_config);
-
-            log_lines.iter()
-                .map(|line| {
-                    paths_normalizer.normalize_line(line.original.clone()).unwrap_or_else(|_| line.clone())
-                })
-                .collect::<Vec<_>>()
-        } else {
-            log_lines.to_vec()
-        };
-
-        let mut output = Vec::new();
-        let mut groups: Vec<Vec<usize>> = Vec::new();
-        let mut processed = vec![false; lines_to_process.len()];
-
-        let sim_normalizer = if with_paths {
-            let paths_config = Config { normalize_paths: true, ..Config::default() };
-            Normalizer::new(paths_config)
-        } else {
-            Normalizer::new(Config::default())
-        };
-
-        // Group similar lines
-        for i in 0..lines_to_process.len() {
-            if processed[i] {
-                continue;
-            }
-
-            let mut group = vec![i];
-            processed[i] = true;
-
-            for j in (i + 1)..lines_to_process.len() {
-                if processed[j] {
-                    continue;
-                }
-
-                let similarity = sim_normalizer.similarity_score(&lines_to_process[i], &lines_to_process[j]);
-                if similarity >= threshold as f64 {
-                    group.push(j);
-                    processed[j] = true;
-                }
-            }
-
-            groups.push(group);
-        }
-
-        // Generate output (similar to actual compression)
-        for group in groups {
-            if group.len() >= min_collapse {
-                // Create summary line (similar to actual lessence output)
-                let first_line = &lines_to_process[group[0]];
-                let summary = format!("[...collapsed {} similar lines...]", group.len());
-                output.push(first_line.original.clone());
-                output.push(summary);
-            } else {
-                // Keep original lines
-                for &idx in &group {
-                    output.push(lines_to_process[idx].original.clone());
-                }
-            }
-        }
-
-        output
-    }
-
     fn generate_recommendations(patterns: &PatternDistribution, total_lines: usize) -> Vec<String> {
         let mut recommendations = Vec::new();
 
@@ -399,11 +280,6 @@ impl LogAnalyzer {
         recommendations
     }
 
-    fn count_tokens(text: &str) -> usize {
-        // Rough token estimation (words + punctuation)
-        text.split_whitespace().count() + text.chars().filter(|c| c.is_ascii_punctuation()).count()
-    }
-
     fn strip_ansi_codes(text: &str) -> String {
         // Regex pattern for ANSI escape sequences
         // \x1b matches ESC, \[ matches [, then any sequence ending with a letter
@@ -432,13 +308,10 @@ impl LogAnalyzer {
         };
 
         let output_lines = stats.total_lines - stats.lines_saved;
-        let estimated_original_tokens = stats.total_lines * 50;
-        let estimated_compressed_tokens = output_lines * 50;
 
         let recommendations = vec![
             format!("Compression achieved: {:.1}%", compression_ratio),
             format!("Output size: {} lines (from {} original)", output_lines, stats.total_lines),
-            format!("Estimated tokens: {} (from {} original)", estimated_compressed_tokens, estimated_original_tokens),
             if compression_ratio > 90.0 {
                 "Excellent compression - highly recommended for processing".to_string()
             } else if compression_ratio > 70.0 {
@@ -457,12 +330,6 @@ impl LogAnalyzer {
                 aggressive: format!("{:.1}% compression", compression_ratio),
             },
             pattern_distribution: patterns,
-            token_estimates: TokenEstimates {
-                original: estimated_original_tokens,
-                compressed_default: estimated_compressed_tokens,
-                compressed_with_paths: estimated_compressed_tokens,
-                compressed_aggressive: estimated_compressed_tokens,
-            },
             recommendations,
             sample_patterns: SamplePatterns {
                 paths: vec![],

@@ -126,10 +126,6 @@ struct Cli {
     #[arg(long)]
     preserve_color: bool,
 
-    /// Maximum tokens to output (supports K/M suffixes: 5K, 1M, default: unlimited)
-    #[arg(long, value_parser = parse_token_count)]
-    max_tokens: Option<usize>,
-
     /// Analysis mode: 'summary' for ultra-compact, 'adaptive' for pattern discovery, 'preflight' for JSON report
     #[arg(long, value_enum)]
     analysis: Option<AnalysisMode>,
@@ -169,45 +165,6 @@ struct Cli {
     /// Input files (reads stdin if none given, use - for explicit stdin)
     #[arg(value_name = "FILE")]
     files: Vec<PathBuf>,
-}
-
-fn parse_token_count(s: &str) -> Result<usize, String> {
-    let s = s.trim().to_lowercase();
-
-    if let Ok(num) = s.parse::<usize>() {
-        return Ok(num);
-    }
-
-    // Handle suffixes
-    if s.ends_with('k') {
-        let base = s.trim_end_matches('k');
-        if let Ok(num) = base.parse::<f64>() {
-            return Ok((num * 1_000.0) as usize);
-        }
-    }
-
-    if s.ends_with('m') {
-        let base = s.trim_end_matches('m');
-        if let Ok(num) = base.parse::<f64>() {
-            return Ok((num * 1_000_000.0) as usize);
-        }
-    }
-
-    if s.ends_with("kb") || s.ends_with("kt") {
-        let base = s.trim_end_matches("kb").trim_end_matches("kt");
-        if let Ok(num) = base.parse::<f64>() {
-            return Ok((num * 1_000.0) as usize);
-        }
-    }
-
-    if s.ends_with("mb") || s.ends_with("mt") {
-        let base = s.trim_end_matches("mb").trim_end_matches("mt");
-        if let Ok(num) = base.parse::<f64>() {
-            return Ok((num * 1_000_000.0) as usize);
-        }
-    }
-
-    Err(format!("Invalid token count format: '{}'. Use numbers or suffixes like 5K, 1M", s))
 }
 
 fn open_inputs(files: &[PathBuf]) -> Vec<Box<dyn BufRead>> {
@@ -253,7 +210,6 @@ fn main() -> Result<()> {
         stats: !cli.no_stats, // Default true unless explicitly disabled
         preserve_color: cli.preserve_color,
         compact: true, // Always compact format (human-readable by default)
-        max_tokens: cli.max_tokens,
         preflight: matches!(cli.analysis, Some(AnalysisMode::Preflight)),
         summary: matches!(cli.analysis, Some(AnalysisMode::Summary)),
         adaptive_min_group_size: 10,
@@ -336,7 +292,6 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     let mut stdout = io::stdout();
-    let mut output_tokens = 0;
     let mut collected_outputs = Vec::new();
     for (lines_processed, line) in readers.into_iter().flat_map(|r| r.lines()).enumerate() {
         let mut line = line?;
@@ -364,27 +319,15 @@ fn main() -> Result<()> {
         if let Some(output) = folder.process_line(&line)? {
             if use_top_n {
                 // In top-N mode, discard incremental output — we'll use finish_top_n()
+            } else if use_structured_output {
+                collected_outputs.push(output);
             } else {
-                // Check token limit before outputting
-                if let Some(max_tokens) = config.max_tokens {
-                    let tokens = folder.count_tokens(&output);
-                    if output_tokens + tokens > max_tokens {
-                        eprintln!("Token limit of {} reached, truncating output", max_tokens);
-                        break;
-                    }
-                    output_tokens += tokens;
-                }
-
-                if use_structured_output {
-                    collected_outputs.push(output);
-                } else {
-                    match writeln!(stdout, "{}", output) {
-                        Ok(_) => {},
-                        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                            std::process::exit(0);
-                        },
-                        Err(e) => return Err(e.into()),
-                    }
+                match writeln!(stdout, "{}", output) {
+                    Ok(_) => {},
+                    Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                        std::process::exit(0);
+                    },
+                    Err(e) => return Err(e.into()),
                 }
             }
         }
@@ -413,17 +356,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Flush any remaining buffered lines (respecting token limits)
+    // Flush any remaining buffered lines
     for output in folder.finish()? {
-        if let Some(max_tokens) = config.max_tokens {
-            let tokens = folder.count_tokens(&output);
-            if output_tokens + tokens > max_tokens {
-                eprintln!("Token limit of {} reached during final flush", max_tokens);
-                break;
-            }
-            output_tokens += tokens;
-        }
-
         if use_structured_output {
             collected_outputs.push(output);
         } else {
@@ -492,9 +426,6 @@ fn main() -> Result<()> {
         folder.print_stats_json(start_time.elapsed())?;
     } else if config.stats {
         folder.print_stats(&mut io::stdout())?;
-        if config.max_tokens.is_some() {
-            println!("Output tokens: {}", output_tokens);
-        }
     }
 
     Ok(())

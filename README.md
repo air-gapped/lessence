@@ -84,8 +84,8 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 --essence                  Strip timestamps, see pure patterns
 --threads N                Thread count (default: all cores)
 --format text|markdown     Output format
---max-tokens 15K           Limit output size (K/M suffixes)
 --no-stats                 Hide statistics footer
+--stats-json               Emit JSON statistics to stderr
 --threshold 85             Similarity % (0-100, lower = more grouping)
 --min-collapse 3           Min similar lines before folding (min: 2)
 --disable-patterns X,Y     Turn off specific detectors
