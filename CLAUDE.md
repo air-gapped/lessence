@@ -40,11 +40,13 @@ src/
 
 **How folding works**: Lines are normalized (variable parts replaced with tokens like `<IP>`, `<TIMESTAMP>`, `<UUID>`), then grouped by similarity. Groups of 3+ similar lines are collapsed to a representative line + count.
 
-**Parallel processing**: When threads > 1 (default), lines are batched (100 at a time), normalized in parallel via rayon, then clustered sequentially.
+**Parallel processing**: When threads > 1 (default), lines are batched (10,000 at a time), normalized in parallel via rayon, then clustered sequentially.
 
 ## Key Flags
 
 ```
+--summary                  One-line-per-pattern frequency overview (use with --top N)
+--preflight                JSON analysis report to stdout (for automation/CI)
 --essence                  Remove timestamps for pure content analysis
 --threads N                Thread count (default: auto, use 1 for single-threaded)
 --format text|markdown     Output format (default: text)
