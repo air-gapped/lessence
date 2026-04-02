@@ -836,9 +836,30 @@ impl PatternFolder {
 
         println!("=== Unique Patterns ({total_unique_patterns} total) ===");
 
-        let patterns_output = sorted_patterns.len();
-        for (pattern, count) in sorted_patterns {
+        // Apply top-N limit if configured
+        let total_patterns = sorted_patterns.len();
+        let display_patterns: Vec<_> = if let Some(n) = self.config.top_n {
+            sorted_patterns.into_iter().take(n).collect()
+        } else {
+            sorted_patterns
+        };
+        let patterns_output = display_patterns.len();
+
+        for (pattern, count) in &display_patterns {
             println!("[{count}x] {pattern}");
+        }
+
+        if self.config.top_n.is_some() {
+            let shown_lines: usize = display_patterns.iter().map(|(_, c)| c).sum();
+            let coverage = if self.stats.total_lines > 0 {
+                (shown_lines as f64 / self.stats.total_lines as f64) * 100.0
+            } else {
+                0.0
+            };
+            eprintln!(
+                "(showing top {} of {} patterns, covering {:.0}% of input lines)",
+                patterns_output, total_patterns, coverage
+            );
         }
 
         // Output compression stats

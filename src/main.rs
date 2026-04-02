@@ -300,7 +300,8 @@ fn main() -> Result<()> {
 
             folder.process_line(&line)?;
         }
-        // No need to flush - we just want the stats
+        // Flush remaining batch buffer (parallel mode collects lines in batches)
+        let _ = folder.finish()?;
 
         // Output JSON analysis only
         let analysis = LogAnalyzer::from_folder_stats(&folder, &config)?;
