@@ -98,16 +98,6 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
     Ok(pattern)
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
-enum AnalysisMode {
-    /// Ultra-compact summary: unique patterns with counts, timestamp range only
-    Summary,
-    /// Enable adaptive pattern discovery for even better compression
-    Adaptive,
-    /// Process logs and output JSON analysis report (for automation/CI)
-    Preflight,
-}
-
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -131,9 +121,13 @@ struct Cli {
     #[arg(long)]
     preserve_color: bool,
 
-    /// Analysis mode: 'summary' for ultra-compact, 'adaptive' for pattern discovery, 'preflight' for JSON report
-    #[arg(long, value_enum)]
-    analysis: Option<AnalysisMode>,
+    /// One-line-per-pattern frequency summary (use with --top N for compact overview)
+    #[arg(long)]
+    summary: bool,
+
+    /// JSON analysis report to stdout (for automation/CI)
+    #[arg(long)]
+    preflight: bool,
 
     /// Output format: text (default), markdown
     #[arg(long, default_value = "text")]
@@ -230,10 +224,8 @@ fn main() -> Result<()> {
         stats: !cli.no_stats, // Default true unless explicitly disabled
         preserve_color: cli.preserve_color,
         compact: true, // Always compact format (human-readable by default)
-        preflight: matches!(cli.analysis, Some(AnalysisMode::Preflight)),
-        summary: matches!(cli.analysis, Some(AnalysisMode::Summary)),
-        adaptive_min_group_size: 10,
-        adaptive_max_group_size: 1000,
+        preflight: cli.preflight,
+        summary: cli.summary,
         // Constitutional CLI flags
         essence_mode: cli.essence,
         thread_count: cli.threads,
@@ -315,24 +307,41 @@ fn main() -> Result<()> {
 
     let mut folder = PatternFolder::new(config.clone());
 
-    // Handle summary mode separately
+    // Handle summary mode: use normal parallel pipeline, then output as summary
     if config.summary {
         let readers = open_inputs(&cli.files);
         if readers.is_empty() {
             eprintln!("lessence: no valid input");
             std::process::exit(1);
         }
-        let chained = readers
+        for (lines_processed, line) in readers
             .into_iter()
             .flat_map(std::io::BufRead::lines)
-            .inspect(|line| {
-                if let (Some(re), Ok(text)) = (&fail_regex, line)
-                    && re.is_match(text)
-                {
-                    pattern_matched.set(true);
-                }
-            });
-        folder.process_summary_mode(chained, &mut io::stdout())?;
+            .enumerate()
+        {
+            let mut line = line?;
+            if let Some(max_lines) = config.max_lines
+                && lines_processed >= max_lines
+            {
+                break;
+            }
+            if let Some(max_length) = config.max_line_length
+                && line.len() > max_length
+            {
+                continue;
+            }
+            if let Some(ref re) = fail_regex
+                && re.is_match(&line)
+            {
+                pattern_matched.set(true);
+            }
+            if !config.preserve_color {
+                line = strip_ansi_codes(&line);
+            }
+            folder.process_line(&line)?;
+        }
+        // Flush and output as summary (one line per group, sorted by count)
+        folder.finish_summary(config.top_n)?;
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         }

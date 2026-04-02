@@ -249,6 +249,66 @@ impl PatternFolder {
         Ok(None)
     }
 
+    /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
+    /// Uses the parallel pipeline for normalization, then merges groups with identical
+    /// normalized text and displays representative original lines.
+    pub fn finish_summary(&mut self, top_n: Option<usize>) -> Result<()> {
+        if !self.batch_buffer.is_empty() {
+            self.process_batch()?;
+        }
+
+        // Merge groups with the same normalized text (default mode keeps them
+        // separate for chronological ordering, but summary wants global counts)
+        let mut merged: HashMap<String, (usize, String)> = HashMap::new();
+        for group in &self.buffer {
+            let key = group.first().normalized.clone();
+            let count = group.count();
+            let representative = group.first().original.clone();
+            merged
+                .entry(key)
+                .and_modify(|(c, _)| *c += count)
+                .or_insert((count, representative));
+        }
+
+        // Sort by count descending
+        let mut sorted: Vec<(usize, String)> = merged.into_values().collect();
+        sorted.sort_by(|a, b| b.0.cmp(&a.0));
+
+        let total_patterns = sorted.len();
+
+        // Apply top-N limit
+        let display: Vec<_> = if let Some(n) = top_n {
+            sorted.into_iter().take(n).collect()
+        } else {
+            sorted
+        };
+        let shown_count = display.len();
+
+        // Output: one line per pattern with representative original line
+        for (count, representative) in &display {
+            let display_line = if representative.len() > 200 {
+                format!("{}...", &representative[..200])
+            } else {
+                representative.clone()
+            };
+            println!("[{count}x] {display_line}");
+        }
+
+        // Coverage info on stderr
+        let shown_lines: usize = display.iter().map(|(c, _)| c).sum();
+        let coverage = if self.stats.total_lines > 0 {
+            (shown_lines as f64 / self.stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+        eprintln!(
+            "({shown_count} of {total_patterns} patterns, {shown_lines} of {} lines, {coverage:.0}% coverage)",
+            self.stats.total_lines
+        );
+
+        Ok(())
+    }
+
     pub fn finish(&mut self) -> Result<Vec<String>> {
         // Constitutional compliance: Process any remaining batch
         if !self.batch_buffer.is_empty() {
@@ -759,256 +819,6 @@ impl PatternFolder {
         count
     }
 
-    /// Process all lines in summary mode: collect unique patterns with counts and timestamp range
-    pub fn process_summary_mode<I, W>(&mut self, lines: I, writer: &mut W) -> Result<()>
-    where
-        I: Iterator<Item = io::Result<String>>,
-        W: Write,
-    {
-        let mut pattern_counts: HashMap<String, usize> = HashMap::new();
-        let mut first_timestamp: Option<String> = None;
-        let mut last_timestamp: Option<String> = None;
-
-        static ANSI_REGEX: std::sync::LazyLock<regex::Regex> =
-            std::sync::LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
-
-        for (lines_processed, line) in lines.enumerate() {
-            let line = line?;
-
-            // Security: Check line count limit (Constitutional Principle X)
-            if let Some(max_lines) = self.config.max_lines
-                && lines_processed >= max_lines
-            {
-                break;
-            }
-
-            self.stats.total_lines += 1;
-
-            // Security: Check line length limit (Constitutional Principle X)
-            if let Some(max_length) = self.config.max_line_length
-                && line.len() > max_length
-            {
-                continue;
-            }
-
-            // Strip ANSI if needed
-            let line = if self.config.preserve_color {
-                line
-            } else {
-                ANSI_REGEX.replace_all(&line, "").to_string()
-            };
-
-            // Extract timestamp for range tracking
-            if let Some(timestamp) = self.extract_timestamp(&line) {
-                if first_timestamp.is_none() {
-                    first_timestamp = Some(timestamp.clone());
-                }
-                last_timestamp = Some(timestamp);
-            }
-
-            // Normalize the line to get the pattern
-            let normalized_line = self.normalizer.normalize_line(line)?;
-
-            if !normalized_line.tokens.is_empty() {
-                self.stats.patterns_detected += 1;
-                self.count_pattern_types(&normalized_line.tokens);
-            }
-
-            // Count this pattern
-            *pattern_counts
-                .entry(normalized_line.normalized)
-                .or_insert(0) += 1;
-        }
-
-        // Sort patterns by frequency (highest first)
-        let mut sorted_patterns: Vec<(String, usize)> = pattern_counts.into_iter().collect();
-        sorted_patterns.sort_by(|a, b| b.1.cmp(&a.1));
-
-        let total_unique_patterns = sorted_patterns.len();
-
-        // Output ultra-compact summary
-        println!("=== lessence Summary Mode ===");
-
-        if let (Some(first), Some(last)) = (&first_timestamp, &last_timestamp) {
-            println!("Time range: {first} → {last}");
-        }
-        println!();
-
-        println!("=== Unique Patterns ({total_unique_patterns} total) ===");
-
-        // Apply top-N limit if configured
-        let total_patterns = sorted_patterns.len();
-        let display_patterns: Vec<_> = if let Some(n) = self.config.top_n {
-            sorted_patterns.into_iter().take(n).collect()
-        } else {
-            sorted_patterns
-        };
-        let patterns_output = display_patterns.len();
-
-        for (pattern, count) in &display_patterns {
-            println!("[{count}x] {pattern}");
-        }
-
-        if self.config.top_n.is_some() {
-            let shown_lines: usize = display_patterns.iter().map(|(_, c)| c).sum();
-            let coverage = if self.stats.total_lines > 0 {
-                (shown_lines as f64 / self.stats.total_lines as f64) * 100.0
-            } else {
-                0.0
-            };
-            eprintln!(
-                "(showing top {} of {} patterns, covering {:.0}% of input lines)",
-                patterns_output, total_patterns, coverage
-            );
-        }
-
-        // Output compression stats
-        if self.config.stats {
-            self.print_summary_stats(writer, total_unique_patterns, patterns_output)?;
-        }
-
-        Ok(())
-    }
-
-    /// Extract timestamp from a line (simplified version)
-    fn extract_timestamp(&self, line: &str) -> Option<String> {
-        // Look for common timestamp patterns at the beginning of the line
-        let timestamp_patterns = [
-            r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{4}|Z)?)",
-            r"^([IWEF]\d{4} \d{2}:\d{2}:\d{2}\.\d+)",
-            r"^(\w{3} \d{1,2} \d{2}:\d{2}:\d{2})",
-        ];
-
-        for pattern in &timestamp_patterns {
-            if let Ok(re) = regex::Regex::new(pattern)
-                && let Some(captures) = re.captures(line)
-                && let Some(timestamp) = captures.get(1)
-            {
-                return Some(timestamp.as_str().to_string());
-            }
-        }
-        None
-    }
-
-    /// Print summary-specific stats
-    fn print_summary_stats<W: Write>(
-        &self,
-        writer: &mut W,
-        total_patterns: usize,
-        patterns_output: usize,
-    ) -> Result<()> {
-        let dedup_ratio = if self.stats.total_lines > 0 {
-            ((self.stats.total_lines - total_patterns) as f64 / self.stats.total_lines as f64)
-                * 100.0
-        } else {
-            0.0
-        };
-
-        writeln!(writer, "\n---")?;
-        writeln!(writer, "# lessence Summary Compression Report")?;
-        writeln!(writer)?;
-        writeln!(writer, "## Summary")?;
-        writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
-        writeln!(
-            writer,
-            "- **Compressed**: {patterns_output} unique patterns"
-        )?;
-        writeln!(
-            writer,
-            "- **Pattern reduction**: {} total → {} unique ({:.1}% deduplication)",
-            self.stats.total_lines, total_patterns, dedup_ratio
-        )?;
-        writeln!(
-            writer,
-            "- **Patterns detected**: {} across {} categories",
-            self.stats.patterns_detected,
-            self.count_active_pattern_types()
-        )?;
-        writeln!(writer)?;
-
-        writeln!(writer, "## Pattern Distribution")?;
-        writeln!(writer, "| Pattern Type | Count | Description |")?;
-        writeln!(writer, "|--------------|-------|-------------|")?;
-
-        if self.stats.timestamps > 0 {
-            writeln!(
-                writer,
-                "| Timestamps | {} | Log timestamps, dates, times |",
-                self.stats.timestamps
-            )?;
-        }
-        if self.stats.ips > 0 {
-            writeln!(
-                writer,
-                "| IP Addresses | {} | IPv4, IPv6, ports, network addresses |",
-                self.stats.ips
-            )?;
-        }
-        if self.stats.hashes > 0 {
-            writeln!(
-                writer,
-                "| Hashes | {} | Pod UIDs, container IDs, volume names, checksums |",
-                self.stats.hashes
-            )?;
-        }
-        if self.stats.uuids > 0 {
-            writeln!(
-                writer,
-                "| UUIDs | {} | Request IDs, trace IDs, unique identifiers |",
-                self.stats.uuids
-            )?;
-        }
-        if self.stats.durations > 0 {
-            writeln!(
-                writer,
-                "| Durations | {} | Timeouts, latencies, elapsed times |",
-                self.stats.durations
-            )?;
-        }
-        if self.stats.pids > 0 {
-            writeln!(
-                writer,
-                "| Process IDs | {} | PIDs, thread IDs, process identifiers |",
-                self.stats.pids
-            )?;
-        }
-        if self.stats.paths > 0 {
-            writeln!(
-                writer,
-                "| File Paths | {} | File paths, URLs, directories |",
-                self.stats.paths
-            )?;
-        }
-        if self.stats.kubernetes > 0 {
-            writeln!(
-                writer,
-                "| Kubernetes | {} | Namespaces, volumes, plugins, pod names |",
-                self.stats.kubernetes
-            )?;
-        }
-
-        writeln!(writer)?;
-        writeln!(writer, "## Recommendations for Analysis")?;
-        writeln!(
-            writer,
-            "- Focus on high-frequency patterns first (top of the list)"
-        )?;
-        writeln!(
-            writer,
-            "- Use pattern frequencies to prioritize debugging efforts"
-        )?;
-        writeln!(
-            writer,
-            "- Search original logs with normalized patterns for specific instances"
-        )?;
-        writeln!(
-            writer,
-            "- Each `[Nx]` indicates N occurrences of that exact error pattern"
-        )?;
-        writeln!(writer, "---")?;
-
-        Ok(())
-    }
 
     /// Parallel batch processing: normalize in parallel, cluster sequentially
     fn process_batch(&mut self) -> Result<()> {

@@ -20,10 +20,6 @@ pub struct Config {
     pub compact: bool,
     pub preflight: bool,
     pub summary: bool,
-    #[allow(dead_code)]
-    pub adaptive_min_group_size: usize,
-    #[allow(dead_code)]
-    pub adaptive_max_group_size: usize,
     // Constitutional CLI flags
     pub essence_mode: bool, // --essence: timestamp removal/tokenization for temporal independence
     pub thread_count: Option<usize>, // --threads: number of threads (1=single-threaded, None=auto-detect)
@@ -60,8 +56,6 @@ impl Default for Config {
             compact: true,
             preflight: false,
             summary: false,
-            adaptive_min_group_size: 10,
-            adaptive_max_group_size: 1000,
             // Constitutional CLI flags defaults
             essence_mode: false, // Essence mode disabled by default
             thread_count: None,  // Auto-detect threads by default (1=single-threaded)
