@@ -102,7 +102,7 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
 #[command(author, version, about, long_about = None)]
 struct Cli {
     /// Similarity percentage required to collapse (0-100)
-    #[arg(long, default_value_t = 85, value_parser = clap::value_parser!(u8).range(0..=100))]
+    #[arg(long, default_value_t = 75, value_parser = clap::value_parser!(u8).range(0..=100))]
     threshold: u8,
 
     /// Minimum lines before folding

@@ -56,7 +56,7 @@ src/
 --fail-on-pattern REGEX    Exit 1 if any input line matches (for CI gating)
 --completions SHELL        Generate shell completions (bash/zsh/fish/elvish/powershell)
 --disable-patterns X,Y     Disable specific pattern detectors
---threshold 85             Similarity percentage (0-100)
+--threshold 75             Similarity percentage (0-100)
 --min-collapse 3           Minimum lines before folding (min: 2)
 --sanitize-pii             Mask email addresses
 --preserve-color           Keep ANSI codes
