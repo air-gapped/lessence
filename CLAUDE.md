@@ -1,6 +1,6 @@
 # CLAUDE.md - lessence
 
-A CLI tool that compresses repetitive logs while preserving 100% of unique information. Pipe any log through it to see the signal, not the noise.
+lessence ("log essence") — a CLI tool that extracts the essence of massive logs, preserving 100% of unique information while folding repetitive noise. Pipe any log through it to see the signal.
 
 ```bash
 lessence < app.log                        # compress, parallel by default

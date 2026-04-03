@@ -1,4 +1,4 @@
-# lessence
+# lessence — extract the essence of your logs
 
 Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually broken?
 
