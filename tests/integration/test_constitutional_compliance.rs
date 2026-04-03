@@ -59,10 +59,12 @@ fn test_constitutional_compliance_kubelet() {
         "❌ CONSTITUTIONAL VIOLATION: {compression_ratio:.2}% < 98.4% compression"
     );
 
-    // Validate we're within expected range (current baseline: ~1,094 lines)
+    // Validate we're within expected range (baseline: ~941 lines at threshold=75)
+    // Lower bound catches regressions that merge too aggressively
+    // Upper bound is the constitutional limit
     assert!(
-        (1000..=1100).contains(&output_lines),
-        "Output {output_lines} outside expected range [1000, 1100]"
+        (800..=1100).contains(&output_lines),
+        "Output {output_lines} outside expected range [800, 1100]"
     );
 
     println!("✅ Constitutional compliance PASSED");

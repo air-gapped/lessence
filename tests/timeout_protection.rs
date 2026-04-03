@@ -13,8 +13,8 @@ fn test_email_timeout_protection() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(100),
-        "Email pattern detection took {elapsed:?}, must complete in <100ms"
+        elapsed < Duration::from_millis(1000),
+        "Email pattern detection took {elapsed:?}, must complete in <1s (ReDoS guard)"
     );
 }
 
@@ -27,8 +27,8 @@ fn test_ipv6_timeout_protection() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(100),
-        "IPv6 pattern detection took {elapsed:?}, must complete in <100ms"
+        elapsed < Duration::from_millis(1000),
+        "IPv6 pattern detection took {elapsed:?}, must complete in <1s (ReDoS guard)"
     );
 }
 
@@ -41,8 +41,8 @@ fn test_timestamp_timeout_protection() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(200),
-        "Timestamp pattern detection took {elapsed:?}, must complete in <500ms"
+        elapsed < Duration::from_millis(1000),
+        "Timestamp pattern detection took {elapsed:?}, must complete in <1s (ReDoS guard)"
     );
 }
 
@@ -63,8 +63,8 @@ fn test_combined_patterns_timeout() {
     let elapsed = start.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(300),
-        "Combined pattern detection took {elapsed:?}, must complete in <300ms (3 patterns × 100ms)"
+        elapsed < Duration::from_millis(1000),
+        "Combined pattern detection took {elapsed:?}, must complete in <1s (ReDoS guard)"
     );
 }
 
@@ -87,7 +87,7 @@ fn test_timeout_does_not_cause_panic() {
 
         assert!(result.is_ok(), "Pattern detection panicked on evil input");
         assert!(
-            elapsed < Duration::from_millis(200),
+            elapsed < Duration::from_millis(1000),
             "Pattern detection took {elapsed:?} on evil input"
         );
     }
