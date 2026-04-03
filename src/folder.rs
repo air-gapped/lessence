@@ -290,9 +290,27 @@ impl PatternFolder {
         };
         let shown_count = display.len();
 
+        // Detect terminal width for summary truncation (unlimited when piped)
+        let max_width: Option<usize> = if atty::is(atty::Stream::Stdout) {
+            terminal_size::terminal_size().map(|(w, _)| w.0 as usize)
+        } else {
+            None
+        };
+
         // Output: one line per pattern with representative original line
         for (count, representative) in &display {
-            println!("[{count}x] {representative}");
+            let prefix = format!("[{count}x] ");
+            match max_width {
+                Some(width) if prefix.len() + representative.len() > width => {
+                    let avail = width.saturating_sub(prefix.len() + 3); // 3 for "..."
+                    if avail > 20 {
+                        println!("{prefix}{}...", &representative[..avail]);
+                    } else {
+                        println!("{prefix}{representative}");
+                    }
+                }
+                _ => println!("{prefix}{representative}"),
+            }
         }
 
         // Coverage info on stderr
