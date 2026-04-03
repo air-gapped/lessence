@@ -73,6 +73,19 @@ Valid pattern names (16): `timestamp`, `hash`, `network`, `uuid`, `email`, `path
 - **CLI pipeline tool** — stdin/stdout, non-destructive, Unix composable.
 - **Test-first** — if it's not tested, it's not done.
 
+## Commits
+
+Conventional commits drive release notes via release-please. The commit type
+controls what appears in the changelog — choose carefully:
+
+- `feat:` / `fix:` / `perf:` — **user-facing** changes. These appear in release notes.
+- `test:` / `refactor:` / `style:` — **internal** changes. Hidden from release notes.
+- `chore:` / `docs:` / `ci:` / `build:` — **infrastructure**. Hidden from release notes.
+
+The first line of the commit message becomes the changelog entry. Write it for
+users, not developers: "default cap of 30 patterns in --summary mode" is better
+than "add DEFAULT_SUMMARY_CAP constant to finish_summary".
+
 ## Safety
 
 - Commit before risky operations (`git add . && git commit -m "protect work"`)
