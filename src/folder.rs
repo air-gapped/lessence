@@ -819,7 +819,6 @@ impl PatternFolder {
         count
     }
 
-
     /// Parallel batch processing: normalize in parallel, cluster sequentially
     fn process_batch(&mut self) -> Result<()> {
         let batch = std::mem::take(&mut self.batch_buffer);
