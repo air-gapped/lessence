@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
   "packages": {
     ".": {
       "release-type": "rust",
@@ -16,8 +17,10 @@
         { "type": "test", "section": "Tests", "hidden": true },
         { "type": "build", "section": "Build System", "hidden": true },
         { "type": "ci", "section": "CI", "hidden": true }
-      ]
+      ],
+      "draft": true,
+      "pull-request-header": ":rocket: A new release is ready to publish",
+      "pull-request-footer": "Merging creates a **draft** GitHub release. Review the release notes, add highlights if needed, then publish."
     }
-  },
-  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json"
+  }
 }
