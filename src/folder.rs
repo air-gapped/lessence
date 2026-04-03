@@ -286,12 +286,7 @@ impl PatternFolder {
 
         // Output: one line per pattern with representative original line
         for (count, representative) in &display {
-            let display_line = if representative.len() > 200 {
-                format!("{}...", &representative[..200])
-            } else {
-                representative.clone()
-            };
-            println!("[{count}x] {display_line}");
+            println!("[{count}x] {representative}");
         }
 
         // Coverage info on stderr
