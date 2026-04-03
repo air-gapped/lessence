@@ -291,7 +291,8 @@ impl PatternFolder {
         let shown_count = display.len();
 
         // Detect terminal width for summary truncation (unlimited when piped)
-        let max_width: Option<usize> = if atty::is(atty::Stream::Stdout) {
+        use std::io::IsTerminal;
+        let max_width: Option<usize> = if std::io::stdout().is_terminal() {
             terminal_size::terminal_size().map(|(w, _)| w.0 as usize)
         } else {
             None
