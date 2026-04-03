@@ -275,12 +275,18 @@ impl PatternFolder {
         sorted.sort_by(|a, b| b.0.cmp(&a.0));
 
         let total_patterns = sorted.len();
+        const DEFAULT_SUMMARY_CAP: usize = 30;
 
-        // Apply top-N limit
-        let display: Vec<_> = if let Some(n) = top_n {
-            sorted.into_iter().take(n).collect()
+        // Apply limit: explicit --top N, or default cap of 30 when no --top given
+        let (display, was_capped): (Vec<_>, bool) = if let Some(0) = top_n {
+            // --top 0 means show all (no limit)
+            (sorted, false)
+        } else if let Some(n) = top_n {
+            (sorted.into_iter().take(n).collect(), false)
+        } else if total_patterns > DEFAULT_SUMMARY_CAP {
+            (sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(), true)
         } else {
-            sorted
+            (sorted, false)
         };
         let shown_count = display.len();
 
@@ -296,10 +302,16 @@ impl PatternFolder {
         } else {
             0.0
         };
-        eprintln!(
-            "({shown_count} of {total_patterns} patterns, {shown_lines} of {} lines, {coverage:.0}% coverage)",
-            self.stats.total_lines
-        );
+        if was_capped {
+            eprintln!(
+                "({shown_count} of {total_patterns} patterns, {coverage:.0}% coverage — use --top N to adjust, or --top 0 for all)",
+            );
+        } else {
+            eprintln!(
+                "({shown_count} of {total_patterns} patterns, {shown_lines} of {} lines, {coverage:.0}% coverage)",
+                self.stats.total_lines
+            );
+        }
 
         Ok(())
     }
