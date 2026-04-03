@@ -30,12 +30,14 @@ lessence                      # normalizes variables, then groups
 
 ## Install
 
-**Prebuilt binaries** — download from [GitHub Releases](https://github.com/air-gapped/lessence/releases/latest) for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows. Extract and put `lessence` in your PATH.
-
-**From source** — requires Rust 1.90+:
 ```bash
-cargo install --path .
+cargo install lessence          # from crates.io (requires Rust 1.90+)
+cargo binstall lessence         # prebuilt binary via cargo-binstall
 ```
+
+Or download a binary from [GitHub Releases](https://github.com/air-gapped/lessence/releases/latest) for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows.
+
+On macOS, you may need to remove the quarantine flag: `xattr -d com.apple.quarantine lessence`
 
 ## Usage
 
