@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.3.0](https://github.com/air-gapped/lessence/compare/v0.2.0...v0.3.0) (2026-04-03)
+
+
+### Features
+
+* auto-truncate long lines in --summary to terminal width ([0165591](https://github.com/air-gapped/lessence/commit/0165591c0b42101b413c4ecf3e3a00a42fae222c))
+* default cap of 30 patterns in --summary mode ([6153a82](https://github.com/air-gapped/lessence/commit/6153a82d3bb88b6adbd1f0088e922fe495260641))
+
+
+### Bug Fixes
+
+* remove hardcoded 200-char truncation from --summary output ([0722aeb](https://github.com/air-gapped/lessence/commit/0722aebb4210c23f5c956c0297980db8d116caf4))
+* replace unmaintained atty crate with std::io::IsTerminal ([3970da8](https://github.com/air-gapped/lessence/commit/3970da8bc8dcd65bcea8c5500286fa70b1cd44c5))
+* stabilize timing-dependent tests under parallel execution ([694f2d2](https://github.com/air-gapped/lessence/commit/694f2d2f880b8508a2da859ba0f449f373d5c413))
+
+
+### Performance Improvements
+
+* change default --threshold from 85 to 75 ([b80432c](https://github.com/air-gapped/lessence/commit/b80432c2c2f1f992a796f6ddfcab3ae6636e7b2c))
+
 ## [0.1.2](https://github.com/air-gapped/lessence/compare/v0.1.1...v0.1.2) (2026-04-01)
 
 
