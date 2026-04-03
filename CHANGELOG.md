@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [1.0.0](https://github.com/air-gapped/lessence/compare/v0.1.2...v1.0.0) (2026-04-03)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace --analysis with --summary and --preflight flags
+
+### Features
+
+* replace --analysis with --summary and --preflight flags ([aafa6e2](https://github.com/air-gapped/lessence/commit/aafa6e28a453db1c40cd495fc78cdeb513055c41))
+
+
+### Bug Fixes
+
+* flush batch buffer in preflight/summary modes and respect --top N in summary ([bb27d3a](https://github.com/air-gapped/lessence/commit/bb27d3aa5cf88e12560d9010bf8467686ed63431))
+
 ## [0.1.2](https://github.com/air-gapped/lessence/compare/v0.1.1...v0.1.2) (2026-04-01)
 
 
