@@ -8,9 +8,8 @@ fn test_cargo_toml_package_name_is_lessence() {
 
     let cargo_content = fs::read_to_string("Cargo.toml").expect("Cargo.toml should exist");
 
-    let cargo_toml: Value = cargo_content
-        .parse()
-        .expect("Cargo.toml should be valid TOML");
+    let cargo_toml: Value =
+        toml::from_str(&cargo_content).expect("Cargo.toml should be valid TOML");
 
     // Check package name
     let package_name = cargo_toml
@@ -30,9 +29,8 @@ fn test_cargo_toml_binary_name_is_lessence() {
     // Verify binary section specifies lessence
     let cargo_content = fs::read_to_string("Cargo.toml").expect("Cargo.toml should exist");
 
-    let cargo_toml: Value = cargo_content
-        .parse()
-        .expect("Cargo.toml should be valid TOML");
+    let cargo_toml: Value =
+        toml::from_str(&cargo_content).expect("Cargo.toml should be valid TOML");
 
     // Check binary name
     if let Some(bin_section) = cargo_toml.get("bin")
@@ -54,9 +52,8 @@ fn test_cargo_toml_description_is_seo_optimized() {
     // Verify description contains SEO keywords
     let cargo_content = fs::read_to_string("Cargo.toml").expect("Cargo.toml should exist");
 
-    let cargo_toml: Value = cargo_content
-        .parse()
-        .expect("Cargo.toml should be valid TOML");
+    let cargo_toml: Value =
+        toml::from_str(&cargo_content).expect("Cargo.toml should be valid TOML");
 
     let description = cargo_toml
         .get("package")
@@ -88,9 +85,8 @@ fn test_cargo_toml_keywords_are_optimized() {
     // Verify keywords are SEO-optimized
     let cargo_content = fs::read_to_string("Cargo.toml").expect("Cargo.toml should exist");
 
-    let cargo_toml: Value = cargo_content
-        .parse()
-        .expect("Cargo.toml should be valid TOML");
+    let cargo_toml: Value =
+        toml::from_str(&cargo_content).expect("Cargo.toml should be valid TOML");
 
     if let Some(keywords) = cargo_toml
         .get("package")
