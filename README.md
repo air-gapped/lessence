@@ -30,11 +30,12 @@ lessence                      # normalizes variables, then groups
 
 ## Install
 
+**Prebuilt binaries** — download from [GitHub Releases](https://github.com/air-gapped/lessence/releases/latest) for Linux (x86_64, aarch64), macOS (Intel, Apple Silicon), and Windows. Extract and put `lessence` in your PATH.
+
+**From source** — requires Rust 1.90+:
 ```bash
 cargo install --path .
 ```
-
-Requires Rust 1.90+. Single binary, no runtime dependencies.
 
 ## Usage
 
@@ -81,6 +82,8 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Flags
 
 ```
+--summary                  One-line-per-pattern frequency overview
+--preflight                JSON analysis report (for automation/CI)
 --essence                  Strip timestamps, see pure patterns
 --threads N                Thread count (default: all cores)
 --format text|markdown     Output format
@@ -89,7 +92,7 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 --top N                    Show only N most frequent patterns by count
 --fail-on-pattern REGEX    Exit 1 if input matches (for CI gating)
 --completions SHELL        Generate shell completions (bash/zsh/fish)
---threshold 85             Similarity % (0-100, lower = more grouping)
+--threshold 75             Similarity % (0-100, lower = more grouping)
 --min-collapse 3           Min similar lines before folding (min: 2)
 --disable-patterns X,Y     Turn off specific detectors
 --sanitize-pii             Replace emails with <EMAIL>
@@ -111,6 +114,24 @@ Disable any with `--disable-patterns timestamp,email`.
 3. **Fold** — collapse groups of 3+ into representative line + count
 
 Parallel by default — uses all CPU cores for normalization.
+
+## Agent Skill
+
+A `SKILL.md` is included at `.claude/skills/lessence/` that teaches AI coding agents when and how to use lessence — triage workflows, flag reference, common pitfalls. The `SKILL.md` format is supported by [Claude Code](https://claude.ai/code), [OpenCode](https://opencode.ai), and other agents that scan `.claude/skills/`.
+
+**If you cloned the repo**, the skill is already active in this project directory.
+
+**To install globally** (available in all projects):
+
+```bash
+mkdir -p ~/.claude/skills/lessence/references
+curl -fsSL https://raw.githubusercontent.com/air-gapped/lessence/main/.claude/skills/lessence/SKILL.md \
+  -o ~/.claude/skills/lessence/SKILL.md
+curl -fsSL https://raw.githubusercontent.com/air-gapped/lessence/main/.claude/skills/lessence/references/flags.md \
+  -o ~/.claude/skills/lessence/references/flags.md
+```
+
+Then just mention logs, errors, or "what's not normal" and the skill triggers.
 
 ## Development
 

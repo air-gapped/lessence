@@ -9,6 +9,7 @@ repository = "https://github.com/air-gapped/lessence"
 readme = "README.md"
 keywords = ["log-compression", "cli", "log-analysis", "devops", "deduplication"]
 categories = ["command-line-utilities", "text-processing"]
+exclude = [".github/", ".ideas/", ".claude/", "examples/", "tests/", "benches/"]
 
 [[bin]]
 name = "lessence"
