@@ -1,89 +1,77 @@
 # lessence Makefile
-# Common development tasks
+# Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
-.PHONY: build test test-unit test-integration test-security bench lint audit clean setup help
-
-# Configuration
-BINARY := lessence
+.PHONY: ci fmt clippy doc build test deny check install setup clean help
 
 #---------------------------------------------------------------------------
-# Setup
+# CI pipeline (matches GitHub Actions step-for-step)
 #---------------------------------------------------------------------------
 
-## setup: Configure git hooks and dev environment
-setup:
-	git config core.hooksPath .githooks
-	@echo "Git hooks configured"
+## ci: Run the full CI pipeline locally (same as GitHub Actions)
+ci: fmt clippy doc build test deny
+	@echo "✓ All CI checks passed"
 
-#---------------------------------------------------------------------------
-# Build
-#---------------------------------------------------------------------------
+## fmt: Check formatting (cargo fmt --check)
+fmt:
+	cargo fmt --all -- --check
+
+## clippy: Run clippy with warnings as errors
+clippy:
+	cargo clippy --all-targets -- -D warnings
+
+## doc: Build docs with warnings as errors
+doc:
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 ## build: Build release binary
 build:
 	cargo build --release
 
-## clean: Remove build artifacts
-clean:
-	cargo clean
-
-#---------------------------------------------------------------------------
-# Test
-#---------------------------------------------------------------------------
-
-## test: Run all tests (release mode — required for timing assertions)
+## test: Run all tests via nextest (release mode)
 test:
-	cargo test --release
+	cargo nextest run --release
 
-## test-unit: Run unit tests only
+## deny: Check dependencies (advisories, licenses, bans)
+deny:
+	cargo deny check
+
+#---------------------------------------------------------------------------
+# Quick checks
+#---------------------------------------------------------------------------
+
+## check: Fast pre-push validation (skip build + tests)
+check: fmt clippy deny
+	@echo "✓ Quick checks passed"
+
+## test-unit: Run unit tests only (fast)
 test-unit:
 	cargo test --lib
 
-## test-integration: Run integration tests only
-test-integration:
-	cargo test --tests --release
-
-## test-security: Run security/ReDoS tests
-test-security:
-	cargo test --release --test test_ipv6_evil_patterns
-
-## bench: Run performance/detection benchmarks
-bench:
-	cargo test --release --test test_detection_performance -- --nocapture
-
 #---------------------------------------------------------------------------
-# Quality
+# Install
 #---------------------------------------------------------------------------
 
-## lint: Run clippy (or warn-as-error build if clippy unavailable)
-lint:
-	@if command -v cargo-clippy >/dev/null 2>&1 || cargo clippy --version >/dev/null 2>&1; then \
-		cargo clippy --all-targets -- -D warnings; \
-	else \
-		echo "clippy not found, falling back to RUSTFLAGS=-Dwarnings"; \
-		RUSTFLAGS="-D warnings" cargo check --all-targets; \
-	fi
+## install: Build and install to ~/.cargo/bin
+install: build
+	cp ./target/release/lessence ~/.cargo/bin/lessence
+	@lessence --version
 
-## audit: Check dependencies for known vulnerabilities
-audit:
-	cargo audit
+## setup: Install required development tools
+setup:
+	@echo "Installing development tools..."
+	cargo install cargo-deny
+	curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
+	rustup component add clippy rustfmt
+	@echo ""
+	@echo "✓ Tools installed:"
+	@cargo deny --version
+	@cargo nextest --version
+	@cargo clippy --version
+	@cargo fmt --version
 
-## check: Build check + lint + audit (fast pre-commit validation)
-check: lint audit
-	cargo check
-
-#---------------------------------------------------------------------------
-# Release
-#---------------------------------------------------------------------------
-
-## fmt: Format all source files
-fmt:
-	cargo fmt
-
-## release-check: Verify everything is ready for release
-release-check: fmt lint test
-	cargo doc --no-deps
-	@echo "All checks passed — ready to release"
+## clean: Remove build artifacts
+clean:
+	cargo clean
 
 #---------------------------------------------------------------------------
 # Help
@@ -92,5 +80,10 @@ release-check: fmt lint test
 ## help: Show this help
 help:
 	@echo "lessence Development Commands"
+	@echo ""
+	@echo "  make ci       — Run full CI pipeline (same as GitHub Actions)"
+	@echo "  make check    — Quick pre-push validation (fmt + clippy + deny)"
+	@echo "  make setup    — Install required dev tools"
+	@echo "  make install  — Build and install to PATH"
 	@echo ""
 	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed 's/^/ /'
