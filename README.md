@@ -60,14 +60,16 @@ docker-compose logs | lessence
 # What's going on? One screen, no scrolling
 kubectl logs pod/api-server | lessence --human
 
-# Strip timestamps to see pure patterns
-lessence --essence < app.log
+# Files or stdin — both work
+lessence app.log                          # direct file argument
+lessence app.log server.log worker.log    # multiple files
+lessence --essence < app.log              # stdin works too
 
 # Markdown report
-lessence --format markdown < app.log > report.md
+lessence --format markdown app.log > report.md
 
 # Mask emails before sharing logs
-lessence --sanitize-pii < app.log
+lessence --sanitize-pii app.log
 ```
 
 ## Essence Mode

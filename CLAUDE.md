@@ -3,11 +3,11 @@
 lessence ("log essence") — a CLI tool that extracts the essence of massive logs, preserving 100% of unique information while folding repetitive noise. Pipe any log through it to see the signal.
 
 ```bash
-lessence < app.log                        # compress, parallel by default
+lessence app.log                          # file argument (or stdin via <)
 kubectl logs pod | lessence               # kubernetes noise reduction
-lessence --essence < app.log              # remove timestamps, show patterns
-lessence --format markdown < app.log      # markdown output
-lessence --threads 1 < app.log            # single-threaded mode
+lessence --human app.log                  # one screen, no scrolling
+lessence --essence app.log                # remove timestamps, show patterns
+lessence --format markdown app.log        # markdown output
 ```
 
 ## Build & Test
