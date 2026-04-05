@@ -170,6 +170,7 @@ fn test_security_performance_overhead() {
     let start = Instant::now();
     for _ in 0..iterations {
         let _ = lessence::should_process_line(test_line, &config_no_security);
+        let _ = lessence::should_process_line_count(0, &config_no_security);
     }
     let baseline_time = start.elapsed();
 
