@@ -52,7 +52,8 @@ grep '^version' Cargo.toml
 
 ## Configuration
 
-- **Workflow**: `.github/workflows/release.yml`
+- **PR management**: `.github/workflows/release.yml` — runs on push to main, only manages the release PR
+- **Build + publish**: `.github/workflows/release-build.yml` — triggers on `release: published` event only
 - **Release-please**: uses defaults (auto-detects Rust from Cargo.toml, no config file)
 - **Auth**: GitHub App token via `RELEASE_BOT_APP_ID` / `RELEASE_BOT_PRIVATE_KEY` secrets
 - **Binary builds**: `taiki-e/upload-rust-binary-action` with musl for Linux
