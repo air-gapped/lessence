@@ -452,7 +452,10 @@ fn main() -> Result<()> {
             }
         }
         if fit_truncated > 0 {
-            let _ = writeln!(stdout, "... {fit_truncated} more patterns (remove --fit for full output)");
+            let _ = writeln!(
+                stdout,
+                "... {fit_truncated} more patterns (remove --fit for full output)"
+            );
         }
         let shown = groups_to_show.len();
         eprintln!(

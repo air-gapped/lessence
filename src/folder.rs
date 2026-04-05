@@ -282,24 +282,9 @@ impl PatternFolder {
         const DEFAULT_SUMMARY_CAP: usize = 30;
 
         // Apply limit: explicit --top N, --fit budget, or default cap of 30
-        let (display, was_capped, fit_truncated): (Vec<_>, bool, usize) =
-            if let Some(0) = top_n {
-                // --top 0 means show all (no limit, --fit still applies)
-                if let Some(budget) = fit_budget {
-                    if sorted.len() > budget {
-                        let show = budget.saturating_sub(1);
-                        let remaining = sorted.len() - show;
-                        (sorted.into_iter().take(show).collect(), false, remaining)
-                    } else {
-                        (sorted, false, 0)
-                    }
-                } else {
-                    (sorted, false, 0)
-                }
-            } else if let Some(n) = top_n {
-                (sorted.into_iter().take(n).collect(), false, 0)
-            } else if let Some(budget) = fit_budget {
-                // --fit replaces the default cap with terminal height
+        let (display, was_capped, fit_truncated): (Vec<_>, bool, usize) = if let Some(0) = top_n {
+            // --top 0 means show all (no limit, --fit still applies)
+            if let Some(budget) = fit_budget {
                 if sorted.len() > budget {
                     let show = budget.saturating_sub(1);
                     let remaining = sorted.len() - show;
@@ -307,11 +292,29 @@ impl PatternFolder {
                 } else {
                     (sorted, false, 0)
                 }
-            } else if total_patterns > DEFAULT_SUMMARY_CAP {
-                (sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(), true, 0)
             } else {
                 (sorted, false, 0)
-            };
+            }
+        } else if let Some(n) = top_n {
+            (sorted.into_iter().take(n).collect(), false, 0)
+        } else if let Some(budget) = fit_budget {
+            // --fit replaces the default cap with terminal height
+            if sorted.len() > budget {
+                let show = budget.saturating_sub(1);
+                let remaining = sorted.len() - show;
+                (sorted.into_iter().take(show).collect(), false, remaining)
+            } else {
+                (sorted, false, 0)
+            }
+        } else if total_patterns > DEFAULT_SUMMARY_CAP {
+            (
+                sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(),
+                true,
+                0,
+            )
+        } else {
+            (sorted, false, 0)
+        };
         let shown_count = display.len();
 
         // Detect terminal width for summary truncation (unlimited when piped)
