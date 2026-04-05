@@ -21,6 +21,7 @@
       ],
       "last-release-sha": "ebb64a09a45836d76e620663b7ab066a41f4bace",
       "draft": true,
+      "force-tag-creation": true,
       "pull-request-header": ":rocket: A new release is ready to publish",
       "pull-request-footer": "Merging creates a **draft** GitHub release. Review the release notes, add highlights if needed, then publish."
     }

@@ -5,19 +5,6 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
-## [0.3.1](https://github.com/air-gapped/lessence/compare/v0.3.0...v0.3.1) (2026-04-05)
-
-
-### Features
-
-* add --fit (--human) flag for screen-sized log overview ([fb06155](https://github.com/air-gapped/lessence/commit/fb06155b16ee2db4b1d7cb33c4ae5ada02f38398))
-
-
-### Bug Fixes
-
-* allow name origin mention of logfold in README ([a4ad912](https://github.com/air-gapped/lessence/commit/a4ad912602c4efc747e9d234021c83bb5b26c4c0))
-* fix flaky security overhead benchmark ([1d36b87](https://github.com/air-gapped/lessence/commit/1d36b870bedc849e9c9201df80bb167a502bc059))
-
 ## [0.3.0](https://github.com/air-gapped/lessence/compare/v0.2.0...v0.3.0) (2026-04-03)
 
 
