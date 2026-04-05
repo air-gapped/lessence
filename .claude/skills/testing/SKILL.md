@@ -1,6 +1,9 @@
 ---
 name: testing
-description: Testing patterns for lessence — unit tests, integration tests, security/ReDoS testing, evil patterns, PII sanitization tests. Covers running tests, adding tests, and verifying security properties.
+description: >-
+  Testing patterns for lessence — unit tests, integration tests, security/ReDoS
+  testing, evil patterns, PII sanitization tests. Covers running tests, adding
+  tests, and verifying security properties.
 ---
 
 # Testing lessence
@@ -11,7 +14,7 @@ description: Testing patterns for lessence — unit tests, integration tests, se
 cargo test --lib                    # Unit tests (in src/)
 cargo test --tests                  # Integration tests (in tests/)
 cargo test                          # All tests
-cargo build --release               # Must use release binary for perf tests
+cargo nextest run --release         # What CI runs (cargo-nextest, release mode)
 ```
 
 ## Test Organization
@@ -20,13 +23,23 @@ cargo build --release               # Must use release binary for perf tests
 tests/
   unit/              # Pattern detector unit tests
   integration/       # CLI and end-to-end tests
-  contract/          # API contract tests
-  constitutional/    # Compliance tests
+  contract/          # API contract tests (CLI validation)
   security/          # ReDoS and evil pattern tests
-  benchmarks/        # Performance tests
+  property/          # Property-based tests
+  snapshot/          # Output snapshot tests
+  performance/       # Performance regression tests
+  benchmarks/        # Microbenchmarks
+  validation/        # Input validation tests
+  fixtures/          # Test data (log samples)
 ```
 
-Tests in subdirectories need `[[test]]` entries in `Cargo.toml` to run.
+Tests in subdirectories need `[[test]]` entries in `Cargo.toml`:
+
+```toml
+[[test]]
+name = "test_my_feature"
+path = "tests/integration/test_my_feature.rs"
+```
 
 ## Security Testing
 
