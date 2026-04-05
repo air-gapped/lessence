@@ -91,6 +91,8 @@ than "add DEFAULT_SUMMARY_CAP constant to finish_summary".
 
 - Commit before risky operations (`git add . && git commit -m "protect work"`)
 - Never run destructive git commands without asking
+- Never create planning/scratch files inside the project tree — use /tmp or keep it in conversation
+- Before `git add`, verify files aren't matched by .gitignore (`git check-ignore <path>`)
 
 ## Skills
 

@@ -4,7 +4,8 @@ description: >-
   Find the essence of massive logs. lessence ("log essence") folds repetitive lines
   and reveals error patterns. Use when: checking logs, anything not normal, wall of
   logs, too much output, can't find the error, what's the pattern, kubectl logs,
-  docker logs, CI failures, crash loops, test failures, compress logs, journalctl.
+  docker logs, CI failures, crash loops, test failures, compress logs, journalctl,
+  feed logs to LLM, reduce context, triage.
 ---
 
 # lessence — Extract the Essence of Your Logs
@@ -38,9 +39,14 @@ lessence app.log                      # compress a file
 kubectl logs deploy/api | lessence    # pipe anything through it
 cargo test 2>&1 | lessence            # capture stderr too
 
-# Start here for large logs
+# Start here — one screen, no scrolling
+lessence --human < app.log            # fits terminal height, implies --summary
 lessence --summary < app.log          # one-line-per-pattern (caps at 30, use --top N to adjust)
 lessence --preflight < app.log        # JSON stats for automation/CI
+
+# Feed compressed logs to an LLM
+kubectl logs pod/api | lessence | claude -p "what's wrong?"
+kubectl logs pod/api | lessence --preflight | claude -p "analyze this log report"
 
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
@@ -50,9 +56,10 @@ lessence --format markdown < app.log  # markdown for incident reports
 lessence --stats-json < app.log       # machine-readable stats on stderr
 ```
 
-**For large logs, start with `--summary`** — caps at 30 patterns by default
-with a coverage percentage. Use `--top N` to adjust or `--top 0` for all.
-Then drill into specific patterns with default mode.
+**For large logs, start with `--human`** (alias `--fit`) — adapts output to
+terminal height so results stay visible after the command returns. For a
+specific count, use `--summary --top N`. Then drill into specific patterns
+with default mode.
 
 ## Reading the Output
 
@@ -81,11 +88,11 @@ volume of logs. Start here unless exploring unknown patterns.
 
 ### Full pipeline (for investigation)
 ```bash
-# 1. Worth compressing?
-lessence --preflight < app.log
+# 1. One screen overview
+lessence --human < app.log
 
-# 2. Pattern overview (caps at 30 patterns, truncates long lines in terminal)
-lessence --summary -q < app.log
+# 2. Worth compressing further?
+lessence --preflight < app.log
 
 # 3. Find errors specifically
 lessence -q < app.log | grep -i error
@@ -96,7 +103,7 @@ lessence < app.log
 
 ### Crash-looping pod
 ```bash
-kubectl logs deploy/api --previous | lessence --summary -q
+kubectl logs deploy/api --previous | lessence --human
 # Then drill in:
 kubectl logs deploy/api --previous | lessence -q | grep -i error
 ```
@@ -155,23 +162,13 @@ repeating problem in crash loops, capacity planning.
 **Don't use `--top` for**: finding a needle in a haystack. Use plain
 `lessence` or `lessence -q | grep error` instead.
 
-## Interpreting Results — Common Mistakes
+## Common Mistakes
 
-- **"Only 5 groups, compression looks too aggressive"** — this usually means
-  the logs genuinely have only 5 distinct patterns. Check `--stats-json` for
-  exact counts. High compression is a feature, not a bug.
-- **"The error I'm looking for didn't appear"** — likely filtered out by
-  `--top N`. Run without `--top` or pipe through `grep` after compression.
-- **"`[+N similar, varying: IP]`" — is this N different clients?** — not
-  necessarily. lessence groups by normalized pattern, not by IP value. The
-  varying IPs might be load balancer health checks from the same source.
-- **Essence mode may have no effect** — if timestamps are already well-normalized
-  by default mode, `--essence` won't change grouping. It only helps when
-  timestamps are the sole differentiator between otherwise-identical lines.
-- **Short lines dominate --top** — logs with embedded JSON fragments produce
-  high-frequency noise patterns like `],` or `}` that push real messages
-  out of `--top N`. Use `grep -v '^.\{0,10\}$'` to filter first, or
-  increase N.
+- **"Compression too aggressive"** — high compression means few distinct patterns. Check `--stats-json` for exact counts.
+- **"Error didn't appear"** — `--top N` excludes rare lines. Run without `--top` or pipe through `grep`.
+- **"`varying: IP` — different clients?"** — not necessarily. lessence groups by pattern, not by value. Varying IPs may be the same source.
+- **"--essence had no effect"** — only helps when timestamps are the sole differentiator between lines.
+- **"Short lines dominate --top"** — JSON fragments like `],` or `}` are high-frequency noise. Filter with `grep -v '^.\{0,10\}$'` first, or increase N.
 
 ## Reference
 
