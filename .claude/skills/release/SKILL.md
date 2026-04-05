@@ -60,6 +60,7 @@ grep '^version' Cargo.toml
 
 ## Troubleshooting
 
+- **PR has stale/wrong changelog** (includes old commits, wrong version): close the PR, delete its branch (`gh pr close N --delete-branch`), push a commit to retrigger. This is a known release-please bug that recurs.
 - **Release PR not appearing**: check that commits use conventional format and include `feat:` or `fix:`
 - **Version mismatch**: release-please manages `Cargo.toml` version — do not edit it manually
 - **Failed binary build**: check the matrix job for the failing target in Actions
