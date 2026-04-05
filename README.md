@@ -18,6 +18,15 @@ Original: 70,548 lines → 1,129 lines (98.4% reduction)
 
 Three distinct problems, not 70,000. Now you know where to look.
 
+## For Coding Agents & LLMs
+
+70,000 log lines burn context and bury the signal. Pipe through lessence first — the agent sees 50 distinct patterns, not 70,000 repeated lines.
+
+```bash
+kubectl logs pod/api | lessence | claude -p "what's wrong?"
+kubectl logs pod/api | lessence --preflight | claude -p "analyze this log report"
+```
+
 ## What It Does
 
 lessence finds log lines that say the same thing with different details — different timestamps, IPs, pod names, request IDs — and folds them together. You see every unique message once, with a count of how many times it happened.
@@ -145,6 +154,10 @@ Then just mention logs, errors, or "what's not normal" and the skill triggers.
 cargo build --release
 cargo test               # 328 tests
 ```
+
+## Name
+
+Started as "logfold" but that was taken. **lessence** = **l**og **essence**, with a nod to the French *l'essence* — the essential nature of a thing.
 
 ## License
 
