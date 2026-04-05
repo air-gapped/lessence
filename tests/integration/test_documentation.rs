@@ -19,7 +19,7 @@ fn test_readme_contains_lessence_branding() {
         "README should contain 'lessence' references"
     );
 
-    // Should not contain old logfold references (except historical context)
+    // Should not contain old logfold references (except name origin section)
     let logfold_lines: Vec<_> = readme_content
         .lines()
         .filter(|line| line.to_lowercase().contains("logfold"))
@@ -27,6 +27,7 @@ fn test_readme_contains_lessence_branding() {
             !line.to_lowercase().contains("renamed")
                 && !line.to_lowercase().contains("previously")
                 && !line.to_lowercase().contains("formerly")
+                && !line.to_lowercase().contains("started as")
         })
         .collect();
 
@@ -87,15 +88,8 @@ fn test_documentation_consistency() {
         "CLAUDE.md should contain lessence branding"
     );
 
-    // Neither should have stray logfold references
-    let readme_logfold_count = readme_content.matches("logfold").count();
+    // CLAUDE.md should not reference logfold
     let claude_logfold_count = claude_content.matches("logfold").count();
-
-    // After transition completion, should have zero logfold references
-    assert_eq!(
-        readme_logfold_count, 0,
-        "README.md should have zero logfold references, found: {readme_logfold_count}"
-    );
     assert_eq!(
         claude_logfold_count, 0,
         "CLAUDE.md should have zero logfold references, found: {claude_logfold_count}"
