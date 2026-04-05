@@ -78,6 +78,11 @@ path = "tests/integration/test_documentation.rs"
 name = "test_top_n"
 path = "tests/integration/test_top_n.rs"
 
+# Fit mode tests
+[[test]]
+name = "test_fit"
+path = "tests/integration/test_fit.rs"
+
 # File input tests
 [[test]]
 name = "test_file_input"

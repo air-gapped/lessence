@@ -45,6 +45,7 @@ src/
 ## Key Flags
 
 ```
+--fit (--human)             One screen overview — no scrolling, stays visible
 --summary                  One-line-per-pattern frequency overview (use with --top N)
 --preflight                JSON analysis report to stdout (for automation/CI)
 --essence                  Remove timestamps for pure content analysis

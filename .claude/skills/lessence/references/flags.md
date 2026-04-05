@@ -4,11 +4,12 @@
 
 | Flag | Description |
 |------|-------------|
+| `--fit` / `--human` | One screen overview that stays visible after the command returns. Adapts to your terminal height — no scrolling. Implies `--summary`. |
 | `--summary` | One-line-per-pattern frequency overview. Shows original representative lines, not normalized tokens. Combine with `--top N` for compact output. |
 | `--preflight` | JSON analysis report to stdout for automation/CI. Shows compression ratio, pattern counts, recommendations. |
 
-Start with `--summary --top 15` for large logs — gives a compact frequency
-overview with readable lines. Then drill into specific patterns with default mode.
+Start with `--fit` to see what's going on at a glance. Use `--summary --top 15`
+for a specific count, or drill into specific patterns with default mode.
 
 ## Output Control
 

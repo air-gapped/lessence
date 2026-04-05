@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -161,6 +161,10 @@ struct Cli {
     #[arg(long)]
     top: Option<usize>,
 
+    /// Quick human-readable overview that fits your screen — no scrolling
+    #[arg(long, alias = "human")]
+    fit: bool,
+
     /// Exit 1 if any input line matches this regex (for CI gating)
     #[arg(long)]
     fail_on_pattern: Option<String>,
@@ -205,6 +209,9 @@ fn main() -> Result<()> {
     // Validate output format before creating config
     cli.format.parse::<output::OutputFormat>()?;
 
+    // --fit implies --summary when no explicit mode is set
+    let effective_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
+
     let config = Config {
         threshold: cli.threshold,
         min_collapse: cli.min_collapse,
@@ -225,7 +232,7 @@ fn main() -> Result<()> {
         preserve_color: cli.preserve_color,
         compact: true, // Always compact format (human-readable by default)
         preflight: cli.preflight,
-        summary: cli.summary,
+        summary: effective_summary,
         // Constitutional CLI flags
         essence_mode: cli.essence,
         thread_count: cli.threads,
@@ -236,6 +243,15 @@ fn main() -> Result<()> {
         top_n: cli.top,
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),
+    };
+
+    // --fit: compute line budget from terminal height (None when piped)
+    let fit_budget: Option<usize> = if cli.fit && std::io::stdout().is_terminal() {
+        terminal_size::terminal_size()
+            .map(|(_, h)| (h.0 as usize).saturating_sub(4)) // command + stderr footer + prompt + buffer
+            .filter(|&h| h >= 3) // below 3 rows, just show everything
+    } else {
+        None
     };
 
     // Compile fail-on-pattern regex early (exit 2 on invalid)
@@ -341,7 +357,7 @@ fn main() -> Result<()> {
             folder.process_line(&line)?;
         }
         // Flush and output as summary (one line per group, sorted by count)
-        folder.finish_summary(config.top_n)?;
+        folder.finish_summary(config.top_n, fit_budget)?;
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         }
@@ -412,7 +428,21 @@ fn main() -> Result<()> {
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
         let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
-        for (count, formatted) in &top_groups {
+
+        // Apply --fit budget
+        let (groups_to_show, fit_truncated) = if let Some(budget) = fit_budget {
+            if top_groups.len() > budget {
+                let show = budget.saturating_sub(1);
+                let remaining = top_groups.len() - show;
+                (&top_groups[..show], remaining)
+            } else {
+                (&top_groups[..], 0)
+            }
+        } else {
+            (&top_groups[..], 0)
+        };
+
+        for (count, formatted) in groups_to_show {
             match writeln!(stdout, "[{count}x] {formatted}") {
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
@@ -421,7 +451,10 @@ fn main() -> Result<()> {
                 Err(e) => return Err(e.into()),
             }
         }
-        let shown = top_groups.len();
+        if fit_truncated > 0 {
+            let _ = writeln!(stdout, "... {fit_truncated} more patterns (remove --fit for full output)");
+        }
+        let shown = groups_to_show.len();
         eprintln!(
             "(showing top {shown} of {total_groups} patterns, covering {coverage_pct}% of input lines)"
         );

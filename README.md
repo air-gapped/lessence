@@ -48,6 +48,9 @@ journalctl -u nginx --since today | lessence
 make build 2>&1 | lessence
 docker-compose logs | lessence
 
+# What's going on? One screen, no scrolling
+kubectl logs pod/api-server | lessence --human
+
 # Strip timestamps to see pure patterns
 lessence --essence < app.log
 
@@ -84,6 +87,7 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Flags
 
 ```
+--fit (--human)             One screen overview — no scrolling, stays visible
 --summary                  One-line-per-pattern frequency overview
 --preflight                JSON analysis report (for automation/CI)
 --essence                  Strip timestamps, see pure patterns

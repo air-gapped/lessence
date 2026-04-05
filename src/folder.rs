@@ -252,7 +252,11 @@ impl PatternFolder {
     /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
     /// Uses the parallel pipeline for normalization, then merges groups with identical
     /// normalized text and displays representative original lines.
-    pub fn finish_summary(&mut self, top_n: Option<usize>) -> Result<()> {
+    pub fn finish_summary(
+        &mut self,
+        top_n: Option<usize>,
+        fit_budget: Option<usize>,
+    ) -> Result<()> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
@@ -277,17 +281,37 @@ impl PatternFolder {
         let total_patterns = sorted.len();
         const DEFAULT_SUMMARY_CAP: usize = 30;
 
-        // Apply limit: explicit --top N, or default cap of 30 when no --top given
-        let (display, was_capped): (Vec<_>, bool) = if let Some(0) = top_n {
-            // --top 0 means show all (no limit)
-            (sorted, false)
-        } else if let Some(n) = top_n {
-            (sorted.into_iter().take(n).collect(), false)
-        } else if total_patterns > DEFAULT_SUMMARY_CAP {
-            (sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(), true)
-        } else {
-            (sorted, false)
-        };
+        // Apply limit: explicit --top N, --fit budget, or default cap of 30
+        let (display, was_capped, fit_truncated): (Vec<_>, bool, usize) =
+            if let Some(0) = top_n {
+                // --top 0 means show all (no limit, --fit still applies)
+                if let Some(budget) = fit_budget {
+                    if sorted.len() > budget {
+                        let show = budget.saturating_sub(1);
+                        let remaining = sorted.len() - show;
+                        (sorted.into_iter().take(show).collect(), false, remaining)
+                    } else {
+                        (sorted, false, 0)
+                    }
+                } else {
+                    (sorted, false, 0)
+                }
+            } else if let Some(n) = top_n {
+                (sorted.into_iter().take(n).collect(), false, 0)
+            } else if let Some(budget) = fit_budget {
+                // --fit replaces the default cap with terminal height
+                if sorted.len() > budget {
+                    let show = budget.saturating_sub(1);
+                    let remaining = sorted.len() - show;
+                    (sorted.into_iter().take(show).collect(), false, remaining)
+                } else {
+                    (sorted, false, 0)
+                }
+            } else if total_patterns > DEFAULT_SUMMARY_CAP {
+                (sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(), true, 0)
+            } else {
+                (sorted, false, 0)
+            };
         let shown_count = display.len();
 
         // Detect terminal width for summary truncation (unlimited when piped)
@@ -312,6 +336,10 @@ impl PatternFolder {
                 }
                 _ => println!("{prefix}{representative}"),
             }
+        }
+
+        if fit_truncated > 0 {
+            println!("... {fit_truncated} more patterns (remove --fit for full output)");
         }
 
         // Coverage info on stderr
