@@ -418,8 +418,8 @@ fn hash_token_value(token: &Token) -> u64 {
     // are rare per line compared to the total workload, so the overhead
     // is negligible relative to pattern detection.
     let canonical = token_value_string(token);
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
     let mut h: u64 = FNV_OFFSET;
     for b in canonical.as_bytes() {
         h ^= u64::from(*b);
@@ -437,8 +437,8 @@ fn hash_token_value(token: &Token) -> u64 {
 /// cross-platform and cross-version stable. Quality is sufficient for
 /// seeding a ChaCha8Rng; we're not defending a hash table.
 fn seed_for_group(normalized: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
     let mut h: u64 = FNV_OFFSET;
     for b in normalized.as_bytes() {
         h ^= u64::from(*b);
@@ -478,13 +478,11 @@ fn render_compact_marker(
 
     // Time range segment. Keep raw strings — the plan deliberately
     // avoided timestamp parsing (see design doc §Why flush-time).
-    if !essence_mode {
-        if let (Some(a), Some(b)) = (first_ts, last_ts) {
-            out.push_str(" | ");
-            out.push_str(a);
-            out.push_str(" → ");
-            out.push_str(b);
-        }
+    if !essence_mode && let (Some(a), Some(b)) = (first_ts, last_ts) {
+        out.push_str(" | ");
+        out.push_str(a);
+        out.push_str(" → ");
+        out.push_str(b);
     }
 
     // Variation segment. Skip count-only types from the inline render —
@@ -665,8 +663,7 @@ impl RollupComputer {
                     distinct.sort();
                     let drawn_refs: Vec<&String> =
                         distinct.choose_multiple(&mut rng, self.k).collect();
-                    let mut drawn: Vec<String> =
-                        drawn_refs.into_iter().cloned().collect();
+                    let mut drawn: Vec<String> = drawn_refs.into_iter().cloned().collect();
                     // Sort the drawn sample itself for a stable JSON
                     // representation regardless of draw order.
                     drawn.sort();
@@ -806,11 +803,7 @@ impl PatternFolder {
     /// after the main loop and `finish()` have drained all groups.
     /// Writes to `writer` (stdout in the main binary path) and ends with
     /// a trailing newline so the JSONL stream terminates cleanly.
-    pub fn print_summary_json(
-        &self,
-        writer: &mut impl io::Write,
-        elapsed: Duration,
-    ) -> Result<()> {
+    pub fn print_summary_json(&self, writer: &mut impl io::Write, elapsed: Duration) -> Result<()> {
         let compression_ratio = if self.stats.total_lines > 0 {
             (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
         } else {

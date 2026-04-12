@@ -69,7 +69,8 @@ fn json_output_has_exactly_one_summary_record_and_it_is_last() {
     let summary_count = records.iter().filter(|r| r["type"] == "summary").count();
     assert_eq!(summary_count, 1, "expected exactly one summary record");
     assert_eq!(
-        records.last().unwrap()["type"], "summary",
+        records.last().unwrap()["type"],
+        "summary",
         "summary record must be last"
     );
 }
@@ -79,8 +80,7 @@ fn json_group_ids_are_monotonic_starting_from_zero() {
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
 
-    let groups: Vec<&serde_json::Value> =
-        records.iter().filter(|r| r["type"] == "group").collect();
+    let groups: Vec<&serde_json::Value> = records.iter().filter(|r| r["type"] == "group").collect();
 
     for (expected, rec) in groups.iter().enumerate() {
         let id = rec["id"]
@@ -101,10 +101,7 @@ fn json_group_record_has_required_fields() {
     for rec in records.iter().filter(|r| r["type"] == "group") {
         assert!(rec.get("id").is_some(), "missing id: {rec}");
         assert!(rec.get("count").is_some(), "missing count: {rec}");
-        assert!(
-            rec.get("normalized").is_some(),
-            "missing normalized: {rec}"
-        );
+        assert!(rec.get("normalized").is_some(), "missing normalized: {rec}");
         assert!(
             rec.get("token_types").is_some(),
             "missing token_types: {rec}"
@@ -200,16 +197,12 @@ fn json_output_is_deterministic_across_runs() {
     // Strip elapsed_ms from both runs' summary records before comparing.
     for r in &mut recs1 {
         if r["type"] == "summary" {
-            r.as_object_mut()
-                .unwrap()
-                .remove("elapsed_ms");
+            r.as_object_mut().unwrap().remove("elapsed_ms");
         }
     }
     for r in &mut recs2 {
         if r["type"] == "summary" {
-            r.as_object_mut()
-                .unwrap()
-                .remove("elapsed_ms");
+            r.as_object_mut().unwrap().remove("elapsed_ms");
         }
     }
 
@@ -224,8 +217,7 @@ fn json_output_includes_expected_group_count_for_microservices_fixture() {
     let raw = run_lessence_json("tests/fixtures/microservices.log");
     let records = parse_jsonl(&raw);
 
-    let groups: Vec<&serde_json::Value> =
-        records.iter().filter(|r| r["type"] == "group").collect();
+    let groups: Vec<&serde_json::Value> = records.iter().filter(|r| r["type"] == "group").collect();
     assert!(!groups.is_empty(), "no group records emitted");
 
     let sum_counts: u64 = groups

@@ -143,9 +143,7 @@ fn token_value_string(token: &Token) -> String {
 /// Process a file through lessence with single-threaded config and
 /// collect the per-group, per-token-type distinct-value lists.
 /// Groups are identified by normalized template.
-fn collect_distinct_per_group(
-    path: &str,
-) -> Option<Vec<BTreeMap<&'static str, Vec<String>>>> {
+fn collect_distinct_per_group(path: &str) -> Option<Vec<BTreeMap<&'static str, Vec<String>>>> {
     let content = std::fs::read_to_string(path).ok()?;
 
     // First pass: build groups via PatternFolder (so grouping matches
@@ -161,8 +159,7 @@ fn collect_distinct_per_group(
     let normalizer = Normalizer::new(config.clone());
 
     // Group index -> per-type distinct value list
-    let mut groups: BTreeMap<String, BTreeMap<&'static str, Vec<String>>> =
-        BTreeMap::new();
+    let mut groups: BTreeMap<String, BTreeMap<&'static str, Vec<String>>> = BTreeMap::new();
 
     for line in content.lines() {
         let log_line: LogLine = match normalizer.normalize_line(line.to_string()) {
@@ -234,21 +231,18 @@ fn main() {
     let mut total_groups = 0usize;
 
     for path in CORPUS {
-        match collect_distinct_per_group(path) {
-            Some(groups) => {
-                files_processed += 1;
-                total_groups += groups.len();
-                for per_type in groups {
-                    for (name, values) in per_type {
-                        let distinct = values.len();
-                        per_type_counts.entry(name).or_default().push(distinct);
-                    }
+        if let Some(groups) = collect_distinct_per_group(path) {
+            files_processed += 1;
+            total_groups += groups.len();
+            for per_type in groups {
+                for (name, values) in per_type {
+                    let distinct = values.len();
+                    per_type_counts.entry(name).or_default().push(distinct);
                 }
             }
-            None => {
-                files_skipped += 1;
-                eprintln!("(skipped: {path} not available)");
-            }
+        } else {
+            files_skipped += 1;
+            eprintln!("(skipped: {path} not available)");
         }
     }
 
@@ -320,7 +314,9 @@ fn main() {
     println!("- P99: {global_p99}");
     println!("- Max observed: {global_max}");
     println!();
-    println!("**Recommended `DISTINCT_CAP = {cap_recommendation}`** (smallest power-of-two ≥ P99).");
+    println!(
+        "**Recommended `DISTINCT_CAP = {cap_recommendation}`** (smallest power-of-two ≥ P99)."
+    );
     println!();
 
     println!("## K (samples per token type) calibration");

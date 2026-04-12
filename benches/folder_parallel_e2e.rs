@@ -44,12 +44,9 @@ const SLICE_MAX_LINES: usize = 10_000;
 
 fn load_corpus_sliced(relative_path: &str) -> Option<String> {
     let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative_path);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(_) => {
-            eprintln!("Skipping bench input: {path} not available (examples/ is gitignored)");
-            return None;
-        }
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        eprintln!("Skipping bench input: {path} not available (examples/ is gitignored)");
+        return None;
     };
     let mut out = String::with_capacity(content.len().min(SLICE_MAX_LINES * 512));
     for (i, line) in content.lines().enumerate() {

@@ -40,12 +40,9 @@ const SAMPLE_LINES: usize = 1000;
 
 fn load_corpus_sample(relative_path: &str, max_lines: usize) -> Option<Vec<String>> {
     let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative_path);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(content) => content,
-        Err(_) => {
-            eprintln!("Skipping bench input: {path} not available (examples/ is gitignored)");
-            return None;
-        }
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        eprintln!("Skipping bench input: {path} not available (examples/ is gitignored)");
+        return None;
     };
     Some(
         content

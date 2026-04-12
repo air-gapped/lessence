@@ -128,8 +128,7 @@ fn count_only_types_have_empty_samples() {
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
 
-    const COUNT_ONLY_TYPES: &[&str] =
-        &["TIMESTAMP", "DURATION", "SIZE", "NUMBER", "PORT", "PID"];
+    const COUNT_ONLY_TYPES: &[&str] = &["TIMESTAMP", "DURATION", "SIZE", "NUMBER", "PORT", "PID"];
 
     for rec in records.iter().filter(|r| r["type"] == "group") {
         let variation = rec["variation"].as_object().unwrap();
