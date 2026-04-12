@@ -21,7 +21,7 @@ fn measure_email_detect(input: &str, iterations: u32) -> std::time::Duration {
 fn assert_linear_scaling(label: &str, make_input: impl Fn(usize) -> String) {
     let small = make_input(1);
     let large = make_input(4);
-    let iters = 500;
+    let iters = 2000;
 
     let time_small = measure_email_detect(&small, iters);
     let time_large = measure_email_detect(&large, iters);

@@ -91,11 +91,12 @@ fn test_performance_scales_linearly() {
 
     let small = "2025-09-29T10:15:30Z ".repeat(250);
     let large = "2025-09-29T10:15:30Z ".repeat(1000);
-    let iters = 10;
+    let iters = 50;
 
-    // Warmup
-    for _ in 0..3 {
+    // Warmup — stabilize allocator and regex caches
+    for _ in 0..10 {
         let _ = UnifiedTimestampDetector::detect_and_replace(&small);
+        let _ = UnifiedTimestampDetector::detect_and_replace(&large);
     }
 
     let start = Instant::now();

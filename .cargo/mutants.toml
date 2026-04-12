@@ -1,0 +1,4 @@
+# cargo-mutants configuration
+# Uses the custom [profile.mutants] from Cargo.toml:
+# opt-level=1 for faster test execution, debug="none" for faster builds.
+profile = "mutants"
