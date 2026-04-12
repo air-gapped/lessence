@@ -129,26 +129,6 @@ impl HashDetector {
         (result, tokens)
     }
 
-    #[allow(dead_code)]
-    pub fn is_likely_hash(text: &str) -> bool {
-        if text.len() < 7 {
-            return false;
-        }
-
-        // Check if it's all hex characters
-        text.chars().all(|c| c.is_ascii_hexdigit())
-    }
-
-    #[allow(dead_code)]
-    pub fn classify_hash_type(length: usize) -> HashType {
-        match length {
-            32 => HashType::MD5,
-            40 => HashType::SHA1,
-            64 => HashType::SHA256,
-            128 => HashType::SHA512,
-            _ => HashType::Generic(length),
-        }
-    }
 }
 
 #[cfg(test)]

@@ -469,4 +469,330 @@ mod tests {
             }
         }
     }
+
+    // ---- has_log_module_indicators: per-condition tests ----
+    // Positive: each || branch in the first group
+
+    #[test]
+    fn log_mod_ind_mod_prefix() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("mod_ssl enabled"));
+    }
+
+    #[test]
+    fn log_mod_ind_ngx_prefix() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("ngx_http_proxy done"));
+    }
+
+    #[test]
+    fn log_mod_ind_error_bracket() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("[error] something failed"));
+    }
+
+    #[test]
+    fn log_mod_ind_warn_bracket() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("[warn] check this"));
+    }
+
+    #[test]
+    fn log_mod_ind_info_bracket() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("[info] started"));
+    }
+
+    #[test]
+    fn log_mod_ind_debug_bracket() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("[debug] trace"));
+    }
+
+    #[test]
+    fn log_mod_ind_error_space() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("ERROR something"));
+    }
+
+    #[test]
+    fn log_mod_ind_warn_space() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("WARN something"));
+    }
+
+    #[test]
+    fn log_mod_ind_info_space() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("INFO something"));
+    }
+
+    #[test]
+    fn log_mod_ind_debug_space() {
+        assert!(LogWithModuleDetector::has_log_module_indicators("DEBUG something"));
+    }
+
+    // Negative: each && exclusion
+
+    #[test]
+    fn log_mod_ind_excludes_function() {
+        assert!(!LogWithModuleDetector::has_log_module_indicators("function [error] handler"));
+    }
+
+    #[test]
+    fn log_mod_ind_excludes_class() {
+        assert!(!LogWithModuleDetector::has_log_module_indicators("class [error] handler"));
+    }
+
+    #[test]
+    fn log_mod_ind_excludes_import() {
+        assert!(!LogWithModuleDetector::has_log_module_indicators("import [error] handler"));
+    }
+
+    #[test]
+    fn log_mod_ind_excludes_k8s() {
+        assert!(!LogWithModuleDetector::has_log_module_indicators("[error] kubelet failed"));
+    }
+
+    #[test]
+    fn log_mod_ind_negative() {
+        assert!(!LogWithModuleDetector::has_log_module_indicators("plain message"));
+    }
+
+    // ---- has_kubernetes_indicators (log_module copy): per-condition tests ----
+
+    #[test]
+    fn log_k8s_ind_kubernetes_io() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("kubernetes.io/name"));
+    }
+
+    #[test]
+    fn log_k8s_ind_namespace() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("namespace/default"));
+    }
+
+    #[test]
+    fn log_k8s_ind_pod() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("pod/nginx"));
+    }
+
+    #[test]
+    fn log_k8s_ind_service() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("service/web"));
+    }
+
+    #[test]
+    fn log_k8s_ind_configmap() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("configmap/cfg"));
+    }
+
+    #[test]
+    fn log_k8s_ind_secret() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("secret/tls"));
+    }
+
+    #[test]
+    fn log_k8s_ind_deployment() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("deployment/app"));
+    }
+
+    #[test]
+    fn log_k8s_ind_volumes() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("volumes/data"));
+    }
+
+    #[test]
+    fn log_k8s_ind_projected_dash() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("projected-token"));
+    }
+
+    #[test]
+    fn log_k8s_ind_volume_subpath() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("volume-subpath x"));
+    }
+
+    #[test]
+    fn log_k8s_ind_projected() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("using projected vol"));
+    }
+
+    #[test]
+    fn log_k8s_ind_apiserver() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("apiserver health"));
+    }
+
+    #[test]
+    fn log_k8s_ind_kube_prefix() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("kube-dns ready"));
+    }
+
+    #[test]
+    fn log_k8s_ind_kubelet() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("kubelet started"));
+    }
+
+    #[test]
+    fn log_k8s_ind_kube_proxy() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("kube-proxy running"));
+    }
+
+    #[test]
+    fn log_k8s_ind_kube_scheduler() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("kube-scheduler elected"));
+    }
+
+    #[test]
+    fn log_k8s_ind_kube_controller() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("kube-controller ok"));
+    }
+
+    #[test]
+    fn log_k8s_ind_etcd() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("etcd cluster"));
+    }
+
+    #[test]
+    fn log_k8s_ind_coredns() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("coredns serving"));
+    }
+
+    #[test]
+    fn log_k8s_ind_negative() {
+        assert!(!LogWithModuleDetector::has_kubernetes_indicators("plain message"));
+    }
+
+    // ---- is_syslog_daemon: per-branch tests ----
+
+    #[test]
+    fn syslog_daemon_known() {
+        assert!(LogWithModuleDetector::is_syslog_daemon("sshd"));
+        assert!(LogWithModuleDetector::is_syslog_daemon("cron"));
+        assert!(LogWithModuleDetector::is_syslog_daemon("postfix"));
+    }
+
+    #[test]
+    fn syslog_daemon_ends_with_d() {
+        assert!(LogWithModuleDetector::is_syslog_daemon("httpd"));
+    }
+
+    #[test]
+    fn syslog_daemon_underscore_service() {
+        assert!(LogWithModuleDetector::is_syslog_daemon("app_service"));
+    }
+
+    #[test]
+    fn syslog_daemon_dash_service() {
+        assert!(LogWithModuleDetector::is_syslog_daemon("app-service"));
+    }
+
+    #[test]
+    fn syslog_daemon_negative() {
+        assert!(!LogWithModuleDetector::is_syslog_daemon("zzz"));
+    }
+
+    // ---- is_framework_module: per-branch tests ----
+
+    #[test]
+    fn framework_mod_known() {
+        assert!(LogWithModuleDetector::is_framework_module("spring"));
+        assert!(LogWithModuleDetector::is_framework_module("hibernate"));
+    }
+
+    #[test]
+    fn framework_mod_dot() {
+        assert!(LogWithModuleDetector::is_framework_module("com.example.app"));
+    }
+
+    #[test]
+    fn framework_mod_underscore() {
+        assert!(LogWithModuleDetector::is_framework_module("my_module"));
+    }
+
+    #[test]
+    fn framework_mod_negative() {
+        // No known pattern, no dot, no underscore
+        assert!(!LogWithModuleDetector::is_framework_module("zzz"));
+    }
+
+    // ---- is_systemd_component: per-branch tests ----
+
+    #[test]
+    fn systemd_comp_known() {
+        assert!(LogWithModuleDetector::is_systemd_component("service_manager"));
+    }
+
+    #[test]
+    fn systemd_comp_manager_suffix() {
+        assert!(LogWithModuleDetector::is_systemd_component("task_manager"));
+    }
+
+    #[test]
+    fn systemd_comp_service_suffix() {
+        assert!(LogWithModuleDetector::is_systemd_component("app_service"));
+    }
+
+    #[test]
+    fn systemd_comp_client_suffix() {
+        assert!(LogWithModuleDetector::is_systemd_component("http_client"));
+    }
+
+    #[test]
+    fn systemd_comp_daemon_suffix() {
+        assert!(LogWithModuleDetector::is_systemd_component("log_daemon"));
+    }
+
+    #[test]
+    fn systemd_comp_negative() {
+        assert!(!LogWithModuleDetector::is_systemd_component("zzz"));
+    }
+
+    // ---- is_nginx_module: per-branch tests ----
+
+    #[test]
+    fn nginx_mod_known() {
+        assert!(LogWithModuleDetector::is_nginx_module("ngx_http_core"));
+        assert!(LogWithModuleDetector::is_nginx_module("ngx_stream"));
+    }
+
+    #[test]
+    fn nginx_mod_generic_pattern() {
+        assert!(LogWithModuleDetector::is_nginx_module("ngx_custom_module"));
+    }
+
+    #[test]
+    fn nginx_mod_negative() {
+        assert!(!LogWithModuleDetector::is_nginx_module("zzz"));
+    }
+
+    // ---- is_apache_module: per-branch tests ----
+
+    #[test]
+    fn apache_mod_known() {
+        assert!(LogWithModuleDetector::is_apache_module("mod_jk"));
+        assert!(LogWithModuleDetector::is_apache_module("mod_ssl"));
+        assert!(LogWithModuleDetector::is_apache_module("mod_proxy"));
+    }
+
+    #[test]
+    fn apache_mod_negative() {
+        assert!(!LogWithModuleDetector::is_apache_module("zzz"));
+    }
+
+    // ---- normalize_syslog_level: match arm tests ----
+
+    #[test]
+    fn syslog_level_emerg() {
+        assert_eq!(LogWithModuleDetector::normalize_syslog_level("emerg"), "emergency");
+    }
+
+    #[test]
+    fn syslog_level_emergency() {
+        assert_eq!(LogWithModuleDetector::normalize_syslog_level("emergency"), "emergency");
+    }
+
+    #[test]
+    fn syslog_level_err() {
+        assert_eq!(LogWithModuleDetector::normalize_syslog_level("err"), "error");
+    }
+
+    #[test]
+    fn syslog_level_crit() {
+        assert_eq!(LogWithModuleDetector::normalize_syslog_level("crit"), "critical");
+    }
+
+    #[test]
+    fn syslog_level_passthrough() {
+        assert_eq!(LogWithModuleDetector::normalize_syslog_level("INFO"), "info");
+    }
 }

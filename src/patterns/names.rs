@@ -135,4 +135,14 @@ mod tests {
         assert!(!NameDetector::is_variable_suffix("stable")); // common word
         assert!(!NameDetector::is_variable_suffix("123")); // too short
     }
+
+    #[test]
+    fn variable_suffix_boundary_4_chars() {
+        assert!(!NameDetector::is_variable_suffix("ab1c")); // exactly 4 — too short
+    }
+
+    #[test]
+    fn variable_suffix_boundary_5_chars() {
+        assert!(NameDetector::is_variable_suffix("ab1c2")); // exactly 5 — accepted
+    }
 }

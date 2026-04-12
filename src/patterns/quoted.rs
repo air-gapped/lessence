@@ -13,11 +13,6 @@ use super::{
 static QUOTED_STRING_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
 
-// Exclude quoted strings that look like fixed keywords or common constants
-static EXCLUDED_QUOTES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"^"(started|finished|completed|failed|error|warning|info|debug|true|false|null|undefined)"$"#).unwrap()
-});
-
 pub struct QuotedStringDetector;
 
 impl QuotedStringDetector {
@@ -108,23 +103,6 @@ impl QuotedStringDetector {
         (result, tokens)
     }
 
-    /// Check if a string looks like a variable quoted string
-    #[allow(dead_code)]
-    pub fn is_variable_quoted_string(text: &str) -> bool {
-        if !text.starts_with('"') || !text.ends_with('"') {
-            return false;
-        }
-
-        if EXCLUDED_QUOTES.is_match(text) {
-            return false;
-        }
-
-        if text.len() <= 4 {
-            return false;
-        }
-
-        true
-    }
 }
 
 #[cfg(test)]

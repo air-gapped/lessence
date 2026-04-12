@@ -215,16 +215,6 @@ impl NetworkDetector {
         (result, tokens)
     }
 
-    #[allow(dead_code)]
-    pub fn is_valid_ipv4(ip: &str) -> bool {
-        IPV4_REGEX.is_match(ip)
-    }
-
-    #[allow(dead_code)]
-    pub fn is_valid_port(_port: u16) -> bool {
-        true // u16 can't exceed 65535 by definition
-    }
-
     /// Lightweight pre-filter to validate IPv6 structural plausibility before regex execution
     ///
     /// This function provides ReDoS protection by quickly rejecting obviously malformed patterns
@@ -385,5 +375,47 @@ mod tests {
     #[test]
     fn plausible_ipv6_valid() {
         assert!(NetworkDetector::is_plausible_ipv6("2001:db8::1").is_plausible);
+    }
+
+    // ---- has_network_indicators: per-condition tests ----
+
+    #[test]
+    fn net_ind_ip_dot() {
+        assert!(NetworkDetector::has_network_indicators("192.168.1.1", true, false, false));
+    }
+
+    #[test]
+    fn net_ind_ip_colon() {
+        assert!(NetworkDetector::has_network_indicators("2001:db8::1", true, false, false));
+    }
+
+    #[test]
+    fn net_ind_port_colon() {
+        assert!(NetworkDetector::has_network_indicators("host:8080", false, true, false));
+    }
+
+    #[test]
+    fn net_ind_fqdn_com() {
+        assert!(NetworkDetector::has_network_indicators("example.com", false, false, true));
+    }
+
+    #[test]
+    fn net_ind_fqdn_org() {
+        assert!(NetworkDetector::has_network_indicators("example.org", false, false, true));
+    }
+
+    #[test]
+    fn net_ind_fqdn_net() {
+        assert!(NetworkDetector::has_network_indicators("example.net", false, false, true));
+    }
+
+    #[test]
+    fn net_ind_all_disabled() {
+        assert!(!NetworkDetector::has_network_indicators("192.168.1.1", false, false, false));
+    }
+
+    #[test]
+    fn net_ind_fqdn_no_dot() {
+        assert!(!NetworkDetector::has_network_indicators("localhost", false, false, true));
     }
 }

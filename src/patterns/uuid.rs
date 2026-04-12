@@ -133,11 +133,6 @@ impl UuidDetector {
         letter_count > 4 && number_count > 4
     }
 
-    #[allow(dead_code)]
-    pub fn is_valid_uuid(text: &str) -> bool {
-        UUID_REGEX.is_match(text)
-    }
-
     #[inline]
     fn has_uuid_indicators(text: &str) -> bool {
         // Ultra-fast check for UUID/ID indicators
@@ -204,5 +199,95 @@ mod tests {
         let (result, tokens) = UuidDetector::detect_and_replace(text);
         assert_eq!(result, "HTTP 200 OK");
         assert_eq!(tokens.len(), 0);
+    }
+
+    // ---- has_uuid_indicators: per-condition tests ----
+
+    #[test]
+    fn uuid_ind_hyphen() {
+        assert!(UuidDetector::has_uuid_indicators("550e8400-e29b-41d4-a716-446655440000"));
+    }
+
+    #[test]
+    fn uuid_ind_req() {
+        assert!(UuidDetector::has_uuid_indicators("req_abc123"));
+    }
+
+    #[test]
+    fn uuid_ind_request() {
+        assert!(UuidDetector::has_uuid_indicators("request_id: abc123"));
+    }
+
+    #[test]
+    fn uuid_ind_trace() {
+        assert!(UuidDetector::has_uuid_indicators("trace_id: abc123"));
+    }
+
+    #[test]
+    fn uuid_ind_session() {
+        assert!(UuidDetector::has_uuid_indicators("session_token: abc123"));
+    }
+
+    #[test]
+    fn uuid_ind_long_hex() {
+        // >20 chars with hex digits, no hyphens/req/trace/session
+        assert!(UuidDetector::has_uuid_indicators("id: 550e8400e29b41d4a716446655440000"));
+    }
+
+    #[test]
+    fn uuid_ind_short_no_match() {
+        // <=20 chars, no keywords — should fail
+        assert!(!UuidDetector::has_uuid_indicators("ok"));
+    }
+
+    // ---- looks_like_uuid_no_hyphens: per-condition tests ----
+
+    #[test]
+    fn uuid_no_hyphens_wrong_len() {
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens("abc123"));
+    }
+
+    #[test]
+    fn uuid_no_hyphens_insufficient_letters() {
+        // 32 chars but only 4 letters
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens("12345678901234567890123456789012"));
+    }
+
+    #[test]
+    fn uuid_no_hyphens_insufficient_numbers() {
+        // 32 chars but only 4 numbers
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens("abcdefabcdefabcdefabcdefabcdefab"));
+    }
+
+    #[test]
+    fn uuid_no_hyphens_good_mix() {
+        assert!(UuidDetector::looks_like_uuid_no_hyphens("550e8400e29b41d4a716446655440000"));
+    }
+
+    // ---- is_likely_id: per-condition tests ----
+
+    #[test]
+    fn likely_id_too_short() {
+        assert!(!UuidDetector::is_likely_id("ab"));
+    }
+
+    #[test]
+    fn likely_id_too_long() {
+        assert!(!UuidDetector::is_likely_id(&"a".repeat(65)));
+    }
+
+    #[test]
+    fn likely_id_just_letters() {
+        assert!(UuidDetector::is_likely_id("abcdef"));
+    }
+
+    #[test]
+    fn likely_id_just_numbers() {
+        assert!(UuidDetector::is_likely_id("123456"));
+    }
+
+    #[test]
+    fn likely_id_no_alphanum() {
+        assert!(!UuidDetector::is_likely_id("----"));
     }
 }

@@ -475,4 +475,338 @@ mod tests {
             }
         }
     }
+
+    // ---- classify_value_type: per-branch tests ----
+
+    #[test]
+    fn classify_percentage() {
+        assert_eq!(KeyValueDetector::classify_value_type("75%"), "percentage");
+    }
+
+    #[test]
+    fn classify_duration_ms() {
+        assert_eq!(KeyValueDetector::classify_value_type("100ms"), "duration");
+    }
+
+    #[test]
+    fn classify_duration_us() {
+        assert_eq!(KeyValueDetector::classify_value_type("50us"), "duration");
+    }
+
+    #[test]
+    fn classify_duration_ns() {
+        assert_eq!(KeyValueDetector::classify_value_type("200ns"), "duration");
+    }
+
+    #[test]
+    fn classify_duration_s() {
+        assert_eq!(KeyValueDetector::classify_value_type("5s"), "duration");
+    }
+
+    #[test]
+    fn classify_size_mb() {
+        assert_eq!(KeyValueDetector::classify_value_type("512MB"), "size");
+    }
+
+    #[test]
+    fn classify_size_gb() {
+        assert_eq!(KeyValueDetector::classify_value_type("2GB"), "size");
+    }
+
+    #[test]
+    fn classify_size_kb() {
+        assert_eq!(KeyValueDetector::classify_value_type("1024KB"), "size");
+    }
+
+    #[test]
+    fn classify_size_bytes() {
+        assert_eq!(KeyValueDetector::classify_value_type("4096bytes"), "size");
+    }
+
+    #[test]
+    fn classify_size_byte() {
+        assert_eq!(KeyValueDetector::classify_value_type("1byte"), "size");
+    }
+
+    #[test]
+    fn classify_rate_rps() {
+        assert_eq!(KeyValueDetector::classify_value_type("1000rps"), "rate");
+    }
+
+    #[test]
+    fn classify_rate_qps() {
+        assert_eq!(KeyValueDetector::classify_value_type("500qps"), "rate");
+    }
+
+    #[test]
+    fn classify_rate_per_s() {
+        assert_eq!(KeyValueDetector::classify_value_type("100/s"), "rate");
+    }
+
+    #[test]
+    fn classify_rate_per_min() {
+        assert_eq!(KeyValueDetector::classify_value_type("60/min"), "rate");
+    }
+
+    #[test]
+    fn classify_rate_per_hr() {
+        assert_eq!(KeyValueDetector::classify_value_type("3600/hr"), "rate");
+    }
+
+    #[test]
+    fn classify_bool_true() {
+        assert_eq!(KeyValueDetector::classify_value_type("true"), "boolean");
+    }
+
+    #[test]
+    fn classify_bool_false() {
+        assert_eq!(KeyValueDetector::classify_value_type("false"), "boolean");
+    }
+
+    #[test]
+    fn classify_bool_enabled() {
+        assert_eq!(KeyValueDetector::classify_value_type("enabled"), "boolean");
+    }
+
+    #[test]
+    fn classify_bool_disabled() {
+        assert_eq!(KeyValueDetector::classify_value_type("disabled"), "boolean");
+    }
+
+    #[test]
+    fn classify_bool_on() {
+        assert_eq!(KeyValueDetector::classify_value_type("on"), "boolean");
+    }
+
+    #[test]
+    fn classify_bool_off() {
+        assert_eq!(KeyValueDetector::classify_value_type("off"), "boolean");
+    }
+
+    #[test]
+    fn classify_number() {
+        assert_eq!(KeyValueDetector::classify_value_type("42.5"), "number");
+    }
+
+    #[test]
+    fn classify_ip_via_is_ip_address() {
+        // Note: pure IPv4 (digits + dots) classifies as "number" first,
+        // so test is_ip_address directly
+        assert!(KeyValueDetector::is_ip_address("192.168.1.1"));
+    }
+
+    #[test]
+    fn classify_url_http() {
+        assert_eq!(KeyValueDetector::classify_value_type("http://example.com"), "url");
+    }
+
+    #[test]
+    fn classify_url_https() {
+        assert_eq!(KeyValueDetector::classify_value_type("https://example.com"), "url");
+    }
+
+    #[test]
+    fn classify_url_ftp() {
+        assert_eq!(KeyValueDetector::classify_value_type("ftp://files.com"), "url");
+    }
+
+    #[test]
+    fn classify_string_default() {
+        assert_eq!(KeyValueDetector::classify_value_type("hello"), "string");
+    }
+
+    // ---- is_common_config_pattern: per-branch tests ----
+
+    #[test]
+    fn config_pattern_timeout_suffix() {
+        assert!(KeyValueDetector::is_common_config_pattern("read_timeout", "30s"));
+    }
+
+    #[test]
+    fn config_pattern_limit_suffix() {
+        assert!(KeyValueDetector::is_common_config_pattern("connection_limit", "100"));
+    }
+
+    #[test]
+    fn config_pattern_size_suffix() {
+        assert!(KeyValueDetector::is_common_config_pattern("buffer_size", "4096"));
+    }
+
+    #[test]
+    fn config_pattern_count_suffix() {
+        assert!(KeyValueDetector::is_common_config_pattern("retry_count", "3"));
+    }
+
+    #[test]
+    fn config_pattern_rate_suffix() {
+        assert!(KeyValueDetector::is_common_config_pattern("error_rate", "0.01"));
+    }
+
+    #[test]
+    fn config_pattern_usage_suffix() {
+        assert!(KeyValueDetector::is_common_config_pattern("cpu_usage", "75%"));
+    }
+
+    #[test]
+    fn config_pattern_max_prefix() {
+        assert!(KeyValueDetector::is_common_config_pattern("max_retries", "5"));
+    }
+
+    #[test]
+    fn config_pattern_min_prefix() {
+        assert!(KeyValueDetector::is_common_config_pattern("min_connections", "1"));
+    }
+
+    #[test]
+    fn config_pattern_value_ms() {
+        assert!(KeyValueDetector::is_common_config_pattern("delay", "100ms"));
+    }
+
+    #[test]
+    fn config_pattern_value_pct() {
+        assert!(KeyValueDetector::is_common_config_pattern("threshold", "50%"));
+    }
+
+    #[test]
+    fn config_pattern_value_mb() {
+        assert!(KeyValueDetector::is_common_config_pattern("heap", "512MB"));
+    }
+
+    #[test]
+    fn config_pattern_value_kb() {
+        assert!(KeyValueDetector::is_common_config_pattern("page", "4KB"));
+    }
+
+    #[test]
+    fn config_pattern_value_gb() {
+        assert!(KeyValueDetector::is_common_config_pattern("disk", "100GB"));
+    }
+
+    #[test]
+    fn config_pattern_negative() {
+        assert!(!KeyValueDetector::is_common_config_pattern("foo", "bar"));
+    }
+
+    // ---- is_valid_key_value_context: per-branch tests ----
+
+    #[test]
+    fn kv_ctx_excludes_if() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("if", "true", "if x=true then"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_for() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("for", "x", "for i=0; i<n"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_while() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("while", "x", "while x=true"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_switch() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("switch", "x", "switch x=val"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_plus() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x + y = 1"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_minus() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x - y = 1"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_mul() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x * y = 1"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_div() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x / y = 1"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_select() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "SELECT col FROM t"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_insert() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "INSERT INTO t"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_update() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "UPDATE t SET col=v"));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_delete_sql() {
+        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "DELETE FROM t"));
+    }
+
+    #[test]
+    fn kv_ctx_valid_key() {
+        assert!(KeyValueDetector::is_valid_key_value_context("timeout", "30", "timeout=30"));
+    }
+
+    #[test]
+    fn kv_ctx_config_pattern() {
+        assert!(KeyValueDetector::is_valid_key_value_context("read_timeout", "100ms", "read_timeout=100ms"));
+    }
+
+    // ---- is_ip_address: per-branch tests ----
+
+    #[test]
+    fn ip_addr_valid_ipv4() {
+        assert!(KeyValueDetector::is_ip_address("192.168.1.1"));
+    }
+
+    #[test]
+    fn ip_addr_invalid_ipv4() {
+        assert!(!KeyValueDetector::is_ip_address("999.999.999.999"));
+    }
+
+    #[test]
+    fn ip_addr_valid_ipv6() {
+        assert!(KeyValueDetector::is_ip_address("2001:db8:0:0:0:0:0:1"));
+    }
+
+    #[test]
+    fn ip_addr_short() {
+        assert!(!KeyValueDetector::is_ip_address("abc"));
+    }
+
+    #[test]
+    fn ip_addr_three_octets() {
+        assert!(!KeyValueDetector::is_ip_address("192.168.1"));
+    }
+
+    // ---- is_metrics_context: per-branch test ----
+
+    #[test]
+    fn metrics_ctx_positive() {
+        assert!(KeyValueDetector::is_metrics_context("cpu usage report", 0));
+    }
+
+    #[test]
+    fn metrics_ctx_negative() {
+        assert!(!KeyValueDetector::is_metrics_context("hello world", 0));
+    }
+
+    // ---- is_logging_json: per-branch test ----
+
+    #[test]
+    fn logging_json_positive() {
+        assert!(KeyValueDetector::is_logging_json(r#"{"level":"info","msg":"ok"}"#));
+    }
+
+    #[test]
+    fn logging_json_negative() {
+        assert!(!KeyValueDetector::is_logging_json("no json here"));
+    }
 }

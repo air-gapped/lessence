@@ -190,4 +190,56 @@ mod tests {
         assert_eq!(tokens.len(), 0);
         assert_eq!(result, non_http_line);
     }
+
+    // ---- has_http_indicators: per-condition tests ----
+
+    #[test]
+    fn http_ind_http_slash() {
+        assert!(HttpStatusDetector::has_http_indicators("HTTP/1.1 200 OK"));
+    }
+
+    #[test]
+    fn http_ind_get() {
+        assert!(HttpStatusDetector::has_http_indicators("GET /index.html"));
+    }
+
+    #[test]
+    fn http_ind_post() {
+        assert!(HttpStatusDetector::has_http_indicators("POST /api/data"));
+    }
+
+    #[test]
+    fn http_ind_put() {
+        assert!(HttpStatusDetector::has_http_indicators("PUT /api/item"));
+    }
+
+    #[test]
+    fn http_ind_delete() {
+        assert!(HttpStatusDetector::has_http_indicators("DELETE /api/item"));
+    }
+
+    #[test]
+    fn http_ind_status_2xx() {
+        assert!(HttpStatusDetector::has_http_indicators(r#""/path" 200"#));
+    }
+
+    #[test]
+    fn http_ind_status_3xx() {
+        assert!(HttpStatusDetector::has_http_indicators(r#""/path" 301"#));
+    }
+
+    #[test]
+    fn http_ind_status_4xx() {
+        assert!(HttpStatusDetector::has_http_indicators(r#""/path" 404"#));
+    }
+
+    #[test]
+    fn http_ind_status_5xx() {
+        assert!(HttpStatusDetector::has_http_indicators(r#""/path" 500"#));
+    }
+
+    #[test]
+    fn http_ind_negative() {
+        assert!(!HttpStatusDetector::has_http_indicators("plain log message"));
+    }
 }

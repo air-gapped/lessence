@@ -299,6 +299,162 @@ mod tests {
         }
     }
 
+    // ---- has_bracket_indicators: per-condition tests ----
+
+    #[test]
+    fn bracket_ind_requires_open_bracket() {
+        // Has ] but not [
+        assert!(!BracketContextDetector::has_bracket_indicators("error] happened"));
+    }
+
+    #[test]
+    fn bracket_ind_requires_close_bracket() {
+        // Has [ but not ]
+        assert!(!BracketContextDetector::has_bracket_indicators("[error happened"));
+    }
+
+    #[test]
+    fn bracket_ind_positive() {
+        assert!(BracketContextDetector::has_bracket_indicators("[error] happened"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_ipv6() {
+        assert!(!BracketContextDetector::has_bracket_indicators("[2001:db8::1]"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_array_access() {
+        assert!(!BracketContextDetector::has_bracket_indicators("data array[0] value"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_index() {
+        assert!(!BracketContextDetector::has_bracket_indicators("at index[5] pos"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_url_params() {
+        assert!(!BracketContextDetector::has_bracket_indicators("[x] param=value"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_math() {
+        assert!(!BracketContextDetector::has_bracket_indicators("[1 + 2]"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_regex() {
+        assert!(!BracketContextDetector::has_bracket_indicators("[0-9] pattern"));
+    }
+
+    #[test]
+    fn bracket_ind_excludes_k8s() {
+        assert!(!BracketContextDetector::has_bracket_indicators("[error] kubelet started"));
+    }
+
+    // ---- has_kubernetes_indicators: per-condition tests ----
+
+    #[test]
+    fn k8s_ind_kubernetes_io() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("kubernetes.io/name"));
+    }
+
+    #[test]
+    fn k8s_ind_namespace() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("namespace/default"));
+    }
+
+    #[test]
+    fn k8s_ind_pod() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("pod/nginx-abc"));
+    }
+
+    #[test]
+    fn k8s_ind_service() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("service/web"));
+    }
+
+    #[test]
+    fn k8s_ind_configmap() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("configmap/cfg"));
+    }
+
+    #[test]
+    fn k8s_ind_secret() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("secret/tls"));
+    }
+
+    #[test]
+    fn k8s_ind_deployment() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("deployment/app"));
+    }
+
+    #[test]
+    fn k8s_ind_volumes() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("volumes/data"));
+    }
+
+    #[test]
+    fn k8s_ind_projected_dash() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("projected-token"));
+    }
+
+    #[test]
+    fn k8s_ind_volume_subpath() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("volume-subpath check"));
+    }
+
+    #[test]
+    fn k8s_ind_projected() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("using projected volume"));
+    }
+
+    #[test]
+    fn k8s_ind_apiserver() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("apiserver health"));
+    }
+
+    #[test]
+    fn k8s_ind_kube_prefix() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("kube-dns ready"));
+    }
+
+    #[test]
+    fn k8s_ind_kubelet() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("kubelet started"));
+    }
+
+    #[test]
+    fn k8s_ind_kube_proxy() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("kube-proxy running"));
+    }
+
+    #[test]
+    fn k8s_ind_kube_scheduler() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("kube-scheduler leader"));
+    }
+
+    #[test]
+    fn k8s_ind_kube_controller() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("kube-controller ready"));
+    }
+
+    #[test]
+    fn k8s_ind_etcd() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("etcd cluster"));
+    }
+
+    #[test]
+    fn k8s_ind_coredns() {
+        assert!(BracketContextDetector::has_kubernetes_indicators("coredns serving"));
+    }
+
+    #[test]
+    fn k8s_ind_negative() {
+        assert!(!BracketContextDetector::has_kubernetes_indicators("plain log message"));
+    }
+
     #[test]
     fn test_context_classification() {
         assert!(BracketContextDetector::is_logging_context("error"));
@@ -310,5 +466,102 @@ mod tests {
         assert!(!BracketContextDetector::is_logging_context("123"));
         assert!(!BracketContextDetector::is_logging_context("2001:db8"));
         assert!(!BracketContextDetector::is_logging_context("a"));
+    }
+
+    // ---- is_logging_context: per-branch tests ----
+
+    #[test]
+    fn logging_ctx_system_context() {
+        assert!(BracketContextDetector::is_logging_context("kernel"));
+        assert!(BracketContextDetector::is_logging_context("cron"));
+        assert!(BracketContextDetector::is_logging_context("firewall"));
+    }
+
+    #[test]
+    fn logging_ctx_service_suffix() {
+        assert!(BracketContextDetector::is_logging_context("app_service"));
+    }
+
+    #[test]
+    fn logging_ctx_manager_suffix() {
+        assert!(BracketContextDetector::is_logging_context("task_manager"));
+    }
+
+    #[test]
+    fn logging_ctx_client_suffix() {
+        assert!(BracketContextDetector::is_logging_context("http_client"));
+    }
+
+    #[test]
+    fn logging_ctx_server_suffix() {
+        assert!(BracketContextDetector::is_logging_context("web_server"));
+    }
+
+    #[test]
+    fn logging_ctx_mod_prefix() {
+        assert!(BracketContextDetector::is_logging_context("mod_proxy"));
+    }
+
+    #[test]
+    fn logging_ctx_ngx_prefix() {
+        assert!(BracketContextDetector::is_logging_context("ngx_http"));
+    }
+
+    #[test]
+    fn logging_ctx_web_module() {
+        assert!(BracketContextDetector::is_logging_context("core"));
+        assert!(BracketContextDetector::is_logging_context("event"));
+    }
+
+    #[test]
+    fn logging_ctx_log_component() {
+        assert!(BracketContextDetector::is_logging_context("proxy"));
+        assert!(BracketContextDetector::is_logging_context("ssl"));
+        assert!(BracketContextDetector::is_logging_context("auth"));
+    }
+
+    #[test]
+    fn logging_ctx_negative() {
+        assert!(!BracketContextDetector::is_logging_context("zzz_random"));
+    }
+
+    // ---- are_logging_contexts: per-condition tests ----
+
+    #[test]
+    fn are_logging_ctxs_valid() {
+        assert!(BracketContextDetector::are_logging_contexts(&[
+            "error".to_string()
+        ]));
+    }
+
+    #[test]
+    fn are_logging_ctxs_rejects_all_digits() {
+        assert!(!BracketContextDetector::are_logging_contexts(&[
+            "error".to_string(),
+            "123".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn are_logging_ctxs_rejects_colon() {
+        assert!(!BracketContextDetector::are_logging_contexts(&[
+            "error".to_string(),
+            "2001:db8".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn are_logging_ctxs_rejects_single_char() {
+        assert!(!BracketContextDetector::are_logging_contexts(&[
+            "error".to_string(),
+            "a".to_string(),
+        ]));
+    }
+
+    #[test]
+    fn are_logging_ctxs_none_recognized() {
+        assert!(!BracketContextDetector::are_logging_contexts(&[
+            "zzz".to_string()
+        ]));
     }
 }

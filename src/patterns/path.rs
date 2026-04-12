@@ -263,28 +263,6 @@ impl PathDetector {
         normalized
     }
 
-    #[allow(dead_code)]
-    pub fn detect_and_replace_flags(text: &str) -> (String, Vec<Token>) {
-        let mut result = text.to_string();
-        let mut tokens = Vec::new();
-
-        // Replace CLI flags with <FLAG>
-        result = CLI_FLAG
-            .replace_all(&result, |caps: &regex::Captures| {
-                let flag = caps.get(0).unwrap().as_str();
-                tokens.push(Token::Path(flag.trim().to_string()));
-                " <FLAG>".to_string()
-            })
-            .to_string();
-
-        (result, tokens)
-    }
-
-    #[allow(dead_code)]
-    pub fn is_valid_path(path: &str) -> bool {
-        // Basic validation - not empty and reasonable length
-        !path.is_empty() && path.len() < 1000
-    }
 }
 
 #[cfg(test)]
@@ -386,5 +364,104 @@ mod tests {
             let (result, _tokens) = PathDetector::detect_and_replace(input);
             assert_eq!(result, expected, "Failed for input: {input}");
         }
+    }
+
+    // ---- is_likely_file_path: per-branch tests ----
+
+    #[test]
+    fn file_path_no_leading_slash() {
+        assert!(!PathDetector::is_likely_file_path("no_slash"));
+    }
+
+    #[test]
+    fn file_path_len_under_3() {
+        assert!(!PathDetector::is_likely_file_path("/a"));
+    }
+
+    #[test]
+    fn file_path_has_extension() {
+        assert!(PathDetector::is_likely_file_path("/app.log"));
+    }
+
+    #[test]
+    fn file_path_multiple_segments() {
+        assert!(PathDetector::is_likely_file_path("/usr/bin/python"));
+    }
+
+    #[test]
+    fn file_path_var() {
+        assert!(PathDetector::is_likely_file_path("/var/log/syslog"));
+    }
+
+    #[test]
+    fn file_path_usr() {
+        assert!(PathDetector::is_likely_file_path("/usr/local/bin"));
+    }
+
+    #[test]
+    fn file_path_etc() {
+        assert!(PathDetector::is_likely_file_path("/etc/nginx/nginx.conf"));
+    }
+
+    #[test]
+    fn file_path_home() {
+        assert!(PathDetector::is_likely_file_path("/home/user/doc"));
+    }
+
+    #[test]
+    fn file_path_opt() {
+        assert!(PathDetector::is_likely_file_path("/opt/app/bin"));
+    }
+
+    #[test]
+    fn file_path_tmp() {
+        assert!(PathDetector::is_likely_file_path("/tmp/data"));
+    }
+
+    // ---- is_likely_url_path: per-branch tests ----
+
+    #[test]
+    fn url_path_no_leading_slash() {
+        assert!(!PathDetector::is_likely_url_path("api/v1"));
+    }
+
+    #[test]
+    fn url_path_len_under_2() {
+        assert!(!PathDetector::is_likely_url_path("/"));
+    }
+
+    #[test]
+    fn url_path_api() {
+        assert!(PathDetector::is_likely_url_path("/api/users"));
+    }
+
+    #[test]
+    fn url_path_v1() {
+        assert!(PathDetector::is_likely_url_path("/v1/resources"));
+    }
+
+    #[test]
+    fn url_path_v2() {
+        assert!(PathDetector::is_likely_url_path("/v2/items"));
+    }
+
+    #[test]
+    fn url_path_static() {
+        assert!(PathDetector::is_likely_url_path("/static/style.css"));
+    }
+
+    #[test]
+    fn url_path_assets() {
+        assert!(PathDetector::is_likely_url_path("/assets/img.png"));
+    }
+
+    #[test]
+    fn url_path_has_query_params() {
+        assert!(PathDetector::is_likely_url_path("/search?q=test"));
+    }
+
+    #[test]
+    fn url_path_multi_segments() {
+        assert!(PathDetector::is_likely_url_path("/users/123/orders"));
     }
 }

@@ -19,9 +19,6 @@ static THREAD_NAME_REGEX: LazyLock<Regex> =
 // Generic numeric ID in various contexts
 static NUMERIC_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bid=(\d+)\b").unwrap());
 
-// Kubernetes specific: process ID in log format
-static K8S_PROCESS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+(\d+)\s+").unwrap());
-
 pub struct ProcessDetector;
 
 impl ProcessDetector {
@@ -123,18 +120,6 @@ impl ProcessDetector {
         (1..=4_194_304).contains(&pid) // 2^22, typical Linux max PID
     }
 
-    #[allow(dead_code)]
-    pub fn extract_k8s_process_id(text: &str) -> Option<u32> {
-        // Special handling for Kubernetes log format like "I0920 10:23:46.386231       1 policy_source.go:224]"
-        // The number after the timestamp is the process ID
-        if let Some(cap) = K8S_PROCESS_REGEX.captures(text)
-            && let Ok(pid) = cap.get(1).unwrap().as_str().parse::<u32>()
-            && Self::is_likely_pid(pid)
-        {
-            return Some(pid);
-        }
-        None
-    }
 }
 
 #[cfg(test)]
@@ -175,13 +160,6 @@ mod tests {
         assert_eq!(result, "tid=<TID> mutex acquired");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::ThreadID(_)));
-    }
-
-    #[test]
-    fn test_k8s_process_id() {
-        let text = "I0920 10:23:46.386231       1 policy_source.go:224] refreshing policies";
-        let pid = ProcessDetector::extract_k8s_process_id(text);
-        assert_eq!(pid, Some(1));
     }
 
     #[test]

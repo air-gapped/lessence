@@ -64,8 +64,6 @@ pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
 #[derive(Debug)]
 struct PatternGroup {
     lines: Vec<LogLine>,
-    #[allow(dead_code)]
-    collapsed: bool,
     position: usize, // Position when first line was encountered
     /// Input line number of the first line in this group (1-indexed).
     /// Used by the JSON output path; ignored by text/markdown formatting.
@@ -79,7 +77,6 @@ impl PatternGroup {
     fn new(line: LogLine, position: usize) -> Self {
         Self {
             lines: vec![line],
-            collapsed: false,
             position,
             first_line_no: position,
             last_line_no: position,
@@ -1070,9 +1067,6 @@ impl PatternFolder {
             self.process_batch()?;
         }
 
-        // Apply second similarity pass to catch similar lines with different patterns
-        // self.apply_second_similarity_pass()?;
-
         let mut output = Vec::new();
 
         // Sort groups by position to maintain chronological order
@@ -1139,66 +1133,6 @@ impl PatternFolder {
         // This maintains pattern detection quality while following "complete files in memory" principle
         const CONSTITUTIONAL_FLUSH_THRESHOLD: usize = 1000;
         self.buffer.len() > CONSTITUTIONAL_FLUSH_THRESHOLD
-    }
-
-    /// Apply second similarity pass to merge groups that are similar but have different patterns
-    #[allow(dead_code)]
-    fn apply_second_similarity_pass(&mut self) -> Result<()> {
-        if self.buffer.len() <= 1 {
-            return Ok(());
-        }
-
-        let mut merged_any = true;
-        let mut iterations = 0;
-
-        // Keep trying to merge until no more merges are possible
-        while merged_any && iterations < 10 {
-            // Prevent infinite loops
-            merged_any = false;
-            iterations += 1;
-
-            // Compare all pairs of groups
-            let mut i = 0;
-            while i < self.buffer.len() {
-                let mut j = i + 1;
-                while j < self.buffer.len() {
-                    // Get representatives from each group (safe: buffer entries always have lines)
-                    let Some(group1_first) = self.buffer[i].lines.first() else {
-                        j += 1;
-                        continue;
-                    };
-                    let Some(group2_first) = self.buffer[j].lines.first() else {
-                        j += 1;
-                        continue;
-                    };
-
-                    // Skip if they already have identical normalized forms (should already be grouped)
-                    if group1_first.normalized == group2_first.normalized {
-                        j += 1;
-                        continue;
-                    }
-
-                    // Check if they're similar enough to merge
-                    let similarity = self.normalizer.similarity_score(group1_first, group2_first);
-                    if similarity >= f64::from(self.config.threshold) {
-                        // Merge group j into group i
-                        let group_to_merge = self.buffer.remove(j);
-                        let merged_last_line_no = group_to_merge.last_line_no;
-                        for line in group_to_merge.lines {
-                            self.buffer[i].add_line(line, merged_last_line_no);
-                        }
-
-                        merged_any = true;
-                        // Don't increment j since we removed an element
-                    } else {
-                        j += 1;
-                    }
-                }
-                i += 1;
-            }
-        }
-
-        Ok(())
     }
 
     fn count_pattern_types(&mut self, tokens: &[Token]) {
@@ -3667,25 +3601,6 @@ mod tests {
             f.stats.output_lines > 0,
             "finish should update output_lines stat"
         );
-    }
-
-    // ---------------------------------------------------------------
-    // apply_second_similarity_pass
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn second_pass_empty_buffer() {
-        let mut f = make_folder();
-        f.apply_second_similarity_pass().unwrap();
-        assert!(f.buffer.is_empty());
-    }
-
-    #[test]
-    fn second_pass_single_group() {
-        let mut f = make_folder();
-        f.buffer.push(PatternGroup::new(make_line("hello", vec![]), 1));
-        f.apply_second_similarity_pass().unwrap();
-        assert_eq!(f.buffer.len(), 1, "single group should remain unchanged");
     }
 
     // ---------------------------------------------------------------

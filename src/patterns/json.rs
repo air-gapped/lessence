@@ -51,11 +51,6 @@ impl JsonDetector {
         (result, tokens)
     }
 
-    #[allow(dead_code)]
-    pub fn is_valid_json(text: &str) -> bool {
-        // Basic validation - starts and ends with braces, reasonable length
-        text.starts_with('{') && text.ends_with('}') && text.len() < 10000
-    }
 }
 
 #[cfg(test)]
@@ -94,21 +89,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_json_validation() {
-        let test_cases = vec![
-            ("{valid: json}", true),
-            ("not json", false),
-            ("{}", true),
-            ("{unclosed", false),
-        ];
-
-        for (input, expected) in test_cases {
-            assert_eq!(
-                JsonDetector::is_valid_json(input),
-                expected,
-                "Failed validation for input: {input}"
-            );
-        }
-    }
 }
