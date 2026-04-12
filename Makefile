@@ -1,7 +1,7 @@
 # lessence Makefile
 # Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
-.PHONY: ci fmt clippy doc build test deny check install setup clean help
+.PHONY: ci fmt clippy doc build test deny check install setup clean help fuzz mutants
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -48,6 +48,22 @@ test-unit:
 	cargo test --lib
 
 #---------------------------------------------------------------------------
+# Local-only heavy testing (not in CI)
+#---------------------------------------------------------------------------
+
+## fuzz: Run fuzz testing on normalizer (requires nightly, local only, 5 min default)
+fuzz:
+	cargo +nightly fuzz run fuzz_normalize -- -max_total_time=300
+
+## fuzz-fold: Run fuzz testing on full folding pipeline (requires nightly, local only)
+fuzz-fold:
+	cargo +nightly fuzz run fuzz_fold -- -max_total_time=300
+
+## mutants: Run mutation testing on core modules (local only, ~10-20 min)
+mutants:
+	cargo mutants -f src/folder.rs -f src/normalize.rs -- --lib
+
+#---------------------------------------------------------------------------
 # Install
 #---------------------------------------------------------------------------
 
@@ -81,9 +97,11 @@ clean:
 help:
 	@echo "lessence Development Commands"
 	@echo ""
-	@echo "  make ci       — Run full CI pipeline (same as GitHub Actions)"
-	@echo "  make check    — Quick pre-push validation (fmt + clippy + deny)"
-	@echo "  make setup    — Install required dev tools"
-	@echo "  make install  — Build and install to PATH"
+	@echo "  make ci        — Run full CI pipeline (same as GitHub Actions)"
+	@echo "  make check     — Quick pre-push validation (fmt + clippy + deny)"
+	@echo "  make fuzz      — Fuzz normalizer (nightly, local only, 5 min)"
+	@echo "  make mutants   — Mutation testing on core modules (local only)"
+	@echo "  make setup     — Install required dev tools"
+	@echo "  make install   — Build and install to PATH"
 	@echo ""
 	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed 's/^/ /'
