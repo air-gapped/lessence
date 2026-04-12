@@ -4186,18 +4186,23 @@ mod tests {
     }
 
     #[test]
-    fn format_group_dispatch_at_min_collapse_has_rollup() {
+    fn format_group_dispatch_at_min_collapse_computes_rollup() {
         let mut f = make_folder(); // min_collapse = 3
+        // Use enough varied tokens that rollup produces distinct output vs legacy
         let group = make_group("error <IP>", vec![
             vec![Token::IPv4("10.0.0.1".into())],
             vec![Token::IPv4("10.0.0.2".into())],
             vec![Token::IPv4("10.0.0.3".into())],
-        ]); // count = 3, exactly at min_collapse
+            vec![Token::IPv4("10.0.0.4".into())],
+            vec![Token::IPv4("10.0.0.5".into())],
+        ]); // count = 5, well above min_collapse
         let output = f.format_group_dispatch(&group).unwrap();
-        // At min_collapse: should have rollup/collapse marker
+        // Rollup path produces "ipv4×N" markers; legacy produces "[+N similar, varying: ...]"
+        // If >= is mutated to <, count=5 >= 3 would become 5 < 3 = false → empty rollup
+        // → legacy format which says "similar" but NOT "ipv4"
         assert!(
-            output.contains("similar") || output.contains("ipv4"),
-            "3 lines should collapse: {output}"
+            output.contains("ipv4"),
+            "rollup should produce ipv4 marker, got legacy format: {output}"
         );
     }
 
