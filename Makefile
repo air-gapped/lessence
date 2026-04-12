@@ -1,7 +1,8 @@
 # lessence Makefile
 # Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
-.PHONY: ci fmt clippy doc build test deny check install setup clean help fuzz mutants
+.PHONY: ci fmt clippy doc build test deny check install setup clean help \
+       coverage fuzz fuzz-fold mutants check-fuzz-prereqs check-mutants-prereqs
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -47,21 +48,42 @@ check: fmt clippy deny
 test-unit:
 	cargo test --lib
 
+## coverage: Generate HTML coverage report (opens in browser)
+coverage:
+	@cargo llvm-cov --version >/dev/null 2>&1 || { echo "Requires: cargo install cargo-llvm-cov"; exit 1; }
+	cargo llvm-cov nextest --no-fail-fast --html --ignore-filename-regex 'tests/'
+	@echo "Report: target/llvm-cov/html/index.html"
+
 #---------------------------------------------------------------------------
 # Local-only heavy testing (not in CI)
+# All targets run at low priority (nice) to keep the system responsive.
+# Override defaults: make fuzz FUZZ_TIME=600 FUZZ_WORKERS=4
 #---------------------------------------------------------------------------
 
-## fuzz: Run fuzz testing on normalizer (requires nightly, local only, 5 min default)
-fuzz:
-	cargo +nightly fuzz run fuzz_normalize -- -max_total_time=300
+FUZZ_TIME ?= 300
+FUZZ_WORKERS ?= 1
 
-## fuzz-fold: Run fuzz testing on full folding pipeline (requires nightly, local only)
-fuzz-fold:
-	cargo +nightly fuzz run fuzz_fold -- -max_total_time=300
+check-fuzz-prereqs:
+	@cargo +nightly fuzz --version >/dev/null 2>&1 || { echo "Requires: cargo install cargo-fuzz && rustup toolchain install nightly"; exit 1; }
 
-## mutants: Run mutation testing on core modules (local only, ~10-20 min)
-mutants:
-	cargo mutants -f src/folder.rs -f src/normalize.rs -- --lib
+check-mutants-prereqs:
+	@cargo mutants --version >/dev/null 2>&1 || { echo "Requires: cargo install cargo-mutants"; exit 1; }
+
+## fuzz: Fuzz normalizer (nightly, local only, FUZZ_TIME=300 FUZZ_WORKERS=1)
+fuzz: check-fuzz-prereqs
+	nice -n 19 cargo +nightly fuzz run fuzz_normalize -- -max_total_time=$(FUZZ_TIME) -jobs=$(FUZZ_WORKERS) -workers=$(FUZZ_WORKERS)
+
+## fuzz-fold: Fuzz full folding pipeline (nightly, local only, FUZZ_TIME=300 FUZZ_WORKERS=1)
+fuzz-fold: check-fuzz-prereqs
+	nice -n 19 cargo +nightly fuzz run fuzz_fold -- -max_total_time=$(FUZZ_TIME) -jobs=$(FUZZ_WORKERS) -workers=$(FUZZ_WORKERS)
+
+## mutants: Mutation testing on core modules (local only, several hours)
+mutants: check-mutants-prereqs
+	nice -n 19 cargo mutants -f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs'
+
+## mutants-quick: Mutation testing, unit tests only (local only, ~40 min)
+mutants-quick: check-mutants-prereqs
+	nice -n 19 cargo mutants -f src/folder.rs -f src/normalize.rs -- --lib
 
 #---------------------------------------------------------------------------
 # Install
@@ -99,6 +121,7 @@ help:
 	@echo ""
 	@echo "  make ci        — Run full CI pipeline (same as GitHub Actions)"
 	@echo "  make check     — Quick pre-push validation (fmt + clippy + deny)"
+	@echo "  make coverage   — HTML code coverage report (unit tests)"
 	@echo "  make fuzz      — Fuzz normalizer (nightly, local only, 5 min)"
 	@echo "  make mutants   — Mutation testing on core modules (local only)"
 	@echo "  make setup     — Install required dev tools"
