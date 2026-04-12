@@ -44,15 +44,19 @@ lessence --human < app.log            # fits terminal height, implies --summary
 lessence --summary < app.log          # one-line-per-pattern (caps at 30, use --top N to adjust)
 lessence --preflight < app.log        # JSON stats for automation/CI
 
+# Structured JSON output — best for AI agents
+lessence --format json < app.log      # JSONL: one JSON object per folded group + summary
+
 # Feed compressed logs to an LLM
 kubectl logs pod/api | lessence | claude -p "what's wrong?"
-kubectl logs pod/api | lessence --preflight | claude -p "analyze this log report"
+kubectl logs pod/api | lessence --format json | claude -p "analyze this structured log report"
 
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
 lessence -q < app.log                 # suppress stats footer
 lessence --format markdown < app.log  # markdown for incident reports
+lessence --format json < app.log      # JSONL with rollup metadata for agents
 lessence --stats-json < app.log       # machine-readable stats on stderr
 ```
 
@@ -61,21 +65,97 @@ terminal height so results stay visible after the command returns. For a
 specific count, use `--summary --top N`. Then drill into specific patterns
 with default mode.
 
+**For agent/programmatic use, prefer `--format json`** over text mode. The
+JSON output carries per-group rollup metadata (distinct counts, sample
+values, time ranges) that lets agents answer follow-up questions without
+re-running the tool. See "Structured JSON Output" below.
+
 ## Reading the Output
+
+### Text mode (default)
 
 ```
 ERROR [handler-3] Failed to connect to 10.0.1.50:5432 - timeout
-  [+847 similar, varying: TIMESTAMP, IP, PORT]
+[+847 similar | 13:07:09 → 14:52:33 | ipv4×4, port×2 {5432, 6379}]
+ERROR [handler-3] Failed to connect to 10.0.1.99:6379 - timeout
 WARN [pool-1] Connection pool exhausted
-  [+312 similar, varying: TIMESTAMP]
+[+312 similar | duration×1]
 INFO [auth] Login succeeded user="admin@corp.com"
 ```
 
 - **`[+N similar]`** = repeated N more times. High N = repeating problem.
-- **`varying: TYPE`** = what changed between repetitions (TIMESTAMP, IP, etc.)
+- **`13:07:09 → 14:52:33`** = time range of the group (first and last timestamp).
+- **`ipv4×4`** = 4 distinct IP addresses in this group. Low count = narrow problem; high count = widespread.
+- **`port×2 {5432, 6379}`** = only 2 distinct ports, both shown inline (complete set).
+- **`hash×1024+`** = the distinct-value cap was hit. The `+` means "at least 1024 and possibly many more."
 - **Few groups** = one dominant problem (focused debugging)
 - **Many groups** = diverse issues (investigate each group)
 - **Lines WITHOUT `[+N similar]`** = unique events — often the actual root cause
+
+### JSON mode (`--format json`)
+
+Each folded group is a JSON object on one line (JSONL). The last record
+is a `"summary"` with aggregate statistics. Key fields per group:
+
+```json
+{
+  "type": "group",
+  "count": 847,
+  "normalized": "ERROR [handler-<NUMBER>] Failed to connect to <IP>:<PORT>...",
+  "time_range": {"first_seen": "13:07:09", "last_seen": "14:52:33"},
+  "variation": {
+    "IPV4": {"distinct_count": 4, "samples": ["10.0.1.50", "10.0.1.51", "10.0.1.99", "10.0.2.1"], "capped": false},
+    "PORT": {"distinct_count": 2, "samples": ["5432", "6379"], "capped": false}
+  }
+}
+```
+
+- **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation.
+- **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION).
+- **`capped: true`** — distinct_count is a lower bound (at least 64 and possibly more).
+- **`normalized`** — the template with `<TOKEN>` placeholders; this is what lessence groups by.
+
+Full schema: `docs/format-json-schema.md`.
+
+## Structured JSON Output (for agents)
+
+**When you are an AI agent processing logs, prefer `--format json` over
+text mode.** The JSON output carries per-group rollup metadata that lets
+you answer triage questions from a single invocation without re-reading
+the raw log.
+
+### Agent triage pipeline
+```bash
+# Step 1: get the structured summary
+lessence --format json < app.log > /tmp/summary.jsonl
+
+# Step 2: answer specific questions from the summary
+# Which groups have the most distinct IPs? (broad vs narrow problem)
+jq -r 'select(.type == "group") | "\(.count)x | IPs: \(.variation.IPV4.distinct_count // 0) | \(.normalized[:80])"' /tmp/summary.jsonl
+
+# Which pods are affected?
+jq -r 'select(.type == "group" and .count >= 100) | .variation.K8S_POD.samples // [] | .[]' /tmp/summary.jsonl
+
+# When did this pattern start?
+jq -r 'select(.type == "group" and .count >= 50) | "\(.time_range.first_seen) — \(.normalized[:60])"' /tmp/summary.jsonl
+
+# Which patterns hit the distinct-value cap? (high-cardinality → investigate)
+jq -r 'select(.type == "group") | .variation | to_entries[] | select(.value.capped) | "\(.key): >=\(.value.distinct_count)"' /tmp/summary.jsonl
+
+# Overall compression stats
+jq 'select(.type == "summary") | {input_lines, output_lines, compression_ratio}' /tmp/summary.jsonl
+```
+
+### Why JSON over text for agents
+- **No re-running.** Text mode shows `uuid×14` but not WHICH UUIDs. JSON
+  mode gives the actual sample values, so you can answer follow-up
+  questions from context without a second `lessence` invocation.
+- **Queryable with jq.** Filter, sort, and extract exactly the fields
+  the user's question requires.
+- **Deterministic.** Same input = byte-identical output (except
+  `elapsed_ms`). Safe to cache and diff.
+- **Streaming.** JSONL format — parse line by line, stop when you have
+  enough context. No need to wait for full output.
 
 ## Triage Workflows
 
@@ -99,6 +179,9 @@ lessence -q < app.log | grep -i error
 
 # 4. Full compressed view when needed
 lessence < app.log
+
+# 5. Structured triage (agent-friendly)
+lessence --format json < app.log | jq 'select(.type == "group" and .count > 100)'
 ```
 
 ### Crash-looping pod
@@ -117,10 +200,13 @@ lessence -q < build.log | grep -i "error"
 
 ### JSON logs (jq then lessence)
 ```bash
-# lessence works on JSON but output is unreadable (1500-char JSON lines).
-# Extract key fields first, then compress:
+# When INPUT is structured JSON, extract key fields first:
 kubectl logs deploy/app | jq -r '[.level, .method, .status, .path] | @tsv' \
   | lessence --summary --top 10 -q
+
+# Or use --format json for structured OUTPUT (input can be any format):
+kubectl logs deploy/app | lessence --format json \
+  | jq 'select(.type == "group" and .count > 50) | {count, template: .normalized[:80]}'
 ```
 
 ### Tabular/columnar output (DB stats, RocksDB, vmstat)
