@@ -590,21 +590,39 @@ mod tests {
 
     #[test]
     fn normalize_url_path_preserves_api_segments() {
-        // Verifies the match arm for API segments is exercised: api and v1 are kept,
-        // but a variable segment like "users" (4+ chars, not in list) is replaced.
-        let result = PathDetector::normalize_url_path("/api/v1/users");
+        // PATH_SEGMENTS regex matches 4+ char segments, so "api"/"v1" are too short
+        // to match. Use 4+ char segments from the preserved list.
+        let result = PathDetector::normalize_url_path("/namespaces/my-ns/pods/nginx-abc");
         assert!(
-            result.contains("/api"),
-            "api segment should be preserved, got: {result}"
+            result.contains("/namespaces"),
+            "namespaces should be preserved, got: {result}"
         );
         assert!(
-            result.contains("/v1"),
-            "v1 segment should be preserved, got: {result}"
+            result.contains("/pods"),
+            "pods should be preserved, got: {result}"
         );
-        // "users" is 5 chars and matches PATH_SEGMENTS, so it should be replaced
+        // "my-ns" and "nginx-abc" are variable, should become <PATH>
         assert!(
-            result.contains("<PATH>"),
+            !result.contains("my-ns"),
             "variable segment should be normalized, got: {result}"
+        );
+    }
+
+    #[test]
+    fn normalize_url_path_static_preserved() {
+        let result = PathDetector::normalize_url_path("/static/style.css");
+        assert!(
+            result.contains("/static"),
+            "static should be preserved, got: {result}"
+        );
+    }
+
+    #[test]
+    fn normalize_url_path_health_preserved() {
+        let result = PathDetector::normalize_url_path("/health/check-endpoint");
+        assert!(
+            result.contains("/health"),
+            "health should be preserved, got: {result}"
         );
     }
 }

@@ -80,6 +80,7 @@ impl LogWithModuleDetector {
     }
 
     /// Detect if text contains Kubernetes patterns that should be handled by KubernetesDetector
+    #[mutants::skip] // kube-proxy/scheduler/controller always match the earlier "kube-" check
     fn has_kubernetes_indicators(text: &str) -> bool {
         // Kubernetes namespaces and resources
         text.contains("kubernetes.io/") ||

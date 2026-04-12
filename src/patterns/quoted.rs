@@ -305,16 +305,36 @@ mod tests {
     // ---- Mutant-killing: boundary conditions on quote detection ----
 
     #[test]
-    fn quoted_string_escaped_json_with_brace_and_colon() {
-        // Kills mutant: `|| with &&` on escaped JSON conditions (line ~78)
-        // Input has backslash + colon but NOT brace — should still trigger escaped JSON
-        // if the || is correct (any one condition suffices with backslash)
-        let input = r#"data "some\:escaped\value" done"#;
+    fn quoted_string_escaped_json_bracket_only() {
+        // Kills mutant: `|| with &&` on line 78 (contains('['))
+        // Input has backslash + bracket but NOT colon and NOT brace
+        let input = r#"data "value\[index\]more" done"#;
         let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
-        // The backslash + colon triggers escaped JSON detection
         assert!(
-            result.contains("<ESCAPED_JSON>") || result == input,
-            "escaped JSON or unchanged: {result}, tokens: {tokens:?}"
+            result.contains("<ESCAPED_JSON>"),
+            "backslash+bracket should trigger escaped JSON: {result}, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_string_escaped_json_colon_only() {
+        // Input has backslash + colon but NOT brace and NOT bracket
+        let input = r#"data "key\:value\:end" done"#;
+        let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
+        assert!(
+            result.contains("<ESCAPED_JSON>"),
+            "backslash+colon should trigger escaped JSON: {result}, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_string_escaped_json_brace_only() {
+        // Input has backslash + brace but NOT colon and NOT bracket
+        let input = r#"data "obj\{inner\}end" done"#;
+        let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
+        assert!(
+            result.contains("<ESCAPED_JSON>"),
+            "backslash+brace should trigger escaped JSON: {result}, tokens: {tokens:?}"
         );
     }
 

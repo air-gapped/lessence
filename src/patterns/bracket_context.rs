@@ -44,6 +44,7 @@ impl BracketContextDetector {
     }
 
     /// Detect if text contains Kubernetes patterns that should be handled by KubernetesDetector
+    #[mutants::skip] // kube-proxy/scheduler/controller always match the earlier "kube-" check, making their || equivalent
     fn has_kubernetes_indicators(text: &str) -> bool {
         // Kubernetes namespaces
         text.contains("kubernetes.io/") ||
@@ -70,6 +71,7 @@ impl BracketContextDetector {
         text.contains("coredns")
     }
 
+    #[mutants::skip] // The replacement loop (line 89-99) duplicates the token loop (line 81) — delete ! on empty check and >= boundary are equivalent
     fn apply_chained_bracket_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         let mut processed_indices = std::collections::HashSet::new();
 

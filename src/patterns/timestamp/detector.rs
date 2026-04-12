@@ -394,6 +394,18 @@ mod tests {
         assert_eq!(result.len(), 2);
     }
 
+    #[test]
+    fn resolve_overlaps_end_equals_start_both_survive() {
+        // Kills mutant: `candidate_range.end > used_range.start` → `>= `
+        // Higher priority match at 5..15 selected first.
+        // Then candidate 0..5: start(0) < used_end(15) = true,
+        // end(5) > used_start(5) → 5 > 5 = false → no overlap → survives.
+        // With >=: 5 >= 5 = true → overlap → wrongly excluded.
+        let matches = vec![make_match(5, 15, 90), make_match(0, 5, 50)];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 2, "adjacent end==start should not overlap");
+    }
+
     // ---- Mutant-killing: has_timestamp_indicators line 84 ----
 
     #[test]

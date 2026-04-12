@@ -240,6 +240,29 @@ mod tests {
         assert!(!UuidDetector::has_uuid_indicators("ok"));
     }
 
+    #[test]
+    fn uuid_ind_exactly_21_chars_with_hex() {
+        // Kills: > 20 → >= 20 boundary
+        // 21 chars with a hex digit, no keywords
+        let s = "z".repeat(20) + "a"; // 21 chars, 'a' is hex
+        assert!(UuidDetector::has_uuid_indicators(&s));
+    }
+
+    #[test]
+    fn uuid_ind_exactly_20_chars_with_hex() {
+        // 20 chars, NOT > 20, should fail (no keywords either)
+        let s = "z".repeat(19) + "a"; // 20 chars
+        assert!(!UuidDetector::has_uuid_indicators(&s));
+    }
+
+    #[test]
+    fn uuid_ind_long_no_hex() {
+        // >20 chars but NO hex digits → && fails
+        // Kills: && with || (would pass if || because len > 20 alone suffices)
+        let s = "z".repeat(25); // no hex digits (z is not hex)
+        assert!(!UuidDetector::has_uuid_indicators(&s));
+    }
+
     // ---- looks_like_uuid_no_hyphens: per-condition tests ----
 
     #[test]

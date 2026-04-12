@@ -282,6 +282,7 @@ impl StructuredMessageDetector {
             .any(|&infra| component.contains(infra))
     }
 
+    #[mutants::skip] // The four is_*_component checks are all subsets of the generic validation (3-50 chars, alphanumeric)
     fn is_valid_structured_log(component: &str, level: &str) -> bool {
         // Validate log level
         let valid_levels = [

@@ -827,4 +827,36 @@ mod tests {
             "should extract port: {tokens:?}"
         );
     }
+
+    // ---- FQDN detection: dot/start/end checks (line 207) ----
+
+    #[test]
+    fn fqdn_leading_dot_not_detected() {
+        // Kills: delete ! on `!fqdn_str.starts_with('.')`
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace(".example.com", false, false, true);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == ".example.com")),
+            "leading dot should prevent FQDN detection: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn fqdn_trailing_dot_not_detected() {
+        // Kills: delete ! on `!fqdn_str.ends_with('.')`
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace("example.com.", false, false, true);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == "example.com.")),
+            "trailing dot should prevent FQDN detection: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn fqdn_valid_detected() {
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("connect example.com ok", false, false, true);
+        assert!(result.contains("<FQDN>"), "valid FQDN should be detected: {result}");
+        assert!(!tokens.is_empty());
+    }
 }

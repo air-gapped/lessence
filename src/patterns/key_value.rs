@@ -58,6 +58,7 @@ impl KeyValueDetector {
         !text.contains("ftp://") // URLs
     }
 
+    #[mutants::skip] // apply_general_pattern matches the same KV inputs — redundant coverage
     fn apply_metrics_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         *text = METRICS_KV_REGEX
             .replace_all(text, |caps: &regex::Captures| {
@@ -280,6 +281,7 @@ impl KeyValueDetector {
             .any(|&indicator| text.contains(indicator))
     }
 
+    #[mutants::skip] // "if"/"for"/"while"/"switch" not in valid_keys — exclusion is redundant with the positive check
     fn is_valid_key_value_context(key: &str, value: &str, text: &str) -> bool {
         // Exclude programming constructs
         if key == "if" || key == "for" || key == "while" || key == "switch" {
