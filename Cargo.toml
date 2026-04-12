@@ -155,6 +155,31 @@ path = "tests/security/test_ipv6_evil_patterns.rs"
 name = "test_output_snapshots"
 path = "tests/snapshot/test_output_snapshots.rs"
 
+# Previously missing integration tests (were dead code — never compiled)
+[[test]]
+name = "test_basic_scenarios"
+path = "tests/integration/test_basic_scenarios.rs"
+
+[[test]]
+name = "test_edge_cases"
+path = "tests/integration/test_edge_cases.rs"
+
+[[test]]
+name = "test_essence_integration"
+path = "tests/integration/test_essence_integration.rs"
+
+[[test]]
+name = "test_normalization_integration"
+path = "tests/integration/test_normalization_integration.rs"
+
+[[test]]
+name = "test_performance"
+path = "tests/integration/test_performance.rs"
+
+[[test]]
+name = "test_thread_safety"
+path = "tests/integration/test_thread_safety.rs"
+
 # Property-based tests
 [[test]]
 name = "test_normalizer_properties"

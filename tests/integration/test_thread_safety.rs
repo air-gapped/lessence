@@ -12,7 +12,8 @@ fn test_concurrent_pattern_access() {
     // Spawn multiple threads accessing patterns simultaneously
     for _ in 0..20 {
         let handle = thread::spawn(|| {
-            let patterns = UnifiedTimestampDetector::get_patterns();
+            let registry = lessence::patterns::timestamp::TimestampRegistry::new();
+            let patterns = registry.get_patterns();
             patterns.len()
         });
         handles.push(handle);
@@ -83,8 +84,7 @@ fn test_registry_thread_safety() {
         let handle = thread::spawn(|| {
             let registry = TimestampRegistry::new();
             let patterns = registry.get_patterns();
-            let stats = registry.get_merge_statistics();
-            (patterns.len(), stats.final_pattern_count)
+            patterns.len()
         });
         handles.push(handle);
     }
@@ -92,16 +92,15 @@ fn test_registry_thread_safety() {
     // All should succeed with consistent results
     let mut results = Vec::new();
     for handle in handles {
-        let (pattern_count, final_count) = handle.join().expect("Thread should complete");
-        results.push((pattern_count, final_count));
+        let pattern_count = handle.join().expect("Thread should complete");
+        results.push(pattern_count);
     }
 
     // All registries should have same pattern count (consistent initialization)
     assert!(!results.is_empty(), "Should have results");
-    let (first_pattern_count, first_final_count) = results[0];
-    for (pattern_count, final_count) in &results {
-        assert_eq!(*pattern_count, first_pattern_count, "Pattern count should be consistent across threads");
-        assert_eq!(*final_count, first_final_count, "Final count should be consistent across threads");
+    let first = results[0];
+    for count in &results {
+        assert_eq!(*count, first, "Pattern count should be consistent across threads");
     }
 }
 
