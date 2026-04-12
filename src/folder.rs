@@ -33,12 +33,19 @@ pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
     // Collect all email token positions
     for token in tokens {
         if let Token::Email(email) = token {
+            if email.is_empty() {
+                continue;
+            }
             // Find all occurrences of this email in original text
             let mut start = 0;
             while let Some(pos) = result[start..].find(email) {
                 let abs_pos = start + pos;
                 email_ranges.push((abs_pos, abs_pos + email.len()));
-                start = abs_pos + email.len();
+                let next = abs_pos + email.len();
+                if next <= start {
+                    break; // Defensive: loop must always advance
+                }
+                start = next;
             }
         }
     }
