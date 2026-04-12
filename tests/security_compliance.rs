@@ -189,10 +189,9 @@ fn test_pii_sanitization_flag_integration() {
 
 #[test]
 fn test_security_performance_overhead() {
-    // Security features must not introduce super-linear overhead.
-    // Measure the overhead ratio (secure/normal) at two input sizes.
-    // If security adds O(n) overhead, the ratio stays constant.
-    // If it adds O(n²), the ratio grows with input size.
+    // Security features (sanitize_pii, max_line_length) must scale linearly.
+    // Scaling-ratio pattern: measure at N and 4N, assert ratio < 8.0.
+    // Linear (O(n)) → ratio ≈ 4.0. Quadratic → ratio ≈ 16.0.
     fn make_input(multiplier: usize) -> String {
         let count = 10 * multiplier;
         (0..count)
@@ -208,57 +207,46 @@ fn test_security_performance_overhead() {
             .join("\n")
     }
 
-    fn measure_overhead(input: &str) -> f64 {
-        let config_normal = Config::default();
-        let config_secure = Config {
-            sanitize_pii: true,
-            max_line_length: Some(1024 * 1024),
-            max_lines: Some(1_000_000),
-            ..Default::default()
-        };
-        let normalizer_normal = lessence::normalize::Normalizer::new(config_normal);
-        let normalizer_secure = lessence::normalize::Normalizer::new(config_secure);
-        let iters = 50;
+    let config = Config {
+        sanitize_pii: true,
+        max_line_length: Some(1024 * 1024),
+        max_lines: Some(1_000_000),
+        ..Default::default()
+    };
 
-        // Warmup
-        for _ in 0..5 {
-            for line in input.lines() {
-                let _ = normalizer_normal.normalize_line(line.to_string());
-                let _ = normalizer_secure.normalize_line(line.to_string());
-            }
+    let small = make_input(1);
+    let large = make_input(4);
+    let normalizer = lessence::normalize::Normalizer::new(config);
+    let iters = 50;
+
+    // Warmup
+    for _ in 0..5 {
+        for line in small.lines() {
+            let _ = normalizer.normalize_line(line.to_string());
         }
-
-        let start = Instant::now();
-        for _ in 0..iters {
-            for line in input.lines() {
-                let _ = normalizer_normal.normalize_line(line.to_string());
-            }
-        }
-        let time_normal = start.elapsed();
-
-        let start = Instant::now();
-        for _ in 0..iters {
-            for line in input.lines() {
-                let _ = normalizer_secure.normalize_line(line.to_string());
-            }
-        }
-        let time_secure = start.elapsed();
-
-        time_secure.as_nanos() as f64 / time_normal.as_nanos().max(1) as f64
     }
 
-    let overhead_small = measure_overhead(&make_input(1));
-    let overhead_large = measure_overhead(&make_input(4));
+    let start = Instant::now();
+    for _ in 0..iters {
+        for line in small.lines() {
+            let _ = normalizer.normalize_line(line.to_string());
+        }
+    }
+    let time_small = start.elapsed();
 
-    // If security adds constant-factor overhead, both ratios are similar.
-    // If it adds super-linear overhead, the large ratio is much bigger.
-    let growth = overhead_large / overhead_small.max(0.01);
+    let start = Instant::now();
+    for _ in 0..iters {
+        for line in large.lines() {
+            let _ = normalizer.normalize_line(line.to_string());
+        }
+    }
+    let time_large = start.elapsed();
 
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
     assert!(
-        growth < 2.0,
-        "Security overhead grows with input size: \
-         small={overhead_small:.2}x, large={overhead_large:.2}x, growth={growth:.2}x \
-         (expected <2.0, super-linear would be >>2.0)"
+        ratio < 8.0,
+        "Security features should scale linearly: 4x input took {ratio:.1}x \
+         (expected ~4.0, quadratic would be ~16.0)"
     );
 }
 

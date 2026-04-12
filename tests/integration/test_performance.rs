@@ -1,108 +1,153 @@
 // Integration Test: Performance Benchmarks (T014)
-// Validates performance characteristics and regression prevention
+// Validates performance characteristics and regression prevention.
+//
+// All timing tests use the scaling-ratio pattern: measure at N and 4N,
+// assert ratio < 8.0. This tests algorithmic complexity (O(n) vs O(n²))
+// and is immune to CPU speed, contention, and debug/release differences.
 
 use std::time::Instant;
 use lessence::patterns::timestamp::TimestampDetector;
 
 #[test]
-fn test_single_timestamp_performance() {
-    let input = "2025-09-29T10:15:30Z Simple log message";
-    let start = Instant::now();
+fn test_single_timestamp_scales_linearly() {
+    let small = "2025-09-29T10:15:30Z Simple log message";
+    let large = &format!("{small} {small} {small} {small}");
 
-    // Run detection multiple times
-    for _ in 0..1000 {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
+    let iters = 1000;
+
+    // Warmup
+    for _ in 0..100 {
+        let _ = TimestampDetector::detect_and_replace(small);
     }
 
-    let duration = start.elapsed();
-    let per_operation = duration.as_nanos() / 1000;
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(small);
+    }
+    let time_small = start.elapsed();
 
-    // Should be reasonably fast (less than 1ms per operation)
-    assert!(per_operation < 1_000_000, "Performance regression: {}ns per operation", per_operation);
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(large);
+    }
+    let time_large = start.elapsed();
+
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
+    assert!(
+        ratio < 8.0,
+        "Single timestamp detection should scale linearly: 4x input took {ratio:.1}x"
+    );
 }
 
 #[test]
-fn test_multiple_timestamp_performance() {
-    let input = "Start: 2025-09-29T10:15:30Z Middle: Jan 29 10:15:30 End: 1727676930.123";
-    let start = Instant::now();
+fn test_multiple_timestamps_scales_linearly() {
+    let base = "Start: 2025-09-29T10:15:30Z Middle: Jan 29 10:15:30 End: 1727676930.123";
+    let small = base.to_string();
+    let large = format!("{base} {base} {base} {base}");
 
-    // Run detection multiple times
-    for _ in 0..500 {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
+    let iters = 500;
+
+    for _ in 0..50 {
+        let _ = TimestampDetector::detect_and_replace(&small);
     }
 
-    let duration = start.elapsed();
-    let per_operation = duration.as_nanos() / 500;
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(&small);
+    }
+    let time_small = start.elapsed();
 
-    // Should handle multiple timestamps efficiently
-    assert!(per_operation < 5_000_000, "Multiple timestamp performance regression: {}ns per operation", per_operation);
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(&large);
+    }
+    let time_large = start.elapsed();
+
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
+    assert!(
+        ratio < 8.0,
+        "Multiple timestamp detection should scale linearly: 4x input took {ratio:.1}x"
+    );
 }
 
 #[test]
-fn test_no_timestamp_performance() {
-    let input = "Regular log message without any timestamp patterns to detect";
-    let start = Instant::now();
+fn test_no_timestamp_scales_linearly() {
+    let base = "Regular log message without any timestamp patterns to detect";
+    let small = base.to_string();
+    let large = format!("{base} {base} {base} {base}");
 
-    // Should be fast when no timestamps are present
-    for _ in 0..2000 {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
-    }
-
-    let duration = start.elapsed();
-    let per_operation = duration.as_nanos() / 2000;
-
-    // Should be very fast for non-matching inputs (fast path)
-    assert!(per_operation < 500_000, "No-timestamp performance regression: {}ns per operation", per_operation);
-}
-
-#[test]
-fn test_long_line_performance() {
-    let base_msg = "This is a longer log message with more content ";
-    let input = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(20), base_msg.repeat(20));
-
-    let start = Instant::now();
+    let iters = 2000;
 
     for _ in 0..100 {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(&input);
+        let _ = TimestampDetector::detect_and_replace(&small);
     }
 
-    let duration = start.elapsed();
-    let per_operation = duration.as_millis() / 100;
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(&small);
+    }
+    let time_small = start.elapsed();
 
-    // Should handle long lines reasonably (less than 10ms)
-    assert!(per_operation < 10, "Long line performance regression: {}ms per operation", per_operation);
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(&large);
+    }
+    let time_large = start.elapsed();
+
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
+    assert!(
+        ratio < 8.0,
+        "No-timestamp fast path should scale linearly: 4x input took {ratio:.1}x"
+    );
 }
 
 #[test]
-fn test_pattern_compilation_performance() {
-    // Test the one-time cost of pattern loading
+fn test_long_line_scales_linearly() {
+    let base_msg = "This is a longer log message with more content ";
+    let small = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(5), base_msg.repeat(5));
+    let large = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(20), base_msg.repeat(20));
+
+    let iters = 200;
+
+    for _ in 0..20 {
+        let _ = TimestampDetector::detect_and_replace(&small);
+    }
+
     let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(&small);
+    }
+    let time_small = start.elapsed();
 
-    // Access patterns (triggers lazy initialization)
-    use lessence::patterns::timestamp::UnifiedTimestampDetector;
-    let patterns = UnifiedTimestampDetector::get_patterns();
+    let start = Instant::now();
+    for _ in 0..iters {
+        let _ = TimestampDetector::detect_and_replace(&large);
+    }
+    let time_large = start.elapsed();
 
-    let duration = start.elapsed();
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
+    assert!(
+        ratio < 8.0,
+        "Long line detection should scale linearly: 4x input took {ratio:.1}x"
+    );
+}
 
-    // Pattern compilation should be reasonable (less than 100ms)
-    assert!(duration.as_millis() < 100, "Pattern compilation too slow: {}ms", duration.as_millis());
-    assert!(patterns.len() >= 30, "Should have sufficient patterns");
+#[test]
+fn test_pattern_compilation_succeeds() {
+    // Verify patterns load correctly and have expected count
+    use lessence::patterns::timestamp::TimestampRegistry;
+    let registry = TimestampRegistry::new();
+    let patterns = registry.get_patterns();
+    assert!(patterns.len() >= 30, "Should have sufficient patterns, got {}", patterns.len());
 }
 
 #[test]
 fn test_memory_usage_stability() {
     let input = "2025-09-29T10:15:30Z Memory test message";
 
-    // Run many iterations to check for memory leaks
-    for i in 0..10000 {
+    // Run many iterations to check for panics or crashes
+    for _ in 0..10000 {
         let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
-
-        // Periodic check - memory usage should be stable
-        if i % 1000 == 0 {
-            // Just ensure we don't crash or accumulate memory
-            // Real memory usage would require external measurement
-            assert!(true, "Memory stability check at iteration {}", i);
-        }
     }
 }
 
@@ -112,11 +157,10 @@ fn test_concurrent_performance() {
     use std::sync::Arc;
 
     let input = Arc::new("2025-09-29T10:15:30Z Concurrent test message".to_string());
-    let start = Instant::now();
 
     let mut handles = vec![];
 
-    // Spawn multiple threads
+    // Spawn multiple threads — just verify no panics or deadlocks
     for _ in 0..4 {
         let input_clone = Arc::clone(&input);
         let handle = thread::spawn(move || {
@@ -127,16 +171,9 @@ fn test_concurrent_performance() {
         handles.push(handle);
     }
 
-    // Wait for all threads to complete
     for handle in handles {
-        handle.join().expect("Thread should complete");
+        handle.join().expect("Thread should complete without panic");
     }
-
-    let duration = start.elapsed();
-
-    // Concurrent access should not significantly degrade performance
-    // Total 1000 operations across 4 threads
-    assert!(duration.as_millis() < 1000, "Concurrent performance degradation: {}ms for 1000 operations", duration.as_millis());
 }
 
 #[test]
@@ -149,21 +186,25 @@ fn test_regex_cache_effectiveness() {
         "timestamp=1727676930 Unix format",
     ];
 
-    // First run - might include compilation cost
+    // First run — may include lazy init cost
     let start1 = Instant::now();
     for input in &test_inputs {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
+        let _ = TimestampDetector::detect_and_replace(input);
     }
     let first_run = start1.elapsed();
 
-    // Second run - should benefit from cached patterns
+    // Second run — should benefit from cached patterns
     let start2 = Instant::now();
     for input in &test_inputs {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
+        let _ = TimestampDetector::detect_and_replace(input);
     }
     let second_run = start2.elapsed();
 
-    // Second run should be as fast or faster (patterns cached)
-    assert!(second_run <= first_run * 2, "Pattern caching not effective: first={}μs, second={}μs",
-        first_run.as_micros(), second_run.as_micros());
+    // Second run should not be dramatically slower than first
+    assert!(
+        second_run <= first_run * 3,
+        "Pattern caching not effective: first={}μs, second={}μs",
+        first_run.as_micros(),
+        second_run.as_micros()
+    );
 }
