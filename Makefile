@@ -77,13 +77,17 @@ fuzz: check-fuzz-prereqs
 fuzz-fold: check-fuzz-prereqs
 	nice -n 19 cargo +nightly fuzz run fuzz_fold -- -max_total_time=$(FUZZ_TIME) -jobs=$(FUZZ_WORKERS) -workers=$(FUZZ_WORKERS)
 
-## mutants: Mutation testing on core modules (local only, several hours)
+MUTANTS_JOBS ?= 2
+MUTANTS_MEM_MAX ?= 16G
+MUTANTS_RUN := systemd-run --scope -p MemoryMax=$(MUTANTS_MEM_MAX) nice -n 19
+
+## mutants: Mutation testing on core modules (local only, several hours, MUTANTS_JOBS=4)
 mutants: check-mutants-prereqs
-	nice -n 19 cargo mutants -f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs'
+	$(MUTANTS_RUN) cargo mutants -j $(MUTANTS_JOBS) -f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs'
 
 ## mutants-quick: Mutation testing, unit tests only (local only, ~40 min)
 mutants-quick: check-mutants-prereqs
-	nice -n 19 cargo mutants -f src/folder.rs -f src/normalize.rs -- --lib
+	$(MUTANTS_RUN) cargo mutants -j $(MUTANTS_JOBS) -f src/folder.rs -f src/normalize.rs -- --lib
 
 #---------------------------------------------------------------------------
 # Install
