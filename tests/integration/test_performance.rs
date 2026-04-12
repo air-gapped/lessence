@@ -107,10 +107,11 @@ fn test_long_line_scales_linearly() {
     let small = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(5), base_msg.repeat(5));
     let large = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(20), base_msg.repeat(20));
 
-    let iters = 200;
+    let iters = 1000;
 
-    for _ in 0..20 {
+    for _ in 0..50 {
         let _ = TimestampDetector::detect_and_replace(&small);
+        let _ = TimestampDetector::detect_and_replace(&large);
     }
 
     let start = Instant::now();
