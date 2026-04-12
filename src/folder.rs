@@ -2862,6 +2862,90 @@ mod tests {
         assert_eq!(f.buffer.len(), 1, "group should remain in buffer");
     }
 
+    // --- Mutant-killing tests for process_line + flush_oldest_safe_group ---
+
+    #[test]
+    fn process_line_advances_position_counter() {
+        // Kills: position_counter += 1 → *= 1 (stays at 0)
+        let mut f = make_folder();
+        assert_eq!(f.position_counter, 0);
+        f.process_line("hello 10.0.0.1").unwrap();
+        assert_eq!(f.position_counter, 1);
+        f.process_line("world 10.0.0.2").unwrap();
+        assert_eq!(f.position_counter, 2);
+    }
+
+    #[test]
+    fn flush_exact_safe_distance_boundary() {
+        // Kills: > safe_distance → >= safe_distance
+        // safe_distance = 100, so distance of exactly 100 should NOT flush
+        let mut f = make_folder();
+        f.buffer.push(PatternGroup::new(
+            make_line("boundary line", vec![]),
+            1,
+        ));
+        f.position_counter = 101; // distance = 101 - 1 = 100, exactly at boundary
+        let result = f.flush_oldest_safe_group().unwrap();
+        assert_eq!(result, None, "distance of exactly 100 should NOT flush (> not >=)");
+
+        // distance = 101 SHOULD flush
+        f.position_counter = 102; // distance = 102 - 1 = 101
+        let result = f.flush_oldest_safe_group().unwrap();
+        assert!(result.is_some(), "distance of 101 should flush");
+    }
+
+    #[test]
+    fn flush_uses_subtraction_not_division() {
+        // Kills: current_position - group.position → current_position / group.position
+        // With position=50, counter=160: 160-50=110 > 100 (flush), 160/50=3 (no flush)
+        let mut f = make_folder();
+        f.buffer.push(PatternGroup::new(
+            make_line("division test", vec![]),
+            50,
+        ));
+        f.position_counter = 160;
+        let result = f.flush_oldest_safe_group().unwrap();
+        assert!(result.is_some(), "distance 110 should flush (subtraction gives 110, division gives 3)");
+    }
+
+    #[test]
+    fn flush_selects_first_among_equal_positions() {
+        // Kills: group.position < oldest_position → <= oldest_position
+        // Two groups at same position, different content — first should be selected
+        let mut f = make_folder();
+        f.buffer.push(PatternGroup::new(
+            make_line("first_group_aaa", vec![]),
+            5,
+        ));
+        f.buffer.push(PatternGroup::new(
+            make_line("second_group_bbb", vec![]),
+            5,
+        ));
+        f.position_counter = 200;
+        let result = f.flush_oldest_safe_group().unwrap().unwrap();
+        assert!(
+            result.contains("first_group_aaa"),
+            "should flush first group at equal position, got: {result}"
+        );
+    }
+
+    #[test]
+    fn flush_accumulates_output_lines() {
+        // Kills: output_lines += count → *= count (0 * N = 0)
+        let mut f = make_folder();
+        f.buffer.push(PatternGroup::new(
+            make_line("output line", vec![]),
+            1,
+        ));
+        f.position_counter = 200;
+        assert_eq!(f.stats.output_lines, 0);
+        let _result = f.flush_oldest_safe_group().unwrap();
+        assert!(
+            f.stats.output_lines > 0,
+            "output_lines should be incremented after flush, got 0"
+        );
+    }
+
     // ---------------------------------------------------------------
     // JSON output: format_group_json, print_summary_json, format_group_dispatch
     // ---------------------------------------------------------------
