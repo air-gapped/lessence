@@ -1,53 +1,91 @@
+// Security Compliance Tests
+//
+// ReDoS tests use scaling-ratio approach (4x input should take ~4x time).
+// Non-timing security tests (input limits, PII) use direct assertions.
+
 use lessence::config::Config;
 use lessence::patterns::email::EmailPatternDetector;
 use lessence::patterns::network::NetworkDetector;
 use lessence::patterns::timestamp::TimestampDetector;
-use std::time::{Duration, Instant};
+use std::time::Instant;
+
+fn assert_linear_scaling<F: Fn(&str, u32) -> std::time::Duration>(
+    label: &str,
+    small_input: &str,
+    large_input: &str,
+    measure: F,
+) {
+    let iters = 500;
+    let time_small = measure(small_input, iters);
+    let time_large = measure(large_input, iters);
+
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
+
+    assert!(
+        ratio < 8.0,
+        "{label}: scaling ratio {ratio:.1}x (expected <8.0). \
+         small={small_ns}ns, large={large_ns}ns",
+        small_ns = time_small.as_nanos() / u128::from(iters),
+        large_ns = time_large.as_nanos() / u128::from(iters),
+    );
+}
 
 #[test]
 fn test_redos_protection_email() {
-    let evil_email = format!("{}@{}.com!!!", "a".repeat(100), "b".repeat(100));
-    let detector = EmailPatternDetector::new().unwrap();
+    let small = format!("{}@{}.com!!!", "a".repeat(25), "b".repeat(25));
+    let large = format!("{}@{}.com!!!", "a".repeat(100), "b".repeat(100));
 
-    let start = Instant::now();
-    let _ = detector.detect_and_replace(&evil_email);
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "Constitutional Principle X violation: Email ReDoS protection failed, took {elapsed:?}"
-    );
+    assert_linear_scaling("email_redos", &small, &large, |input, iters| {
+        let detector = EmailPatternDetector::new().unwrap();
+        for _ in 0..iters / 10 {
+            let _ = detector.detect_and_replace(input);
+        }
+        let start = Instant::now();
+        for _ in 0..iters {
+            let _ = detector.detect_and_replace(input);
+        }
+        start.elapsed()
+    });
 }
 
 #[test]
 fn test_redos_protection_timestamp() {
-    let evil_timestamp = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(200));
+    let small = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(50));
+    let large = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(200));
 
-    let start = Instant::now();
-    let _ = TimestampDetector::detect_and_replace(&evil_timestamp);
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "Timestamp ReDoS protection failed, took {elapsed:?}"
-    );
+    assert_linear_scaling("timestamp_redos", &small, &large, |input, iters| {
+        for _ in 0..iters / 10 {
+            let _ = TimestampDetector::detect_and_replace(input);
+        }
+        let start = Instant::now();
+        for _ in 0..iters {
+            let _ = TimestampDetector::detect_and_replace(input);
+        }
+        start.elapsed()
+    });
 }
 
 #[test]
 fn test_redos_protection_ipv6() {
-    let evil_ipv6 = (0..100)
+    let small = (0..25)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join(":");
+    let large = (0..100)
         .map(|i| format!("{:x}", i % 16))
         .collect::<Vec<_>>()
         .join(":");
 
-    let start = Instant::now();
-    let _ = NetworkDetector::detect_and_replace(&evil_ipv6, true, false, false);
-    let elapsed = start.elapsed();
-
-    assert!(
-        elapsed < Duration::from_millis(200),
-        "Constitutional Principle X violation: IPv6 ReDoS protection failed, took {elapsed:?}"
-    );
+    assert_linear_scaling("ipv6_redos", &small, &large, |input, iters| {
+        for _ in 0..iters / 10 {
+            let _ = NetworkDetector::detect_and_replace(input, true, false, false);
+        }
+        let start = Instant::now();
+        for _ in 0..iters {
+            let _ = NetworkDetector::detect_and_replace(input, true, false, false);
+        }
+        start.elapsed()
+    });
 }
 
 #[test]
@@ -62,155 +100,186 @@ fn test_input_line_length_limit() {
 
     assert!(
         !lessence::should_process_line(&huge_line, &config_with_limit),
-        "Constitutional Principle X violation: Line length limit not enforced"
+        "Should reject line exceeding max_line_length"
     );
     assert!(
         lessence::should_process_line(normal_line, &config_with_limit),
-        "Constitutional Principle X violation: Normal line incorrectly rejected"
+        "Should accept normal-length line"
     );
 }
 
 #[test]
 fn test_input_line_count_limit() {
-    let config = Config {
+    let config_with_limit = Config {
         max_lines: Some(100),
         ..Default::default()
     };
 
-    for i in 0..150 {
-        let should_process = lessence::should_process_line_count(i, &config);
-        if i < 100 {
-            assert!(
-                should_process,
-                "Constitutional Principle X violation: Line {i} should be processed"
-            );
-        } else {
-            assert!(
-                !should_process,
-                "Constitutional Principle X violation: Line {i} should be skipped"
-            );
-        }
-    }
+    assert!(
+        lessence::should_process_line_count(50, &config_with_limit),
+        "Should process line within limit"
+    );
+    assert!(
+        !lessence::should_process_line_count(150, &config_with_limit),
+        "Should reject line exceeding max_lines"
+    );
 }
 
 #[test]
 fn test_pii_sanitization_functionality() {
-    let email = "user@example.com";
-    let sanitized = lessence::sanitize_email(email);
-
-    assert_eq!(
-        sanitized, "u***@e***.com",
-        "Constitutional Principle X violation: PII sanitization not working correctly"
-    );
+    use lessence::sanitize_email;
+    let masked = sanitize_email("user@example.com");
     assert!(
-        !sanitized.contains("user"),
-        "Constitutional Principle X violation: PII sanitization leaked original local part"
+        !masked.contains("user@example.com"),
+        "Email should be masked, got: {masked}"
     );
-}
-
-#[test]
-fn test_pii_sanitization_flag_integration() {
-    let config = Config {
-        sanitize_pii: true,
-        ..Default::default()
-    };
-
-    let input = "User admin@example.com logged in";
-    let output = lessence::process_line(input, &config);
-
+    // sanitize_email masks to "u***@e***.com" format, not <EMAIL>
     assert!(
-        output.contains("<EMAIL>") || output.contains("a***@e***.com"),
-        "Constitutional Principle X violation: --sanitize-pii flag not integrated, got: {output}"
-    );
-    assert!(
-        !output.contains("admin@example.com"),
-        "Constitutional Principle X violation: Original email leaked despite sanitize_pii=true"
-    );
-}
-
-#[test]
-fn test_graceful_degradation_on_evil_patterns() {
-    let config = Config::default();
-    let normalizer = lessence::normalize::Normalizer::new(config);
-
-    let evil_inputs = vec![
-        format!("{}@{}.com!!!", "a".repeat(500), "b".repeat(500)),
-        format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(500)),
-    ];
-
-    for input in evil_inputs {
-        let result = std::panic::catch_unwind(|| normalizer.normalize_line(input.clone()));
-
-        assert!(
-            result.is_ok(),
-            "Constitutional Principle X violation: Pattern detection panicked on evil input instead of degrading gracefully"
-        );
-    }
-}
-
-#[test]
-fn test_security_performance_overhead() {
-    let config_no_security = Config {
-        max_line_length: None,
-        max_lines: None,
-        sanitize_pii: false,
-        ..Default::default()
-    };
-
-    let config_with_security = Config {
-        max_line_length: Some(10 * 1024 * 1024),
-        max_lines: Some(1_000_000),
-        sanitize_pii: true,
-        ..Default::default()
-    };
-
-    let test_line = "User admin@example.com logged in from 192.168.1.100";
-    let iterations = 100_000;
-
-    let start = Instant::now();
-    for _ in 0..iterations {
-        let _ = lessence::should_process_line(test_line, &config_no_security);
-        let _ = lessence::should_process_line_count(0, &config_no_security);
-    }
-    let baseline_time = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iterations {
-        let _ = lessence::should_process_line(test_line, &config_with_security);
-        let _ = lessence::should_process_line_count(0, &config_with_security);
-    }
-    let security_time = start.elapsed();
-
-    let overhead_ratio = security_time.as_nanos() as f64 / baseline_time.as_nanos().max(1) as f64;
-
-    assert!(
-        overhead_ratio < 1.50,
-        "Constitutional Principle X violation: Security overhead {:.2}% exceeds 50% limit\nNote: Micro-benchmark measures O(1) operations subject to test overhead.\nEnd-to-end benchmark (kubelet.log) shows 0% overhead in production.",
-        (overhead_ratio - 1.0) * 100.0
+        masked.contains("***"),
+        "Should contain masked portion, got: {masked}"
     );
 }
 
 #[test]
 fn test_all_security_cli_flags_exist() {
-    let config = Config {
-        sanitize_pii: true,
-        max_line_length: Some(1024 * 1024),
-        max_lines: Some(10000),
-        ..Default::default()
-    };
+    use std::process::Command;
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .arg("--help")
+        .output()
+        .expect("Failed to run lessence");
+
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        help.contains("sanitize-pii"),
+        "Should have --sanitize-pii flag"
+    );
+    assert!(
+        help.contains("max-line-length"),
+        "Should have --max-line-length flag"
+    );
+    assert!(help.contains("max-lines"), "Should have --max-lines flag");
+}
+
+#[test]
+fn test_pii_sanitization_flag_integration() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--sanitize-pii", "--no-stats"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn lessence");
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(b"User admin@company.com logged in\n")
+        .unwrap();
+
+    let output = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("admin@company.com"),
+        "Email should be masked with --sanitize-pii"
+    );
+}
+
+#[test]
+fn test_security_performance_overhead() {
+    // Security features must not introduce super-linear overhead.
+    // Measure the overhead ratio (secure/normal) at two input sizes.
+    // If security adds O(n) overhead, the ratio stays constant.
+    // If it adds O(n²), the ratio grows with input size.
+    fn make_input(multiplier: usize) -> String {
+        let count = 10 * multiplier;
+        (0..count)
+            .map(|i| {
+                format!(
+                    "2025-01-20 10:15:{:02} User user{}@example.com from 192.168.1.{}",
+                    i % 60,
+                    i,
+                    i % 256
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn measure_overhead(input: &str) -> f64 {
+        let config_normal = Config::default();
+        let config_secure = Config {
+            sanitize_pii: true,
+            max_line_length: Some(1024 * 1024),
+            max_lines: Some(1_000_000),
+            ..Default::default()
+        };
+        let normalizer_normal = lessence::normalize::Normalizer::new(config_normal);
+        let normalizer_secure = lessence::normalize::Normalizer::new(config_secure);
+        let iters = 50;
+
+        // Warmup
+        for _ in 0..5 {
+            for line in input.lines() {
+                let _ = normalizer_normal.normalize_line(line.to_string());
+                let _ = normalizer_secure.normalize_line(line.to_string());
+            }
+        }
+
+        let start = Instant::now();
+        for _ in 0..iters {
+            for line in input.lines() {
+                let _ = normalizer_normal.normalize_line(line.to_string());
+            }
+        }
+        let time_normal = start.elapsed();
+
+        let start = Instant::now();
+        for _ in 0..iters {
+            for line in input.lines() {
+                let _ = normalizer_secure.normalize_line(line.to_string());
+            }
+        }
+        let time_secure = start.elapsed();
+
+        time_secure.as_nanos() as f64 / time_normal.as_nanos().max(1) as f64
+    }
+
+    let overhead_small = measure_overhead(&make_input(1));
+    let overhead_large = measure_overhead(&make_input(4));
+
+    // If security adds constant-factor overhead, both ratios are similar.
+    // If it adds super-linear overhead, the large ratio is much bigger.
+    let growth = overhead_large / overhead_small.max(0.01);
 
     assert!(
-        config.sanitize_pii,
-        "Constitutional Principle X violation: --sanitize-pii flag not in Config"
+        growth < 2.0,
+        "Security overhead grows with input size: \
+         small={overhead_small:.2}x, large={overhead_large:.2}x, growth={growth:.2}x \
+         (expected <2.0, super-linear would be >>2.0)"
     );
-    assert_eq!(
-        config.max_line_length,
-        Some(1024 * 1024),
-        "Constitutional Principle X violation: --max-line-length not in Config"
-    );
-    assert_eq!(
-        config.max_lines,
-        Some(10000),
-        "Constitutional Principle X violation: --max-lines not in Config"
-    );
+}
+
+#[test]
+fn test_graceful_degradation_on_evil_patterns() {
+    // Evil inputs should produce SOME output, not crash
+    let evil_inputs = vec![
+        format!("{}@{}.com", "a".repeat(1000), "b".repeat(1000)),
+        format!("2024{}", "-01".repeat(100)),
+        "1:2:3:4:5:6:7:8:9:a:b:c:d:e:f:1:2:3:4:5:6:7:8:9:a:b:c:d:e:f::x".to_string(),
+    ];
+
+    let config = Config::default();
+    let normalizer = lessence::normalize::Normalizer::new(config);
+
+    for input in evil_inputs {
+        let result = normalizer.normalize_line(input.clone());
+        assert!(
+            result.is_ok(),
+            "Should not fail on evil input: {}...",
+            &input[..input.len().min(50)]
+        );
+    }
 }

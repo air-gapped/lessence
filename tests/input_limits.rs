@@ -109,6 +109,13 @@ fn test_input_limit_performance_is_o1() {
 
     let iterations = 10000;
 
+    // Warmup: settle allocations and caches before measuring
+    for _ in 0..1000 {
+        lessence::should_process_line(&line_1kb, &config);
+        lessence::should_process_line(&line_1mb, &config);
+        lessence::should_process_line(&line_10mb, &config);
+    }
+
     let start = Instant::now();
     for _ in 0..iterations {
         lessence::should_process_line(&line_1kb, &config);

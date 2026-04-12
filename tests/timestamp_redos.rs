@@ -1,113 +1,99 @@
 // Contract Test: Timestamp Pattern ReDoS Resistance
-// This test validates timestamp pattern detector against evil inputs
+//
+// Tests that timestamp pattern detection scales linearly with input size.
+// Uses scaling-ratio approach: 4x input should take ~4x time, not 16x.
 
-use std::time::{Duration, Instant};
+use lessence::patterns::timestamp::TimestampDetector;
+use std::time::Instant;
 
-#[test]
-fn test_timestamp_redos_resistance_repeated_digits() {
-    // Given: Malicious timestamp-like pattern with excessive digits and separators
-    let evil_timestamp = format!("2024-01-01 12:00:00{}UTCX", ".".repeat(100));
-
-    // When: Timestamp pattern detector processes the malicious input
-    use lessence::patterns::timestamp::TimestampDetector;
+fn measure_timestamp_detect(input: &str, iterations: u32) -> std::time::Duration {
+    for _ in 0..iterations / 10 {
+        let _ = TimestampDetector::detect_and_replace(input);
+    }
     let start = Instant::now();
-    let (_normalized, _tokens) = TimestampDetector::detect_and_replace(&evil_timestamp);
-    let elapsed = start.elapsed();
+    for _ in 0..iterations {
+        let _ = TimestampDetector::detect_and_replace(input);
+    }
+    start.elapsed()
+}
 
-    // Then: Processing completes in <200ms
+fn assert_linear_scaling(label: &str, make_input: impl Fn(usize) -> String) {
+    let small = make_input(1);
+    let large = make_input(4);
+    let iters = 500;
+
+    let time_small = measure_timestamp_detect(&small, iters);
+    let time_large = measure_timestamp_detect(&large, iters);
+
+    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
+
     assert!(
-        elapsed < Duration::from_millis(1000),
-        "ReDoS detected: timestamp pattern took {:?} for input length {}",
-        elapsed,
-        evil_timestamp.len()
+        ratio < 8.0,
+        "{label}: scaling ratio {ratio:.1}x for 4x input (expected <8.0). \
+         small={small_ns}ns, large={large_ns}ns",
+        small_ns = time_small.as_nanos() / u128::from(iters),
+        large_ns = time_large.as_nanos() / u128::from(iters),
     );
 }
 
 #[test]
-fn test_timestamp_redos_resistance_iso8601_abuse() {
-    // Given: Malicious ISO 8601-like pattern with excessive fractional seconds
-    let evil_timestamp = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(100));
+fn test_timestamp_redos_excessive_fractional_seconds_scales_linearly() {
+    assert_linear_scaling("fractional_seconds", |multiplier| {
+        let len = 25 * multiplier;
+        format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(len))
+    });
+}
 
-    // When: Processing timestamp with excessive precision
-    use lessence::patterns::timestamp::TimestampDetector;
-    let start = Instant::now();
-    let (_normalized, _tokens) = TimestampDetector::detect_and_replace(&evil_timestamp);
-    let elapsed = start.elapsed();
+#[test]
+fn test_timestamp_redos_repeated_dots_scales_linearly() {
+    assert_linear_scaling("repeated_dots", |multiplier| {
+        let len = 25 * multiplier;
+        format!("2024-01-01 12:00:00{}UTCX", ".".repeat(len))
+    });
+}
 
-    // Then: Completes in <200ms despite malformed input
-    assert!(
-        elapsed < Duration::from_millis(1000),
-        "ReDoS detected on malformed ISO timestamp: took {elapsed:?}"
-    );
+#[test]
+fn test_timestamp_redos_k8s_excessive_digits_scales_linearly() {
+    assert_linear_scaling("k8s_excessive_digits", |multiplier| {
+        let len = 25 * multiplier;
+        format!(
+            "E0909 13:07:09.{} 3116 kubelet.go:123] test",
+            "1".repeat(len)
+        )
+    });
+}
+
+#[test]
+fn test_timestamp_redos_multiple_formats_scales_linearly() {
+    assert_linear_scaling("multiple_formats", |multiplier| {
+        let count = 3 * multiplier;
+        let mut line = String::new();
+        for _ in 0..count {
+            line.push_str("2024-01-01T12:00:00.999Z ");
+            line.push_str("01/01/2024 12:00:00 ");
+            line.push_str("E0909 13:07:09.123456 ");
+        }
+        line
+    });
 }
 
 #[test]
 fn test_timestamp_valid_formats_still_detected() {
-    // Given: Valid timestamp formats (regression check)
     let valid_timestamps = vec![
         "2024-01-01T10:15:30Z",
         "2024-01-01 10:15:30.123",
         "Jan 15 10:15:30",
         "01/15/2024 10:15:30",
-        "E0909 13:07:09.181236", // Kubernetes format
+        "E0909 13:07:09.181236",
     ];
 
-    // When/Then: All valid timestamps still detected
-    use lessence::patterns::timestamp::TimestampDetector;
     for ts in valid_timestamps {
         let input = format!("Event at {ts}");
         let (normalized, tokens) = TimestampDetector::detect_and_replace(&input);
-
         assert!(
             normalized.contains("<TIMESTAMP>"),
             "Failed to detect timestamp: {ts}"
         );
         assert!(!tokens.is_empty(), "No tokens for valid timestamp: {ts}");
     }
-}
-
-#[test]
-fn test_timestamp_kubernetes_format_resistance() {
-    // Given: Kubernetes log format with evil pattern
-    let evil_k8s = format!(
-        "E0909 13:07:09.{} 3116 kubelet.go:123] test",
-        "1".repeat(100)
-    );
-
-    // When: Processing Kubernetes-style timestamp with excessive digits
-    use lessence::patterns::timestamp::TimestampDetector;
-    let start = Instant::now();
-    let (_normalized, _tokens) = TimestampDetector::detect_and_replace(&evil_k8s);
-    let elapsed = start.elapsed();
-
-    // Then: Completes quickly
-    assert!(
-        elapsed < Duration::from_millis(1000),
-        "K8s format took {:?} for {} chars",
-        elapsed,
-        evil_k8s.len()
-    );
-}
-
-#[test]
-fn test_timestamp_multiple_formats_same_line() {
-    // Given: Line with multiple timestamp-like patterns (stress test)
-    let evil_line = format!(
-        "Start: 2024-01-01T12:00:00.{}Z!!! Middle: 01/01/2024 {} End: E0909 {}invalid",
-        "9".repeat(50),
-        "12:00:00".repeat(10),
-        "13:07:09.".repeat(10)
-    );
-
-    // When: Processing line with multiple evil patterns
-    use lessence::patterns::timestamp::TimestampDetector;
-    let start = Instant::now();
-    let (_normalized, _tokens) = TimestampDetector::detect_and_replace(&evil_line);
-    let elapsed = start.elapsed();
-
-    // Then: Completes in <300ms (100ms per pattern)
-    assert!(
-        elapsed < Duration::from_millis(1000),
-        "Multiple evil timestamp patterns took {elapsed:?}"
-    );
 }
