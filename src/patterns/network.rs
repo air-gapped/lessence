@@ -491,4 +491,340 @@ mod tests {
         // Port should not be replaced when normalize_ports=false
         assert!(!tokens.iter().any(|t| matches!(t, Token::Port(_))));
     }
+
+    // ---- file extension exclusions: verify NO Port token is emitted (kills token-loop mutants) ----
+
+    #[test]
+    fn port_skip_go_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("server.go:1234", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .go file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_rs_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("main.rs:42", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .rs file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_py_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("app.py:100", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .py file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_js_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("index.js:55", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .js file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_java_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("App.java:200", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .java file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_c_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("main.c:30", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .c file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_cpp_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("main.cpp:30", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .cpp file: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn port_skip_h_file_no_token() {
+        let (_, tokens) = NetworkDetector::detect_and_replace("header.h:10", false, true, false);
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+            "should not emit Port token for .h file: {tokens:?}"
+        );
+    }
+
+    // ---- detect_and_replace: verify extracted IP from IPv4:Port (line 94 arithmetic) ----
+
+    #[test]
+    fn ipv4_port_extracts_correct_ip() {
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace("connect 172.16.0.1:443", true, true, false);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv4(s) if s == "172.16.0.1")),
+            "should extract exact IP '172.16.0.1', got: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::Port(443))),
+            "should extract port 443, got: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn ipv4_port_extracts_correct_ip_long_port() {
+        // Use a 5-digit port to stress the arithmetic: len - port_str.len() - 1
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace("host 10.0.0.99:65535", true, true, false);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv4(s) if s == "10.0.0.99")),
+            "should extract exact IP '10.0.0.99', got: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::Port(65535))),
+            "should extract port 65535, got: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn ipv4_port_extracts_correct_ip_short_port() {
+        // Single-digit port number (smallest valid port_str length)
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace("addr 192.168.0.1:8", true, true, false);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv4(s) if s == "192.168.0.1")),
+            "should extract exact IP '192.168.0.1', got: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::Port(8))),
+            "should extract port 8, got: {tokens:?}"
+        );
+    }
+
+    // ---- detect_and_replace: dedup check (line 207, FQDN/IPv4 dedup) ----
+
+    #[test]
+    fn no_duplicate_ipv4_tokens() {
+        // Two occurrences of the same IP should produce only one IPv4 token
+        let (_, tokens) = NetworkDetector::detect_and_replace(
+            "from 10.0.0.1 to 10.0.0.1",
+            true,
+            false,
+            false,
+        );
+        let ip_count = tokens
+            .iter()
+            .filter(|t| matches!(t, Token::IPv4(s) if s == "10.0.0.1"))
+            .count();
+        assert_eq!(
+            ip_count, 1,
+            "duplicate IPv4 tokens should be suppressed, got: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn no_duplicate_port_tokens() {
+        // Two hostnames with the same port should produce only one Port token
+        let (_, tokens) = NetworkDetector::detect_and_replace(
+            "server1.example.com:8080 server2.example.net:8080",
+            false,
+            true,
+            true,
+        );
+        let port_count = tokens
+            .iter()
+            .filter(|t| matches!(t, Token::Port(8080)))
+            .count();
+        assert_eq!(
+            port_count, 1,
+            "duplicate Port tokens should be suppressed, got: {tokens:?}"
+        );
+    }
+
+    // ---- is_plausible_ipv6: boundary tests ----
+
+    #[test]
+    fn plausible_ipv6_len_exactly_2() {
+        // len == 2 is the minimum accepted length; "::" is 2 chars and valid
+        assert!(NetworkDetector::is_plausible_ipv6("::").is_plausible);
+    }
+
+    #[test]
+    fn plausible_ipv6_len_exactly_1() {
+        // len == 1 is below the boundary, must be rejected
+        assert!(!NetworkDetector::is_plausible_ipv6(":").is_plausible);
+    }
+
+    #[test]
+    fn plausible_ipv6_len_exactly_100() {
+        // len == 100 is the maximum accepted length
+        // Build a 100-char string: "a:" repeated to fill, ending with valid hex
+        let mut s = String::new();
+        // "a:" is 2 chars, repeat 49 times = 98 chars, then "a:" = 100
+        for _ in 0..50 {
+            s.push_str("a:");
+        }
+        assert_eq!(s.len(), 100);
+        assert!(
+            NetworkDetector::is_plausible_ipv6(&s).is_plausible,
+            "len=100 should be accepted"
+        );
+    }
+
+    #[test]
+    fn plausible_ipv6_len_exactly_101() {
+        // len == 101 is above the boundary, must be rejected
+        let mut s = String::new();
+        for _ in 0..50 {
+            s.push_str("a:");
+        }
+        s.push('a');
+        assert_eq!(s.len(), 101);
+        assert!(
+            !NetworkDetector::is_plausible_ipv6(&s).is_plausible,
+            "len=101 should be rejected"
+        );
+    }
+
+    // ---- is_plausible_ipv6: IPv4-mapped address (dot handling, line 270) ----
+
+    #[test]
+    fn plausible_ipv6_ipv4_mapped() {
+        // IPv4-mapped IPv6 address contains dots — the '.' match arm must accept them
+        assert!(
+            NetworkDetector::is_plausible_ipv6("::ffff:192.168.1.1").is_plausible,
+            "IPv4-mapped IPv6 should be plausible"
+        );
+    }
+
+    #[test]
+    fn plausible_ipv6_dots_only_with_colon() {
+        // Dots + colons but no hex digits and not "::" — should be rejected (no hex)
+        assert!(
+            !NetworkDetector::is_plausible_ipv6(":..:..").is_plausible,
+            "dots and colons without hex digits should be rejected"
+        );
+    }
+
+    // ---- is_plausible_ipv6: no hex digits (line 280, != vs ==) ----
+
+    #[test]
+    fn plausible_ipv6_double_colon_special_case() {
+        // "::" has no hex digits but IS the special case — must be accepted
+        assert!(
+            NetworkDetector::is_plausible_ipv6("::").is_plausible,
+            ":: should be accepted even without hex digits"
+        );
+    }
+
+    #[test]
+    fn plausible_ipv6_colons_only_not_double_colon() {
+        // ":::" has colons and no hex but is NOT "::" — should be rejected
+        assert!(
+            !NetworkDetector::is_plausible_ipv6(":::").is_plausible,
+            "::: should be rejected: has no hex and is not ::"
+        );
+    }
+
+    #[test]
+    fn plausible_ipv6_invalid_char() {
+        assert!(
+            !NetworkDetector::is_plausible_ipv6("20g1:db8::1").is_plausible,
+            "non-hex letter should be rejected"
+        );
+    }
+
+    // ---- has_network_indicators: inner && conditions (lines 297, 302) ----
+
+    #[test]
+    fn net_ind_ports_no_colon() {
+        // normalize_ports=true but text has no colon => should be false
+        // kills: `&& with ||` on line 297
+        assert!(!NetworkDetector::has_network_indicators(
+            "no-colon-here",
+            false,
+            true,
+            false
+        ));
+    }
+
+    #[test]
+    fn net_ind_fqdn_dot_but_no_tld_keyword() {
+        // normalize_fqdns=true, text has a dot but no "com"/"org"/"net" => should be false
+        // kills: `&& with ||` on line 302 (the inner &&)
+        assert!(!NetworkDetector::has_network_indicators(
+            "file.txt",
+            false,
+            false,
+            true
+        ));
+    }
+
+    #[test]
+    fn net_ind_fqdn_tld_keyword_but_no_dot() {
+        // normalize_fqdns=true, text has "com" but no dot => should be false
+        // kills: `&& with ||` on the outer part of line 302
+        assert!(!NetworkDetector::has_network_indicators(
+            "dotcom",
+            false,
+            false,
+            true
+        ));
+    }
+
+    // ---- detect_and_replace: legitimate hostname:port IS detected ----
+
+    #[test]
+    fn port_detected_for_non_source_file_hostname() {
+        // A hostname that does NOT match any file extension should have its port detected
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("myserver.local:9090", false, true, false);
+        assert!(
+            result.contains("<PORT>"),
+            "hostname:port should be detected: {result}"
+        );
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::Port(9090))),
+            "Port token should be emitted: {tokens:?}"
+        );
+    }
+
+    // ---- IPv6 port detection ----
+
+    #[test]
+    fn ipv6_port_detection_tokens() {
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("[2001:db8::1]:443", true, true, false);
+        assert!(
+            result.contains("[<IP>]:<PORT>"),
+            "IPv6 port should be replaced: {result}"
+        );
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv6(s) if s == "2001:db8::1")),
+            "should extract IPv6 address: {tokens:?}"
+        );
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::Port(443))),
+            "should extract port: {tokens:?}"
+        );
+    }
 }

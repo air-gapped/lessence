@@ -786,6 +786,134 @@ mod tests {
         assert!(!KeyValueDetector::is_ip_address("192.168.1"));
     }
 
+    // ---- Mutant-killing: apply_* patterns must modify text ----
+
+    #[test]
+    fn apply_metrics_pattern_modifies_text() {
+        // Input that triggers metrics detection: has metrics context + metrics KV
+        let input = "Performance metrics: cpu=75%";
+        let (result, tokens) = KeyValueDetector::detect_and_replace(input);
+        assert_ne!(result, input, "metrics pattern should modify text");
+        assert!(!tokens.is_empty(), "metrics pattern should produce tokens");
+    }
+
+    #[test]
+    fn apply_json_pattern_modifies_text() {
+        // Input that triggers JSON detection: has logging JSON indicators + JSON KV
+        let input = r#"{"level": "info", "message": "hello", "component": "web"}"#;
+        let (result, tokens) = KeyValueDetector::detect_and_replace(input);
+        assert_ne!(result, input, "JSON pattern should modify text");
+        assert!(!tokens.is_empty(), "JSON pattern should produce tokens");
+    }
+
+    #[test]
+    fn apply_general_pattern_modifies_text() {
+        // Input that triggers general KV with a valid key from the valid_keys list
+        let input = "timeout=30";
+        let (result, tokens) = KeyValueDetector::detect_and_replace(input);
+        assert_ne!(result, input, "general pattern should modify text");
+        assert!(!tokens.is_empty(), "general pattern should produce tokens");
+    }
+
+    // ---- Mutant-killing: is_config_context false negative ----
+
+    #[test]
+    fn config_context_returns_false_for_non_config() {
+        // Input without any config keywords should return false
+        assert!(!KeyValueDetector::is_config_context("just a plain log line with no keywords", 0));
+    }
+
+    // ---- Mutant-killing: is_valid_key_value_context SQL exclusion per-keyword ----
+
+    #[test]
+    fn kv_ctx_excludes_select_only() {
+        // Has SELECT but not INSERT, UPDATE, DELETE
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "SELECT id FROM users"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_insert_only() {
+        // Has INSERT but not SELECT, UPDATE, DELETE
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "INSERT INTO users VALUES (1)"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_update_only() {
+        // Has UPDATE but not SELECT, INSERT, DELETE
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "UPDATE users SET name='x'"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_delete_only() {
+        // Has DELETE but not SELECT, INSERT, UPDATE
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "DELETE FROM users WHERE id=1"
+        ));
+    }
+
+    // ---- Mutant-killing: is_valid_key_value_context math exclusion per-operator ----
+
+    #[test]
+    fn kv_ctx_excludes_math_plus_only() {
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "a + b"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_minus_only() {
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "a - b"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_mul_only() {
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "a * b"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_excludes_math_div_only() {
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "a / b"
+        ));
+    }
+
+    // ---- Mutant-killing: is_valid_key_value_context valid_keys per-group ----
+
+    #[test]
+    fn kv_ctx_valid_key_from_list_timeout() {
+        // "timeout" is in valid_keys list, not a config pattern key
+        assert!(KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "setting timeout=30"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_valid_via_config_pattern() {
+        // "read_timeout" matches is_common_config_pattern (ends_with "_timeout")
+        // but is NOT in the valid_keys list directly
+        assert!(KeyValueDetector::is_valid_key_value_context(
+            "read_timeout", "100ms", "read_timeout=100ms"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_invalid_key_not_in_list_or_pattern() {
+        // Key is not in valid_keys and doesn't match config pattern -> false
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "foo", "bar", "foo=bar"
+        ));
+    }
+
     // ---- is_metrics_context: per-branch test ----
 
     #[test]

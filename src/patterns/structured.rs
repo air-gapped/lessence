@@ -879,4 +879,194 @@ mod tests {
                 "level '{level}' should be valid");
         }
     }
+
+    // ---- Mutant-killing: apply_* patterns must modify text ----
+
+    #[test]
+    fn apply_json_pattern_modifies_text() {
+        // JSON structured log: level first, then component (not a k8s component)
+        // Kills mutant: apply_json_pattern replaced with ()
+        let input = r#"{"level":"error","component":"payment-api","msg":"fail"}"#;
+        let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
+        assert_ne!(result, input, "JSON pattern should modify text");
+        assert!(!tokens.is_empty(), "JSON pattern should produce tokens");
+        assert!(result.contains("<STRUCTURED_MESSAGE>"));
+    }
+
+    #[test]
+    fn apply_json_primary_regex_matches_directly() {
+        // Verify the primary JSON regex works (level first, then component)
+        let input = r#"{"level":"error","service":"order-api"}"#;
+        let m = JSON_STRUCTURED_REGEX.captures(input);
+        assert!(m.is_some(), "Primary JSON regex should match level-first JSON, input: {input}");
+    }
+
+    #[test]
+    fn apply_logfmt_pattern_modifies_text() {
+        // Logfmt structured log with a valid component
+        // Kills mutant: apply_logfmt_pattern replaced with ()
+        let input = "level=info component=api-gateway msg=\"Request received\"";
+        let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
+        assert_ne!(result, input, "logfmt pattern should modify text");
+        assert!(!tokens.is_empty(), "logfmt pattern should produce tokens");
+        assert!(result.contains("<STRUCTURED_MESSAGE>"));
+    }
+
+    #[test]
+    fn apply_json_pattern_produces_correct_token() {
+        // Verify the JSON path produces the right component and level
+        let input = r#"{"level":"warn","service":"billing-api","msg":"retry"}"#;
+        let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
+        assert!(result.contains("<STRUCTURED_MESSAGE>"));
+        assert!(!tokens.is_empty());
+        if let Token::StructuredMessage { component, level } = &tokens[0] {
+            assert_eq!(component, "billing-api");
+            assert_eq!(level, "warn");
+        } else {
+            panic!("Expected StructuredMessage token");
+        }
+    }
+
+    #[test]
+    fn apply_logfmt_pattern_produces_correct_token() {
+        // Verify logfmt produces the right component and level
+        let input = "level=error component=my-registry msg=\"connection lost\"";
+        let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
+        assert!(result.contains("<STRUCTURED_MESSAGE>"));
+        assert!(!tokens.is_empty());
+        if let Token::StructuredMessage { component, level } = &tokens[0] {
+            assert_eq!(component, "my-registry");
+            assert_eq!(level, "error");
+        } else {
+            panic!("Expected StructuredMessage token");
+        }
+    }
+
+    // ---- Mutant-killing: is_application_component suffix-only matches ----
+
+    #[test]
+    fn app_comp_only_service_suffix() {
+        // "xyz-service" ends_with("-service") but "xyz" is NOT in app_components list
+        assert!(StructuredMessageDetector::is_application_component("xyz-service"));
+    }
+
+    #[test]
+    fn app_comp_only_underscore_service_suffix() {
+        assert!(StructuredMessageDetector::is_application_component("xyz_service"));
+    }
+
+    #[test]
+    fn app_comp_only_api_suffix() {
+        // "xyz-api" ends_with("-api") but "xyz" is not in app_components
+        assert!(StructuredMessageDetector::is_application_component("xyz-api"));
+    }
+
+    #[test]
+    fn app_comp_only_underscore_api_suffix() {
+        assert!(StructuredMessageDetector::is_application_component("xyz_api"));
+    }
+
+    #[test]
+    fn app_comp_only_client_suffix() {
+        // "xyz-client" ends_with("-client") but "xyz" is not in app_components
+        assert!(StructuredMessageDetector::is_application_component("xyz-client"));
+    }
+
+    #[test]
+    fn app_comp_only_underscore_client_suffix() {
+        assert!(StructuredMessageDetector::is_application_component("xyz_client"));
+    }
+
+    #[test]
+    fn app_comp_no_match_at_all() {
+        // Does not match any app_component item NOR any suffix
+        assert!(!StructuredMessageDetector::is_application_component("xyz-handler"));
+    }
+
+    // ---- Mutant-killing: is_microservice_component single-keyword matches ----
+
+    #[test]
+    fn micro_comp_only_gateway() {
+        // Contains "gateway" but NOT service, api, proxy, balancer, registry, discovery,
+        // config, auth, user, payment, order, inventory, notification
+        assert!(StructuredMessageDetector::is_microservice_component("my-gateway-1"));
+        // Verify it doesn't contain other keywords
+        let s = "my-gateway-1";
+        assert!(!s.contains("service") && !s.contains("api") && !s.contains("proxy"));
+    }
+
+    #[test]
+    fn micro_comp_only_balancer() {
+        assert!(StructuredMessageDetector::is_microservice_component("my-balancer"));
+        assert!(!"my-balancer".contains("service"));
+    }
+
+    #[test]
+    fn micro_comp_only_registry() {
+        assert!(StructuredMessageDetector::is_microservice_component("my-registry"));
+    }
+
+    #[test]
+    fn micro_comp_only_discovery() {
+        assert!(StructuredMessageDetector::is_microservice_component("my-discovery"));
+    }
+
+    #[test]
+    fn micro_comp_only_config() {
+        assert!(StructuredMessageDetector::is_microservice_component("my-config"));
+    }
+
+    #[test]
+    fn micro_comp_only_notification() {
+        assert!(StructuredMessageDetector::is_microservice_component("my-notification"));
+    }
+
+    // ---- Mutant-killing: is_valid_structured_log single-checker matches ----
+
+    #[test]
+    fn valid_struct_log_only_app_component() {
+        // "metrics-handler" -> is_application_component (contains "metrics") = true
+        // is_microservice_component: contains none of its keywords (actually "metrics" is not in micro list) = false
+        // is_framework_component: no framework names, no '.' = false
+        // is_infrastructure_component: no infra names = false
+        // Kills mutant: || replaced with && between the four is_* checks
+        assert!(StructuredMessageDetector::is_valid_structured_log("metrics-handler", "info"));
+        // Verify it's ONLY app_component
+        assert!(StructuredMessageDetector::is_application_component("metrics-handler"));
+        assert!(!StructuredMessageDetector::is_microservice_component("metrics-handler"));
+        assert!(!StructuredMessageDetector::is_framework_component("metrics-handler"));
+        assert!(!StructuredMessageDetector::is_infrastructure_component("metrics-handler"));
+    }
+
+    #[test]
+    fn valid_struct_log_only_micro_component() {
+        // "my-gateway-1" -> is_microservice (contains "gateway") but NOT app, framework, or infra
+        assert!(StructuredMessageDetector::is_valid_structured_log("my-gateway-1", "info"));
+        assert!(!StructuredMessageDetector::is_application_component("my-gateway-1"));
+        assert!(StructuredMessageDetector::is_microservice_component("my-gateway-1"));
+        assert!(!StructuredMessageDetector::is_framework_component("my-gateway-1"));
+        assert!(!StructuredMessageDetector::is_infrastructure_component("my-gateway-1"));
+    }
+
+    #[test]
+    fn valid_struct_log_only_framework_component() {
+        // "spring-boot" -> is_framework (contains "spring") but NOT app, micro, or infra
+        // Note: doesn't contain any micro keywords (service, api, gateway, etc.)
+        assert!(StructuredMessageDetector::is_valid_structured_log("spring-boot", "info"));
+        assert!(!StructuredMessageDetector::is_application_component("spring-boot"));
+        assert!(!StructuredMessageDetector::is_microservice_component("spring-boot"));
+        assert!(StructuredMessageDetector::is_framework_component("spring-boot"));
+        assert!(!StructuredMessageDetector::is_infrastructure_component("spring-boot"));
+    }
+
+    #[test]
+    fn valid_struct_log_only_infra_component() {
+        // "my-nginx-1" -> is_infrastructure (contains "nginx") but NOT app, micro, or framework
+        // "nginx" doesn't contain any micro keywords or app_components items
+        assert!(StructuredMessageDetector::is_valid_structured_log("my-nginx-1", "info"));
+        assert!(!StructuredMessageDetector::is_application_component("my-nginx-1"));
+        assert!(!StructuredMessageDetector::is_microservice_component("my-nginx-1"));
+        assert!(!StructuredMessageDetector::is_framework_component("my-nginx-1"));
+        assert!(StructuredMessageDetector::is_infrastructure_component("my-nginx-1"));
+    }
 }

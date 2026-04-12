@@ -4497,4 +4497,664 @@ mod tests {
         // Should have first line + collapsed marker, but NOT a third "last" line
         assert!(line_count <= 2, "essence mode should suppress identical last: {output}");
     }
+
+    // ---------------------------------------------------------------
+    // print_stats: each stat field at zero must NOT produce its row
+    // Kills `> with >=` on each `if self.stats.FIELD > 0` check
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn print_stats_zero_timestamps_no_row() {
+        let mut f = make_folder();
+        f.stats.timestamps = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Timestamps |"),
+            "timestamps=0 should not produce Timestamps row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_ips_no_row() {
+        let mut f = make_folder();
+        f.stats.ips = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| IP Addresses |"),
+            "ips=0 should not produce IP Addresses row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_hashes_no_row() {
+        let mut f = make_folder();
+        f.stats.hashes = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Hashes |"),
+            "hashes=0 should not produce Hashes row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_uuids_no_row() {
+        let mut f = make_folder();
+        f.stats.uuids = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| UUIDs |"),
+            "uuids=0 should not produce UUIDs row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_durations_no_row() {
+        let mut f = make_folder();
+        f.stats.durations = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Durations |"),
+            "durations=0 should not produce Durations row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_pids_no_row() {
+        let mut f = make_folder();
+        f.stats.pids = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Process IDs |"),
+            "pids=0 should not produce Process IDs row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_sizes_no_row() {
+        let mut f = make_folder();
+        f.stats.sizes = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| File Sizes |"),
+            "sizes=0 should not produce File Sizes row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_percentages_no_row() {
+        let mut f = make_folder();
+        f.stats.percentages = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Numbers/Percentages |"),
+            "percentages=0 should not produce Numbers/Percentages row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_http_status_no_row() {
+        let mut f = make_folder();
+        f.stats.http_status = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| HTTP Status |"),
+            "http_status=0 should not produce HTTP Status row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_paths_no_row() {
+        let mut f = make_folder();
+        f.stats.paths = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| File Paths |"),
+            "paths=0 should not produce File Paths row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_kubernetes_no_row() {
+        let mut f = make_folder();
+        f.stats.kubernetes = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Kubernetes |"),
+            "kubernetes=0 should not produce Kubernetes row: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_emails_no_row() {
+        let mut f = make_folder();
+        f.stats.emails = 0;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("| Email Addresses |"),
+            "emails=0 should not produce Email Addresses row: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: rollup vs legacy path (line 1198 delete ! mutant)
+    // Distinguishes by output content: rollup has "ipv4×N", legacy has "varying"
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_rollup_path_vs_legacy_path_output_differs() {
+        // Non-empty rollup should produce compact marker (with type names)
+        let mut f1 = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+        ]);
+        let rollup = f1.rollup_computer.compute(&group);
+        assert!(!rollup.is_empty(), "rollup should be non-empty for varied IPs");
+        let output_with_rollup = f1.format_group(&group, &rollup).unwrap();
+
+        // Empty rollup should produce legacy format with "similar" and "varying"
+        let mut f2 = make_folder();
+        let empty_rollup = BTreeMap::new();
+        let output_legacy = f2.format_group(&group, &empty_rollup).unwrap();
+
+        // The two paths must produce different output
+        assert_ne!(
+            output_with_rollup, output_legacy,
+            "rollup vs legacy path should produce different output"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: exact count in collapsed marker (lines 1202, 1213)
+    // Kills `- with +` and `- with /` on count-2 and count-3
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_collapsed_marker_exact_count_legacy() {
+        // Legacy path (empty rollup): collapsed count = count - 2
+        // With 5 lines, the marker should say "+3 similar" (5-2=3)
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+            vec![Token::IPv4("10.0.0.5".into())],
+        ]);
+        let empty_rollup = BTreeMap::new();
+        let output = f.format_group(&group, &empty_rollup).unwrap();
+        // Legacy format: "[+3 similar, varying: ...]"
+        assert!(
+            output.contains("+3 similar"),
+            "5 lines with empty rollup: marker should say +3 similar (5-2=3), got: {output}"
+        );
+    }
+
+    #[test]
+    fn format_group_collapsed_marker_exact_count_rollup() {
+        // Rollup path: collapsed count = count - 2, lines_saved = count - 3
+        // With 6 lines, the rollup marker should say "+4 similar" (6-2=4)
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+            vec![Token::IPv4("10.0.0.5".into())],
+            vec![Token::IPv4("10.0.0.6".into())],
+        ]);
+        let rollup = f.rollup_computer.compute(&group);
+        let output = f.format_group(&group, &rollup).unwrap();
+        // Rollup format: "[+4 similar | ...]"
+        assert!(
+            output.contains("+4 similar"),
+            "6 lines with rollup: marker should say +4 similar (6-2=4), got: {output}"
+        );
+        // Also verify lines_saved = count - 3 = 3
+        assert_eq!(f.stats.lines_saved, 3, "6 lines collapsed: saved = 6-3 = 3");
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: PII + essence interaction (line 1228 && with ||)
+    // When both sanitize_pii=true AND essence_mode=true, should NOT mask
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_pii_plus_essence_does_not_mask() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize_pii: true,
+            essence_mode: true,
+            ..Config::default()
+        });
+        // In essence mode, normalized text is used (not original). Build a group
+        // where normalized contains the email text to check masking is NOT applied.
+        let mut line = make_line(
+            "user alice@test.com logged in",
+            vec![Token::Email("alice@test.com".into())],
+        );
+        line.original = "user alice@test.com logged in".to_string();
+        let group = PatternGroup::new(line, 1);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // In essence mode (even with pii=true), the condition is
+        // `sanitize_pii && !essence_mode` which is false, so no masking
+        assert!(
+            !output.contains("<EMAIL>"),
+            "essence mode should NOT mask emails even with sanitize_pii=true: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: count=1 vs count=2 last line (line 1238 > with >=)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_count_1_collapsed_no_last_line() {
+        // A group with exactly 1 line above min_collapse threshold cannot
+        // happen in practice, but we can test the boundary via a single-line
+        // group that does NOT collapse (below min_collapse).
+        // The real test: with count=1, `group.count() > 1` is false, so no last line.
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 2, // low threshold to make 3 lines collapse
+            ..Config::default()
+        });
+        let group = make_group("single", vec![vec![]]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // count=1: should be just the one line, no extra "last line"
+        assert_eq!(
+            output.lines().count(),
+            1,
+            "count=1 should produce exactly 1 line: {output}"
+        );
+    }
+
+    #[test]
+    fn format_group_count_4_collapsed_has_last_line() {
+        // With min_collapse=3 and count=4, group collapses and
+        // count > 1 is true, so last line should appear.
+        // (count must be >= 3 to avoid overflow on lines_saved = count - 3)
+        let mut f = make_folder(); // min_collapse=3
+        let mut line1 = make_line("error connecting to server", vec![]);
+        line1.original = "error connecting to server A".to_string();
+        let mut line2 = make_line("error connecting to server", vec![]);
+        line2.original = "error connecting to server B".to_string();
+        let mut line3 = make_line("error connecting to server", vec![]);
+        line3.original = "error connecting to server C".to_string();
+        let mut line4 = make_line("error connecting to server", vec![]);
+        line4.original = "error connecting to server D".to_string();
+        let mut group = PatternGroup::new(line1, 1);
+        group.add_line(line2, 2);
+        group.add_line(line3, 3);
+        group.add_line(line4, 4);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // count=4 > 1, so last line should be present (3 lines total:
+        // first + marker + last)
+        let line_count = output.lines().count();
+        assert!(
+            line_count >= 3,
+            "count=4 collapsed should have first+marker+last ({line_count} lines): {output}"
+        );
+        // Verify the last line content is present
+        assert!(
+            output.contains("server D"),
+            "last line should appear in collapsed output: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: essence mode with different first/last (line 1249)
+    // Kills `!= with ==` — different lines should show last line
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_non_essence_different_first_last_shows_both() {
+        // In non-essence collapsed mode, when first_line != last_line,
+        // the last line should appear in the output.
+        // This tests line 1249: `!self.config.essence_mode || first_line != last_line`
+        let mut f = make_folder(); // non-essence, min_collapse=3
+        let mut line1 = make_line("error connecting to server", vec![]);
+        line1.original = "error connecting to A".to_string();
+        let mut line2 = make_line("error connecting to server", vec![]);
+        line2.original = "error connecting to B".to_string();
+        let mut line3 = make_line("error connecting to server", vec![]);
+        line3.original = "error connecting to C".to_string();
+        let mut group = PatternGroup::new(line1, 1);
+        group.add_line(line2, 2);
+        group.add_line(line3, 3);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // Non-essence mode: condition is true (short-circuits on !essence_mode)
+        // So last line ("error connecting to C") should appear
+        assert!(
+            output.contains("error connecting to C"),
+            "non-essence collapsed with different first/last should show last: {output}"
+        );
+    }
+
+    #[test]
+    fn format_group_non_essence_same_first_last_still_shows_last() {
+        // Even when first and last original text are identical, in non-essence
+        // mode the last line still shows (because !essence_mode is true).
+        // This exercises line 1249 where the != check is redundant in non-essence.
+        let mut f = make_folder(); // non-essence, min_collapse=3
+        let line1 = make_line("identical text", vec![]);
+        let line2 = make_line("identical text", vec![]);
+        let line3 = make_line("identical text", vec![]);
+        let mut group = PatternGroup::new(line1, 1);
+        group.add_line(line2, 2);
+        group.add_line(line3, 3);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        let line_count = output.lines().count();
+        // Non-essence mode: last line always shown when count > 1
+        assert_eq!(
+            line_count, 3,
+            "non-essence collapsed with same first/last should still show 3 lines: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: PII masking for last line (line 1253 && with ||)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_pii_masks_last_line_in_non_essence() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize_pii: true,
+            essence_mode: false,
+            ..Config::default()
+        });
+        // Build a group with 3 lines (collapses). Last line has an email.
+        let line1 = make_line(
+            "user <EMAIL> logged in",
+            vec![Token::Email("first@test.com".into())],
+        );
+        let line2 = make_line(
+            "user <EMAIL> logged in",
+            vec![Token::Email("second@test.com".into())],
+        );
+        let mut line3 = make_line(
+            "user <EMAIL> logged in",
+            vec![Token::Email("last@test.com".into())],
+        );
+        line3.original = "user last@test.com logged in".to_string();
+        let mut group = PatternGroup::new(line1, 1);
+        group.add_line(line2, 2);
+        group.add_line(line3, 3);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // In non-essence mode with PII, last line's email should be masked
+        assert!(
+            !output.contains("last@test.com"),
+            "last line email should be masked with PII in non-essence mode: {output}"
+        );
+    }
+
+    #[test]
+    fn format_group_pii_does_not_mask_last_line_in_essence() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 2,
+            sanitize_pii: true,
+            essence_mode: true,
+            ..Config::default()
+        });
+        // In essence mode, PII masking for last line should NOT apply
+        // because condition is `sanitize_pii && !essence_mode`
+        let line1 = make_line(
+            "user alice@test.com logged in",
+            vec![Token::Email("alice@test.com".into())],
+        );
+        let mut line2 = make_line(
+            "user bob@test.com logged in",
+            vec![Token::Email("bob@test.com".into())],
+        );
+        line2.original = "user bob@test.com logged in".to_string();
+        let mut group = PatternGroup::new(line1, 1);
+        group.add_line(line2, 2);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // In essence mode, normalized text is used (not original), so
+        // the email in normalized won't be masked. The key point is
+        // the <EMAIL> token should NOT appear.
+        assert!(
+            !output.contains("<EMAIL>"),
+            "essence mode should not apply PII masking to last line: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: non-collapsed group boundary (line 1273 > with >=)
+    // When count > 1 in non-collapsed essence path, lines_saved accumulates
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_essence_non_collapsed_count_1_no_lines_saved() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            essence_mode: true,
+            ..Config::default()
+        });
+        let group = make_group("single pattern", vec![vec![]]);
+        let rollup = BTreeMap::new();
+        let _ = f.format_group(&group, &rollup).unwrap();
+        // count=1, so `count > 1` is false → no lines_saved
+        assert_eq!(
+            f.stats.lines_saved, 0,
+            "essence mode count=1 should not save lines"
+        );
+    }
+
+    #[test]
+    fn format_group_essence_non_collapsed_count_2_saves_lines() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            essence_mode: true,
+            ..Config::default()
+        });
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let _ = f.format_group(&group, &rollup).unwrap();
+        // count=2, in essence mode below min_collapse: lines_saved = 2-1 = 1
+        assert_eq!(
+            f.stats.lines_saved, 1,
+            "essence mode count=2 should save 1 line"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // finish_summary: observable side effects (line 1051 replace with Ok(()))
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn finish_summary_flushes_batch_buffer() {
+        // finish_summary calls prepare_summary which flushes batch_buffer.
+        // If replaced with Ok(()), prepare_summary wouldn't be called
+        // and batch_buffer would remain non-empty.
+        let mut f = make_folder();
+        f.stats.total_lines = 5;
+        // Put lines in batch_buffer (simulating unprocessed parallel batch)
+        f.batch_buffer.push("2024-01-01 ERROR one 10.0.0.1".to_string());
+        f.batch_buffer.push("2024-01-01 ERROR two 10.0.0.2".to_string());
+        assert!(!f.batch_buffer.is_empty());
+        let result = f.finish_summary(None, None);
+        assert!(result.is_ok());
+        // prepare_summary drains batch_buffer via process_batch
+        assert!(
+            f.batch_buffer.is_empty(),
+            "finish_summary should flush batch_buffer via prepare_summary"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // finish_summary: fit_truncated=0 should NOT print extra line (line 1068)
+    // Kills `> with >=` and `> with ==` and `> with <`
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn prepare_summary_fit_truncated_zero_when_under_budget() {
+        // When patterns fit within budget, fit_truncated should be exactly 0
+        let mut f = make_folder();
+        for i in 0..3 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
+        }
+        // budget=10, only 3 patterns → fit_truncated = 0
+        let (_, _, _, fit_truncated) = f.prepare_summary(None, Some(10)).unwrap();
+        assert_eq!(
+            fit_truncated, 0,
+            "3 patterns within budget=10 should have fit_truncated=0"
+        );
+    }
+
+    #[test]
+    fn prepare_summary_fit_truncated_nonzero_when_over_budget() {
+        let mut f = make_folder();
+        for i in 0..10 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
+        }
+        // budget=5, 10 patterns → fit_truncated > 0
+        let (_, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+        assert!(
+            fit_truncated > 0,
+            "10 patterns with budget=5 should have fit_truncated > 0, got {fit_truncated}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // finish_top_n: coverage with total_input_lines > 0 (line 1139)
+    // Kills `> with >=` — when total_input_lines=0, coverage=0
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn finish_top_n_zero_total_lines_zero_coverage() {
+        let mut f = make_folder();
+        f.stats.total_lines = 0;
+        // Even with a group in the buffer, coverage should be 0
+        // because total_input_lines is 0
+        f.buffer.push(PatternGroup::new(make_line("error", vec![]), 1));
+        let (_, _, coverage) = f.finish_top_n(10).unwrap();
+        assert_eq!(
+            coverage, 0,
+            "zero total_input_lines should produce 0% coverage"
+        );
+    }
+
+    #[test]
+    fn finish_top_n_nonzero_total_lines_nonzero_coverage() {
+        let mut f = make_folder();
+        f.stats.total_lines = 10;
+        let mut group = PatternGroup::new(make_line("error", vec![]), 1);
+        for i in 1..10 {
+            group.add_line(make_line("error", vec![]), i + 1);
+        }
+        f.buffer.push(group);
+        let (_, _, coverage) = f.finish_top_n(10).unwrap();
+        assert_eq!(
+            coverage, 100,
+            "10/10 lines should be 100% coverage"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // print_stats_json: verify it writes to stderr (line 1506)
+    // Since print_stats_json writes to real stderr, we test via
+    // build_stats_json (the extracted testable core) and verify
+    // the JSON can be serialized to a writer.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn build_stats_json_serializes_to_writer() {
+        // This kills the "replace with Ok(())" mutant by proving
+        // the stats JSON is valid and non-empty when serialized.
+        let mut f = make_folder();
+        f.stats.total_lines = 50;
+        f.stats.lines_saved = 25;
+        f.stats.output_lines = 25;
+        f.stats.timestamps = 5;
+        let stats = f.build_stats_json(Duration::from_millis(42));
+        let mut buf = Vec::new();
+        serde_json::to_writer(&mut buf, &stats).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(!output.is_empty(), "stats JSON should not be empty");
+        let v: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(v["input_lines"], 50);
+        assert_eq!(v["output_lines"], 25);
+        assert_eq!(v["elapsed_ms"], 42);
+        assert_eq!(v["pattern_hits"]["timestamps"], 5);
+    }
+
+    // ---------------------------------------------------------------
+    // get_stats: verify it returns current stats (line 1613)
+    // Kills return substitution mutant
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn get_stats_returns_current_stats() {
+        let mut f = make_folder();
+        f.stats.total_lines = 42;
+        f.stats.ips = 7;
+        f.stats.timestamps = 3;
+        let stats = f.get_stats();
+        assert_eq!(stats.total_lines, 42, "get_stats should return current total_lines");
+        assert_eq!(stats.ips, 7, "get_stats should return current ips");
+        assert_eq!(stats.timestamps, 3, "get_stats should return current timestamps");
+    }
+
+    #[test]
+    fn get_stats_reflects_processing() {
+        let mut f = make_folder();
+        // Process some lines to populate stats
+        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1").unwrap();
+        f.process_line("2024-01-01 10:00:01 INFO world 192.168.1.2").unwrap();
+        let stats = f.get_stats();
+        assert_eq!(stats.total_lines, 2, "should have processed 2 lines");
+        assert!(
+            stats.patterns_detected > 0,
+            "should detect patterns after processing"
+        );
+    }
 }

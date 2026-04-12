@@ -464,4 +464,145 @@ mod tests {
     fn url_path_multi_segments() {
         assert!(PathDetector::is_likely_url_path("/users/123/orders"));
     }
+
+    // ---- Mutant-killing: is_likely_file_path boundary & branch isolation ----
+
+    #[test]
+    fn file_path_len_exactly_3_accepted() {
+        // len=3 "/ab" must pass the `< 3` guard (boundary: == should fail, <= should fail)
+        // It has no extension, no multiple segments, no common dirs, so it should
+        // actually return false (none of the three conditions are met). But it DOES
+        // pass the length guard, which is the mutant we're killing.
+        // We need a 3-char path that satisfies at least one condition.
+        // "/a." has a dot but split('/').next_back() = "a." which contains('.') -> has_extension
+        assert!(PathDetector::is_likely_file_path("/a."));
+    }
+
+    #[test]
+    fn file_path_len_exactly_2_rejected() {
+        // len=2 "/a" must fail the `< 3` guard
+        assert!(!PathDetector::is_likely_file_path("/a"));
+    }
+
+    #[test]
+    fn file_path_has_extension_only() {
+        // has_extension=true, has_multiple_segments=false, has_common_dirs=false
+        // Single segment after /, has extension, no common dir.
+        // "/x.log" -> segments from split('/'): ["", "x.log"], matches('/').count()=1 so not >1
+        assert!(PathDetector::is_likely_file_path("/x.log"));
+    }
+
+    #[test]
+    fn file_path_has_multiple_segments_only() {
+        // has_extension=false, has_multiple_segments=true, has_common_dirs=false
+        // No extension, multiple segments, no common dir names
+        assert!(PathDetector::is_likely_file_path("/foo/bar/baz"));
+    }
+
+    #[test]
+    fn file_path_has_common_dirs_only() {
+        // has_extension=false, has_multiple_segments=false (need only 1 slash beyond root),
+        // has_common_dirs=true
+        // "/var/x" -> matches('/').count()=2 which IS >1, so has_multiple_segments=true too.
+        // We need exactly 1 slash: that means the path is just "/var/" which contains "/var/"
+        // "/var/" -> matches('/').count()=2, still >1. Hard to isolate.
+        // Actually "/tmp/" -> contains "/tmp/", matches('/')=2 -> has_multiple_segments=true
+        // Let's verify the mutant is still killed: if || became &&, then having only
+        // common_dirs true (with multiple_segments also true) wouldn't isolate.
+        // Instead test: has_common_dirs=true but extension=false, to kill the first ||
+        assert!(PathDetector::is_likely_file_path("/var/x"));
+    }
+
+    #[test]
+    fn file_path_none_of_three_conditions() {
+        // No extension, single segment (1 slash), no common dir -> should be false
+        // Kills mutant: || replaced with && (if all were required, this proves || works
+        // by showing that ABSENCE of all three returns false)
+        assert!(!PathDetector::is_likely_file_path("/xyz"));
+    }
+
+    // ---- Mutant-killing: is_likely_url_path boundary & branch isolation ----
+
+    #[test]
+    fn url_path_len_exactly_2_accepted() {
+        // len=2 "/x" must pass the `< 2` guard. But then it needs to satisfy a condition.
+        // "/x" has no api patterns, no query params, matches('/').count()=1 (not >1), no numeric ids.
+        // So it returns false. The mutant is about the guard itself.
+        // We need a 2-char URL path that satisfies at least one condition.
+        // "/?" has query params -> has_query_params=true, len=2
+        assert!(PathDetector::is_likely_url_path("/?"));
+    }
+
+    #[test]
+    fn url_path_len_exactly_1_rejected() {
+        // len=1 "/" must fail the `< 2` guard
+        assert!(!PathDetector::is_likely_url_path("/"));
+    }
+
+    #[test]
+    fn url_path_has_api_patterns_only() {
+        // has_api_patterns=true, has_query_params=false, has_multiple_segments=false(?), has_numeric_ids=false
+        // "/static/x" -> starts_with("/static/")=true, no '?', matches('/')=2 which IS >1
+        // Hard to isolate api from multiple_segments. Use "/static/" itself:
+        // matches('/')=2 -> has_multiple_segments=true. Can't avoid it with /static/.
+        // Use "/v1/" -> matches('/')=2 again.
+        // The point is: if || became &&, requiring ALL to be true would fail since
+        // has_query_params and has_numeric_ids are false. This kills the mutant.
+        assert!(PathDetector::is_likely_url_path("/v1/items"));
+    }
+
+    #[test]
+    fn url_path_has_query_params_only() {
+        // has_api_patterns=false, has_query_params=true, has_multiple_segments=false, has_numeric_ids=false
+        // "/x?q=1" -> no api pattern, has '?', matches('/')=1 (not >1), no route params
+        assert!(PathDetector::is_likely_url_path("/x?q=1"));
+    }
+
+    #[test]
+    fn url_path_has_multiple_segments_only() {
+        // has_api_patterns=false, has_query_params=false, has_multiple_segments=true, has_numeric_ids=false
+        // "/foo/bar" -> no api, no '?', matches('/')=2 (>1), no numeric route params
+        assert!(PathDetector::is_likely_url_path("/foo/bar"));
+    }
+
+    #[test]
+    fn url_path_has_numeric_ids_only() {
+        // has_api_patterns=false, has_query_params=false, has_multiple_segments=false, has_numeric_ids=true
+        // Need a path with a numeric route param but only 1 slash.
+        // ROUTE_PARAMS matches /([0-9a-fA-F]{8,}|[0-9]{3,}|[a-fA-F0-9\-]{8,})
+        // "/12345" -> matches('/').count()=1 so not multiple segments
+        // ROUTE_PARAMS: /([0-9]{3,}) matches "/12345"
+        assert!(PathDetector::is_likely_url_path("/12345"));
+    }
+
+    #[test]
+    fn url_path_segment_count_boundary() {
+        // has_multiple_segments requires matches('/').count() > 1
+        // "/x" has count=1 (not >1). Kills mutant: > replaced with <
+        assert!(!PathDetector::is_likely_url_path("/x"));
+        // "/x/y" has count=2 (>1) -> true
+        assert!(PathDetector::is_likely_url_path("/x/y"));
+    }
+
+    // ---- Mutant-killing: normalize_url_path API segment preservation ----
+
+    #[test]
+    fn normalize_url_path_preserves_api_segments() {
+        // Verifies the match arm for API segments is exercised: api and v1 are kept,
+        // but a variable segment like "users" (4+ chars, not in list) is replaced.
+        let result = PathDetector::normalize_url_path("/api/v1/users");
+        assert!(
+            result.contains("/api"),
+            "api segment should be preserved, got: {result}"
+        );
+        assert!(
+            result.contains("/v1"),
+            "v1 segment should be preserved, got: {result}"
+        );
+        // "users" is 5 chars and matches PATH_SEGMENTS, so it should be replaced
+        assert!(
+            result.contains("<PATH>"),
+            "variable segment should be normalized, got: {result}"
+        );
+    }
 }
