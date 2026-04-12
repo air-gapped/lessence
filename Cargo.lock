@@ -547,6 +547,8 @@ dependencies = [
  "criterion",
  "insta",
  "proptest",
+ "rand",
+ "rand_chacha",
  "rayon",
  "regex",
  "serde",

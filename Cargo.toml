@@ -26,6 +26,19 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 rayon = "1.11.0"
 terminal_size = "0.4.4"
+# Deterministic, cross-platform seeded sampling for rollup metadata.
+# rand_chacha is explicitly portable (ChaCha8Rng gives the same sequence
+# from the same seed on Linux, macOS, and Windows) — unlike SmallRng,
+# which picks the fastest underlying generator per platform and is NOT
+# stable across them. Determinism is load-bearing for snapshot tests
+# and agent-cacheable outputs; performance is irrelevant here because
+# we draw at most K samples per group, not per line.
+#
+# Keep default-features enabled: the `alloc` feature (on by default) is
+# what gates `IndexedRandom::choose_multiple`, and we deliberately skip
+# pulling in rand_core for thread-local RNGs we don't use.
+rand = { version = "0.9", default-features = false, features = ["alloc"] }
+rand_chacha = "0.9"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
@@ -111,6 +124,11 @@ path = "tests/integration/test_stats_json.rs"
 [[test]]
 name = "test_format_json"
 path = "tests/integration/test_format_json.rs"
+
+# Rollup metadata tests (Phase 3 — variation field shape and determinism)
+[[test]]
+name = "test_format_json_rollups"
+path = "tests/integration/test_format_json_rollups.rs"
 
 # Multi-format output tests
 [[test]]

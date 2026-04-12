@@ -1,7 +1,9 @@
 use anyhow::Result;
 use chrono::Utc;
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -110,6 +112,11 @@ pub struct PatternFolder {
     /// exactly once per flushed group in JSON mode. Stays at 0 in text /
     /// markdown modes. Stable within a run.
     next_json_id: usize,
+    /// Rollup computer — runs on every group at flush time regardless of
+    /// output format, so the perf gate applies uniformly to text and
+    /// JSON modes. Parameters come from `PLACEHOLDER_*` constants in
+    /// Phases 3/4 and are calibrated via autoresearch in Phase 5.
+    rollup_computer: RollupComputer,
 }
 
 #[derive(Debug, Default)]
@@ -206,6 +213,10 @@ struct GroupRecord {
     first: LineRef,
     last: LineRef,
     time_range: TimeRange,
+    /// Per-token-type variation metadata (Phase 3): distinct counts plus
+    /// deterministic samples for sample-worthy types. The key order is
+    /// stable (BTreeMap) so agents can diff records across runs.
+    variation: GroupRollup,
 }
 
 /// Terminal summary record for the JSONL stream. Flattens the existing
@@ -261,6 +272,310 @@ fn first_timestamp_in(tokens: &[Token]) -> Option<String> {
     })
 }
 
+// -------------------------------------------------------------------------
+// Rollup metadata (Phase 3).
+//
+// Per-group rollups capture what VARIES inside a folded group: for each
+// token type that appeared in the group, the distinct-value count and a
+// small deterministic sample of those values. Agents use this to answer
+// triage questions without re-reading the raw log — "is this one UUID
+// repeating or 1273 distinct UUIDs?", "which paths were affected?", etc.
+//
+// See .ideas/structured-folding-output-for-agents.md for design rationale.
+//
+// PHASE 3 PLACEHOLDERS: the three constants below are intentionally
+// preliminary. They exist as named `PLACEHOLDER_*` values during phases
+// 3 and 4 and are replaced by calibrated values in Phase 5 via the
+// autoresearch skill, gated against the Tier 1+2+3 corpus.
+//
+// SHIPPING WITH ANY `PLACEHOLDER_*` CONSTANT UNCHANGED IS A BLOCKING BUG.
+// The Phase 5 exit criterion is `rg 'PLACEHOLDER_' src/` returning zero
+// matches.
+// -------------------------------------------------------------------------
+
+/// K: samples surfaced per token type in JSON mode.
+/// Calibrated in Phase 5 against a corpus-wide eval proxy.
+const PLACEHOLDER_K: usize = 5;
+
+/// Maximum distinct values tracked per (group, token type).
+/// Beyond this cap, distinct_count becomes a lower bound and `capped` is
+/// set true. Calibrated in Phase 5 from the P99 of observed distributions.
+const PLACEHOLDER_DISTINCT_CAP: usize = 1024;
+
+/// Text-mode inline-sample threshold: when `distinct_count <=` this value,
+/// the compact marker shows the complete distinct set; otherwise count-only.
+/// Calibrated in Phase 5 against terminal width distributions.
+#[allow(dead_code)] // Used in Phase 4 (text compact marker)
+const PLACEHOLDER_TEXT_SAMPLE_THRESHOLD: usize = 3;
+
+/// One entry in the variation map: count, samples (possibly truncated),
+/// and `capped` flag indicating whether the cap was hit.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+struct VariationEntry {
+    pub distinct_count: usize,
+    pub samples: Vec<String>,
+    pub capped: bool,
+}
+
+/// Full rollup for a single group — a sorted map from token type name to
+/// its variation entry. BTreeMap gives deterministic iteration order,
+/// which flows through to the JSON field order.
+type GroupRollup = BTreeMap<&'static str, VariationEntry>;
+
+/// Is this token type worth surfacing as samples (i.e., does the value
+/// carry identity information useful to an agent)?
+///
+/// - **Sample-worthy** (identity types): UUID, IP, Path, Email, Hash,
+///   Kubernetes objects, HTTP status, quoted strings, names, bracket
+///   context, structured JSON — values an agent uses to identify which
+///   specific entities were involved.
+/// - **Count-only** (measurement types): Timestamp, Port, Pid, ThreadID,
+///   Duration, Size, Number, KeyValuePair, LogWithModule,
+///   StructuredMessage — values where "how many distinct" is useful but
+///   showing specific values is noise.
+///
+/// The Phase 5 calibration may move token types between categories based
+/// on observed real-world value-to-noise ratio.
+fn is_sample_worthy(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Uuid(_)
+            | Token::IPv4(_)
+            | Token::IPv6(_)
+            | Token::Path(_)
+            | Token::Email(_)
+            | Token::Hash(_, _)
+            | Token::KubernetesNamespace(_)
+            | Token::VolumeName(_)
+            | Token::PluginType(_)
+            | Token::PodName(_)
+            | Token::QuotedString(_)
+            | Token::Name(_)
+            | Token::HttpStatus(_)
+            | Token::HttpStatusClass(_)
+            | Token::BracketContext(_)
+            | Token::Json(_)
+    )
+}
+
+/// Extract the string representation of a token for sampling.
+/// Used only for sample-worthy token types; count-only types use
+/// `hash_token_value` instead to avoid retaining large strings.
+fn token_value_string(token: &Token) -> String {
+    match token {
+        Token::Timestamp(s)
+        | Token::IPv4(s)
+        | Token::IPv6(s)
+        | Token::Uuid(s)
+        | Token::Path(s)
+        | Token::Json(s)
+        | Token::Duration(s)
+        | Token::Size(s)
+        | Token::Number(s)
+        | Token::QuotedString(s)
+        | Token::Name(s)
+        | Token::KubernetesNamespace(s)
+        | Token::VolumeName(s)
+        | Token::PluginType(s)
+        | Token::PodName(s)
+        | Token::ThreadID(s)
+        | Token::HttpStatusClass(s)
+        | Token::Email(s) => s.clone(),
+        Token::Hash(_, s) => s.clone(),
+        Token::BracketContext(parts) => parts.join(","),
+        Token::Port(p) => p.to_string(),
+        Token::HttpStatus(s) => s.to_string(),
+        Token::Pid(p) => p.to_string(),
+        Token::KeyValuePair { key, value_type } => format!("{key}={value_type}"),
+        Token::LogWithModule { level, module } => format!("{level}:{module}"),
+        Token::StructuredMessage { component, level } => format!("{component}:{level}"),
+    }
+}
+
+/// Hash a token value to a u64. Used for count-only tracking of
+/// high-cardinality types (Timestamp, Number, Duration, ...) where
+/// retaining full strings would blow the memory budget.
+///
+/// Uses the same FNV-1a hashing as `seed_for_group` — NOT
+/// `ahash::AHasher::default()` — so `distinct_count` is deterministic
+/// across processes. For count-only types this mostly matters when the
+/// distinct_cap is hit: the specific set of tracked hashes would
+/// otherwise depend on per-process randomness, which in turn could
+/// shift `distinct_count` by one on cap boundaries. Keeping everything
+/// fixed-seed sidesteps that class of flake entirely.
+fn hash_token_value(token: &Token) -> u64 {
+    // Reuse `token_value_string` to get a canonical string representation,
+    // then run FNV-1a over its bytes. This is slower than hashing field
+    // bytes directly but keeps the code in one place. Count-only tokens
+    // are rare per line compared to the total workload, so the overhead
+    // is negligible relative to pattern detection.
+    let canonical = token_value_string(token);
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h: u64 = FNV_OFFSET;
+    for b in canonical.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// Seed for the deterministic sample RNG. Derived from the group's
+/// normalized template so the same template → the same seed → the same
+/// sample draw. This is the non-negotiable determinism contract.
+///
+/// Uses FNV-1a — NOT `ahash::AHasher::default()`, which seeds randomly
+/// per process and breaks determinism across runs. FNV-1a is trivially
+/// cross-platform and cross-version stable. Quality is sufficient for
+/// seeding a ChaCha8Rng; we're not defending a hash table.
+fn seed_for_group(normalized: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut h: u64 = FNV_OFFSET;
+    for b in normalized.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// Intermediate accumulator for one (group, token_type) pair during
+/// rollup computation. Sample-worthy types retain strings; count-only
+/// types retain u64 hashes. Both cap at `distinct_cap`.
+enum Accumulator {
+    /// Sample-worthy: retain full values so we can draw samples.
+    Values(HashSet<String>),
+    /// Count-only: retain only hashes so memory stays bounded.
+    Hashes(HashSet<u64>),
+}
+
+impl Accumulator {
+    fn len(&self) -> usize {
+        match self {
+            Self::Values(s) => s.len(),
+            Self::Hashes(s) => s.len(),
+        }
+    }
+}
+
+/// Stateless rollup computer. One per `PatternFolder`. Parameters
+/// (K, distinct_cap) come from `PLACEHOLDER_*` until Phase 5 calibrates
+/// them.
+struct RollupComputer {
+    k: usize,
+    distinct_cap: usize,
+}
+
+impl RollupComputer {
+    fn new(k: usize, distinct_cap: usize) -> Self {
+        Self { k, distinct_cap }
+    }
+
+    fn with_placeholders() -> Self {
+        Self::new(PLACEHOLDER_K, PLACEHOLDER_DISTINCT_CAP)
+    }
+
+    /// Compute the rollup for one group. Iterates the group's lines
+    /// once, bucketing each token into its per-type accumulator, then
+    /// draws the final samples and produces one VariationEntry per
+    /// token type that appeared.
+    ///
+    /// Complexity: O(total_tokens_in_group). Memory bound:
+    /// `sum(min(distinct, cap)) × per-entry-size`, where per-entry-size
+    /// is `sizeof(u64)` for count-only and `value_len` for sample-worthy.
+    fn compute(&self, group: &PatternGroup) -> GroupRollup {
+        // Flags + accumulators, keyed by token type name.
+        // Kept as BTreeMap so the final JSON serialisation is sorted.
+        let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
+
+        // Upper bound on distinct values per token type: can't exceed
+        // the number of lines in the group. Pre-allocating HashSets
+        // with this hint avoids the grow-rehash cycle that shows up
+        // disproportionately in parallel-mode flush timing.
+        let capacity_hint = group.lines.len().min(self.distinct_cap);
+
+        for line in &group.lines {
+            for token in &line.tokens {
+                let name = token_type_name(token);
+                let sample_worthy = is_sample_worthy(token);
+
+                let entry = per_type.entry(name).or_insert_with(|| {
+                    (
+                        if sample_worthy {
+                            Accumulator::Values(HashSet::with_capacity(capacity_hint))
+                        } else {
+                            Accumulator::Hashes(HashSet::with_capacity(capacity_hint))
+                        },
+                        false, // capped flag
+                    )
+                });
+
+                // Skip the insert if already capped — keeps cost bounded
+                // and prevents per-insert growth beyond the cap.
+                if entry.1 {
+                    continue;
+                }
+
+                match &mut entry.0 {
+                    Accumulator::Values(s) => {
+                        if s.len() >= self.distinct_cap {
+                            entry.1 = true;
+                        } else {
+                            s.insert(token_value_string(token));
+                        }
+                    }
+                    Accumulator::Hashes(s) => {
+                        if s.len() >= self.distinct_cap {
+                            entry.1 = true;
+                        } else {
+                            s.insert(hash_token_value(token));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Finalise: draw samples deterministically from each Accumulator.
+        // Seed is per-group so same template → same draw.
+        let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(&group.first().normalized));
+        let mut out: GroupRollup = BTreeMap::new();
+        for (name, (acc, capped)) in per_type {
+            let distinct_count = acc.len();
+            let samples = match acc {
+                Accumulator::Values(s) => {
+                    // Collect distinct values into a Vec, then let
+                    // SliceRandom draw K uniformly. The HashSet's
+                    // iteration order is unreliable across allocator
+                    // versions; the intermediate Vec must therefore be
+                    // sorted before sampling so the per-group seed ↔
+                    // same sample draw invariant holds across hash
+                    // seeds. This is load-bearing for determinism.
+                    let mut distinct: Vec<String> = s.into_iter().collect();
+                    distinct.sort();
+                    let drawn_refs: Vec<&String> =
+                        distinct.choose_multiple(&mut rng, self.k).collect();
+                    let mut drawn: Vec<String> =
+                        drawn_refs.into_iter().cloned().collect();
+                    // Sort the drawn sample itself for a stable JSON
+                    // representation regardless of draw order.
+                    drawn.sort();
+                    drawn
+                }
+                Accumulator::Hashes(_) => Vec::new(),
+            };
+            out.insert(
+                name,
+                VariationEntry {
+                    distinct_count,
+                    samples,
+                    capped,
+                },
+            );
+        }
+        out
+    }
+}
+
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let normalizer = Normalizer::new(config.clone());
@@ -273,6 +588,7 @@ impl PatternFolder {
             position_counter: 0,
             batch_buffer: Vec::new(),
             next_json_id: 0,
+            rollup_computer: RollupComputer::with_placeholders(),
         }
     }
 
@@ -281,14 +597,34 @@ impl PatternFolder {
         matches!(self.config.output_format.as_str(), "json" | "jsonl")
     }
 
-    /// Format a group for the configured output mode. Dispatches to
-    /// `format_group_json` when `--format json` is set, else the existing
-    /// text/markdown `format_group` path. This is the single insertion
-    /// point for JSON mode across all flush call sites.
+    /// Format a group for the configured output mode.
+    ///
+    /// Rollup metadata is computed unconditionally here — regardless of
+    /// output format — so that the perf gate applies uniformly to both
+    /// text and JSON modes. This is the single insertion point for the
+    /// feature's flush-time cost. In Phase 3, text mode (`format_group`)
+    /// discards the rollup after paying the compute cost; Phase 4 wires
+    /// it into the text compact marker.
+    ///
+    /// Groups smaller than `min_collapse` skip the rollup entirely —
+    /// there's no useful variation summary to report for a group of one
+    /// or two lines, and the allocation cost of building empty
+    /// accumulators dominated flush-time overhead in parallel mode
+    /// before this guard was added. The `variation` field in JSON mode
+    /// remains present (as an empty `{}`) so the schema shape is
+    /// unchanged; only the compute cost is skipped.
     fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
-        if self.is_json_output() {
-            self.format_group_json(group)
+        let rollup = if group.count() >= self.config.min_collapse {
+            self.rollup_computer.compute(group)
         } else {
+            BTreeMap::new()
+        };
+        if self.is_json_output() {
+            self.format_group_json(group, rollup)
+        } else {
+            // Text mode in Phase 3: rollup is computed but not consumed.
+            // Phase 4 replaces this drop with the compact-marker render.
+            let _ = rollup;
             self.format_group(group)
         }
     }
@@ -301,7 +637,11 @@ impl PatternFolder {
     /// `output_lines` is updated by the *caller* (same as `format_group`
     /// via `formatted.lines().count()`) so both formatting paths keep
     /// stats coherent with no double-counting.
-    fn format_group_json(&mut self, group: &PatternGroup) -> Result<String> {
+    fn format_group_json(
+        &mut self,
+        group: &PatternGroup,
+        variation: GroupRollup,
+    ) -> Result<String> {
         let id = self.next_json_id;
         self.next_json_id += 1;
 
@@ -348,6 +688,7 @@ impl PatternFolder {
                 first_seen: first_timestamp_in(&group.first().tokens),
                 last_seen: first_timestamp_in(&group.last().tokens),
             },
+            variation,
         };
 
         Ok(serde_json::to_string(&record)?)
