@@ -11,17 +11,6 @@ use std::process::Command;
 /// Then: The Pattern Distribution must include an "Email Addresses" row with correct count
 #[test]
 fn test_email_statistics_shown_in_report() {
-    // Build the release binary first
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build release binary");
-
-    assert!(
-        build_output.status.success(),
-        "Failed to build release binary"
-    );
-
     // Test input with 3 email addresses
     let test_input = "2025-09-26T10:15:00Z User john@company.com logged in from 192.168.1.100\n\
                       2025-09-26T10:15:01Z User admin@company.com logged in from 192.168.1.101\n\
@@ -75,16 +64,6 @@ fn test_email_statistics_shown_in_report() {
 /// Then: The Pattern Distribution must NOT include an "Email Addresses" row
 #[test]
 fn test_email_statistics_hidden_when_zero() {
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build release binary");
-
-    assert!(
-        build_output.status.success(),
-        "Failed to build release binary"
-    );
-
     // Test input with NO email addresses
     let test_input = "2025-09-26T10:15:00Z Server started on port 8080\n\
                       2025-09-26T10:15:01Z Listening on 192.168.1.100:8080\n";
@@ -124,16 +103,6 @@ fn test_email_statistics_hidden_when_zero() {
 /// Then: Email statistics must be displayed correctly (same as standard mode)
 #[test]
 fn test_email_statistics_in_essence_mode() {
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build release binary");
-
-    assert!(
-        build_output.status.success(),
-        "Failed to build release binary"
-    );
-
     // Test input with 4 email addresses
     let test_input = "2025-09-26T10:15:00Z User john@company.com logged in\n\
                       2025-09-26T10:15:01Z User admin@company.com logged in\n\
@@ -188,16 +157,6 @@ fn test_email_statistics_in_essence_mode() {
 /// Then: Email patterns must appear in their own category, not in "Numbers/Percentages"
 #[test]
 fn test_email_not_grouped_with_percentages() {
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build release binary");
-
-    assert!(
-        build_output.status.success(),
-        "Failed to build release binary"
-    );
-
     // Test input with emails and numbers
     let test_input = "2025-09-26T10:15:00Z CPU usage: 85% for user@domain.com\n\
                       2025-09-26T10:15:01Z CPU usage: 92% for admin@domain.com\n";

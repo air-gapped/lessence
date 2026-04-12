@@ -3,17 +3,6 @@ use std::str;
 
 #[test]
 fn test_nginx_compression_improvement() {
-    // Build the release binary first
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build release binary");
-
-    assert!(
-        build_output.status.success(),
-        "Failed to build release binary"
-    );
-
     // Test compression on nginx_sample.log
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--no-stats"])

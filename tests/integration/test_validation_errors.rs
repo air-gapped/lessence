@@ -9,8 +9,8 @@ fn test_validation_fails_fast_no_stdin_read() {
 
     let start = Instant::now();
 
-    let mut child = Command::new("cargo")
-        .args(["run", "--release", "--", "--threads", "0"])
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--threads", "0"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -42,8 +42,8 @@ fn test_validation_fails_fast_no_stdin_read() {
 
 #[test]
 fn test_pattern_error_lists_all_valid_patterns() {
-    let output = Command::new("cargo")
-        .args(["run", "--release", "--", "--disable-patterns", "invalid"])
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--disable-patterns", "invalid"])
         .output()
         .expect("Failed to run command");
 
@@ -81,8 +81,8 @@ fn test_pattern_error_lists_all_valid_patterns() {
 
 #[test]
 fn test_validation_accepts_large_valid_values() {
-    let mut child = Command::new("cargo")
-        .args(["run", "--release", "--", "--threads", "999999"])
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--threads", "999999"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
