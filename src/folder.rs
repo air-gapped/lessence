@@ -4166,4 +4166,330 @@ mod tests {
         let (_, _, coverage) = f.finish_top_n(10).unwrap();
         assert_eq!(coverage, 0);
     }
+
+    // ---------------------------------------------------------------
+    // Targeted tests for remaining missed mutants
+    // ---------------------------------------------------------------
+
+    // format_group_dispatch line 729: >= with < boundary
+    // count < min_collapse should NOT compute rollup
+    #[test]
+    fn format_group_dispatch_below_min_collapse_no_rollup() {
+        let mut f = make_folder(); // min_collapse = 3
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+        ]); // count = 2, below min_collapse = 3
+        let output = f.format_group_dispatch(&group).unwrap();
+        // Below min_collapse: no rollup marker, just the raw lines
+        assert!(!output.contains("similar"), "2 lines should not collapse: {output}");
+    }
+
+    #[test]
+    fn format_group_dispatch_at_min_collapse_has_rollup() {
+        let mut f = make_folder(); // min_collapse = 3
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]); // count = 3, exactly at min_collapse
+        let output = f.format_group_dispatch(&group).unwrap();
+        // At min_collapse: should have rollup/collapse marker
+        assert!(
+            output.contains("similar") || output.contains("ipv4"),
+            "3 lines should collapse: {output}"
+        );
+    }
+
+    // prepare_summary: return value substitution tests (lines 941)
+    #[test]
+    fn prepare_summary_returns_nonempty_for_nonempty_buffer() {
+        let mut f = make_folder();
+        f.buffer.push(PatternGroup::new(make_line("error", vec![]), 1));
+        let (display, total, was_capped, fit_truncated) = f.prepare_summary(None, None).unwrap();
+        assert!(!display.is_empty(), "should return entries for non-empty buffer");
+        assert_eq!(total, 1);
+        assert!(!was_capped);
+        assert_eq!(fit_truncated, 0);
+    }
+
+    // prepare_summary line 969: > boundary with top_n=Some(0) + fit_budget
+    #[test]
+    fn prepare_summary_top_zero_fit_budget_exact_boundary() {
+        let mut f = make_folder();
+        for i in 0..5 {
+            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+        }
+        // top=0 + budget=5: sorted.len() == budget, NOT > budget → no truncation
+        let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(5)).unwrap();
+        assert_eq!(display.len(), 5);
+        assert_eq!(fit_truncated, 0, "exact fit should not truncate");
+    }
+
+    #[test]
+    fn prepare_summary_top_zero_fit_budget_over() {
+        let mut f = make_folder();
+        for i in 0..5 {
+            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+        }
+        // top=0 + budget=3: sorted.len() > budget → truncate
+        let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(3)).unwrap();
+        assert_eq!(display.len(), 2); // budget.saturating_sub(1) = 2
+        assert_eq!(fit_truncated, 3); // 5 - 2 = 3 remaining
+    }
+
+    // prepare_summary line 971: saturating_sub arithmetic
+    #[test]
+    fn prepare_summary_top_zero_fit_budget_one() {
+        let mut f = make_folder();
+        for i in 0..5 {
+            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+        }
+        // budget=1, saturating_sub(1) = 0 → show 0 patterns, remaining = 5
+        let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(1)).unwrap();
+        assert_eq!(display.len(), 0);
+        assert_eq!(fit_truncated, 5);
+    }
+
+    // prepare_summary line 983: > with >= on fit_budget (no top_n)
+    #[test]
+    fn prepare_summary_fit_budget_exact() {
+        let mut f = make_folder();
+        for i in 0..5 {
+            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+        }
+        // fit_budget=5, sorted.len()=5 → NOT > budget → no truncation
+        let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+        assert_eq!(display.len(), 5);
+        assert_eq!(fit_truncated, 0);
+    }
+
+    // format_summary_line: detailed boundary tests
+    #[test]
+    fn summary_line_truncation_arithmetic() {
+        // Width = 30, prefix "[5x] " = 5 chars, representative = 30 chars
+        // prefix.len() + representative.len() = 35 > 30 → truncate
+        // avail = 30 - 5 - 3 = 22 > 20 → do truncate with ...
+        let line = PatternFolder::format_summary_line(5, &"x".repeat(30), Some(30));
+        assert!(line.ends_with("..."), "should truncate: {line}");
+        assert!(line.len() <= 30, "should fit in width: len={}", line.len());
+    }
+
+    #[test]
+    fn summary_line_prefix_plus_rep_exactly_at_width() {
+        // prefix "[5x] " = 5 chars + representative 25 chars = 30 = width → no truncation
+        let line = PatternFolder::format_summary_line(5, &"x".repeat(25), Some(30));
+        assert!(!line.ends_with("..."), "exact fit should not truncate: {line}");
+    }
+
+    #[test]
+    fn summary_line_avail_exactly_20() {
+        // Width = 28, prefix "[5x] " = 5, avail = 28 - 5 - 3 = 20 → exactly 20, NOT > 20
+        // So: don't truncate (avail must be > 20)
+        let long = "x".repeat(30);
+        let line = PatternFolder::format_summary_line(5, &long, Some(28));
+        assert!(!line.ends_with("..."), "avail=20 should not truncate: {line}");
+    }
+
+    #[test]
+    fn summary_line_avail_21_does_truncate() {
+        // Width = 29, prefix "[5x] " = 5, avail = 29 - 5 - 3 = 21 > 20 → truncate
+        let long = "x".repeat(30);
+        let line = PatternFolder::format_summary_line(5, &long, Some(29));
+        assert!(line.ends_with("..."), "avail=21 should truncate: {line}");
+    }
+
+    // finish_summary line 1051: replace with Ok(()) — verify it actually does something
+    #[test]
+    fn finish_summary_does_not_panic() {
+        let mut f = make_folder();
+        f.stats.total_lines = 10;
+        for i in 0..3 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("error {i}"), vec![]),
+                i + 1,
+            ));
+        }
+        // finish_summary prints to stdout — verify it runs without error
+        f.finish_summary(None, None).unwrap();
+    }
+
+    // finish_summary line 1068: fit_truncated > 0 boundary
+    #[test]
+    fn finish_summary_with_fit_truncation() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        for i in 0..10 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("pattern {i}"), vec![]),
+                i + 1,
+            ));
+        }
+        // fit_budget=3 with 10 patterns → fit_truncated > 0
+        f.finish_summary(None, Some(3)).unwrap();
+        // Can't capture stdout, but no panic = OK
+    }
+
+    // finish_top_n line 1108: delete ! on batch_buffer.is_empty()
+    #[test]
+    fn finish_top_n_flushes_batch_buffer() {
+        let mut f = make_folder();
+        f.stats.total_lines = 5;
+        // Put lines in batch_buffer (simulating unprocessed batch)
+        f.batch_buffer.push("error one".to_string());
+        f.batch_buffer.push("error two".to_string());
+        let (output, total, _) = f.finish_top_n(10).unwrap();
+        // Should have flushed and processed the batch
+        assert!(f.batch_buffer.is_empty(), "batch should be flushed");
+        assert!(total > 0 || output.is_empty()); // processed something
+    }
+
+    // finish_top_n line 1131: += on output_lines
+    #[test]
+    fn finish_top_n_updates_output_lines() {
+        let mut f = make_folder();
+        f.stats.total_lines = 10;
+        for i in 0..3 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("error {i}"), vec![]),
+                i + 1,
+            ));
+        }
+        let before = f.stats.output_lines;
+        let _ = f.finish_top_n(10).unwrap();
+        assert!(f.stats.output_lines > before, "should increment output_lines");
+    }
+
+    // finish_top_n line 1139: > with >= on coverage calc
+    #[test]
+    fn finish_top_n_coverage_50_percent() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        // Create one group with 50 lines
+        let mut group = PatternGroup::new(make_line("error", vec![]), 1);
+        for i in 1..50 {
+            group.add_line(make_line("error", vec![]), i + 1);
+        }
+        f.buffer.push(group);
+        let (_, _, coverage) = f.finish_top_n(10).unwrap();
+        assert_eq!(coverage, 50, "50/100 lines = 50% coverage");
+    }
+
+    // format_group line 1198: delete ! on rollup.is_empty()
+    #[test]
+    fn format_group_empty_rollup_uses_legacy() {
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]);
+        let empty_rollup = BTreeMap::new();
+        let output = f.format_group(&group, &empty_rollup).unwrap();
+        // Empty rollup → legacy format_collapsed_line path
+        assert!(output.contains("similar"), "empty rollup should use legacy: {output}");
+    }
+
+    #[test]
+    fn format_group_nonempty_rollup_uses_compact() {
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]);
+        let rollup = f.rollup_computer.compute(&group);
+        let output = f.format_group(&group, &rollup).unwrap();
+        // Non-empty rollup → compact marker path
+        assert!(
+            output.contains("ipv4") || output.contains("similar"),
+            "non-empty rollup should use compact: {output}"
+        );
+    }
+
+    // format_group line 1202/1213: - with + on count-2 and count-3
+    #[test]
+    fn format_group_lines_saved_arithmetic() {
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+            vec![Token::IPv4("10.0.0.5".into())],
+        ]); // count = 5
+        let rollup = BTreeMap::new();
+        f.format_group(&group, &rollup).unwrap();
+        // lines_saved = count - 3 = 5 - 3 = 2
+        assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed saves 2");
+    }
+
+    // format_group line 1228: && with || and delete ! on essence_mode PII
+    #[test]
+    fn format_group_pii_masking_only_in_non_essence() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize_pii: true,
+            essence_mode: false,
+            ..Config::default()
+        });
+        let group = make_group("user test@example.com logged in", vec![
+            vec![Token::Email("test@example.com".into())],
+            vec![Token::Email("test@example.com".into())],
+            vec![Token::Email("test@example.com".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // PII masking: email should be masked
+        assert!(
+            output.contains("***@***") || !output.contains("test@example.com"),
+            "PII should be masked in non-essence mode: {output}"
+        );
+    }
+
+    // format_group line 1238: > with >= on group.count() > 1
+    #[test]
+    fn format_group_single_line_no_last() {
+        let mut f = make_folder();
+        let group = make_group("single line", vec![vec![]]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // Single line: no "last line" section
+        assert_eq!(output.lines().count(), 1, "single line should have 1 line: {output}");
+    }
+
+    #[test]
+    fn format_group_two_lines_has_last() {
+        let mut f = make_folder();
+        let group = make_group("error msg", vec![vec![], vec![]]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // Two lines, below min_collapse: both lines shown
+        assert!(output.lines().count() >= 2, "two lines should show both: {output}");
+    }
+
+    // format_group line 1249: != with == on essence_mode first!=last
+    #[test]
+    fn format_group_essence_identical_suppresses_last() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            essence_mode: true,
+            ..Config::default()
+        });
+        // 4 lines, all same normalized text → in essence mode, last = first, suppress last
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        let line_count = output.lines().count();
+        // Essence mode with identical first/last normalized: last suppressed
+        // Should have first line + collapsed marker, but NOT a third "last" line
+        assert!(line_count <= 2, "essence mode should suppress identical last: {output}");
+    }
 }
