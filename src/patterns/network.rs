@@ -358,4 +358,32 @@ mod tests {
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::IPv6(_)));
     }
+
+    // --- is_plausible_ipv6 ---
+
+    #[test]
+    fn plausible_ipv6_empty_rejected() {
+        assert!(!NetworkDetector::is_plausible_ipv6("").is_plausible);
+    }
+
+    #[test]
+    fn plausible_ipv6_too_short() {
+        assert!(!NetworkDetector::is_plausible_ipv6("x").is_plausible);
+    }
+
+    #[test]
+    fn plausible_ipv6_too_long() {
+        let long = "a".repeat(101);
+        assert!(!NetworkDetector::is_plausible_ipv6(&long).is_plausible);
+    }
+
+    #[test]
+    fn plausible_ipv6_no_colons() {
+        assert!(!NetworkDetector::is_plausible_ipv6("abcdef").is_plausible);
+    }
+
+    #[test]
+    fn plausible_ipv6_valid() {
+        assert!(NetworkDetector::is_plausible_ipv6("2001:db8::1").is_plausible);
+    }
 }

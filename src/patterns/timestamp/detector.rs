@@ -157,3 +157,49 @@ impl UnifiedTimestampDetector {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn has_timestamp_indicators_year_and_colon() {
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators("2024-01-01 10:00:00"));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_iso8601() {
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators("foo:barT"));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_month_name() {
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Jan 1 10:00:00"));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_k8s_level() {
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators("I1025 10:00:00.000"));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_no_colon_rejects() {
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators("2024-01-01 no colon"));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_colon_but_no_date() {
+        // Has colon but no year, date separator, month name, or k8s indicator
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators("foo:bar"));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_empty() {
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators(""));
+    }
+
+    #[test]
+    fn has_timestamp_indicators_bracket() {
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators("[10:00:00]"));
+    }
+}

@@ -1721,6 +1721,14 @@ mod tests {
         assert_eq!(result, "10.0.0.1 <EMAIL>");
     }
 
+    #[test]
+    fn pii_masking_empty_email_does_not_loop() {
+        // Defensive: empty email string would cause infinite loop without guard
+        let tokens = vec![Token::Email(String::new())];
+        let result = apply_pii_masking("no emails here", &tokens);
+        assert_eq!(result, "no emails here");
+    }
+
     // ---------------------------------------------------------------
     // first_timestamp_in
     // ---------------------------------------------------------------
@@ -2676,5 +2684,698 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Pipeline: process_line, flush_oldest_safe_group, should_flush_buffer
+    // ---------------------------------------------------------------
+
+    /// Build a single-threaded PatternFolder with sensible test defaults.
+    fn make_folder() -> PatternFolder {
+        PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn process_line_increments_total_lines() {
+        let mut f = make_folder();
+        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1").unwrap();
+        assert_eq!(f.stats.total_lines, 1);
+    }
+
+    #[test]
+    fn process_line_with_tokens_increments_patterns_detected() {
+        let mut f = make_folder();
+        // This line contains an IP which will be detected as a token
+        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1").unwrap();
+        assert!(
+            f.stats.patterns_detected >= 1,
+            "patterns_detected should be >= 1, got {}",
+            f.stats.patterns_detected
+        );
+    }
+
+    #[test]
+    fn process_line_without_tokens_does_not_increment_patterns() {
+        let mut f = make_folder();
+        // Plain text with no detectable patterns
+        f.process_line("hello world").unwrap();
+        assert_eq!(f.stats.patterns_detected, 0);
+    }
+
+    #[test]
+    fn process_line_counts_patterns_for_each_line() {
+        let mut f = make_folder();
+        f.process_line("request from 10.0.0.1").unwrap();
+        f.process_line("request from 10.0.0.2").unwrap();
+        assert_eq!(f.stats.total_lines, 2);
+        // Both lines have IP tokens
+        assert!(
+            f.stats.patterns_detected >= 2,
+            "expected >= 2 patterns_detected, got {}",
+            f.stats.patterns_detected
+        );
+    }
+
+    #[test]
+    fn process_line_identical_lines_cluster_into_one_group() {
+        let mut f = make_folder();
+        for _ in 0..5 {
+            f.process_line("2024-01-01 ERROR connection refused from 10.0.0.1").unwrap();
+        }
+        // Similar lines should be in one group
+        assert_eq!(f.buffer.len(), 1, "identical lines should cluster into one group");
+        assert_eq!(f.buffer[0].count(), 5);
+    }
+
+    #[test]
+    fn process_line_dissimilar_lines_create_separate_groups() {
+        let mut f = make_folder();
+        f.process_line("2024-01-01 ERROR disk full on /dev/sda1").unwrap();
+        f.process_line("GET /api/health HTTP/1.1 200 OK").unwrap();
+        assert!(
+            f.buffer.len() >= 2,
+            "dissimilar lines should create separate groups, got {}",
+            f.buffer.len()
+        );
+    }
+
+    #[test]
+    fn process_line_batches_in_parallel_mode() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: None, // parallel mode
+            min_collapse: 3,
+            ..Config::default()
+        });
+        let result = f.process_line("2024-01-01 INFO hello 10.0.0.1").unwrap();
+        // Parallel mode buffers lines instead of processing immediately
+        assert_eq!(result, None, "parallel mode should buffer, not process");
+        assert_eq!(f.batch_buffer.len(), 1, "line should be in batch_buffer");
+        assert_eq!(f.buffer.len(), 0, "buffer should be empty until batch processes");
+    }
+
+    #[test]
+    fn process_line_finish_outputs_collapsed_groups() {
+        let mut f = make_folder();
+        // Feed 5 similar lines — above min_collapse=3, so they should collapse
+        for i in 0..5 {
+            f.process_line(&format!("2024-01-01 ERROR timeout connecting to 10.0.0.{i}"))
+                .unwrap();
+        }
+        let output = f.finish().unwrap();
+        let joined = output.join("\n");
+        assert!(
+            joined.contains("similar"),
+            "collapsed output should contain 'similar', got: {joined}"
+        );
+    }
+
+    #[test]
+    fn should_flush_buffer_false_at_1000() {
+        let mut f = make_folder();
+        // Manually push 1000 groups into the buffer
+        for i in 0..1000 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("unique pattern {i}"), vec![]),
+                i + 1,
+            ));
+        }
+        assert!(
+            !f.should_flush_buffer(),
+            "should_flush_buffer should be false at exactly 1000 groups"
+        );
+    }
+
+    #[test]
+    fn should_flush_buffer_true_above_1000() {
+        let mut f = make_folder();
+        for i in 0..1001 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("unique pattern {i}"), vec![]),
+                i + 1,
+            ));
+        }
+        assert!(
+            f.should_flush_buffer(),
+            "should_flush_buffer should be true at 1001 groups"
+        );
+    }
+
+    #[test]
+    fn flush_oldest_safe_group_empty_buffer_returns_none() {
+        let mut f = make_folder();
+        let result = f.flush_oldest_safe_group().unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn flush_oldest_safe_group_flushes_old_group() {
+        let mut f = make_folder();
+        // Add a group at position 1
+        f.buffer.push(PatternGroup::new(
+            make_line("old line with 10.0.0.1", vec![Token::IPv4("10.0.0.1".into())]),
+            1,
+        ));
+        // Advance position counter well past safe_distance (100)
+        f.position_counter = 200;
+        let result = f.flush_oldest_safe_group().unwrap();
+        assert!(result.is_some(), "should flush group that is 199 lines old");
+        assert!(f.buffer.is_empty(), "buffer should be empty after flush");
+    }
+
+    #[test]
+    fn flush_oldest_safe_group_does_not_flush_recent_group() {
+        let mut f = make_folder();
+        // Add a group at position 50
+        f.buffer.push(PatternGroup::new(
+            make_line("recent line", vec![]),
+            50,
+        ));
+        // Position counter is only 60 — well within safe_distance=100
+        f.position_counter = 60;
+        let result = f.flush_oldest_safe_group().unwrap();
+        // Group has 1 line (< min_collapse=3) and is recent (10 < 100), so NOT ready
+        assert_eq!(result, None, "should not flush recent small group");
+        assert_eq!(f.buffer.len(), 1, "group should remain in buffer");
+    }
+
+    // ---------------------------------------------------------------
+    // JSON output: format_group_json, print_summary_json, format_group_dispatch
+    // ---------------------------------------------------------------
+
+    fn make_folder_json() -> PatternFolder {
+        PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            output_format: "json".to_string(),
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn format_group_json_below_min_collapse_no_stats_change() {
+        let mut f = make_folder_json();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+        ]);
+        assert_eq!(group.count(), 2); // below min_collapse=3
+        let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        assert_eq!(f.stats.collapsed_groups, 0);
+        assert_eq!(f.stats.lines_saved, 0);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["count"], 2);
+    }
+
+    #[test]
+    fn format_group_json_at_min_collapse_updates_stats() {
+        let mut f = make_folder_json();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]);
+        assert_eq!(group.count(), 3); // exactly min_collapse
+        let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        assert_eq!(f.stats.collapsed_groups, 1);
+        assert_eq!(f.stats.lines_saved, 2); // count - 1 = 3 - 1 = 2
+    }
+
+    #[test]
+    fn format_group_json_essence_mode_skips_stats() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            output_format: "json".to_string(),
+            essence_mode: true,
+            ..Config::default()
+        });
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]);
+        let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        assert_eq!(f.stats.collapsed_groups, 0, "essence_mode should skip collapsed_groups");
+        assert_eq!(f.stats.lines_saved, 0, "essence_mode should skip lines_saved");
+    }
+
+    #[test]
+    fn format_group_json_id_increments() {
+        let mut f = make_folder_json();
+        let group = make_group("line", vec![vec![]]);
+        let json0 = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        let json1 = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        let v0: serde_json::Value = serde_json::from_str(&json0).unwrap();
+        let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
+        assert_eq!(v0["id"], 0);
+        assert_eq!(v1["id"], 1);
+    }
+
+    #[test]
+    fn format_group_json_token_types_sorted() {
+        let mut f = make_folder_json();
+        // Use tokens whose type names sort alphabetically: "ipv4" < "uuid"
+        let group = make_group("error <IP> <UUID>", vec![
+            vec![Token::Uuid("aaa".into()), Token::IPv4("10.0.0.1".into())],
+        ]);
+        let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let types: Vec<&str> = v["token_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        let mut sorted = types.clone();
+        sorted.sort();
+        assert_eq!(types, sorted, "token_types should be alphabetically sorted");
+    }
+
+    #[test]
+    fn format_group_json_time_range_from_timestamps() {
+        let mut f = make_folder_json();
+        let group = make_group("error <TIMESTAMP>", vec![
+            vec![Token::Timestamp("2024-01-01T00:00:00Z".into())],
+            vec![Token::Timestamp("2024-01-01T01:00:00Z".into())],
+        ]);
+        let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["time_range"]["first_seen"].as_str().unwrap(),
+            "2024-01-01T00:00:00Z"
+        );
+        assert_eq!(
+            v["time_range"]["last_seen"].as_str().unwrap(),
+            "2024-01-01T01:00:00Z"
+        );
+    }
+
+    #[test]
+    fn format_group_json_record_type_is_group() {
+        let mut f = make_folder_json();
+        let group = make_group("line", vec![vec![]]);
+        let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "group");
+    }
+
+    #[test]
+    fn print_summary_json_zero_lines() {
+        let f = make_folder_json();
+        let mut buf = Vec::new();
+        f.print_summary_json(&mut buf, std::time::Duration::from_millis(100))
+            .unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let v: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(v["type"], "summary");
+        assert_eq!(v["compression_ratio"], 0.0);
+        assert_eq!(v["input_lines"], 0);
+    }
+
+    #[test]
+    fn print_summary_json_with_stats() {
+        let mut f = make_folder_json();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 80;
+        f.stats.output_lines = 20;
+        f.stats.collapsed_groups = 5;
+        f.stats.patterns_detected = 50;
+        f.stats.timestamps = 10;
+        f.stats.ips = 5;
+        let mut buf = Vec::new();
+        f.print_summary_json(&mut buf, std::time::Duration::from_millis(42))
+            .unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        let v: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
+        assert_eq!(v["input_lines"], 100);
+        assert_eq!(v["output_lines"], 20);
+        assert_eq!(v["collapsed_groups"], 5);
+        assert_eq!(v["lines_saved"], 80);
+        assert_eq!(v["patterns_detected"], 50);
+        assert_eq!(v["elapsed_ms"], 42);
+        // compression_ratio = 80/100 * 100 = 80.0
+        assert!((v["compression_ratio"].as_f64().unwrap() - 80.0).abs() < 0.01);
+        assert_eq!(v["pattern_hits"]["timestamps"], 10);
+        assert_eq!(v["pattern_hits"]["ips"], 5);
+    }
+
+    #[test]
+    fn print_summary_json_ends_with_newline() {
+        let f = make_folder_json();
+        let mut buf = Vec::new();
+        f.print_summary_json(&mut buf, std::time::Duration::from_millis(0))
+            .unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.ends_with('\n'), "summary JSON should end with newline");
+    }
+
+    #[test]
+    fn format_group_dispatch_text_mode() {
+        let mut f = make_folder();
+        let group = make_group("hello", vec![vec![]]);
+        let output = f.format_group_dispatch(&group).unwrap();
+        // Text mode: should NOT be valid JSON
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&output).is_err(),
+            "text mode output should not be JSON"
+        );
+    }
+
+    #[test]
+    fn format_group_dispatch_json_mode() {
+        let mut f = make_folder_json();
+        let group = make_group("hello", vec![vec![]]);
+        let output = f.format_group_dispatch(&group).unwrap();
+        // JSON mode: should be valid JSON
+        let v: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(v["type"], "group");
+    }
+
+    // ---------------------------------------------------------------
+    // Stats counters: count_pattern_types, count_active_pattern_types
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn count_pattern_types_timestamp() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Timestamp("2024-01-01".into())]);
+        assert_eq!(f.stats.timestamps, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_ip_variants() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[
+            Token::IPv4("10.0.0.1".into()),
+            Token::IPv6("::1".into()),
+            Token::Port(8080),
+        ]);
+        // IPv4 + IPv6 + Port all count as ips
+        assert_eq!(f.stats.ips, 3);
+    }
+
+    #[test]
+    fn count_pattern_types_email() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Email("a@b.com".into())]);
+        assert_eq!(f.stats.emails, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_kubernetes_variants() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[
+            Token::KubernetesNamespace("kube-system".into()),
+            Token::VolumeName("pvc-123".into()),
+            Token::PluginType("csi".into()),
+            Token::PodName("nginx-abc".into()),
+        ]);
+        assert_eq!(f.stats.kubernetes, 4);
+    }
+
+    #[test]
+    fn count_pattern_types_overloaded_bucket() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[
+            Token::Number("42".into()),
+            Token::QuotedString("hello".into()),
+            Token::Name("foo-bar".into()),
+            Token::BracketContext(vec!["ERROR".into()]),
+            Token::KeyValuePair { key: "k".into(), value_type: "string".into() },
+            Token::LogWithModule { level: "INFO".into(), module: "main".into() },
+            Token::StructuredMessage { component: "api".into(), level: "info".into() },
+        ]);
+        assert_eq!(f.stats.percentages, 7, "Number/QuotedString/Name/BracketContext/KV/Log/Structured -> percentages");
+    }
+
+    #[test]
+    fn count_pattern_types_empty_tokens() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[]);
+        // No stats should change — all still zero
+        assert_eq!(f.stats.timestamps, 0);
+        assert_eq!(f.stats.ips, 0);
+        assert_eq!(f.stats.emails, 0);
+    }
+
+    #[test]
+    fn count_active_pattern_types_all_zero() {
+        let f = make_folder();
+        assert_eq!(f.count_active_pattern_types(), 0);
+    }
+
+    #[test]
+    fn count_active_pattern_types_one_nonzero() {
+        let mut f = make_folder();
+        f.stats.timestamps = 5;
+        assert_eq!(f.count_active_pattern_types(), 1);
+    }
+
+    #[test]
+    fn count_active_pattern_types_all_nonzero() {
+        let mut f = make_folder();
+        f.stats.timestamps = 1;
+        f.stats.ips = 1;
+        f.stats.hashes = 1;
+        f.stats.uuids = 1;
+        f.stats.durations = 1;
+        f.stats.pids = 1;
+        f.stats.sizes = 1;
+        f.stats.percentages = 1;
+        f.stats.http_status = 1;
+        f.stats.paths = 1;
+        f.stats.kubernetes = 1;
+        // Note: emails is NOT counted by count_active_pattern_types
+        assert_eq!(f.count_active_pattern_types(), 11);
+    }
+
+    // ---------------------------------------------------------------
+    // Text formatting: format_group
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_below_min_collapse_outputs_all_lines() {
+        let mut f = make_folder();
+        let group = make_group("error connecting", vec![vec![], vec![]]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        // 2 lines < min_collapse=3, should output all lines individually
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn format_group_at_min_collapse_collapses() {
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        assert!(
+            output.contains("similar"),
+            "collapsed output should contain 'similar', got: {output}"
+        );
+        assert_eq!(f.stats.collapsed_groups, 1);
+    }
+
+    #[test]
+    fn format_group_single_line_no_collapse() {
+        let mut f = make_folder();
+        let group = make_group("hello", vec![vec![]]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        assert!(!output.contains("similar"));
+        assert_eq!(output, "hello");
+    }
+
+    #[test]
+    fn format_group_essence_mode_uses_normalized() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            essence_mode: true,
+            ..Config::default()
+        });
+        // In essence mode, single-line groups output normalized text
+        let group = make_group("normalized <IP>", vec![vec![Token::IPv4("10.0.0.1".into())]]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        assert_eq!(output, "normalized <IP>");
+    }
+
+    #[test]
+    fn format_group_pii_masking_masks_emails() {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize_pii: true,
+            ..Config::default()
+        });
+        // Build a group with email token where original contains the email
+        let mut line = make_line("user alice@test.com logged in", vec![Token::Email("alice@test.com".into())]);
+        line.original = "user alice@test.com logged in".to_string();
+        let group = PatternGroup::new(line, 1);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        assert!(
+            output.contains("<EMAIL>"),
+            "PII masking should replace email with <EMAIL>, got: {output}"
+        );
+        assert!(
+            !output.contains("alice@test.com"),
+            "email should be masked, got: {output}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // print_stats
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn print_stats_contains_report_header() {
+        let f = make_folder();
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("# lessence Compression Report"));
+    }
+
+    #[test]
+    fn print_stats_shows_pattern_rows_for_nonzero() {
+        let mut f = make_folder();
+        f.stats.timestamps = 10;
+        f.stats.ips = 5;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Timestamps"), "should show Timestamps row");
+        assert!(output.contains("IP Addresses"), "should show IP Addresses row");
+        // emails is 0, so should NOT appear
+        assert!(!output.contains("Email Addresses"), "should not show Email row when 0");
+    }
+
+    #[test]
+    fn print_stats_zero_lines_shows_zero_compression() {
+        let f = make_folder();
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("0.0%"), "zero lines should show 0.0% compression");
+    }
+
+    // ---------------------------------------------------------------
+    // finish_top_n
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn finish_top_n_returns_sorted_by_count() {
+        let mut f = make_folder();
+        // Group A: 5 lines
+        for _ in 0..5 {
+            f.process_line("2024-01-01 ERROR timeout from 10.0.0.1").unwrap();
+        }
+        // Group B: 2 lines
+        for _ in 0..2 {
+            f.process_line("GET /api/health HTTP/1.1 200 OK").unwrap();
+        }
+        // Group C: 1 line
+        f.process_line("unique log entry with no pattern match").unwrap();
+
+        let (top, total_groups, _coverage) = f.finish_top_n(2).unwrap();
+        assert_eq!(top.len(), 2, "should return top 2");
+        assert!(
+            top[0].0 >= top[1].0,
+            "should be sorted descending: {} >= {}",
+            top[0].0,
+            top[1].0
+        );
+        assert!(total_groups >= 2, "total_groups should count all groups");
+    }
+
+    #[test]
+    fn finish_top_n_returns_correct_total_groups() {
+        let mut f = make_folder();
+        f.process_line("line A with 10.0.0.1").unwrap();
+        f.process_line("line B with 10.0.0.2").unwrap();
+        f.process_line("line C with something else entirely different").unwrap();
+        let (_top, total_groups, _coverage) = f.finish_top_n(10).unwrap();
+        assert!(total_groups >= 1, "should have at least 1 group");
+    }
+
+    #[test]
+    fn finish_top_n_n_exceeds_groups() {
+        let mut f = make_folder();
+        f.process_line("only one line 10.0.0.1").unwrap();
+        let (top, _total, _coverage) = f.finish_top_n(100).unwrap();
+        // Should return all groups (1 or more), not crash
+        assert!(!top.is_empty());
+    }
+
+    #[test]
+    fn finish_top_n_coverage_percentage() {
+        let mut f = make_folder();
+        // 10 identical lines = 1 group covering 100%
+        for _ in 0..10 {
+            f.process_line("2024-01-01 ERROR same 10.0.0.1").unwrap();
+        }
+        let (_top, _total, coverage) = f.finish_top_n(10).unwrap();
+        assert_eq!(coverage, 100, "single group covering all lines = 100%");
+    }
+
+    // ---------------------------------------------------------------
+    // finish (drains buffer in chronological order)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn finish_drains_buffer_chronologically() {
+        let mut f = make_folder();
+        // Feed dissimilar lines to create multiple groups
+        f.process_line("2024-01-01 ERROR first unique line with 10.0.0.1").unwrap();
+        f.process_line("GET /api/v2/status HTTP/1.1 200 OK").unwrap();
+        let output = f.finish().unwrap();
+        assert!(output.len() >= 2, "should output at least 2 groups");
+        // First group in output should be the first line (chronological)
+        assert!(
+            output[0].contains("first unique"),
+            "first output should be the earliest group"
+        );
+    }
+
+    #[test]
+    fn finish_updates_output_lines() {
+        let mut f = make_folder();
+        f.process_line("a line 10.0.0.1").unwrap();
+        f.process_line("another line 10.0.0.2").unwrap();
+        let _output = f.finish().unwrap();
+        assert!(
+            f.stats.output_lines > 0,
+            "finish should update output_lines stat"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // apply_second_similarity_pass
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn second_pass_empty_buffer() {
+        let mut f = make_folder();
+        f.apply_second_similarity_pass().unwrap();
+        assert!(f.buffer.is_empty());
+    }
+
+    #[test]
+    fn second_pass_single_group() {
+        let mut f = make_folder();
+        f.buffer.push(PatternGroup::new(make_line("hello", vec![]), 1));
+        f.apply_second_similarity_pass().unwrap();
+        assert_eq!(f.buffer.len(), 1, "single group should remain unchanged");
     }
 }

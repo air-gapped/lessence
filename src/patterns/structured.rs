@@ -369,27 +369,75 @@ mod tests {
         }
     }
 
-    // TODO: Re-enable these tests when methods are implemented
-    // #[test]
-    // fn test_component_classification() {
-    //     assert!(StructuredMessageDetector::is_k8s_component("kubelet"));
-    //     assert!(StructuredMessageDetector::is_application_component("user-service"));
-    //     assert!(StructuredMessageDetector::is_microservice_component("payment-api"));
-    //     assert!(StructuredMessageDetector::is_framework_component("spring.web"));
-    //     assert!(StructuredMessageDetector::is_infrastructure_component("nginx"));
-    // }
+    // --- Component classification (private helpers) ---
 
-    // #[test]
-    // fn test_structured_log_validation() {
-    //     assert!(StructuredMessageDetector::is_valid_structured_log("api-gateway", "info"));
-    //     assert!(StructuredMessageDetector::is_valid_structured_log("kubelet", "error"));
-    //     assert!(StructuredMessageDetector::is_valid_structured_log("payment-service", "warn"));
+    #[test]
+    fn test_microservice_component() {
+        assert!(StructuredMessageDetector::is_microservice_component("payment-api"));
+        assert!(StructuredMessageDetector::is_microservice_component("user-service"));
+        assert!(!StructuredMessageDetector::is_microservice_component("random-thing"));
+    }
 
-    //     // Invalid cases
-    //     assert!(!StructuredMessageDetector::is_valid_structured_log("api-gateway", "invalid"));
-    //     assert!(!StructuredMessageDetector::is_valid_structured_log("123", "info"));
-    //     assert!(!StructuredMessageDetector::is_valid_structured_log("", "info"));
-    // }
+    #[test]
+    fn test_infrastructure_component() {
+        assert!(StructuredMessageDetector::is_infrastructure_component("nginx"));
+        assert!(StructuredMessageDetector::is_infrastructure_component("redis-cache"));
+        assert!(!StructuredMessageDetector::is_infrastructure_component("my-app"));
+    }
+
+    #[test]
+    fn test_framework_component() {
+        assert!(StructuredMessageDetector::is_framework_component("spring.web"));
+        assert!(StructuredMessageDetector::is_framework_component("com.example.App"));
+        assert!(!StructuredMessageDetector::is_framework_component("my-app"));
+    }
+
+    // --- Structured log validation ---
+
+    #[test]
+    fn test_valid_structured_log() {
+        assert!(StructuredMessageDetector::is_valid_structured_log("api-gateway", "info"));
+        assert!(StructuredMessageDetector::is_valid_structured_log("payment-service", "error"));
+    }
+
+    #[test]
+    fn test_invalid_structured_log_bad_level() {
+        assert!(!StructuredMessageDetector::is_valid_structured_log("api-gateway", "invalid"));
+    }
+
+    #[test]
+    fn test_invalid_structured_log_all_digits() {
+        assert!(!StructuredMessageDetector::is_valid_structured_log("123", "info"));
+    }
+
+    // --- has_kubernetes_indicators ---
+
+    #[test]
+    fn test_k8s_indicators_present() {
+        assert!(StructuredMessageDetector::has_kubernetes_indicators("kubernetes.io/foo"));
+        assert!(StructuredMessageDetector::has_kubernetes_indicators("kube-system component"));
+    }
+
+    #[test]
+    fn test_k8s_indicators_absent() {
+        assert!(!StructuredMessageDetector::has_kubernetes_indicators("just plain text"));
+    }
+
+    // --- has_structured_indicators ---
+
+    #[test]
+    fn test_structured_indicators_json() {
+        assert!(StructuredMessageDetector::has_structured_indicators(
+            r#"{"level":"info","component":"app"}"#
+        ));
+    }
+
+    #[test]
+    fn test_structured_indicators_logfmt() {
+        assert!(StructuredMessageDetector::has_structured_indicators(
+            "level=info component=app"
+        ));
+    }
 
     #[test]
     fn test_no_false_positives() {

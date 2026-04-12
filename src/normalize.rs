@@ -689,6 +689,103 @@ mod tests {
         );
     }
 
+    // --- similarity_score edge cases for uncaught mutants ---
+
+    #[test]
+    fn test_similarity_score_empty_vs_nonempty() {
+        // Kills mutant: max_len == 0 → max_len != 0
+        // With one empty and one non-empty, max_len > 0, min_len = 0
+        // length_ratio = 0/5 = 0.0 < 0.7 → returns 0.0
+        let normalizer = Normalizer::new(Config::default());
+        let empty = LogLine {
+            original: String::new(),
+            normalized: String::new(),
+            tokens: vec![],
+            hash: 0,
+        };
+        let nonempty = LogLine {
+            original: "hello".into(),
+            normalized: "hello".into(),
+            tokens: vec![],
+            hash: 1,
+        };
+        let score = normalizer.similarity_score(&empty, &nonempty);
+        assert!(
+            score < 1.0,
+            "empty vs non-empty should score near 0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_min_max_not_swapped() {
+        // Kills mutant: min_len ↔ max_len swap in length_ratio calculation
+        // len1=3, len2=10: ratio should be 3/10=0.3, NOT 10/3=3.33
+        let normalizer = Normalizer::new(Config::default());
+        let short = LogLine {
+            original: "abc".into(),
+            normalized: "abc".into(),
+            tokens: vec![],
+            hash: 0,
+        };
+        let long = LogLine {
+            original: "abcdefghij".into(),
+            normalized: "abcdefghij".into(),
+            tokens: vec![],
+            hash: 1,
+        };
+        let score = normalizer.similarity_score(&short, &long);
+        // ratio = 3/10 = 0.3 < 0.7 → returns 0.3 * 100 = 30.0
+        assert!(
+            (score - 30.0).abs() < f64::EPSILON,
+            "3/10 ratio should give 30.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_division_direction() {
+        // Kills mutant: `/ max_len` → `* max_len` or `+ max_len` in line 234
+        // 5 chars match out of 10 max → 5/10 * 100 = 50.0 (not 5*10*100)
+        let normalizer = Normalizer::new(Config::default());
+        let a = LogLine {
+            original: "abcdeXXXXX".into(),
+            normalized: "abcdeXXXXX".into(),
+            tokens: vec![],
+            hash: 0,
+        };
+        let b = LogLine {
+            original: "abcdeYYYYY".into(),
+            normalized: "abcdeYYYYY".into(),
+            tokens: vec![],
+            hash: 1,
+        };
+        let score = normalizer.similarity_score(&a, &b);
+        assert!(
+            (score - 50.0).abs() < f64::EPSILON,
+            "5/10 matching chars should give 50.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_are_similar_hash_shortcircuit() {
+        let normalizer = Normalizer::new(Config::default());
+        let a = LogLine {
+            original: "completely different".into(),
+            normalized: "completely different".into(),
+            tokens: vec![],
+            hash: 42,
+        };
+        let b = LogLine {
+            original: "not similar at all really".into(),
+            normalized: "not similar at all really".into(),
+            tokens: vec![],
+            hash: 42, // same hash = shortcircuit to true
+        };
+        assert!(
+            normalizer.are_similar(&a, &b),
+            "same hash should shortcircuit to similar"
+        );
+    }
+
     // --- summarize_variation_types direct tests (mutant kills) ---
 
     #[test]

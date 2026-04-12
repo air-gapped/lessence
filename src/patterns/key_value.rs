@@ -408,6 +408,51 @@ mod tests {
         );
     }
 
+    // --- classify_value_type edge cases ---
+
+    #[test]
+    fn classify_duration_single_digit_s() {
+        assert_eq!(KeyValueDetector::classify_value_type("5s"), "duration");
+    }
+
+    #[test]
+    fn classify_boolean_off() {
+        assert_eq!(KeyValueDetector::classify_value_type("off"), "boolean");
+    }
+
+    #[test]
+    fn classify_number_decimal() {
+        assert_eq!(KeyValueDetector::classify_value_type("10.5"), "number");
+    }
+
+    #[test]
+    fn classify_empty_is_number() {
+        // Empty string: chars().all(digit_or_dot) is vacuously true → "number"
+        assert_eq!(KeyValueDetector::classify_value_type(""), "number");
+    }
+
+    #[test]
+    fn classify_rate() {
+        assert_eq!(KeyValueDetector::classify_value_type("100rps"), "rate");
+    }
+
+    // --- has_key_value_indicators ---
+
+    #[test]
+    fn kv_indicators_equals() {
+        assert!(KeyValueDetector::has_key_value_indicators("key=value"));
+    }
+
+    #[test]
+    fn kv_indicators_no_equals_or_colon() {
+        assert!(!KeyValueDetector::has_key_value_indicators("no kv here"));
+    }
+
+    #[test]
+    fn kv_indicators_url_excluded() {
+        assert!(!KeyValueDetector::has_key_value_indicators("visit https://example.com"));
+    }
+
     #[test]
     fn test_no_false_positives() {
         let non_kv_cases = vec![

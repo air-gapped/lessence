@@ -330,6 +330,45 @@ mod tests {
         }
     }
 
+    // --- is_likely_file_path ---
+
+    #[test]
+    fn file_path_short_rejected() {
+        assert!(!PathDetector::is_likely_file_path("/a"));
+    }
+
+    #[test]
+    fn file_path_no_leading_slash_rejected() {
+        assert!(!PathDetector::is_likely_file_path("var/log"));
+    }
+
+    #[test]
+    fn file_path_common_dir() {
+        assert!(PathDetector::is_likely_file_path("/var/log"));
+    }
+
+    #[test]
+    fn file_path_with_extension() {
+        assert!(PathDetector::is_likely_file_path("/app/main.rs"));
+    }
+
+    // --- is_likely_url_path ---
+
+    #[test]
+    fn url_path_api_pattern() {
+        assert!(PathDetector::is_likely_url_path("/api/v1/users"));
+    }
+
+    #[test]
+    fn url_path_too_short() {
+        assert!(!PathDetector::is_likely_url_path("/"));
+    }
+
+    #[test]
+    fn url_path_query_params() {
+        assert!(PathDetector::is_likely_url_path("/search?q=test"));
+    }
+
     #[test]
     fn test_path_normalization() {
         let test_cases = vec![

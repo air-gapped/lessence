@@ -298,4 +298,37 @@ mod tests {
         assert!(result2.contains(r#"plugin type="<PLUGIN>""#));
         assert!(tokens2.iter().any(|t| matches!(t, Token::PluginType(_))));
     }
+
+    #[test]
+    fn test_pod_name_in_namespace_slash_format() {
+        // The existing test uses "pod namespace/name" format which is what the regex matches
+        let text = "Error preparing data for pod kube-system/nginx-abc123: failed";
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::KubernetesNamespace(_) | Token::PodName(_))),
+            "should detect namespace or pod, got tokens: {tokens:?}"
+        );
+        assert!(
+            result.contains("<NAMESPACE>") || result.contains("<POD>"),
+            "should normalize namespace/pod, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_volume_name_kube_api_access() {
+        let text = "volume \"kube-api-access-def456\" (projected) failed to mount for pod kube-system/test-pod";
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        assert!(
+            !tokens.is_empty(),
+            "should detect k8s patterns, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_no_detection_without_k8s_indicators() {
+        let text = "just a plain log line with nothing kubernetes about it";
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        assert!(tokens.is_empty(), "should detect nothing k8s");
+        assert_eq!(result, text);
+    }
 }
