@@ -1669,6 +1669,83 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
+    // apply_pii_masking
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn pii_masking_no_emails() {
+        let result = apply_pii_masking("no emails here", &[]);
+        assert_eq!(result, "no emails here");
+    }
+
+    #[test]
+    fn pii_masking_single_email() {
+        let tokens = vec![Token::Email("alice@co.com".into())];
+        let result = apply_pii_masking("User alice@co.com logged in", &tokens);
+        assert_eq!(result, "User <EMAIL> logged in");
+    }
+
+    #[test]
+    fn pii_masking_duplicate_email_in_line() {
+        // Kills mutant: `start + pos` → `start * pos` (line 39).
+        // Second occurrence requires non-zero `start` for correct indexing.
+        let tokens = vec![Token::Email("bob@x.com".into())];
+        let result = apply_pii_masking("from bob@x.com to bob@x.com", &tokens);
+        assert_eq!(result, "from <EMAIL> to <EMAIL>");
+    }
+
+    #[test]
+    fn pii_masking_multiple_different_emails() {
+        let tokens = vec![
+            Token::Email("a@b.com".into()),
+            Token::Email("c@d.com".into()),
+        ];
+        let result = apply_pii_masking("a@b.com and c@d.com", &tokens);
+        assert_eq!(result, "<EMAIL> and <EMAIL>");
+    }
+
+    #[test]
+    fn pii_masking_non_email_tokens_ignored() {
+        let tokens = vec![
+            Token::IPv4("10.0.0.1".into()),
+            Token::Email("x@y.com".into()),
+        ];
+        let result = apply_pii_masking("10.0.0.1 x@y.com", &tokens);
+        assert_eq!(result, "10.0.0.1 <EMAIL>");
+    }
+
+    // ---------------------------------------------------------------
+    // first_timestamp_in
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn first_timestamp_no_tokens() {
+        assert_eq!(first_timestamp_in(&[]), None);
+    }
+
+    #[test]
+    fn first_timestamp_no_timestamps() {
+        let tokens = vec![Token::IPv4("1.2.3.4".into()), Token::Pid(42)];
+        assert_eq!(first_timestamp_in(&tokens), None);
+    }
+
+    #[test]
+    fn first_timestamp_single() {
+        let tokens = vec![Token::Timestamp("10:00:00".into())];
+        assert_eq!(first_timestamp_in(&tokens), Some("10:00:00".into()));
+    }
+
+    #[test]
+    fn first_timestamp_multiple_returns_first() {
+        let tokens = vec![
+            Token::IPv4("1.2.3.4".into()),
+            Token::Timestamp("10:00:00".into()),
+            Token::Timestamp("11:00:00".into()),
+        ];
+        assert_eq!(first_timestamp_in(&tokens), Some("10:00:00".into()));
+    }
+
+    // ---------------------------------------------------------------
     // Existing folding tests
     // ---------------------------------------------------------------
 
