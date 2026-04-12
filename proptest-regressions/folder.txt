@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc a875db32b3922f5808fab26a2dca51e11bb1343cebb8c38468cd4b6955660400 # shrinks to group = PatternGroup { lines: [LogLine { original: " aa a", normalized: " aa a", tokens: [Timestamp("a")], hash: 0 }], collapsed: false, position: 1, first_line_no: 1, last_line_no: 1 }

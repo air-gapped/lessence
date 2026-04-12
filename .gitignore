@@ -13,3 +13,4 @@ examples/
 *.rs.bk
 *.rlib
 *.prof*
+proptest-regressions/
