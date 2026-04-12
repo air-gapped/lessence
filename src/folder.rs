@@ -439,6 +439,90 @@ fn seed_for_group(normalized: &str) -> u64 {
     h
 }
 
+/// Render the text-mode compact marker for a collapsed group, using
+/// the rollup metadata computed at flush time.
+///
+/// Output shape:
+///   `[+N similar | first_ts → last_ts | TYPE×count {s1, s2}, TYPE×count]`
+///
+/// - The word `similar` is kept for backwards compatibility with the
+///   existing test suite (many tests grep for it).
+/// - The time-range segment is only included when both `first_ts` and
+///   `last_ts` are present (they come from the first `Token::Timestamp`
+///   in the respective line's tokens). In essence mode, timestamps are
+///   omitted even when present.
+/// - Variation entries render with samples inline when
+///   `distinct_count <= inline_threshold` and the entry is not capped,
+///   else count-only (with a trailing `+` for capped entries).
+/// - If the rollup is empty (either because the group was too small to
+///   compute, or because none of its token types varied), falls back to
+///   the minimal `[+N similar]` form. This keeps text output coherent
+///   when the Phase 3 min_collapse guard skips rollup computation.
+fn render_compact_marker(
+    count: usize,
+    rollup: &GroupRollup,
+    first_ts: Option<&str>,
+    last_ts: Option<&str>,
+    inline_threshold: usize,
+    essence_mode: bool,
+) -> String {
+    let mut out = format!("[+{count} similar");
+
+    // Time range segment. Keep raw strings — the plan deliberately
+    // avoided timestamp parsing (see design doc §Why flush-time).
+    if !essence_mode {
+        if let (Some(a), Some(b)) = (first_ts, last_ts) {
+            out.push_str(" | ");
+            out.push_str(a);
+            out.push_str(" → ");
+            out.push_str(b);
+        }
+    }
+
+    // Variation segment. Skip count-only types from the inline render —
+    // "TIMESTAMP×1000" noise would dominate the marker with no
+    // information payoff. Sample-worthy types always get rendered.
+    let worthy: Vec<(&&'static str, &VariationEntry)> = rollup
+        .iter()
+        .filter(|(_, entry)| !entry.samples.is_empty() || entry.distinct_count <= inline_threshold)
+        .filter(|(_, entry)| entry.distinct_count > 0)
+        .collect();
+
+    if !worthy.is_empty() {
+        out.push_str(" | ");
+        let mut first = true;
+        for (name, entry) in &worthy {
+            if !first {
+                out.push_str(", ");
+            }
+            first = false;
+            // Text-mode convention is lowercase token type names (matches
+            // the existing `summarize_variation_types` output in
+            // `normalize.rs` that integration tests assert against).
+            // JSON mode keeps UPPERCASE keys in the `variation` map
+            // — the two conventions are deliberately different.
+            out.push_str(&name.to_lowercase());
+            out.push('×');
+            out.push_str(&entry.distinct_count.to_string());
+            if entry.capped {
+                out.push('+');
+            }
+            // Inline samples when the full distinct set fits.
+            if entry.distinct_count <= inline_threshold
+                && !entry.capped
+                && !entry.samples.is_empty()
+            {
+                out.push_str(" {");
+                out.push_str(&entry.samples.join(", "));
+                out.push('}');
+            }
+        }
+    }
+
+    out.push(']');
+    out
+}
+
 /// Intermediate accumulator for one (group, token_type) pair during
 /// rollup computation. Sample-worthy types retain strings; count-only
 /// types retain u64 hashes. Both cap at `distinct_cap`.
@@ -602,9 +686,9 @@ impl PatternFolder {
     /// Rollup metadata is computed unconditionally here — regardless of
     /// output format — so that the perf gate applies uniformly to both
     /// text and JSON modes. This is the single insertion point for the
-    /// feature's flush-time cost. In Phase 3, text mode (`format_group`)
-    /// discards the rollup after paying the compute cost; Phase 4 wires
-    /// it into the text compact marker.
+    /// feature's flush-time cost. Text mode (Phase 4) renders a richer
+    /// compact marker from the rollup; JSON mode (Phase 3) serialises
+    /// the rollup as the `variation` field.
     ///
     /// Groups smaller than `min_collapse` skip the rollup entirely —
     /// there's no useful variation summary to report for a group of one
@@ -622,10 +706,7 @@ impl PatternFolder {
         if self.is_json_output() {
             self.format_group_json(group, rollup)
         } else {
-            // Text mode in Phase 3: rollup is computed but not consumed.
-            // Phase 4 replaces this drop with the compact-marker render.
-            let _ = rollup;
-            self.format_group(group)
+            self.format_group(group, &rollup)
         }
     }
 
@@ -1111,16 +1192,35 @@ impl PatternFolder {
         }
     }
 
-    fn format_group(&mut self, group: &PatternGroup) -> Result<String> {
+    fn format_group(&mut self, group: &PatternGroup, rollup: &GroupRollup) -> Result<String> {
         if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
             self.stats.collapsed_groups += 1;
             self.stats.lines_saved += group.count() - 3; // First, summary, and last lines are output
 
-            let collapsed_line = self.normalizer.format_collapsed_line(
-                group.first(),
-                group.last(),
-                group.count() - 2, // Don't count first and last in collapse count
-            );
+            // Phase 4: when the rollup has any worthwhile content, render
+            // the richer compact marker directly. Otherwise fall through
+            // to the legacy `format_collapsed_line` path — this applies
+            // to small groups whose rollup was skipped (see
+            // `format_group_dispatch`), keeping behaviour unchanged for
+            // that code path.
+            let collapsed_line = if !rollup.is_empty() {
+                let first_ts = first_timestamp_in(&group.first().tokens);
+                let last_ts = first_timestamp_in(&group.last().tokens);
+                render_compact_marker(
+                    group.count() - 2,
+                    rollup,
+                    first_ts.as_deref(),
+                    last_ts.as_deref(),
+                    PLACEHOLDER_TEXT_SAMPLE_THRESHOLD,
+                    self.config.essence_mode,
+                )
+            } else {
+                self.normalizer.format_collapsed_line(
+                    group.first(),
+                    group.last(),
+                    group.count() - 2, // Don't count first and last in collapse count
+                )
+            };
 
             // Format output: first line, collapsed summary, last line
             let mut result = String::new();

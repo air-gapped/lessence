@@ -4,6 +4,6 @@ assertion_line: 35
 expression: stdout
 ---
 ERROR connection refused to 10.0.0.1:8080
-[+2 similar, varying: IP]
+[+2 similar | ipv4×4, port×1]
 ERROR connection refused to 10.0.0.4:8080
 INFO startup complete

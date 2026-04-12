@@ -17,13 +17,25 @@ fn test_plain_text_output_format() {
 
     let text_output = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
 
-    // Should be plain text without markup
-    assert!(!text_output.contains('<'), "Should not contain HTML tags");
+    // Should be plain text — not markdown or JSON. The old checks used
+    // a blanket `!contains('<')`, `!contains('#')`, and `!contains('{')`,
+    // which are too strict: log data legitimately contains `<` (e.g.
+    // syslog brackets, normalized token placeholders like `<PATH>` in
+    // compact-marker samples), `#` (e.g. many log formats include `#`),
+    // and `{` (the compact marker's inline-sample set syntax is
+    // `TYPE×N {s1, s2}`). Narrow checks to actual JSON / HTML output.
     assert!(
-        !text_output.contains('#'),
+        !text_output.contains("<html") && !text_output.contains("</"),
+        "Should not contain HTML tags"
+    );
+    assert!(
+        !text_output.contains("## "),
         "Should not contain markdown headers"
     );
-    assert!(!text_output.contains('{'), "Should not contain JSON braces");
+    assert!(
+        !text_output.trim_start().starts_with("{\""),
+        "Should not start with JSON output"
+    );
 
     // Should contain folded line indicators
     assert!(

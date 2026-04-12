@@ -4,8 +4,8 @@ assertion_line: 48
 expression: stdout
 ---
 [10x] ERROR connection refused to 10.0.0.0:8080
-[+8 similar, varying: IP]
+[+8 similar | ipv4×10, port×1]
 ERROR connection refused to 10.0.0.9:8080
 [5x] WARN timeout after 30s
-[+3 similar]
+[+3 similar | duration×1]
 WARN timeout after 30s
