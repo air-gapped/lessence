@@ -1,5 +1,7 @@
 target/
 mutants.out*/
+fuzz/artifacts/
+fuzz/corpus/
 examples/
 .blocklist
 .ideas/
