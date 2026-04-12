@@ -2,7 +2,7 @@
 # Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
 .PHONY: ci fmt clippy doc build test deny check install setup clean help \
-       coverage fuzz fuzz-fold mutants check-fuzz-prereqs check-mutants-prereqs
+       coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -77,24 +77,51 @@ fuzz: check-fuzz-prereqs
 fuzz-fold: check-fuzz-prereqs
 	nice -n 19 cargo +nightly fuzz run fuzz_fold -- -max_total_time=$(FUZZ_TIME) -jobs=$(FUZZ_WORKERS) -workers=$(FUZZ_WORKERS)
 
-MUTANTS_JOBS ?= 1
 MUTANTS_MEM_MAX ?= 32G
-# Timeout = baseline × multiplier. Default 5x means a 16s baseline gives
-# 80s per mutant. Most mutants are caught in <2s; infinite loops die at
-# ~80s. No hardcoded --timeout — let it auto-calculate from the baseline.
 MUTANTS_TIMEOUT_MULT ?= 3
 MUTANTS_RUN := systemd-run --scope -p MemoryMax=$(MUTANTS_MEM_MAX) nice -n 19
-# Reduce proptest cases during mutation testing (256 default → 32).
-# 32 random cases still catch >99% of bugs; 8x less work per mutant.
 MUTANTS_ENV := PROPTEST_CASES=32 PROPTEST_MAX_SHRINK_ITERS=100
+MUTANTS_FILES := -f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs'
 
-## mutants: Mutation testing on core modules (local only)
+# ── Mutation testing targets ──────────────────────────────────────────
+#
+#   make mutants        Fast default. Builds & runs only unit tests.
+#                       ~0.7s per mutant ≈ 12 min for ~1,000 mutants.
+#                       Unit tests catch >99% of mutants.
+#
+#   make mutants-full   Thorough. Builds & runs ALL tests including
+#                       integration (subprocess) tests.
+#                       ~2.3s per mutant ≈ 38 min for ~1,000 mutants.
+#                       Use before releases to verify nothing slips
+#                       through that unit tests miss.
+#
+# Both targets:
+#   - Use [profile.mutants] (opt-level=1, debug=none) for fast builds
+#   - Reduce proptest from 256 → 32 cases (PROPTEST_CASES)
+#   - Run at low priority (nice) under memory limit (systemd-run)
+#   - Cap lints to skip warning checks on mutated code
+#
+# How it works: cargo-mutants changes one operator at a time in the
+# source, rebuilds, runs tests, checks if any test fails. If no test
+# fails, the mutant "survived" — meaning your tests have a gap.
+#
+# -C --lib tells cargo to only compile and run the #[test] functions
+# inside src/ (the library). Without it, cargo also compiles and links
+# 5 extra test binaries from tests/ — adding ~1.5s per mutant for
+# integration tests that rarely catch anything unit tests miss.
+# ──────────────────────────────────────────────────────────────────────
+
+## mutants: Mutation testing — fast, unit tests only (~12 min)
 mutants: check-mutants-prereqs
-	$(MUTANTS_RUN) env $(MUTANTS_ENV) cargo mutants --in-place --timeout-multiplier $(MUTANTS_TIMEOUT_MULT) -f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs'
+	$(MUTANTS_RUN) env $(MUTANTS_ENV) cargo mutants --in-place \
+		--timeout-multiplier $(MUTANTS_TIMEOUT_MULT) \
+		$(MUTANTS_FILES) -C --lib
 
-## mutants-quick: Mutation testing, unit tests only (local only, ~40 min)
-mutants-quick: check-mutants-prereqs
-	$(MUTANTS_RUN) env $(MUTANTS_ENV) cargo mutants --in-place --timeout-multiplier $(MUTANTS_TIMEOUT_MULT) -f src/folder.rs -f src/normalize.rs -- --lib
+## mutants-full: Mutation testing — thorough, all tests (~38 min)
+mutants-full: check-mutants-prereqs
+	$(MUTANTS_RUN) env $(MUTANTS_ENV) cargo mutants --in-place \
+		--timeout-multiplier $(MUTANTS_TIMEOUT_MULT) \
+		$(MUTANTS_FILES)
 
 #---------------------------------------------------------------------------
 # Install
@@ -130,12 +157,13 @@ clean:
 help:
 	@echo "lessence Development Commands"
 	@echo ""
-	@echo "  make ci        — Run full CI pipeline (same as GitHub Actions)"
-	@echo "  make check     — Quick pre-push validation (fmt + clippy + deny)"
-	@echo "  make coverage   — HTML code coverage report (unit tests)"
-	@echo "  make fuzz      — Fuzz normalizer (nightly, local only, 5 min)"
-	@echo "  make mutants   — Mutation testing on core modules (local only)"
-	@echo "  make setup     — Install required dev tools"
-	@echo "  make install   — Build and install to PATH"
+	@echo "  make ci            — Run full CI pipeline (same as GitHub Actions)"
+	@echo "  make check         — Quick pre-push validation (fmt + clippy + deny)"
+	@echo "  make coverage      — HTML code coverage report (unit tests)"
+	@echo "  make fuzz          — Fuzz normalizer (nightly, local only, 5 min)"
+	@echo "  make mutants       — Mutation testing, unit tests only (~12 min)"
+	@echo "  make mutants-full  — Mutation testing, all tests (~38 min)"
+	@echo "  make setup         — Install required dev tools"
+	@echo "  make install       — Build and install to PATH"
 	@echo ""
 	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed 's/^/ /'

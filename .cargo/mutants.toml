@@ -2,3 +2,6 @@
 # Uses the custom [profile.mutants] from Cargo.toml:
 # opt-level=1 for faster test execution, debug="none" for faster builds.
 profile = "mutants"
+
+# Skip lint checking — mutated code triggers warnings that waste time.
+cap_lints = true
