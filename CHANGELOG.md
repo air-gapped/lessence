@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.4.0](https://github.com/air-gapped/lessence/compare/v0.3.1...v0.4.0) (2026-04-12)
+
+
+### Features
+
+* **folder:** compute per-group rollup metadata at flush time ([b6b235d](https://github.com/air-gapped/lessence/commit/b6b235db12a68cd72caf797eb3ae3443144aef43))
+* **folder:** enrich text-mode compact marker with time range and rollups ([0d019ff](https://github.com/air-gapped/lessence/commit/0d019ff77e019d0c2eee9b5ce6f73326b8f13317))
+* **folder:** retire rollup placeholders with corpus-calibrated values ([a896ae5](https://github.com/air-gapped/lessence/commit/a896ae52b6cb1818d33cb91244a316ff00e3f8cd))
+* **format:** add --format json emitting JSONL with group and summary records ([cac1a8b](https://github.com/air-gapped/lessence/commit/cac1a8bea4790861e7ecf46e7eed3dc86a8f82eb))
+
+
+### Bug Fixes
+
+* pass crates.io OIDC token to cargo publish via env var ([0bfda2a](https://github.com/air-gapped/lessence/commit/0bfda2a0377cf52eaa6ad7f09e795e6f6e67054e))
+* pass crates.io token explicitly to cargo publish ([2552e67](https://github.com/air-gapped/lessence/commit/2552e6727af62ac7921d3657877708bd7778d6e4))
+
+
+### Reverts
+
+* restore original cargo publish pattern without --token ([08fffe7](https://github.com/air-gapped/lessence/commit/08fffe7ed5265a71cf64cc57165049d83dfedfc2))
+
 ## [0.3.1](https://github.com/air-gapped/lessence/compare/v0.3.0...v0.3.1) (2026-04-05)
 
 
