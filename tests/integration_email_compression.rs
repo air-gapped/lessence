@@ -1,6 +1,37 @@
 use std::io::Write;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use tempfile::NamedTempFile;
+
+/// Helper: run lessence with --no-stats on a temp file via stdin.
+fn run_lessence_file(temp_file: &NamedTempFile) -> String {
+    let file = std::fs::File::open(temp_file.path()).expect("Failed to open temp file");
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .arg("--no-stats")
+        .stdin(file)
+        .output()
+        .expect("Failed to execute lessence");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+/// Helper: run lessence with args, piping input string via stdin.
+fn run_lessence_stdin(args: &[&str], input: &str) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn lessence");
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child
+        .wait_with_output()
+        .expect("Failed to wait for lessence");
+    String::from_utf8(output.stdout).unwrap()
+}
 
 /// Test basic email detection and folding
 #[test]
@@ -22,16 +53,7 @@ fn test_basic_email_detection() {
     )
     .unwrap();
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "./target/release/lessence --no-stats < {}",
-            temp_file.path().display()
-        ))
-        .output()
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_file(&temp_file);
 
     // Should fold similar lines with different emails
     assert!(
@@ -73,16 +95,7 @@ fn test_email_with_mixed_patterns() {
     )
     .unwrap();
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg(format!(
-            "./target/release/lessence --no-stats < {}",
-            temp_file.path().display()
-        ))
-        .output()
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_file(&temp_file);
 
     // Should fold all lines into a single pattern with multiple varying types
     assert!(
@@ -109,25 +122,7 @@ fn test_email_pattern_disabled() {
                  2025-09-26T10:15:01Z User bob@company.com successfully authenticated\n\
                  2025-09-26T10:15:02Z User charlie@company.com successfully authenticated\n";
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("./target/release/lessence --disable-patterns email --no-stats")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_stdin(&["--disable-patterns", "email", "--no-stats"], input);
 
     // With email patterns disabled, timestamps still get normalized so lines may fold.
     // The key check is that original email addresses are preserved in the output.
@@ -145,25 +140,7 @@ fn test_email_validation_no_false_positives() {
                  2025-09-26T10:15:02Z Error: multiple @ symbols in user@@domain.com\n\
                  2025-09-26T10:15:03Z Valid email: support@company.com processed\n";
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("./target/release/lessence --no-stats")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_stdin(&["--no-stats"], input);
 
     // The "userexample.com" string (no @ sign) should remain intact
     assert!(
@@ -187,25 +164,7 @@ fn test_email_url_pattern_order() {
                  2025-09-26T10:15:01Z Visit https://company.com/contact?email=info@company.com\n\
                  2025-09-26T10:15:02Z Send to: feedback@company.com or call support\n";
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("./target/release/lessence --no-stats")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_stdin(&["--no-stats"], input);
 
     // Lines have similar structure (all have email-like patterns and timestamps)
     // so folding is expected. Just verify the output is valid and compressed.
@@ -238,32 +197,14 @@ fn test_email_performance_impact() {
     }
 
     let start = std::time::Instant::now();
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("./target/release/lessence --no-stats")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .expect("Failed to execute lessence");
+    let stdout = run_lessence_stdin(&["--no-stats"], &input);
     let duration = start.elapsed();
 
-    assert!(output.status.success(), "Command should succeed");
     assert!(
         duration.as_secs() < 10,
         "Should complete within 10 seconds for 2000 lines"
     );
 
-    let stdout = String::from_utf8(output.stdout).unwrap();
     let output_lines: Vec<&str> = stdout.lines().collect();
 
     // Should achieve significant compression
@@ -281,25 +222,7 @@ fn test_complex_email_formats() {
                  User test_user@sub.domain.com logged in\n\
                  User user123@domain123.net logged in\n";
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("./target/release/lessence --no-stats")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_stdin(&["--no-stats"], input);
 
     // Should fold similar lines with different complex emails
     assert!(stdout.contains("similar"), "Should contain folded output");
@@ -317,25 +240,7 @@ fn test_integration_with_existing_patterns() {
                  2025-09-26T10:15:01.124Z [INFO] User bob@company.com authenticated from 192.168.1.101 with session def456ghi789\n\
                  2025-09-26T10:15:02.125Z [INFO] User charlie@company.com authenticated from 192.168.1.102 with session ghi789jkl012\n";
 
-    let output = Command::new("sh")
-        .arg("-c")
-        .arg("./target/release/lessence --no-stats")
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(input.as_bytes())
-                .unwrap();
-            child.wait_with_output()
-        })
-        .expect("Failed to execute lessence");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = run_lessence_stdin(&["--no-stats"], input);
 
     // Should fold all lines together since they have the same pattern
     // with varying timestamp, email, IP, and hash

@@ -5,7 +5,7 @@ fn test_version_shows_lessence_name() {
     // T007: CLI contract test for version display
     // Verifies that version output contains lessence name
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--version")
         .output()
         .expect("lessence binary should exist");
@@ -33,7 +33,7 @@ fn test_version_shows_lessence_name() {
 #[test]
 fn test_version_format() {
     // Verify version follows semantic versioning
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--version")
         .output()
         .expect("lessence binary should exist");
@@ -51,7 +51,7 @@ fn test_version_format() {
 #[test]
 fn test_version_short_flag() {
     // Test -V short flag works
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("-V")
         .output()
         .expect("lessence binary should exist");

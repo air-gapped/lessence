@@ -4,7 +4,7 @@ use std::str;
 #[test]
 fn test_markdown_output_format() {
     // Test that --format markdown produces valid markdown
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--format", "markdown", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -51,7 +51,7 @@ fn test_markdown_output_format() {
 #[test]
 fn test_markdown_readability_features() {
     // Test readability features specific to markdown
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--format", "markdown", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")

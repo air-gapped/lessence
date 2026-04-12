@@ -8,15 +8,7 @@ use std::str;
 
 /// Run lessence on a fixture and return stdout as a string.
 fn run_lessence_json(fixture: &str) -> String {
-    // Build once per test invocation. `cargo build --release` is a no-op
-    // when already built, so the overhead is minimal.
-    let build = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("failed to run cargo build");
-    assert!(build.status.success(), "cargo build failed");
-
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--format", "json", "--threads", "1", fixture])
         .output()
         .expect("failed to run lessence");

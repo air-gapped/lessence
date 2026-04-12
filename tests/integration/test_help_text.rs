@@ -5,7 +5,7 @@ fn test_help_text_contains_lessence_branding() {
     // T006: CLI contract test for help text branding
     // Verifies that help text contains proper lessence branding
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--help")
         .output()
         .expect("lessence binary should exist");
@@ -33,7 +33,7 @@ fn test_help_text_contains_lessence_branding() {
 #[test]
 fn test_help_text_contains_seo_description() {
     // Verify SEO-optimized description appears in help
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--help")
         .output()
         .expect("lessence binary should exist");
@@ -56,7 +56,7 @@ fn test_help_text_contains_seo_description() {
 #[test]
 fn test_help_text_structure() {
     // Verify help text has proper structure
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--help")
         .output()
         .expect("lessence binary should exist");

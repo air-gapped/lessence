@@ -23,7 +23,7 @@ fn test_constitutional_compliance_kubelet() {
         return;
     };
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--no-stats"])
         .stdin(file)
         .output()
@@ -95,7 +95,7 @@ fn test_processing_speed_requirement() {
 
     let start = Instant::now();
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--no-stats"])
         .stdin(file)
         .output()

@@ -15,7 +15,7 @@ fn test_microservices_compression_improvement() {
     );
 
     // Test compression on microservices.log
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/microservices.log")
@@ -54,7 +54,7 @@ fn test_microservices_baseline_without_new_patterns() {
     // This test documents the baseline before new patterns
     // Used for comparison to validate improvement
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/microservices.log")

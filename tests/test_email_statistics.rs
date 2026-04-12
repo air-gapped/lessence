@@ -28,7 +28,7 @@ fn test_email_statistics_shown_in_report() {
                       2025-09-26T10:15:02Z User sarah@company.com logged in from 192.168.1.102\n";
 
     // Run lessence with test input
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -89,7 +89,7 @@ fn test_email_statistics_hidden_when_zero() {
     let test_input = "2025-09-26T10:15:00Z Server started on port 8080\n\
                       2025-09-26T10:15:01Z Listening on 192.168.1.100:8080\n";
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -140,7 +140,7 @@ fn test_email_statistics_in_essence_mode() {
                       2025-09-26T10:15:02Z User sarah@company.com logged in\n\
                       2025-09-26T10:15:03Z User mike@company.com logged in\n";
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--essence"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -202,7 +202,7 @@ fn test_email_not_grouped_with_percentages() {
     let test_input = "2025-09-26T10:15:00Z CPU usage: 85% for user@domain.com\n\
                       2025-09-26T10:15:01Z CPU usage: 92% for admin@domain.com\n";
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()

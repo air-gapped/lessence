@@ -1,27 +1,12 @@
 use std::process::Command;
 use std::str;
 
-/// Build the release binary if it doesn't exist or is out of date
-fn ensure_release_build() {
-    let build_output = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("Failed to build release binary");
-
-    assert!(
-        build_output.status.success(),
-        "Failed to build release binary: {}",
-        String::from_utf8_lossy(&build_output.stderr)
-    );
-}
-
 #[test]
 fn test_text_format_default() {
     // Test that text format is the default and produces expected output
-    ensure_release_build();
 
     // Test with default format (no --format flag)
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -58,7 +43,7 @@ fn test_text_format_default() {
         .any(|line| line.contains('+') && line.contains("similar"));
 
     // Test explicit --format text flag produces same result
-    let explicit_output = Command::new("./target/release/lessence")
+    let explicit_output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--format", "text", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -89,9 +74,8 @@ fn test_text_format_default() {
 #[test]
 fn test_markdown_format_flag() {
     // Test --format markdown produces valid markdown structure
-    ensure_release_build();
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--format", "markdown", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -167,7 +151,6 @@ fn test_markdown_format_flag() {
 #[test]
 fn test_format_compression_quality() {
     // Test that all formats maintain constitutional compliance (≥98.4% compression)
-    ensure_release_build();
 
     let formats = vec!["text", "markdown"];
 
@@ -179,7 +162,7 @@ fn test_format_compression_quality() {
             return;
         };
 
-        let output = Command::new("./target/release/lessence")
+        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
             .args(["--format", format, "--no-stats"])
             .stdin(file)
             .output()
@@ -248,12 +231,11 @@ fn test_format_compression_quality() {
 #[test]
 fn test_format_selection_errors() {
     // Test that invalid format values produce appropriate errors
-    ensure_release_build();
 
     let invalid_formats = vec!["xml", "csv", "yaml", "invalid"];
 
     for invalid_format in invalid_formats {
-        let output = Command::new("./target/release/lessence")
+        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
             .args(["--format", invalid_format, "--no-stats"])
             .stdin(
                 std::fs::File::open("tests/fixtures/nginx_sample.log")

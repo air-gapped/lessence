@@ -5,7 +5,7 @@ fn test_lessence_binary_exists() {
     // T005: CLI contract test for binary name
     // Verifies that the lessence binary exists and executes properly
 
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--version")
         .output();
 
@@ -23,7 +23,7 @@ fn test_lessence_binary_exists() {
             );
         }
         Err(_) => {
-            panic!("lessence binary should exist at ./target/release/lessence");
+            panic!("lessence binary should exist");
         }
     }
 }
@@ -31,7 +31,7 @@ fn test_lessence_binary_exists() {
 #[test]
 fn test_lessence_binary_help() {
     // Verify lessence binary responds to help
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .arg("--help")
         .output()
         .expect("lessence binary should exist");

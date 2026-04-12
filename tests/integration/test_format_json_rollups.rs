@@ -9,13 +9,7 @@
 use std::process::Command;
 
 fn run_lessence_json(fixture: &str) -> String {
-    let build = Command::new("cargo")
-        .args(["build", "--release"])
-        .output()
-        .expect("cargo build failed");
-    assert!(build.status.success(), "cargo build failed");
-
-    let output = Command::new("./target/release/lessence")
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--format", "json", "--threads", "1", fixture])
         .output()
         .expect("failed to run lessence");
