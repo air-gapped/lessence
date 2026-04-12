@@ -66,8 +66,8 @@ fn test_pattern_accuracy_preservation() {
 
     for (input, expected) in test_cases {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
-        assert_eq!(result, expected, "Failed for input: {}", input);
-        assert!(!tokens.is_empty(), "No tokens found for input: {}", input);
+        assert_eq!(result, expected, "Failed for input: {input}");
+        assert!(!tokens.is_empty(), "No tokens found for input: {input}");
     }
 }
 

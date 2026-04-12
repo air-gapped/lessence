@@ -9,6 +9,8 @@ repository = "https://github.com/air-gapped/lessence"
 readme = "README.md"
 keywords = ["log-compression", "cli", "log-analysis", "devops", "deduplication"]
 categories = ["command-line-utilities", "text-processing"]
+autobenches = false
+autotests = false
 exclude = [".github/", ".ideas/", ".claude/", "examples/", "tests/", "benches/"]
 
 [[bin]]
@@ -49,141 +51,28 @@ regex = "1.10"
 insta = "1"
 proptest = "1"
 
-# Integration tests
+# Consolidated test binaries (5 barrels instead of 40 separate binaries).
+# Each barrel imports submodules — one link step per category.
+# See: https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html
 [[test]]
-name = "test_nginx_compression"
-path = "tests/integration/test_nginx_compression.rs"
+name = "integration"
+path = "tests/integration.rs"
 
 [[test]]
-name = "test_microservices_compression"
-path = "tests/integration/test_microservices_compression.rs"
+name = "contract"
+path = "tests/contract.rs"
 
 [[test]]
-name = "test_constitutional_compliance"
-path = "tests/integration/test_constitutional_compliance.rs"
+name = "unit"
+path = "tests/unit.rs"
 
 [[test]]
-name = "test_cli_formats"
-path = "tests/integration/test_cli_formats.rs"
-
-# Contract tests for rename validation
-[[test]]
-name = "test_binary_name"
-path = "tests/integration/test_binary_name.rs"
+name = "security"
+path = "tests/security.rs"
 
 [[test]]
-name = "test_help_text"
-path = "tests/integration/test_help_text.rs"
-
-[[test]]
-name = "test_version_display"
-path = "tests/integration/test_version_display.rs"
-
-[[test]]
-name = "test_cargo_validation"
-path = "tests/integration/test_cargo_validation.rs"
-
-[[test]]
-name = "test_documentation"
-path = "tests/integration/test_documentation.rs"
-
-# Top-N mode tests
-[[test]]
-name = "test_top_n"
-path = "tests/integration/test_top_n.rs"
-
-# Fit mode tests
-[[test]]
-name = "test_fit"
-path = "tests/integration/test_fit.rs"
-
-# File input tests
-[[test]]
-name = "test_file_input"
-path = "tests/integration/test_file_input.rs"
-
-# CLI validation tests
-[[test]]
-name = "test_cli_validation"
-path = "tests/contract/test_cli_validation.rs"
-
-[[test]]
-name = "test_validation_errors"
-path = "tests/integration/test_validation_errors.rs"
-
-# CI exit code tests
-[[test]]
-name = "test_fail_on_pattern"
-path = "tests/integration/test_fail_on_pattern.rs"
-
-# JSON stats tests
-[[test]]
-name = "test_stats_json"
-path = "tests/integration/test_stats_json.rs"
-
-# --format json tests (Phase 2 — schema shape validation, no rollups yet)
-[[test]]
-name = "test_format_json"
-path = "tests/integration/test_format_json.rs"
-
-# Rollup metadata tests (Phase 3 — variation field shape and determinism)
-[[test]]
-name = "test_format_json_rollups"
-path = "tests/integration/test_format_json_rollups.rs"
-
-# Multi-format output tests
-[[test]]
-name = "test_markdown_output"
-path = "tests/unit/test_markdown_output.rs"
-
-[[test]]
-name = "test_text_output"
-path = "tests/unit/test_text_output.rs"
-
-# Performance validation tests
-[[test]]
-name = "test_detection_performance"
-path = "tests/benchmarks/test_detection_performance.rs"
-
-# Security tests
-[[test]]
-name = "test_ipv6_evil_patterns"
-path = "tests/security/test_ipv6_evil_patterns.rs"
-
-# Snapshot tests
-[[test]]
-name = "test_output_snapshots"
-path = "tests/snapshot/test_output_snapshots.rs"
-
-# Previously missing integration tests (were dead code — never compiled)
-[[test]]
-name = "test_basic_scenarios"
-path = "tests/integration/test_basic_scenarios.rs"
-
-[[test]]
-name = "test_edge_cases"
-path = "tests/integration/test_edge_cases.rs"
-
-[[test]]
-name = "test_essence_integration"
-path = "tests/integration/test_essence_integration.rs"
-
-[[test]]
-name = "test_normalization_integration"
-path = "tests/integration/test_normalization_integration.rs"
-
-[[test]]
-name = "test_performance"
-path = "tests/integration/test_performance.rs"
-
-[[test]]
-name = "test_thread_safety"
-path = "tests/integration/test_thread_safety.rs"
-
-# Property-based tests
-[[test]]
-name = "test_normalizer_properties"
-path = "tests/property/test_normalizer_properties.rs"
+name = "misc"
+path = "tests/misc.rs"
 
 # Criterion benchmarks — perf gate for the structured-folding-output feature.
 # See docs/bench.md for how to record and compare baselines.

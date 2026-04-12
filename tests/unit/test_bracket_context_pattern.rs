@@ -201,7 +201,7 @@ mod tests {
         ];
 
         let mut normalized_lines = Vec::new();
-        for line in microservices_sample {
+        for line in &microservices_sample {
             let (normalized, _tokens) = BracketContextDetector::detect_and_replace(line);
             normalized_lines.push(normalized);
         }

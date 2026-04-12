@@ -84,9 +84,9 @@ fn test_comprehensive_format_support() {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
         assert!(result.contains("<TIMESTAMP>"),
-            "Failed to detect {} format in: {}", description, input);
-        assert!(tokens.len() > 0,
-            "No tokens generated for {} format in: {}", description, input);
+            "Failed to detect {description} format in: {input}");
+        assert!(!tokens.is_empty(),
+            "No tokens generated for {description} format in: {input}");
     }
 }
 
@@ -163,6 +163,6 @@ fn test_memory_efficiency() {
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&large_input);
 
     // Basic validation
-    assert!(result.len() > 0);
+    assert!(!result.is_empty());
     assert_eq!(tokens.len(), 10000);
 }

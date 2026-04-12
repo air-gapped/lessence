@@ -237,7 +237,7 @@ mod tests {
         ];
 
         let mut normalized_lines = Vec::new();
-        for line in apache_samples {
+        for line in &apache_samples {
             let (normalized, _tokens) = LogWithModuleDetector::detect_and_replace(line);
             normalized_lines.push(normalized);
         }

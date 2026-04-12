@@ -145,10 +145,10 @@ fn test_format_family_enum_completeness() {
         FormatFamily::Unix,
     ];
 
-    for family in families {
-        let priority = PatternPriority::new(50, family);
+    for family in &families {
+        let priority = PatternPriority::new(50, family.clone());
         let score = priority.effective_score();
-        assert!(score != 0 || family == FormatFamily::Structured,
+        assert!(score != 0 || *family == FormatFamily::Structured,
             "All families should produce valid scores");
     }
 }

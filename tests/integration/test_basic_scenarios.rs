@@ -83,7 +83,7 @@ fn test_no_timestamp_handling() {
 fn test_partial_timestamp_rejection() {
     // Should not match incomplete timestamps
     let input = "Processing item 2025-09-29T10:15 incomplete";
-    let (result, tokens) = TimestampDetector::detect_and_replace(input);
+    let (_result, tokens) = TimestampDetector::detect_and_replace(input);
 
     // Should either not match or match what's valid
     assert!(tokens.len() <= 1, "Should not over-match partial timestamps");
@@ -111,7 +111,7 @@ fn test_whitespace_handling() {
 
     for input in test_cases {
         let (result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(result.contains("<TIMESTAMP>"), "Should handle whitespace: {}", input);
-        assert_eq!(tokens.len(), 1, "Should find one timestamp: {}", input);
+        assert!(result.contains("<TIMESTAMP>"), "Should handle whitespace: {input}");
+        assert_eq!(tokens.len(), 1, "Should find one timestamp: {input}");
     }
 }

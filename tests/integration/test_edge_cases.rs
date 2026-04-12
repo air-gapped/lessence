@@ -20,7 +20,7 @@ fn test_whitespace_only() {
 #[test]
 fn test_very_long_line() {
     let prefix = "Very long line ".repeat(1000);
-    let input = format!("{}2025-09-29T10:15:30Z End", prefix);
+    let input = format!("{prefix}2025-09-29T10:15:30Z End");
     let (result, tokens) = TimestampDetector::detect_and_replace(&input);
 
     assert!(result.ends_with("<TIMESTAMP> End"));
@@ -38,10 +38,10 @@ fn test_malformed_timestamps() {
     ];
 
     for input in malformed_cases {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, _tokens) = TimestampDetector::detect_and_replace(input);
         // Should either reject completely or handle gracefully
         // Don't crash or produce invalid output
-        assert!(result.len() > 0, "Should not crash on malformed input: {}", input);
+        assert!(!result.is_empty(), "Should not crash on malformed input: {input}");
     }
 }
 
@@ -64,7 +64,7 @@ fn test_special_characters() {
 
     for input in test_cases {
         let (result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(result.contains("<TIMESTAMP>"), "Should handle special chars: {}", input);
+        assert!(result.contains("<TIMESTAMP>"), "Should handle special chars: {input}");
         assert_eq!(tokens.len(), 1);
     }
 }
@@ -88,7 +88,7 @@ fn test_timestamp_at_boundaries() {
 
     for input in test_cases {
         let (result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(result.contains("<TIMESTAMP>"), "Should detect at boundaries: {}", input);
+        assert!(result.contains("<TIMESTAMP>"), "Should detect at boundaries: {input}");
         assert_eq!(tokens.len(), 1);
     }
 
@@ -133,11 +133,11 @@ fn test_false_positive_prevention() {
     ];
 
     for input in false_positives {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (_result, tokens) = TimestampDetector::detect_and_replace(input);
 
         // Most of these should not be detected as timestamps
         // Unix timestamps should have very low priority to avoid false positives
-        if tokens.len() > 0 {
+        if !tokens.is_empty() {
             // If detected, should be a very specific pattern, not generic numbers
             println!("Detected in '{}': {} tokens", input, tokens.len());
         }
@@ -150,8 +150,8 @@ fn test_false_positive_prevention() {
 fn test_binary_data_safety() {
     // Test with binary-like data that might contain timestamp-like patterns
     let binary_like = "ÿþ2025\x00\x01\x0229T10:15:30Zÿþ";
-    let (result, tokens) = TimestampDetector::detect_and_replace(binary_like);
+    let (result, _tokens) = TimestampDetector::detect_and_replace(binary_like);
 
     // Should not crash, might or might not detect patterns
-    assert!(result.len() > 0, "Should handle binary data gracefully");
+    assert!(!result.is_empty(), "Should handle binary data gracefully");
 }

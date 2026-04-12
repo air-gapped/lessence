@@ -3035,7 +3035,7 @@ mod tests {
             .map(|v| v.as_str().unwrap())
             .collect();
         let mut sorted = types.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(types, sorted, "token_types should be alphabetically sorted");
     }
 
