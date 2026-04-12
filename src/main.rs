@@ -129,7 +129,7 @@ struct Cli {
     #[arg(long)]
     preflight: bool,
 
-    /// Output format: text (default), markdown
+    /// Output format: text (default), markdown, json (JSONL for agent consumption)
     #[arg(long, default_value = "text")]
     format: String,
 
@@ -551,6 +551,21 @@ fn main() -> Result<()> {
                 }
             }
             _ => unreachable!("Should only reach here for markdown"),
+        }
+        if pattern_matched.get() {
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+
+    // JSON mode: emit the terminal summary record, then skip the
+    // human/--stats-json paths (the summary record supersedes them).
+    if matches!(config.output_format.as_str(), "json" | "jsonl") {
+        folder.print_summary_json(&mut io::stdout(), start_time.elapsed())?;
+        if config.stats_json {
+            eprintln!(
+                "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
+            );
         }
         if pattern_matched.get() {
             std::process::exit(1);

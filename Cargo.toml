@@ -107,6 +107,11 @@ path = "tests/integration/test_fail_on_pattern.rs"
 name = "test_stats_json"
 path = "tests/integration/test_stats_json.rs"
 
+# --format json tests (Phase 2 — schema shape validation, no rollups yet)
+[[test]]
+name = "test_format_json"
+path = "tests/integration/test_format_json.rs"
+
 # Multi-format output tests
 [[test]]
 name = "test_markdown_output"

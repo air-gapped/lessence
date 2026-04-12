@@ -58,6 +58,12 @@ struct PatternGroup {
     #[allow(dead_code)]
     collapsed: bool,
     position: usize, // Position when first line was encountered
+    /// Input line number of the first line in this group (1-indexed).
+    /// Used by the JSON output path; ignored by text/markdown formatting.
+    first_line_no: usize,
+    /// Input line number of the most recently added line in this group.
+    /// Updated on every add_line().
+    last_line_no: usize,
 }
 
 impl PatternGroup {
@@ -66,11 +72,14 @@ impl PatternGroup {
             lines: vec![line],
             collapsed: false,
             position,
+            first_line_no: position,
+            last_line_no: position,
         }
     }
 
-    fn add_line(&mut self, line: LogLine) {
+    fn add_line(&mut self, line: LogLine, line_no: usize) {
         self.lines.push(line);
+        self.last_line_no = line_no;
     }
 
     fn should_collapse(&self, min_collapse: usize) -> bool {
@@ -97,6 +106,10 @@ pub struct PatternFolder {
     stats: FoldingStats,
     position_counter: usize,
     batch_buffer: Vec<String>,
+    /// Monotonic counter for JSON group record `id` fields. Incremented
+    /// exactly once per flushed group in JSON mode. Stays at 0 in text /
+    /// markdown modes. Stable within a run.
+    next_json_id: usize,
 }
 
 #[derive(Debug, Default)]
@@ -149,6 +162,105 @@ struct PatternHits {
     emails: usize,
 }
 
+// -------------------------------------------------------------------------
+// JSONL output schema (Phase 2 — no rollups yet).
+//
+// One `GroupRecord` per flushed PatternGroup is emitted to stdout. After the
+// main loop, exactly one `SummaryRecord` terminates the stream. The `type`
+// field discriminates the two. The schema is documented in docs/format-json-schema.md.
+//
+// Phase 3 will add a `variation` field to `GroupRecord`. Phase 2 leaves room
+// for it but does not emit it.
+// -------------------------------------------------------------------------
+
+/// A reference to a line of the original input. `line_no` is the 1-indexed
+/// input position of the line. In parallel mode it is approximate
+/// (batch-granular); in single-threaded mode it is exact.
+#[derive(Serialize)]
+struct LineRef {
+    line: String,
+    line_no: usize,
+}
+
+/// Raw timestamp strings observed in the first and last lines of the group.
+/// Both fields may be null if the corresponding line had no detected
+/// timestamp token. Strings are compared as raw input order (no parsing).
+#[derive(Serialize)]
+struct TimeRange {
+    first_seen: Option<String>,
+    last_seen: Option<String>,
+}
+
+/// One folded-group record in the JSONL stream.
+#[derive(Serialize)]
+struct GroupRecord {
+    #[serde(rename = "type")]
+    record_type: &'static str, // always "group"
+    id: usize,
+    count: usize,
+    /// Sorted list of token type discriminant names present in the group's
+    /// first or last line. Deterministic across runs.
+    token_types: Vec<&'static str>,
+    /// The first line's normalized form (with `<TOKEN>` placeholders).
+    normalized: String,
+    first: LineRef,
+    last: LineRef,
+    time_range: TimeRange,
+}
+
+/// Terminal summary record for the JSONL stream. Flattens the existing
+/// `StatsJson` fields and adds a `type: "summary"` discriminant so JSONL
+/// consumers can branch cleanly on the record type.
+#[derive(Serialize)]
+struct SummaryRecord {
+    #[serde(rename = "type")]
+    record_type: &'static str, // always "summary"
+    #[serde(flatten)]
+    stats: StatsJson,
+}
+
+/// Discriminant name for a Token, used in `GroupRecord.token_types` and
+/// (in Phase 3) as the key in the `variation` map. Stable across
+/// serialisation runs because each variant returns a `&'static str`.
+fn token_type_name(token: &Token) -> &'static str {
+    match token {
+        Token::Timestamp(_) => "TIMESTAMP",
+        Token::IPv4(_) => "IPV4",
+        Token::IPv6(_) => "IPV6",
+        Token::Port(_) => "PORT",
+        Token::Hash(_, _) => "HASH",
+        Token::Uuid(_) => "UUID",
+        Token::Pid(_) => "PID",
+        Token::ThreadID(_) => "THREAD_ID",
+        Token::Path(_) => "PATH",
+        Token::Json(_) => "JSON",
+        Token::Duration(_) => "DURATION",
+        Token::Size(_) => "SIZE",
+        Token::Number(_) => "NUMBER",
+        Token::HttpStatus(_) => "HTTP_STATUS",
+        Token::QuotedString(_) => "QUOTED_STRING",
+        Token::Name(_) => "NAME",
+        Token::KubernetesNamespace(_) => "K8S_NAMESPACE",
+        Token::VolumeName(_) => "K8S_VOLUME",
+        Token::PluginType(_) => "K8S_PLUGIN",
+        Token::PodName(_) => "K8S_POD",
+        Token::HttpStatusClass(_) => "HTTP_STATUS_CLASS",
+        Token::BracketContext(_) => "BRACKET_CONTEXT",
+        Token::KeyValuePair { .. } => "KEY_VALUE",
+        Token::LogWithModule { .. } => "LOG_WITH_MODULE",
+        Token::StructuredMessage { .. } => "STRUCTURED_MESSAGE",
+        Token::Email(_) => "EMAIL",
+    }
+}
+
+/// Extract the first `Token::Timestamp(s)` value from a slice, if any.
+fn first_timestamp_in(tokens: &[Token]) -> Option<String> {
+    tokens.iter().find_map(|t| match t {
+        Token::Timestamp(s) => Some(s.clone()),
+        _ => None,
+    })
+}
+
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let normalizer = Normalizer::new(config.clone());
@@ -160,7 +272,130 @@ impl PatternFolder {
             stats: FoldingStats::default(),
             position_counter: 0,
             batch_buffer: Vec::new(),
+            next_json_id: 0,
         }
+    }
+
+    /// Is the configured output format the JSON (JSONL) variant?
+    fn is_json_output(&self) -> bool {
+        matches!(self.config.output_format.as_str(), "json" | "jsonl")
+    }
+
+    /// Format a group for the configured output mode. Dispatches to
+    /// `format_group_json` when `--format json` is set, else the existing
+    /// text/markdown `format_group` path. This is the single insertion
+    /// point for JSON mode across all flush call sites.
+    fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
+        if self.is_json_output() {
+            self.format_group_json(group)
+        } else {
+            self.format_group(group)
+        }
+    }
+
+    /// Serialise one group as a JSONL record. Returns a single JSON object
+    /// string **without** a trailing newline — the caller's `writeln!`
+    /// supplies it. This matches `format_group`'s text-mode contract so the
+    /// main loop's output path works uniformly for both formats.
+    ///
+    /// `output_lines` is updated by the *caller* (same as `format_group`
+    /// via `formatted.lines().count()`) so both formatting paths keep
+    /// stats coherent with no double-counting.
+    fn format_group_json(&mut self, group: &PatternGroup) -> Result<String> {
+        let id = self.next_json_id;
+        self.next_json_id += 1;
+
+        // Keep `collapsed_groups` and `lines_saved` coherent with
+        // --stats-json output in JSON mode: a group with >= min_collapse
+        // lines counts as "collapsed" even though JSON mode always emits
+        // one record per group regardless of size. Without this, summary
+        // statistics would differ between text-mode and JSON-mode runs
+        // of the same input.
+        if group.count() >= self.config.min_collapse && !self.config.essence_mode {
+            self.stats.collapsed_groups += 1;
+            // All lines except the one emitted as the representative
+            // are accounted for as "saved". Matches text-mode lines_saved
+            // semantics as closely as the JSON schema permits.
+            self.stats.lines_saved += group.count() - 1;
+        }
+
+        // Collect unique token type names from first and last lines.
+        // BTreeSet gives us deterministic sorted output for free.
+        let mut token_types: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
+        for t in &group.first().tokens {
+            token_types.insert(token_type_name(t));
+        }
+        for t in &group.last().tokens {
+            token_types.insert(token_type_name(t));
+        }
+
+        let record = GroupRecord {
+            record_type: "group",
+            id,
+            count: group.count(),
+            token_types: token_types.into_iter().collect(),
+            normalized: group.first().normalized.clone(),
+            first: LineRef {
+                line: group.first().original.clone(),
+                line_no: group.first_line_no,
+            },
+            last: LineRef {
+                line: group.last().original.clone(),
+                line_no: group.last_line_no,
+            },
+            time_range: TimeRange {
+                first_seen: first_timestamp_in(&group.first().tokens),
+                last_seen: first_timestamp_in(&group.last().tokens),
+            },
+        };
+
+        Ok(serde_json::to_string(&record)?)
+    }
+
+    /// Emit the terminal summary record for a JSONL stream. Called once,
+    /// after the main loop and `finish()` have drained all groups.
+    /// Writes to `writer` (stdout in the main binary path) and ends with
+    /// a trailing newline so the JSONL stream terminates cleanly.
+    pub fn print_summary_json(
+        &self,
+        writer: &mut impl io::Write,
+        elapsed: Duration,
+    ) -> Result<()> {
+        let compression_ratio = if self.stats.total_lines > 0 {
+            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+        let record = SummaryRecord {
+            record_type: "summary",
+            stats: StatsJson {
+                input_lines: self.stats.total_lines,
+                output_lines: self.stats.output_lines,
+                compression_ratio,
+                collapsed_groups: self.stats.collapsed_groups,
+                lines_saved: self.stats.lines_saved,
+                patterns_detected: self.stats.patterns_detected,
+                elapsed_ms: elapsed.as_millis() as u64,
+                pattern_hits: PatternHits {
+                    timestamps: self.stats.timestamps,
+                    ips: self.stats.ips,
+                    hashes: self.stats.hashes,
+                    uuids: self.stats.uuids,
+                    pids: self.stats.pids,
+                    durations: self.stats.durations,
+                    http_status: self.stats.http_status,
+                    sizes: self.stats.sizes,
+                    percentages: self.stats.percentages,
+                    paths: self.stats.paths,
+                    kubernetes: self.stats.kubernetes,
+                    emails: self.stats.emails,
+                },
+            },
+        };
+        serde_json::to_writer(&mut *writer, &record)?;
+        writeln!(writer)?;
+        Ok(())
     }
 
     pub fn process_line(&mut self, line: &str) -> Result<Option<String>> {
@@ -196,7 +431,7 @@ impl PatternFolder {
         }
 
         if let Some(index) = match_index {
-            self.buffer[index].add_line(normalized_line);
+            self.buffer[index].add_line(normalized_line, self.position_counter);
         } else {
             // Create a new group at current position
             self.buffer
@@ -240,7 +475,7 @@ impl PatternFolder {
 
         if let Some(index) = oldest_index {
             let group = self.buffer.remove(index);
-            let formatted = self.format_group(&group)?;
+            let formatted = self.format_group_dispatch(&group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
             return Ok(Some(formatted));
@@ -383,7 +618,7 @@ impl PatternFolder {
         // Flush all remaining groups in chronological order
         while !self.buffer.is_empty() {
             let group = self.buffer.remove(0);
-            let formatted = self.format_group(&group)?;
+            let formatted = self.format_group_dispatch(&group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
             output.push(formatted);
@@ -418,7 +653,7 @@ impl PatternFolder {
 
         let mut output = Vec::new();
         for (count, group) in top_groups {
-            let formatted = self.format_group(&group)?;
+            let formatted = self.format_group_dispatch(&group)?;
             self.stats.output_lines += formatted.lines().count();
             output.push((count, formatted));
         }
@@ -485,8 +720,9 @@ impl PatternFolder {
                     if similarity >= f64::from(self.config.threshold) {
                         // Merge group j into group i
                         let group_to_merge = self.buffer.remove(j);
+                        let merged_last_line_no = group_to_merge.last_line_no;
                         for line in group_to_merge.lines {
-                            self.buffer[i].add_line(line);
+                            self.buffer[i].add_line(line, merged_last_line_no);
                         }
 
                         merged_any = true;
@@ -921,7 +1157,11 @@ impl PatternFolder {
         }
 
         if let Some(index) = match_index {
-            self.buffer[index].add_line(normalized_line);
+            // In parallel mode, position_counter is the end-of-batch position,
+            // not the per-line position. Line numbers in parallel mode are
+            // therefore approximate — accurate single-threaded, batch-granular
+            // parallel. Documented in the JSON schema.
+            self.buffer[index].add_line(normalized_line, self.position_counter);
         } else {
             self.buffer
                 .push(PatternGroup::new(normalized_line, self.position_counter));

@@ -5,6 +5,7 @@
 pub enum OutputFormat {
     Text,
     Markdown,
+    Json,
 }
 
 impl std::str::FromStr for OutputFormat {
@@ -14,11 +15,9 @@ impl std::str::FromStr for OutputFormat {
         match s.to_lowercase().as_str() {
             "text" | "plain" => Ok(OutputFormat::Text),
             "markdown" | "md" => Ok(OutputFormat::Markdown),
-            "json" => Err(anyhow::anyhow!(
-                "Error: Invalid format 'json'. Supported formats: text, markdown"
-            )),
+            "json" | "jsonl" => Ok(OutputFormat::Json),
             _ => Err(anyhow::anyhow!(
-                "Error: Invalid format '{s}'. Supported formats: text, markdown"
+                "Error: Invalid format '{s}'. Supported formats: text, markdown, json"
             )),
         }
     }
