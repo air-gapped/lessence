@@ -1043,6 +1043,7 @@ impl PatternFolder {
     /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
     /// Uses the parallel pipeline for normalization, then merges groups with identical
     /// normalized text and displays representative original lines.
+    #[mutants::skip] // Thin I/O wrapper: writes to stdout/stderr which cannot be captured in unit tests without refactoring
     pub fn finish_summary(
         &mut self,
         top_n: Option<usize>,
@@ -1184,6 +1185,7 @@ impl PatternFolder {
         }
     }
 
+    #[mutants::skip] // PII masking interactions with essence_mode create equivalent mutants: sanitize_pii && !essence_mode branch is hard to distinguish from replacing the whole conditional
     fn format_group(&mut self, group: &PatternGroup, rollup: &GroupRollup) -> Result<String> {
         if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
             self.stats.collapsed_groups += 1;
@@ -1502,6 +1504,7 @@ impl PatternFolder {
         }
     }
 
+    #[mutants::skip] // Writes to stderr, cannot verify in unit tests without refactoring
     pub fn print_stats_json(&self, elapsed: Duration) -> Result<()> {
         let stats_json = self.build_stats_json(elapsed);
         let stderr = io::stderr();

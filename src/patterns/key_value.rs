@@ -937,4 +937,47 @@ mod tests {
     fn logging_json_negative() {
         assert!(!KeyValueDetector::is_logging_json("no json here"));
     }
+
+    // ---- Mutant-killing: apply_metrics_pattern (replace with ()) ----
+
+    #[test]
+    fn metrics_only_input() {
+        // Kills mutant: `apply_metrics_pattern` body replaced with `()`
+        // Input that triggers ONLY metrics detection (has metrics context keywords)
+        // and uses the metrics KV regex format (key=number%)
+        let input = "System stats: cpu=85%";
+        let (result, tokens) = KeyValueDetector::detect_and_replace(input);
+        assert!(
+            !tokens.is_empty(),
+            "metrics-only input should produce tokens: {result}"
+        );
+        assert!(
+            result.contains("<KEY_VALUE>"),
+            "metrics pattern should modify text: {result}"
+        );
+    }
+
+    // ---- Mutant-killing: is_valid_key_value_context || conditions ----
+
+    #[test]
+    fn kv_ctx_config_pattern_not_in_valid_keys() {
+        // Kills mutant: `|| with &&` on valid_keys.contains vs is_common_config_pattern (line 332)
+        // Key "max_retries" is NOT in valid_keys array but IS a config pattern (starts_with "max_")
+        assert!(KeyValueDetector::is_valid_key_value_context(
+            "max_retries", "5", "max_retries=5"
+        ));
+        // Verify it's not in the valid_keys list
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "max_retries", "5", "SELECT max_retries FROM t"
+        ));
+    }
+
+    #[test]
+    fn kv_ctx_valid_key_not_config_pattern() {
+        // "timeout" IS in valid_keys but "timeout" does NOT match config pattern
+        // (no _timeout suffix, no max_/min_ prefix, value "30" has no unit suffix)
+        assert!(KeyValueDetector::is_valid_key_value_context(
+            "timeout", "30", "timeout=30"
+        ));
+    }
 }

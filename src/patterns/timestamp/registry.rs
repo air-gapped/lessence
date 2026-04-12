@@ -384,6 +384,47 @@ mod tests {
         }
     }
 
+    // ---- Mutant-killing: load_original_essence_patterns (replace with vec![]) ----
+
+    #[test]
+    fn essence_patterns_loaded() {
+        // Kills mutant: `load_original_essence_patterns` replaced with `vec![]`
+        // Verify that essence-specific formats are present in the registry
+        let registry = TimestampRegistry::new();
+        let has_essence_pattern = registry.get_patterns().iter().any(|p| {
+            matches!(
+                p.format_type,
+                TimestampFormat::WindowsEvent
+                    | TimestampFormat::GitCommit
+                    | TimestampFormat::Aws
+                    | TimestampFormat::Gcp
+                    | TimestampFormat::Azure
+            )
+        });
+        assert!(
+            has_essence_pattern,
+            "Registry should contain essence-specific patterns"
+        );
+    }
+
+    // ---- Mutant-killing: assign_pattern_priorities (replace with ()) ----
+
+    #[test]
+    fn assign_priorities_actually_changes_priorities() {
+        // Kills mutant: `assign_pattern_priorities` body replaced with `()`
+        // After construction, each pattern should have a priority that matches
+        // its format_type's specificity score, not the initial hardcoded value
+        let registry = TimestampRegistry::new();
+        for pattern in registry.get_patterns() {
+            let expected_specificity = pattern.format_type.specificity_score();
+            assert_eq!(
+                pattern.priority.specificity_score, expected_specificity,
+                "Pattern {:?} should have specificity {} from assign_pattern_priorities, got {}",
+                pattern.format_type, expected_specificity, pattern.priority.specificity_score
+            );
+        }
+    }
+
     #[test]
     fn assign_priorities_unix_lowest() {
         let registry = TimestampRegistry::new();

@@ -923,4 +923,72 @@ mod tests {
             line.tokens
         );
     }
+
+    // ---- Mutant-killing: normalize_timestamps=false with colon input ----
+
+    #[test]
+    fn normalize_timestamps_disabled_with_colon_input() {
+        // Kills mutant: `self.config.normalize_timestamps && text.contains(':')` → `||`
+        // If mutated to ||, timestamps would be detected even when disabled
+        let config = Config {
+            normalize_timestamps: false,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let line = normalizer
+            .normalize_line("10:15:30 Error occurred".to_string())
+            .unwrap();
+        assert!(
+            !line.tokens.iter().any(|t| matches!(t, Token::Timestamp(_))),
+            "Timestamps should NOT be detected when normalize_timestamps=false"
+        );
+    }
+
+    // ---- Mutant-killing: normalize_json=false with brace input ----
+
+    #[test]
+    fn normalize_json_disabled_with_brace_input() {
+        // Kills mutant: `self.config.normalize_json && normalized.contains('{')` → `||`
+        let config = Config {
+            normalize_json: false,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let line = normalizer
+            .normalize_line(r#"Got {"key": "value"} response"#.to_string())
+            .unwrap();
+        assert!(
+            !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
+            "JSON should NOT be detected when normalize_json=false"
+        );
+    }
+
+    // ---- Mutant-killing: similarity_score division vs multiplication ----
+
+    #[test]
+    fn similarity_score_division_not_multiplication() {
+        // Kills mutant: `min_len as f64 / max_len as f64` → `min_len as f64 * max_len as f64`
+        // If mutated to *, ratio for 7/10 would be 70.0 which > 0.7 threshold...
+        // We need strings where the distinction matters for the final score
+        let normalizer = Normalizer::new(Config::default());
+        let short = LogLine {
+            original: "abcd".into(),
+            normalized: "abcd".into(),
+            tokens: vec![],
+            hash: 0,
+        };
+        let long = LogLine {
+            original: "abcdefghij".into(),
+            normalized: "abcdefghij".into(),
+            tokens: vec![],
+            hash: 1,
+        };
+        let score = normalizer.similarity_score(&short, &long);
+        // ratio = 4/10 = 0.4 < 0.7 → returns 0.4 * 100 = 40.0
+        // If mutated to *, ratio = 4*10 = 40.0 which is NOT < 0.7, so it would do char comparison instead
+        assert!(
+            (score - 40.0).abs() < f64::EPSILON,
+            "4/10 ratio should give 40.0, got {score}"
+        );
+    }
 }

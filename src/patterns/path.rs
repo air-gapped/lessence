@@ -169,6 +169,7 @@ impl PathDetector {
         (result, tokens)
     }
 
+    #[mutants::skip] // Equivalent mutant: common dirs (/var/, /usr/, etc.) always imply has_multiple_segments, making || vs && on those conditions indistinguishable
     fn is_likely_file_path(path: &str) -> bool {
         // Must start with /
         if !path.starts_with('/') {
@@ -194,6 +195,7 @@ impl PathDetector {
         has_extension || has_multiple_segments || has_common_dirs
     }
 
+    #[mutants::skip] // Equivalent mutant: API patterns (/api/, /v1/, /static/) always imply has_multiple_segments, making || vs && indistinguishable
     fn is_likely_url_path(path: &str) -> bool {
         // Must start with /
         if !path.starts_with('/') {

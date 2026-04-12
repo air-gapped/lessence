@@ -290,4 +290,64 @@ mod tests {
     fn likely_id_no_alphanum() {
         assert!(!UuidDetector::is_likely_id("----"));
     }
+
+    // ---- Mutant-killing: boundary tests for is_likely_id ----
+
+    #[test]
+    fn likely_id_exactly_4_chars() {
+        // Kills mutant: `< 4` → `<= 4` (line 112)
+        assert!(UuidDetector::is_likely_id("abcd")); // len=4, has letters → true
+    }
+
+    #[test]
+    fn likely_id_exactly_3_chars_rejected() {
+        assert!(!UuidDetector::is_likely_id("abc")); // len=3 < 4 → false
+    }
+
+    #[test]
+    fn likely_id_exactly_64_chars() {
+        // Kills mutant: `> 64` → `>= 64` (line 112)
+        assert!(UuidDetector::is_likely_id(&"a".repeat(64))); // len=64, has letters → true
+    }
+
+    #[test]
+    fn likely_id_exactly_65_chars_rejected() {
+        assert!(!UuidDetector::is_likely_id(&"a".repeat(65))); // len=65 > 64 → false
+    }
+
+    // ---- Mutant-killing: looks_like_uuid_no_hyphens boundary tests ----
+
+    #[test]
+    fn uuid_no_hyphens_exactly_5_letters_passes() {
+        // Kills mutant: `letter_count > 4` → `letter_count >= 4` (line 133)
+        // 5 letters + 27 digits = 32 chars → letter_count=5 > 4 ✓
+        let s = "abcde012345678901234567890123456"; // 5 letters + 27 digits = 32 chars
+        assert_eq!(s.len(), 32);
+        assert!(UuidDetector::looks_like_uuid_no_hyphens(s));
+    }
+
+    #[test]
+    fn uuid_no_hyphens_exactly_4_letters_fails() {
+        // 4 letters + 28 digits = 32 chars → letter_count=4, NOT > 4
+        let s: String = "abcd".chars().chain(std::iter::repeat_n('0', 28)).collect();
+        assert_eq!(s.len(), 32);
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens(&s));
+    }
+
+    #[test]
+    fn uuid_no_hyphens_exactly_5_numbers_passes() {
+        // Kills mutant: `number_count > 4` → `number_count >= 4` (line 133)
+        // 27 letters + 5 digits = 32 chars
+        let s: String = std::iter::repeat_n('a', 27).chain("01234".chars()).collect();
+        assert_eq!(s.len(), 32);
+        assert!(UuidDetector::looks_like_uuid_no_hyphens(&s));
+    }
+
+    #[test]
+    fn uuid_no_hyphens_exactly_4_numbers_fails() {
+        // 28 letters + 4 digits = 32 chars → number_count=4, NOT > 4
+        let s: String = std::iter::repeat_n('a', 28).chain("0123".chars()).collect();
+        assert_eq!(s.len(), 32);
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens(&s));
+    }
 }

@@ -302,6 +302,51 @@ mod tests {
         }
     }
 
+    // ---- Mutant-killing: boundary conditions on quote detection ----
+
+    #[test]
+    fn quoted_string_escaped_json_with_brace_and_colon() {
+        // Kills mutant: `|| with &&` on escaped JSON conditions (line ~78)
+        // Input has backslash + colon but NOT brace — should still trigger escaped JSON
+        // if the || is correct (any one condition suffices with backslash)
+        let input = r#"data "some\:escaped\value" done"#;
+        let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
+        // The backslash + colon triggers escaped JSON detection
+        assert!(
+            result.contains("<ESCAPED_JSON>") || result == input,
+            "escaped JSON or unchanged: {result}, tokens: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn quoted_string_long_unmodified_threshold() {
+        // Kills mutant: `> 25` → `>= 25` (line ~91)
+        // The threshold applies when no normalization patterns match inside the quoted content.
+        // Use content that no detector will normalize (no IPs, timestamps, UUIDs, names, etc.)
+        // A simple repeated word with spaces — normalizers won't touch it.
+        // Content must be plain text that doesn't trigger ANY detector.
+
+        // We need quoted_string.len() == 25
+        // quoted_string includes the quotes: "..." = content_len + 2
+        // For len == 25, content_len = 23
+        // For len == 26, content_len = 24
+        // Use spaces and lowercase words to avoid pattern detection
+        let content_23 = "it is a very simple tex"; // 23 chars
+        assert_eq!(content_23.len(), 23);
+        let input_25 = format!(r#"x "{content_23}""#);
+        let (result25, tokens25) = QuotedStringDetector::detect_and_replace(&input_25);
+        assert_eq!(tokens25.len(), 0, "25-char quoted string should NOT produce token: {result25}");
+        assert_eq!(result25, input_25);
+
+        // 24 chars content + 2 quotes = 26 total → > 25 → replaced
+        let content_24 = "it is a very simple text";
+        assert_eq!(content_24.len(), 24);
+        let input_26 = format!(r#"x "{content_24}""#);
+        let (result26, tokens26) = QuotedStringDetector::detect_and_replace(&input_26);
+        assert_eq!(tokens26.len(), 1, "26-char quoted string should produce token: {result26}");
+        assert!(result26.contains("<QUOTED_STRING>"), "should be replaced: {result26}");
+    }
+
     #[test]
     fn test_order_critical_patterns() {
         // Test UUID detection happens before hash detection

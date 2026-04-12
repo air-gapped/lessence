@@ -393,4 +393,43 @@ mod tests {
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 2);
     }
+
+    // ---- Mutant-killing: has_timestamp_indicators line 84 ----
+
+    #[test]
+    fn ts_ind_requires_colon() {
+        // Kills mutant: `text.contains(':') &&` condition
+        // Input with date indicators but NO colon should return false
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators("2024-01-01 no colon here"));
+    }
+
+    #[test]
+    fn ts_ind_colon_with_year_20() {
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators("2024:00"));
+    }
+
+    // ---- Mutant-killing: resolve_overlaps line 124 ----
+
+    #[test]
+    fn resolve_overlaps_single_match() {
+        // Single match should always survive
+        let matches = vec![make_match(5, 15, 90)];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start_pos, 5);
+    }
+
+    #[test]
+    fn resolve_overlaps_three_overlapping() {
+        // Three overlapping matches: 0..20, 5..25, 10..30
+        // Highest priority (90) wins, others excluded
+        let matches = vec![
+            make_match(0, 20, 90),
+            make_match(5, 25, 50),
+            make_match(10, 30, 30),
+        ];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 1, "only highest priority should survive");
+        assert_eq!(result[0].start_pos, 0);
+    }
 }

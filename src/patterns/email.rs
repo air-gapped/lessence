@@ -248,4 +248,30 @@ mod tests {
         let detector = EmailPatternDetector::new().unwrap();
         assert!(!detector.validate_email(&email));
     }
+
+    // ---- Mutant-killing: validate_email boundary > vs >= on length 320 ----
+
+    #[test]
+    fn validate_email_exactly_320_accepted() {
+        // Kills mutant: `> 320` → `>= 320` (line 63)
+        // Build exactly 320 chars
+        let local = "a".repeat(50);
+        let domain_needed = 320 - 50 - 1 - 4; // 265 chars for domain body
+        let domain_body = "b".repeat(domain_needed);
+        let email = format!("{local}@{domain_body}.com");
+        assert_eq!(email.len(), 320, "email len should be exactly 320");
+        let detector = EmailPatternDetector::new().unwrap();
+        assert!(detector.validate_email(&email), "320-char email should be accepted");
+    }
+
+    #[test]
+    fn validate_email_exactly_321_rejected() {
+        let local = "a".repeat(50);
+        let domain_needed = 321 - 50 - 1 - 4; // 266 chars
+        let domain_body = "b".repeat(domain_needed);
+        let email = format!("{local}@{domain_body}.com");
+        assert_eq!(email.len(), 321, "email len should be exactly 321");
+        let detector = EmailPatternDetector::new().unwrap();
+        assert!(!detector.validate_email(&email), "321-char email should be rejected");
+    }
 }

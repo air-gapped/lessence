@@ -331,4 +331,73 @@ mod tests {
         assert!(tokens.is_empty(), "should detect nothing k8s");
         assert_eq!(result, text);
     }
+
+    // ---- Mutant-killing: normalize_volume_names boundary ----
+
+    #[test]
+    fn volume_names_captures_len_boundary() {
+        // Kills mutant: `capture.len() > 1` → `capture.len() >= 1` (line ~102)
+        // A kube-api-access match has only capture group 0 (no group 1), so
+        // len() == 1, meaning > 1 is false. If mutated to >= 1, it would try
+        // capture.get(1) on a None, which would panic or produce wrong tokens.
+        let text = r#"volume kube-api-access-abc123 failed"#;
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        // Should succeed without panic — the kube-api-access pattern has no capture group 1
+        assert!(result.contains("kube-api-access-<SUFFIX>"), "result: {result}");
+        // kube-api-access patterns don't push VolumeName tokens (only named-capture patterns do)
+        let _ = tokens; // just verify no panic
+    }
+
+    // ---- Mutant-killing: normalize_pod_names arithmetic ----
+
+    #[test]
+    fn pod_names_capture_last_group() {
+        // Kills mutant: `capture.len() - 1` → `capture.len() + 1` or `/ 1` (lines ~165, 172)
+        // The pod pattern "pod ns/pod-name" has 2 capture groups: (1)=ns, (2)=pod-name
+        // capture.len() = 3 (0=full, 1=ns, 2=pod). len()-1 = 2, which is the pod name.
+        // If mutated to len()+1 = 4, it would be out of bounds.
+        // Use a non-common namespace so normalize_namespaces doesn't alter the text first.
+        let text = "Error for pod my-app-ns/nginx-abc123: failed";
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        // Should detect the pod name (the last capture group)
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::PodName(_))),
+            "Should detect pod name, tokens: {tokens:?}"
+        );
+        assert!(
+            result.contains("<POD_NAME>"),
+            "Should replace pod name: {result}"
+        );
+    }
+
+    // ---- Mutant-killing: is_common_k8s_namespace replace with true ----
+
+    #[test]
+    fn is_common_k8s_namespace_rejects_unknown() {
+        // Kills mutant: `is_common_k8s_namespace` replaced with `true`
+        // An unknown namespace should NOT be normalized
+        assert!(!KubernetesDetector::is_common_k8s_namespace("my-custom-ns"));
+        assert!(!KubernetesDetector::is_common_k8s_namespace("production"));
+        assert!(!KubernetesDetector::is_common_k8s_namespace("staging"));
+    }
+
+    #[test]
+    fn is_common_k8s_namespace_accepts_known() {
+        assert!(KubernetesDetector::is_common_k8s_namespace("kube-system"));
+        assert!(KubernetesDetector::is_common_k8s_namespace("default"));
+        assert!(KubernetesDetector::is_common_k8s_namespace("monitoring"));
+    }
+
+    #[test]
+    fn unknown_namespace_not_normalized() {
+        // Integration test: unknown namespace should NOT be replaced with <NAMESPACE>
+        // This kills the mutant where is_common_k8s_namespace always returns true
+        let text = "Error for pod my-custom-ns/nginx-abc123: failed";
+        let (result, _tokens) = KubernetesDetector::detect_and_replace(text);
+        // "my-custom-ns" is NOT a common k8s namespace, so it should be preserved
+        assert!(
+            result.contains("my-custom-ns"),
+            "Unknown namespace should NOT be replaced: {result}"
+        );
+    }
 }

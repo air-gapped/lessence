@@ -285,4 +285,57 @@ mod tests {
         assert!(!tokens.is_empty(), "should detect HTTP status: {result}");
         assert!(result.contains("<HTTP_STATUS"), "text should be modified: {result}");
     }
+
+    // ---- Mutant-killing: apply_access_log_pattern (replace with ()) ----
+
+    #[test]
+    fn access_log_pattern_only() {
+        // Input that matches ONLY the access log pattern (GET/POST + status)
+        // and NOT the generic HTTP_STATUS_REGEX pattern
+        let input = r#""GET /index.html HTTP/1.1" 200 1234"#;
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert!(
+            !tokens.is_empty(),
+            "access log pattern should detect status: {result}"
+        );
+        assert!(
+            result.contains("<HTTP_STATUS_2XX>"),
+            "should replace status code: {result}"
+        );
+    }
+
+    // ---- Mutant-killing: apply_http_status_pattern (replace with ()) ----
+
+    #[test]
+    fn http_status_pattern_only() {
+        // Input that matches the HTTP_STATUS_REGEX but NOT access log pattern
+        // HTTP_STATUS_REGEX: "...HTTP/1.1" STATUS SIZE
+        let input = r#"response "HTTP/1.1" 404 335 end"#;
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert!(
+            !tokens.is_empty(),
+            "HTTP status pattern should detect status: {result}"
+        );
+        assert!(
+            result.contains("<HTTP_STATUS"),
+            "should replace status code: {result}"
+        );
+    }
+
+    // ---- Mutant-killing: apply_proxy_pattern ----
+
+    #[test]
+    fn proxy_pattern_detection() {
+        // Input that matches the PROXY_STATUS_REGEX: NNN -> NNN
+        let input = "GET /api upstream 200 -> downstream 502";
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert!(
+            tokens.len() >= 2,
+            "proxy pattern should detect 2 status codes: {tokens:?}"
+        );
+        assert!(
+            result.contains("<HTTP_STATUS_2XX>") && result.contains("<HTTP_STATUS_5XX>"),
+            "should replace both status codes: {result}"
+        );
+    }
 }

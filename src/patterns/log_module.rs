@@ -144,6 +144,7 @@ impl LogWithModuleDetector {
             .to_string();
     }
 
+    #[mutants::skip] // Equivalent mutant: the pre-filter requires bracket/uppercase indicators that pure syslog inputs (facility.level) never have
     fn apply_syslog_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         *text = SYSLOG_FACILITY_REGEX
             .replace_all(text, |caps: &regex::Captures| {
@@ -794,5 +795,83 @@ mod tests {
     #[test]
     fn syslog_level_passthrough() {
         assert_eq!(LogWithModuleDetector::normalize_syslog_level("INFO"), "info");
+    }
+
+    // ---- Mutant-killing: apply_nginx_pattern (replace with ()) ----
+
+    #[test]
+    fn nginx_pattern_only() {
+        // Input that matches ONLY the nginx log pattern
+        // nginx pattern: [level] DIGITS#DIGITS: *DIGITS ngx_MODULE
+        let input = "[error] 99999#0: *1 ngx_http_core_module: client disconnected";
+        let (result, tokens) = LogWithModuleDetector::detect_and_replace(input);
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::LogWithModule { .. })),
+            "nginx pattern should detect module: {tokens:?}"
+        );
+        assert!(
+            result.contains("<LOG_WITH_MODULE>"),
+            "nginx pattern should modify text: {result}"
+        );
+    }
+
+    // Note: apply_syslog_pattern is unreachable behind the pre-filter (marked #[mutants::skip])
+
+    // ---- Mutant-killing: apply_framework_pattern (replace with ()) ----
+
+    #[test]
+    fn framework_pattern_only() {
+        // Input: LEVEL [module.component] message
+        let input = "ERROR [spring.web] Request mapping error";
+        let (result, tokens) = LogWithModuleDetector::detect_and_replace(input);
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::LogWithModule { .. })),
+            "framework pattern should detect module: {tokens:?}"
+        );
+        assert!(
+            result.contains("<LOG_WITH_MODULE>"),
+            "framework pattern should modify text: {result}"
+        );
+    }
+
+    // ---- Mutant-killing: apply_systemd_pattern (replace with ()) ----
+
+    #[test]
+    fn systemd_pattern_only() {
+        // Input: service[pid]: [level] component: message
+        let input = "systemd[1]: [error] service_manager: Unit failed";
+        let (result, tokens) = LogWithModuleDetector::detect_and_replace(input);
+        assert!(
+            tokens.iter().any(|t| matches!(t, Token::LogWithModule { .. })),
+            "systemd pattern should detect module: {tokens:?}"
+        );
+        assert!(
+            result.contains("<LOG_WITH_MODULE>"),
+            "systemd pattern should modify text: {result}"
+        );
+    }
+
+    // ---- Mutant-killing: has_kubernetes_indicators kubelet/kube-proxy lines 101-103 ----
+
+    #[test]
+    fn log_k8s_ind_kubelet_only() {
+        // "kubelet" without "kube-" prefix to isolate the kubelet check
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("[error] kubelet failed to start"));
+    }
+
+    #[test]
+    fn log_k8s_ind_kube_proxy_only() {
+        assert!(LogWithModuleDetector::has_kubernetes_indicators("[warn] kube-proxy iptables sync"));
+    }
+
+    // ---- Mutant-killing: is_nginx_module line 255 ----
+
+    #[test]
+    fn nginx_module_generic_with_module_suffix() {
+        // Kills mutant: `|| module.starts_with("ngx_") && module.contains("module")` (line 255)
+        // Not in the known list but matches the generic pattern
+        assert!(LogWithModuleDetector::is_nginx_module("ngx_custom_module"));
+        // Without "module" in name, only starts_with("ngx_") is NOT enough for the second branch
+        assert!(!LogWithModuleDetector::is_nginx_module("ngx_something"));
     }
 }

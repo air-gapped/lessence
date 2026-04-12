@@ -191,4 +191,45 @@ mod tests {
     fn pid_over_max_rejected() {
         assert!(!ProcessDetector::is_likely_pid(4_194_305));
     }
+
+    // ---- Mutant-killing: dedup checks (delete ! on lines 49, 88, 104) ----
+
+    #[test]
+    fn pid_dedup_no_duplicate_tokens() {
+        // Kills mutant: `!tokens.iter().any(...)` → `tokens.iter().any(...)`
+        // Input has pid=12345 appearing in BOTH bracket and equals forms.
+        // The dedup check should prevent the same PID from being added twice.
+        let text = "[pid=12345] restart with pid=12345 active";
+        let (_result, tokens) = ProcessDetector::detect_and_replace(text);
+        let pid_count = tokens.iter().filter(|t| matches!(t, Token::Pid(12345))).count();
+        assert_eq!(
+            pid_count, 1,
+            "PID 12345 should appear exactly once (dedup), got {pid_count}"
+        );
+    }
+
+    #[test]
+    fn numeric_id_dedup_no_duplicate_tokens() {
+        // The generic numeric ID pattern (id=NNN) should not duplicate PIDs
+        // that were already found by the bracket or equals patterns.
+        let text = "[pid=12345] and id=12345 duplicate";
+        let (_result, tokens) = ProcessDetector::detect_and_replace(text);
+        let pid_count = tokens.iter().filter(|t| matches!(t, Token::Pid(12345))).count();
+        assert_eq!(
+            pid_count, 1,
+            "PID 12345 should appear exactly once across patterns, got {pid_count}"
+        );
+    }
+
+    #[test]
+    fn paren_pid_dedup_no_duplicate_tokens() {
+        // The parentheses PID pattern (NNN) should not duplicate PIDs.
+        let text = "pid=12345 process (12345) running";
+        let (_result, tokens) = ProcessDetector::detect_and_replace(text);
+        let pid_count = tokens.iter().filter(|t| matches!(t, Token::Pid(12345))).count();
+        assert_eq!(
+            pid_count, 1,
+            "PID 12345 should appear exactly once (paren dedup), got {pid_count}"
+        );
+    }
 }
