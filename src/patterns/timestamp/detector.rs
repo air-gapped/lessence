@@ -347,4 +347,50 @@ mod tests {
     fn ts_ind_f10() {
         assert!(UnifiedTimestampDetector::has_timestamp_indicators("F1029 10:00:00"));
     }
+
+    // ---- resolve_overlaps: boundary tests ----
+
+    fn make_match(start: usize, end: usize, specificity: u32) -> TimestampMatch {
+        TimestampMatch {
+            original: String::new(),
+            start_pos: start,
+            end_pos: end,
+            priority: super::super::priority::PatternPriority::new(
+                specificity,
+                super::super::priority::FormatFamily::Structured,
+            ),
+        }
+    }
+
+    #[test]
+    fn resolve_overlaps_empty() {
+        let result = UnifiedTimestampDetector::resolve_overlaps(vec![]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn resolve_overlaps_no_overlap() {
+        let matches = vec![make_match(0, 10, 90), make_match(15, 25, 80)];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn resolve_overlaps_overlap_higher_wins() {
+        // Two matches overlap: 0..20 and 10..30
+        // Higher specificity (90) should win
+        let matches = vec![make_match(0, 20, 90), make_match(10, 30, 50)];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].start_pos, 0);
+        assert_eq!(result[0].end_pos, 20);
+    }
+
+    #[test]
+    fn resolve_overlaps_adjacent_both_survive() {
+        // Touching but not overlapping: 0..10 and 10..20
+        let matches = vec![make_match(0, 10, 90), make_match(10, 20, 80)];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 2);
+    }
 }

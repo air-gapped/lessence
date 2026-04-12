@@ -182,4 +182,26 @@ mod tests {
         assert_eq!(result, "Port 8080 is open");
         assert_eq!(tokens.len(), 0);
     }
+
+    // ---- has_hex_run: boundary tests ----
+
+    #[test]
+    fn hex_run_6_chars_false() {
+        assert!(!HashDetector::has_hex_run("abcdef"));
+    }
+
+    #[test]
+    fn hex_run_7_chars_true() {
+        assert!(HashDetector::has_hex_run("abcdef0"));
+    }
+
+    #[test]
+    fn hex_run_broken_by_non_hex() {
+        assert!(!HashDetector::has_hex_run("abc_def"));
+    }
+
+    #[test]
+    fn hex_run_empty() {
+        assert!(!HashDetector::has_hex_run(""));
+    }
 }

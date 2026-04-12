@@ -367,3 +367,51 @@ impl TimestampRegistry {
         &self.patterns
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assign_priorities_sets_nonzero() {
+        let registry = TimestampRegistry::new();
+        for pattern in registry.get_patterns() {
+            assert_ne!(
+                pattern.priority.specificity_score, 0,
+                "Pattern {:?} should have nonzero specificity",
+                pattern.format_type
+            );
+        }
+    }
+
+    #[test]
+    fn assign_priorities_unix_lowest() {
+        let registry = TimestampRegistry::new();
+        let unix_pattern = registry
+            .get_patterns()
+            .iter()
+            .find(|p| {
+                matches!(
+                    p.format_type,
+                    crate::patterns::timestamp::formats::TimestampFormat::UnixTimestamp
+                )
+            });
+        if let Some(up) = unix_pattern {
+            let structured_pattern = registry
+                .get_patterns()
+                .iter()
+                .find(|p| {
+                    matches!(
+                        p.format_type,
+                        crate::patterns::timestamp::formats::TimestampFormat::ISO8601Full
+                    )
+                });
+            if let Some(sp) = structured_pattern {
+                assert!(
+                    up.priority.effective_score() > sp.priority.effective_score(),
+                    "Unix should have lower priority (higher score) than ISO8601"
+                );
+            }
+        }
+    }
+}

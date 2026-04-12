@@ -225,4 +225,27 @@ mod tests {
             }
         }
     }
+
+    // ---- validate_email: boundary tests ----
+
+    #[test]
+    fn validate_email_exactly_320_chars() {
+        let local = "a".repeat(63);
+        let domain = format!("{}.com", "b".repeat(250));
+        let email = format!("{local}@{domain}");
+        assert!(email.len() <= 320);
+        let detector = EmailPatternDetector::new().unwrap();
+        assert!(detector.validate_email(&email));
+    }
+
+    #[test]
+    fn validate_email_321_chars_rejected() {
+        // Build a 321-char email: local@domain
+        let local = "a".repeat(64);
+        let domain_body = "b".repeat(321 - 64 - 1 - 4); // -local -@ -.com
+        let email = format!("{local}@{domain_body}.com");
+        assert!(email.len() > 320, "email len {} should exceed 320", email.len());
+        let detector = EmailPatternDetector::new().unwrap();
+        assert!(!detector.validate_email(&email));
+    }
 }

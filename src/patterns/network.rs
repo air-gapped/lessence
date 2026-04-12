@@ -418,4 +418,77 @@ mod tests {
     fn net_ind_fqdn_no_dot() {
         assert!(!NetworkDetector::has_network_indicators("localhost", false, false, true));
     }
+
+    // ---- detect_and_replace: file extension exclusions ----
+
+    #[test]
+    fn port_skip_go_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("server.go:1234", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .go file: {result}");
+    }
+
+    #[test]
+    fn port_skip_rs_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("main.rs:42", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .rs file: {result}");
+    }
+
+    #[test]
+    fn port_skip_py_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("app.py:100", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .py file: {result}");
+    }
+
+    #[test]
+    fn port_skip_js_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("index.js:55", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .js file: {result}");
+    }
+
+    #[test]
+    fn port_skip_java_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("App.java:200", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .java file: {result}");
+    }
+
+    #[test]
+    fn port_skip_c_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("main.c:30", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .c file: {result}");
+    }
+
+    #[test]
+    fn port_skip_cpp_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("main.cpp:30", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .cpp file: {result}");
+    }
+
+    #[test]
+    fn port_skip_h_file() {
+        let (result, _) = NetworkDetector::detect_and_replace("header.h:10", false, true, false);
+        assert!(!result.contains("<PORT>"), "should skip .h file: {result}");
+    }
+
+    // ---- detect_and_replace: IPv4:port split ----
+
+    #[test]
+    fn ipv4_port_split() {
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("connect 10.0.0.1:8080", true, true, false);
+        assert!(result.contains("<IP>"));
+        assert!(result.contains("<PORT>"));
+        assert!(tokens.iter().any(|t| matches!(t, Token::IPv4(_))));
+        assert!(tokens.iter().any(|t| matches!(t, Token::Port(8080))));
+    }
+
+    // ---- detect_and_replace: flag combos ----
+
+    #[test]
+    fn detect_ips_only() {
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("host 10.0.0.1:8080", true, false, false);
+        assert!(result.contains("<IP>"));
+        // Port should not be replaced when normalize_ports=false
+        assert!(!tokens.iter().any(|t| matches!(t, Token::Port(_))));
+    }
 }

@@ -56,3 +56,40 @@ pub enum FormatFamily {
     Legacy,      // Syslog, IBM, compact formats
     Unix,        // Numeric timestamps (lowest priority)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_score_unix_has_penalty() {
+        let p = PatternPriority::new(10, FormatFamily::Unix);
+        // Unix family: modifier=1000, penalty=500, base=-10
+        assert_eq!(p.effective_score(), -10 + 1000 + 500);
+    }
+
+    #[test]
+    fn effective_score_structured_highest_priority() {
+        let p = PatternPriority::new(90, FormatFamily::Structured);
+        // Structured: modifier=0, no penalty, base=-90
+        assert_eq!(p.effective_score(), -90);
+    }
+
+    #[test]
+    fn effective_score_higher_specificity_wins() {
+        let high = PatternPriority::new(100, FormatFamily::Structured);
+        let low = PatternPriority::new(50, FormatFamily::Structured);
+        assert!(high.effective_score() < low.effective_score());
+    }
+
+    #[test]
+    fn effective_score_each_family() {
+        let s = PatternPriority::new(10, FormatFamily::Structured).effective_score();
+        let a = PatternPriority::new(10, FormatFamily::Application).effective_score();
+        let r = PatternPriority::new(10, FormatFamily::Regional).effective_score();
+        let d = PatternPriority::new(10, FormatFamily::Database).effective_score();
+        let l = PatternPriority::new(10, FormatFamily::Legacy).effective_score();
+        let u = PatternPriority::new(10, FormatFamily::Unix).effective_score();
+        assert!(s < a && a < r && r < d && d < l && l < u);
+    }
+}

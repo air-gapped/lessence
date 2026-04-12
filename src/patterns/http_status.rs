@@ -242,4 +242,47 @@ mod tests {
     fn http_ind_negative() {
         assert!(!HttpStatusDetector::has_http_indicators("plain log message"));
     }
+
+    // ---- classify_status_code: each match arm ----
+
+    #[test]
+    fn classify_1xx() {
+        assert_eq!(HttpStatusDetector::classify_status_code(100), "1xx");
+        assert_eq!(HttpStatusDetector::classify_status_code(199), "1xx");
+    }
+
+    #[test]
+    fn classify_2xx() {
+        assert_eq!(HttpStatusDetector::classify_status_code(200), "2xx");
+    }
+
+    #[test]
+    fn classify_3xx() {
+        assert_eq!(HttpStatusDetector::classify_status_code(301), "3xx");
+    }
+
+    #[test]
+    fn classify_4xx() {
+        assert_eq!(HttpStatusDetector::classify_status_code(404), "4xx");
+    }
+
+    #[test]
+    fn classify_5xx() {
+        assert_eq!(HttpStatusDetector::classify_status_code(500), "5xx");
+    }
+
+    #[test]
+    fn classify_unknown() {
+        assert_eq!(HttpStatusDetector::classify_status_code(600), "unknown");
+    }
+
+    // ---- apply_http_status_pattern: verifies text modification ----
+
+    #[test]
+    fn apply_http_status_modifies_text() {
+        let input = r#"10.0.0.1 - - [01/Jan/2025:00:00:00 +0000] "GET /api HTTP/1.1" 200 1234"#;
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert!(!tokens.is_empty(), "should detect HTTP status: {result}");
+        assert!(result.contains("<HTTP_STATUS"), "text should be modified: {result}");
+    }
 }

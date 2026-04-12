@@ -169,4 +169,26 @@ mod tests {
         assert_eq!(result, "Error code: 0"); // Should not replace 0 as PID
         assert_eq!(tokens.len(), 0);
     }
+
+    // ---- is_likely_pid: boundary tests ----
+
+    #[test]
+    fn pid_zero_rejected() {
+        assert!(!ProcessDetector::is_likely_pid(0));
+    }
+
+    #[test]
+    fn pid_one_accepted() {
+        assert!(ProcessDetector::is_likely_pid(1));
+    }
+
+    #[test]
+    fn pid_max_accepted() {
+        assert!(ProcessDetector::is_likely_pid(4_194_304));
+    }
+
+    #[test]
+    fn pid_over_max_rejected() {
+        assert!(!ProcessDetector::is_likely_pid(4_194_305));
+    }
 }

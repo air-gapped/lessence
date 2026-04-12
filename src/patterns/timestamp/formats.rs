@@ -205,3 +205,55 @@ pub enum PatternSource {
     OriginalEssence,
     Merged,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- specificity_score: per-band tests ----
+
+    #[test]
+    fn specificity_enhanced_100() {
+        assert_eq!(TimestampFormat::KubernetesLog.specificity_score(), 100);
+    }
+
+    #[test]
+    fn specificity_iso8601_full_90() {
+        assert_eq!(TimestampFormat::ISO8601Full.specificity_score(), 90);
+    }
+
+    #[test]
+    fn specificity_iso8601_noz_80() {
+        assert_eq!(TimestampFormat::ISO8601NoZ.specificity_score(), 80);
+    }
+
+    #[test]
+    fn specificity_apache_common_70() {
+        assert_eq!(TimestampFormat::ApacheCommon.specificity_score(), 70);
+    }
+
+    #[test]
+    fn specificity_us_date_60() {
+        assert_eq!(TimestampFormat::USDate.specificity_score(), 60);
+    }
+
+    #[test]
+    fn specificity_syslog_bsd_50() {
+        assert_eq!(TimestampFormat::SyslogBSD.specificity_score(), 50);
+    }
+
+    #[test]
+    fn specificity_unix_bracketed_20() {
+        assert_eq!(TimestampFormat::UnixBracketed.specificity_score(), 20);
+    }
+
+    #[test]
+    fn specificity_unix_timestamp_10() {
+        assert_eq!(TimestampFormat::UnixTimestamp.specificity_score(), 10);
+    }
+
+    #[test]
+    fn specificity_unix_timestamp_ms_10() {
+        assert_eq!(TimestampFormat::UnixTimestampMs.specificity_score(), 10);
+    }
+}

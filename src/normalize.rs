@@ -882,4 +882,45 @@ mod tests {
             "Ports should be detected"
         );
     }
+
+    // ---- normalize_line: boolean condition tests ----
+
+    #[test]
+    fn normalize_line_json_disabled_no_detection() {
+        let mut config = Config::default();
+        config.normalize_json = false;
+        let n = Normalizer::new(config);
+        let line = n.normalize_line(r#"&Event{Type: Warning}"#.into()).unwrap();
+        // With JSON detection disabled, Event objects should NOT be detected
+        assert!(
+            !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
+            "JSON detection should be disabled"
+        );
+    }
+
+    #[test]
+    fn structured_detection_brace_only() {
+        // Input with { but no = — should still trigger structured detection
+        let n = Normalizer::new(Config::default());
+        let line = n.normalize_line(r#"{"level":"error","component":"web","msg":"fail"}"#.into()).unwrap();
+        assert!(
+            line.tokens.iter().any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "Brace-only input should trigger structured detection: {:?}",
+            line.tokens
+        );
+    }
+
+    #[test]
+    fn structured_detection_equals_only() {
+        // Input with = but no { — should still trigger the structured/KV detection path
+        // The || ensures both branches (contains '{') and (contains '=') individually pass
+        let n = Normalizer::new(Config::default());
+        let line = n.normalize_line("level=error component=web msg=fail".into()).unwrap();
+        // Either StructuredMessage or KeyValuePair tokens indicate the = path was taken
+        assert!(
+            line.tokens.iter().any(|t| matches!(t, Token::StructuredMessage { .. } | Token::KeyValuePair { .. })),
+            "Equals-only input should trigger structured or KV detection: {:?}",
+            line.tokens
+        );
+    }
 }
