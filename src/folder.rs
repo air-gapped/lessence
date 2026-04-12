@@ -933,14 +933,14 @@ impl PatternFolder {
         Ok(None)
     }
 
-    /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
-    /// Uses the parallel pipeline for normalization, then merges groups with identical
-    /// normalized text and displays representative original lines.
-    pub fn finish_summary(
+    /// Prepare summary data: flush batches, merge groups by normalized text,
+    /// sort by count descending, apply top-N / fit-budget / default cap.
+    /// Returns (display_items, total_patterns, was_capped, fit_truncated).
+    fn prepare_summary(
         &mut self,
         top_n: Option<usize>,
         fit_budget: Option<usize>,
-    ) -> Result<()> {
+    ) -> Result<(Vec<(usize, String)>, usize, bool, usize)> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
@@ -999,6 +999,20 @@ impl PatternFolder {
         } else {
             (sorted, false, 0)
         };
+
+        Ok((display, total_patterns, was_capped, fit_truncated))
+    }
+
+    /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
+    /// Uses the parallel pipeline for normalization, then merges groups with identical
+    /// normalized text and displays representative original lines.
+    pub fn finish_summary(
+        &mut self,
+        top_n: Option<usize>,
+        fit_budget: Option<usize>,
+    ) -> Result<()> {
+        let (display, total_patterns, was_capped, fit_truncated) =
+            self.prepare_summary(top_n, fit_budget)?;
         let shown_count = display.len();
 
         // Detect terminal width for summary truncation (unlimited when piped)
@@ -3461,5 +3475,150 @@ mod tests {
         f.buffer.push(PatternGroup::new(make_line("hello", vec![]), 1));
         f.apply_second_similarity_pass().unwrap();
         assert_eq!(f.buffer.len(), 1, "single group should remain unchanged");
+    }
+
+    // ---------------------------------------------------------------
+    // prepare_summary (extracted from finish_summary for testability)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn prepare_summary_merges_identical_groups() {
+        let mut f = make_folder();
+        // Two groups with same normalized text should merge
+        f.buffer.push(PatternGroup::new(
+            make_line("error <IP>", vec![Token::IPv4("10.0.0.1".into())]),
+            1,
+        ));
+        f.buffer.push(PatternGroup::new(
+            make_line("error <IP>", vec![Token::IPv4("10.0.0.2".into())]),
+            2,
+        ));
+        let (display, total_patterns, _, _) = f.prepare_summary(None, None).unwrap();
+        assert_eq!(total_patterns, 1, "identical normalized text should merge");
+        assert_eq!(display[0].0, 2, "merged count should be 1+1=2");
+    }
+
+    #[test]
+    fn prepare_summary_accumulates_counts() {
+        let mut f = make_folder();
+        // Group with 3 lines + group with 2 lines (same normalized) = 5 total
+        let mut g1 = PatternGroup::new(make_line("err <IP>", vec![]), 1);
+        g1.add_line(make_line("err <IP>", vec![]), 2);
+        g1.add_line(make_line("err <IP>", vec![]), 3);
+        let mut g2 = PatternGroup::new(make_line("err <IP>", vec![]), 10);
+        g2.add_line(make_line("err <IP>", vec![]), 11);
+        f.buffer.push(g1);
+        f.buffer.push(g2);
+        let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+        assert_eq!(display[0].0, 5, "merged count should be 3+2=5");
+    }
+
+    #[test]
+    fn prepare_summary_sorts_descending() {
+        let mut f = make_folder();
+        // Group A: 1 line, Group B: 5 lines — B should come first
+        f.buffer.push(PatternGroup::new(make_line("small", vec![]), 1));
+        let mut big = PatternGroup::new(make_line("big", vec![]), 10);
+        for i in 0..4 {
+            big.add_line(make_line("big", vec![]), 11 + i);
+        }
+        f.buffer.push(big);
+        let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+        assert!(display[0].0 >= display[1].0, "should sort descending");
+    }
+
+    #[test]
+    fn prepare_summary_top_n_limits() {
+        let mut f = make_folder();
+        for i in 0..10 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("pattern{i}"), vec![]),
+                i + 1,
+            ));
+        }
+        let (display, total, _, _) = f.prepare_summary(Some(3), None).unwrap();
+        assert_eq!(display.len(), 3, "top_n=3 should return 3");
+        assert_eq!(total, 10, "total_patterns should be 10");
+    }
+
+    #[test]
+    fn prepare_summary_top_zero_shows_all() {
+        let mut f = make_folder();
+        for i in 0..5 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
+        }
+        let (display, _, _, _) = f.prepare_summary(Some(0), None).unwrap();
+        assert_eq!(display.len(), 5, "top_n=0 should show all");
+    }
+
+    #[test]
+    fn prepare_summary_default_cap_at_30() {
+        let mut f = make_folder();
+        for i in 0..50 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("unique{i}"), vec![]),
+                i + 1,
+            ));
+        }
+        let (display, _, was_capped, _) = f.prepare_summary(None, None).unwrap();
+        assert_eq!(display.len(), 30, "default cap should be 30");
+        assert!(was_capped, "should indicate capping");
+    }
+
+    #[test]
+    fn prepare_summary_fit_budget_limits() {
+        let mut f = make_folder();
+        for i in 0..20 {
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("line{i}"), vec![]),
+                i + 1,
+            ));
+        }
+        let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+        assert_eq!(display.len(), 4, "fit_budget=5 → show 4 (budget-1)");
+        assert_eq!(fit_truncated, 16, "should report 16 remaining");
+    }
+
+    #[test]
+    fn prepare_summary_flushes_batch_buffer() {
+        // Parallel mode: lines go to batch_buffer, not buffer directly
+        let mut f = PatternFolder::new(Config {
+            thread_count: None,
+            min_collapse: 3,
+            ..Config::default()
+        });
+        f.process_line("2024-01-01 ERROR test 10.0.0.1").unwrap();
+        assert!(!f.batch_buffer.is_empty(), "should have buffered line");
+        let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+        assert!(!display.is_empty(), "should have processed batch");
+    }
+
+    // ---------------------------------------------------------------
+    // format_group_dispatch: rollup computed for collapsible groups
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_dispatch_computes_rollup_for_collapsible() {
+        // Kills: >= min_collapse → < min_collapse
+        // A group at min_collapse should get rollup metadata in the output
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+        ]);
+        assert_eq!(group.count(), 4); // >= min_collapse=3
+        let output = f.format_group_dispatch(&group).unwrap();
+        // Rollup produces variation markers with type names (e.g., "ipv4")
+        // The legacy format_collapsed_line produces "[+N similar, varying: X]"
+        // With rollup, it produces "[+N similar | ipv4×M ...]"
+        assert!(
+            output.contains("ipv4") || output.contains("similar"),
+            "collapsible group should have rollup or collapse marker, got: {output}"
+        );
     }
 }
