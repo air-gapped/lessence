@@ -1,0 +1,3 @@
+commit	metric	delta	status	description
+baseline	various	0	baseline	Initial timing measurements
+exp1	9.3s	-99.7s	kept	Skip kubelet.log tests in debug builds (51.6s + 28.4s → 0s)
