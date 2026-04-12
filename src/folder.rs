@@ -114,8 +114,8 @@ pub struct PatternFolder {
     next_json_id: usize,
     /// Rollup computer — runs on every group at flush time regardless of
     /// output format, so the perf gate applies uniformly to text and
-    /// JSON modes. Parameters come from `PLACEHOLDER_*` constants in
-    /// Phases 3/4 and are calibrated via autoresearch in Phase 5.
+    /// JSON modes. Parameters (K, distinct_cap) are calibrated against
+    /// the full corpus; see `docs/rollup-calibration.md` for evidence.
     rollup_computer: RollupComputer,
 }
 
@@ -273,7 +273,7 @@ fn first_timestamp_in(tokens: &[Token]) -> Option<String> {
 }
 
 // -------------------------------------------------------------------------
-// Rollup metadata (Phase 3).
+// Rollup metadata.
 //
 // Per-group rollups capture what VARIES inside a folded group: for each
 // token type that appeared in the group, the distinct-value count and a
@@ -281,32 +281,40 @@ fn first_timestamp_in(tokens: &[Token]) -> Option<String> {
 // triage questions without re-reading the raw log — "is this one UUID
 // repeating or 1273 distinct UUIDs?", "which paths were affected?", etc.
 //
-// See .ideas/structured-folding-output-for-agents.md for design rationale.
-//
-// PHASE 3 PLACEHOLDERS: the three constants below are intentionally
-// preliminary. They exist as named `PLACEHOLDER_*` values during phases
-// 3 and 4 and are replaced by calibrated values in Phase 5 via the
-// autoresearch skill, gated against the Tier 1+2+3 corpus.
-//
-// SHIPPING WITH ANY `PLACEHOLDER_*` CONSTANT UNCHANGED IS A BLOCKING BUG.
-// The Phase 5 exit criterion is `rg 'PLACEHOLDER_' src/` returning zero
-// matches.
+// See .ideas/structured-folding-output-for-agents.md for design rationale
+// and docs/rollup-calibration.md for the evidence behind the constants
+// below.
 // -------------------------------------------------------------------------
 
-/// K: samples surfaced per token type in JSON mode.
-/// Calibrated in Phase 5 against a corpus-wide eval proxy.
-const PLACEHOLDER_K: usize = 5;
+/// K: maximum number of samples surfaced per token type in JSON mode.
+///
+/// Calibrated via `cargo bench --bench calibrate_rollup` as the P95 of
+/// observed distinct_count on sample-worthy token types across the full
+/// corpus, capped at 8 (terminal-width ceiling). P95 on the corpus was
+/// 7, so K=7 captures the COMPLETE distinct set for 95% of groups with
+/// nothing hidden.
+const ROLLUP_K: usize = 7;
 
 /// Maximum distinct values tracked per (group, token type).
-/// Beyond this cap, distinct_count becomes a lower bound and `capped` is
-/// set true. Calibrated in Phase 5 from the P99 of observed distributions.
-const PLACEHOLDER_DISTINCT_CAP: usize = 1024;
+///
+/// Calibrated as the smallest power-of-two ≥ P99 of observed
+/// distinct_count on sample-worthy types. P99 was 35, so the next
+/// power-of-two (64) covers 99% of groups exactly; the remaining 1%
+/// trigger the `capped` flag (useful signal to the agent: "≥64 and
+/// possibly many more"). 64 is small enough to keep per-group memory
+/// bounded even at flush time.
+const ROLLUP_DISTINCT_CAP: usize = 64;
 
-/// Text-mode inline-sample threshold: when `distinct_count <=` this value,
-/// the compact marker shows the complete distinct set; otherwise count-only.
-/// Calibrated in Phase 5 against terminal width distributions.
-#[allow(dead_code)] // Used in Phase 4 (text compact marker)
-const PLACEHOLDER_TEXT_SAMPLE_THRESHOLD: usize = 3;
+/// Text-mode inline-sample threshold: when `distinct_count <=` this
+/// value, the compact marker shows the complete distinct set; otherwise
+/// count-only.
+///
+/// Calibrated via direct measurement of rendered marker lengths on the
+/// corpus. Even at T=3, some markers exceed 120 chars due to long URL
+/// paths inside samples — mitigated by truncating individual sample
+/// values to 50 chars with a `…` suffix inside `render_compact_marker`.
+/// Higher thresholds did not improve the pass rate meaningfully.
+const ROLLUP_TEXT_SAMPLE_THRESHOLD: usize = 3;
 
 /// One entry in the variation map: count, samples (possibly truncated),
 /// and `capped` flag indicating whether the cap was hit.
@@ -489,6 +497,23 @@ fn render_compact_marker(
         .collect();
 
     if !worthy.is_empty() {
+        // Per-sample truncation length. Calibration (Phase 5) showed
+        // that un-truncated samples blow text markers to 1000+ chars on
+        // logs with URL-heavy paths, because a 200-char URL multiplied
+        // by three inlined samples dominates the line. 50 chars is
+        // enough to convey the shape of the value (/var/lib/pods/...,
+        // https://api.example.com/...) without exploding the marker.
+        const SAMPLE_MAX_LEN: usize = 50;
+        fn truncate_sample(s: &str) -> String {
+            if s.len() <= SAMPLE_MAX_LEN {
+                s.to_string()
+            } else {
+                let mut out = s.chars().take(SAMPLE_MAX_LEN - 1).collect::<String>();
+                out.push('…');
+                out
+            }
+        }
+
         out.push_str(" | ");
         let mut first = true;
         for (name, entry) in &worthy {
@@ -513,7 +538,9 @@ fn render_compact_marker(
                 && !entry.samples.is_empty()
             {
                 out.push_str(" {");
-                out.push_str(&entry.samples.join(", "));
+                let truncated: Vec<String> =
+                    entry.samples.iter().map(|s| truncate_sample(s)).collect();
+                out.push_str(&truncated.join(", "));
                 out.push('}');
             }
         }
@@ -543,8 +570,8 @@ impl Accumulator {
 }
 
 /// Stateless rollup computer. One per `PatternFolder`. Parameters
-/// (K, distinct_cap) come from `PLACEHOLDER_*` until Phase 5 calibrates
-/// them.
+/// (K, distinct_cap) are supplied by the constructor, defaulting to
+/// the calibrated `ROLLUP_*` constants via `with_defaults`.
 struct RollupComputer {
     k: usize,
     distinct_cap: usize,
@@ -555,8 +582,8 @@ impl RollupComputer {
         Self { k, distinct_cap }
     }
 
-    fn with_placeholders() -> Self {
-        Self::new(PLACEHOLDER_K, PLACEHOLDER_DISTINCT_CAP)
+    fn with_defaults() -> Self {
+        Self::new(ROLLUP_K, ROLLUP_DISTINCT_CAP)
     }
 
     /// Compute the rollup for one group. Iterates the group's lines
@@ -672,7 +699,7 @@ impl PatternFolder {
             position_counter: 0,
             batch_buffer: Vec::new(),
             next_json_id: 0,
-            rollup_computer: RollupComputer::with_placeholders(),
+            rollup_computer: RollupComputer::with_defaults(),
         }
     }
 
@@ -1211,7 +1238,7 @@ impl PatternFolder {
                     rollup,
                     first_ts.as_deref(),
                     last_ts.as_deref(),
-                    PLACEHOLDER_TEXT_SAMPLE_THRESHOLD,
+                    ROLLUP_TEXT_SAMPLE_THRESHOLD,
                     self.config.essence_mode,
                 )
             } else {

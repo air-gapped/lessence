@@ -70,10 +70,11 @@ fn variation_field_exists_on_every_group_record() {
 
 #[test]
 fn variation_samples_never_exceed_k() {
-    // K is PLACEHOLDER_K = 5 during phase 3. Any sample list longer than
-    // that is a bug in the sampler. (Phase 5 may raise or lower this,
-    // at which point this test's constant needs to move with it.)
-    const PHASE_3_K: usize = 5;
+    // K is ROLLUP_K in src/folder.rs. The calibrated value is 7 as of
+    // Phase 5 (P95 of distinct_count on sample-worthy types across
+    // the full corpus, capped at terminal-width ceiling of 8).
+    // Any sample list longer than K is a bug in the sampler.
+    const ROLLUP_K: usize = 7;
 
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
@@ -83,8 +84,8 @@ fn variation_samples_never_exceed_k() {
         for (key, entry) in variation {
             let samples = entry["samples"].as_array().unwrap();
             assert!(
-                samples.len() <= PHASE_3_K,
-                "variation[{key}] has {} samples, exceeds K={PHASE_3_K}: {entry}",
+                samples.len() <= ROLLUP_K,
+                "variation[{key}] has {} samples, exceeds K={ROLLUP_K}: {entry}",
                 samples.len()
             );
         }

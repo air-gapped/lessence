@@ -178,6 +178,13 @@ harness = false
 name = "normalize_line"
 harness = false
 
+# Phase 5 calibration harness — not a criterion bench, a one-shot
+# binary that measures per-group distinct_count distributions across
+# the corpus and recommends values for the three PLACEHOLDER_* constants.
+[[bench]]
+name = "calibrate_rollup"
+harness = false
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 # Selectively allow noisy pedantic lints
