@@ -5,7 +5,7 @@
       "release-type": "rust",
       "include-component-in-tag": false,
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
       "changelog-sections": [
         { "type": "feat", "section": "Features" },
         { "type": "fix", "section": "Bug Fixes" },
@@ -19,7 +19,7 @@
         { "type": "build", "section": "Build System", "hidden": true },
         { "type": "ci", "section": "CI", "hidden": true }
       ],
-      "last-release-sha": "ebb64a09a45836d76e620663b7ab066a41f4bace",
+      "last-release-sha": "0bfda2a0377cf52eaa6ad7f09e795e6f6e67054e",
       "draft": true,
       "force-tag-creation": true,
       "pull-request-header": ":rocket: A new release is ready to publish",
