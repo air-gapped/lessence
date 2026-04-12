@@ -1641,13 +1641,42 @@ impl PatternFolder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::patterns::HashType;
+
+    // ---------------------------------------------------------------
+    // Helpers for building synthetic test data
+    // ---------------------------------------------------------------
+
+    /// Build a LogLine with the given tokens and a normalized template.
+    fn make_line(normalized: &str, tokens: Vec<Token>) -> LogLine {
+        LogLine {
+            original: normalized.to_string(),
+            normalized: normalized.to_string(),
+            tokens,
+            hash: 0,
+        }
+    }
+
+    /// Build a PatternGroup with N lines, each having the given tokens.
+    /// All lines share the same normalized template.
+    fn make_group(normalized: &str, lines: Vec<Vec<Token>>) -> PatternGroup {
+        assert!(!lines.is_empty(), "group must have at least one line");
+        let mut group = PatternGroup::new(make_line(normalized, lines[0].clone()), 1);
+        for (i, tokens) in lines.into_iter().enumerate().skip(1) {
+            group.add_line(make_line(normalized, tokens), i + 2);
+        }
+        group
+    }
+
+    // ---------------------------------------------------------------
+    // Existing folding tests
+    // ---------------------------------------------------------------
 
     #[test]
     fn test_simple_folding() -> Result<()> {
         let config = Config::default();
         let mut folder = PatternFolder::new(config);
 
-        // Add similar lines
         let line1 = "2025-01-20 10:15:01 [pid=12345] Connection failed to 192.168.1.100:8080";
         let line2 = "2025-01-20 10:15:02 [pid=12346] Connection failed to 192.168.1.101:8081";
         let line3 = "2025-01-20 10:15:03 [pid=12347] Connection failed to 192.168.1.102:8082";
@@ -1656,7 +1685,6 @@ mod tests {
         folder.process_line(line2)?;
         let result = folder.process_line(line3)?;
 
-        // Should not collapse yet (need more lines)
         assert!(result.is_none());
 
         Ok(())
@@ -1665,13 +1693,12 @@ mod tests {
     #[test]
     fn test_folding_with_finish() -> Result<()> {
         let config = Config {
-            min_collapse: 2, // Lower threshold for testing
+            min_collapse: 2,
             ..Config::default()
         };
 
         let mut folder = PatternFolder::new(config);
 
-        // Add similar lines
         let line1 = "2025-01-20 10:15:01 [pid=12345] Connection failed to 192.168.1.100:8080";
         let line2 = "2025-01-20 10:15:02 [pid=12346] Connection failed to 192.168.1.101:8081";
         let line3 = "2025-01-20 10:15:03 [pid=12347] Connection failed to 192.168.1.102:8082";
@@ -1683,7 +1710,6 @@ mod tests {
         let results = folder.finish()?;
         assert!(!results.is_empty());
 
-        // Check that output contains compact folding format (default is compact=true)
         let output = results.join("\n");
         assert!(
             output.contains("similar"),
@@ -1698,7 +1724,6 @@ mod tests {
         let config = Config::default();
         let mut folder = PatternFolder::new(config);
 
-        // Add different lines
         let line1 = "2025-01-20 10:15:01 Starting application";
         let line2 = "2025-01-20 10:15:02 Loading configuration";
         let line3 = "2025-01-20 10:15:03 Database connected";
@@ -1710,14 +1735,862 @@ mod tests {
         let results = folder.finish()?;
         let output = results.join("\n");
 
-        // Should not contain collapsed format
         assert!(!output.contains("collapsed"));
-
-        // All original lines should be present
         assert!(output.contains("Starting application"));
         assert!(output.contains("Loading configuration"));
         assert!(output.contains("Database connected"));
 
         Ok(())
+    }
+
+    // ---------------------------------------------------------------
+    // seed_for_group — FNV-1a determinism
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn seed_for_group_pinned_values() {
+        // Pin FNV-1a outputs so any implementation drift is caught.
+        assert_eq!(seed_for_group("hello"), 0xa430_d846_80aa_bd0b);
+        assert_eq!(seed_for_group("world"), 0x4f59_ff5e_730c_8af3);
+    }
+
+    #[test]
+    fn seed_for_group_empty_string_is_offset_basis() {
+        // Empty string → no XOR/multiply iterations → returns FNV offset basis.
+        assert_eq!(seed_for_group(""), 0xcbf2_9ce4_8422_2325);
+    }
+
+    #[test]
+    fn seed_for_group_different_inputs_different_seeds() {
+        let a = seed_for_group("template A: <UUID> failed");
+        let b = seed_for_group("template B: <IP> connected");
+        assert_ne!(a, b);
+    }
+
+    // ---------------------------------------------------------------
+    // hash_token_value — FNV-1a on token canonical strings
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn hash_token_value_matches_seed_for_same_string() {
+        // hash_token_value(Name("hello")) should equal seed_for_group("hello")
+        // because both use the same FNV-1a over the same bytes.
+        let token = Token::Name("hello".to_string());
+        assert_eq!(hash_token_value(&token), seed_for_group("hello"));
+    }
+
+    #[test]
+    fn hash_token_value_different_tokens_different_hashes() {
+        let a = hash_token_value(&Token::Pid(1234));
+        let b = hash_token_value(&Token::Pid(5678));
+        assert_ne!(a, b);
+    }
+
+    // ---------------------------------------------------------------
+    // is_sample_worthy — exhaustiveness
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn is_sample_worthy_covers_all_token_variants() {
+        // Build one instance of every Token variant. If a new variant is
+        // added to the enum without updating this test, it won't compile.
+        let all_tokens: Vec<(Token, bool)> = vec![
+            // Sample-worthy types (true)
+            (Token::Uuid("u".into()), true),
+            (Token::IPv4("1.2.3.4".into()), true),
+            (Token::IPv6("::1".into()), true),
+            (Token::Path("/a".into()), true),
+            (Token::Email("a@b".into()), true),
+            (Token::Hash(HashType::MD5, "abc".into()), true),
+            (Token::KubernetesNamespace("ns".into()), true),
+            (Token::VolumeName("vol".into()), true),
+            (Token::PluginType("csi".into()), true),
+            (Token::PodName("pod".into()), true),
+            (Token::QuotedString("q".into()), true),
+            (Token::Name("n".into()), true),
+            (Token::HttpStatus(200), true),
+            (Token::HttpStatusClass("2xx".into()), true),
+            (Token::BracketContext(vec!["err".into()]), true),
+            (Token::Json("{}".into()), true),
+            // Count-only types (false)
+            (Token::Timestamp("ts".into()), false),
+            (Token::Port(80), false),
+            (Token::Pid(1), false),
+            (Token::ThreadID("t1".into()), false),
+            (Token::Duration("1s".into()), false),
+            (Token::Size("1KB".into()), false),
+            (Token::Number("42".into()), false),
+            (
+                Token::KeyValuePair {
+                    key: "k".into(),
+                    value_type: "v".into(),
+                },
+                false,
+            ),
+            (
+                Token::LogWithModule {
+                    level: "INFO".into(),
+                    module: "m".into(),
+                },
+                false,
+            ),
+            (
+                Token::StructuredMessage {
+                    component: "c".into(),
+                    level: "l".into(),
+                },
+                false,
+            ),
+        ];
+
+        for (token, expected) in &all_tokens {
+            assert_eq!(
+                is_sample_worthy(token),
+                *expected,
+                "is_sample_worthy({:?}) should be {expected}",
+                token_type_name(token)
+            );
+        }
+
+        // Verify we covered all 26 variants (24 original + any new ones).
+        // Update this count if Token gains new variants.
+        assert_eq!(
+            all_tokens.len(),
+            26,
+            "Token enum may have new variants — update this test"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // token_type_name — exhaustiveness
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn token_type_name_covers_all_variants() {
+        // Every Token variant must return a non-empty UPPERCASE name.
+        let tokens: Vec<Token> = vec![
+            Token::Timestamp("ts".into()),
+            Token::IPv4("1.2.3.4".into()),
+            Token::IPv6("::1".into()),
+            Token::Port(80),
+            Token::Hash(HashType::SHA256, "h".into()),
+            Token::Uuid("u".into()),
+            Token::Pid(1),
+            Token::ThreadID("t".into()),
+            Token::Path("/p".into()),
+            Token::Json("{}".into()),
+            Token::Duration("1s".into()),
+            Token::Size("1K".into()),
+            Token::Number("1".into()),
+            Token::HttpStatus(200),
+            Token::QuotedString("q".into()),
+            Token::Name("n".into()),
+            Token::KubernetesNamespace("ns".into()),
+            Token::VolumeName("v".into()),
+            Token::PluginType("p".into()),
+            Token::PodName("pod".into()),
+            Token::HttpStatusClass("2xx".into()),
+            Token::BracketContext(vec![]),
+            Token::KeyValuePair {
+                key: "k".into(),
+                value_type: "v".into(),
+            },
+            Token::LogWithModule {
+                level: "INFO".into(),
+                module: "m".into(),
+            },
+            Token::StructuredMessage {
+                component: "c".into(),
+                level: "l".into(),
+            },
+            Token::Email("e@e".into()),
+        ];
+
+        for token in &tokens {
+            let name = token_type_name(token);
+            assert!(
+                !name.is_empty(),
+                "token_type_name returned empty for {token:?}",
+            );
+            assert_eq!(
+                name,
+                name.to_uppercase(),
+                "token_type_name should return UPPERCASE: got {name}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // token_value_string — no panics on any variant
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn token_value_string_handles_all_variants() {
+        let tokens: Vec<Token> = vec![
+            Token::Timestamp("2025-01-01".into()),
+            Token::IPv4("10.0.0.1".into()),
+            Token::IPv6("::1".into()),
+            Token::Port(443),
+            Token::Hash(HashType::SHA1, "abc123".into()),
+            Token::Uuid("550e8400-e29b-41d4-a716-446655440000".into()),
+            Token::Pid(9999),
+            Token::ThreadID("worker-3".into()),
+            Token::Path("/var/log/app.log".into()),
+            Token::Json(r#"{"key":"val"}"#.into()),
+            Token::Duration("3.5s".into()),
+            Token::Size("2MB".into()),
+            Token::Number("42".into()),
+            Token::HttpStatus(404),
+            Token::QuotedString("hello world".into()),
+            Token::Name("myapp".into()),
+            Token::KubernetesNamespace("kube-system".into()),
+            Token::VolumeName("pvc-data".into()),
+            Token::PluginType("csi-driver".into()),
+            Token::PodName("api-server-xyz".into()),
+            Token::HttpStatusClass("5xx".into()),
+            Token::BracketContext(vec!["error".into(), "handler".into()]),
+            Token::KeyValuePair {
+                key: "user".into(),
+                value_type: "string".into(),
+            },
+            Token::LogWithModule {
+                level: "WARN".into(),
+                module: "net".into(),
+            },
+            Token::StructuredMessage {
+                component: "api".into(),
+                level: "error".into(),
+            },
+            Token::Email("user@example.com".into()),
+        ];
+
+        for token in &tokens {
+            let val = token_value_string(token);
+            assert!(
+                !val.is_empty(),
+                "token_value_string returned empty for {:?}",
+                token_type_name(token)
+            );
+        }
+
+        // Spot-check specific formats
+        assert_eq!(
+            token_value_string(&Token::BracketContext(vec![
+                "error".into(),
+                "handler".into()
+            ])),
+            "error,handler"
+        );
+        assert_eq!(token_value_string(&Token::Port(443)), "443");
+        assert_eq!(token_value_string(&Token::HttpStatus(404)), "404");
+        assert_eq!(token_value_string(&Token::Pid(9999)), "9999");
+        assert_eq!(
+            token_value_string(&Token::KeyValuePair {
+                key: "k".into(),
+                value_type: "v".into()
+            }),
+            "k=v"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // RollupComputer::compute — hand-crafted groups
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn rollup_empty_group_no_tokens() {
+        let rc = RollupComputer::with_defaults();
+        let group = make_group("no tokens here", vec![vec![]]);
+        let rollup = rc.compute(&group);
+        assert!(
+            rollup.is_empty(),
+            "empty-token group should produce empty rollup"
+        );
+    }
+
+    #[test]
+    fn rollup_single_sample_worthy_token() {
+        let rc = RollupComputer::with_defaults();
+        let group = make_group(
+            "request <UUID> failed",
+            vec![vec![Token::Uuid("aaa-bbb".into())]],
+        );
+        let rollup = rc.compute(&group);
+        let entry = rollup.get("UUID").expect("UUID should be in rollup");
+        assert_eq!(entry.distinct_count, 1);
+        assert_eq!(entry.samples, vec!["aaa-bbb"]);
+        assert!(!entry.capped);
+    }
+
+    #[test]
+    fn rollup_single_count_only_token() {
+        let rc = RollupComputer::with_defaults();
+        let group = make_group(
+            "<TIMESTAMP> started",
+            vec![vec![Token::Timestamp("2025-01-01 10:00:00".into())]],
+        );
+        let rollup = rc.compute(&group);
+        let entry = rollup
+            .get("TIMESTAMP")
+            .expect("TIMESTAMP should be in rollup");
+        assert_eq!(entry.distinct_count, 1);
+        assert!(
+            entry.samples.is_empty(),
+            "count-only type must have empty samples"
+        );
+        assert!(!entry.capped);
+    }
+
+    #[test]
+    fn rollup_mixed_tokens_across_lines() {
+        let rc = RollupComputer::with_defaults();
+        let lines: Vec<Vec<Token>> = (0..5)
+            .map(|i| {
+                vec![
+                    Token::Uuid(format!("uuid-{}", i % 3)), // 3 distinct
+                    Token::Timestamp(format!("ts-{i}")),    // 5 distinct
+                ]
+            })
+            .collect();
+        let group = make_group("request <UUID> at <TIMESTAMP>", lines);
+        let rollup = rc.compute(&group);
+
+        let uuid_entry = rollup.get("UUID").unwrap();
+        assert_eq!(uuid_entry.distinct_count, 3);
+        assert_eq!(uuid_entry.samples.len(), 3); // 3 <= K, so all shown
+        assert!(!uuid_entry.capped);
+
+        let ts_entry = rollup.get("TIMESTAMP").unwrap();
+        assert_eq!(ts_entry.distinct_count, 5);
+        assert!(ts_entry.samples.is_empty(), "TIMESTAMP is count-only");
+        assert!(!ts_entry.capped);
+    }
+
+    #[test]
+    fn rollup_exactly_at_cap_is_not_capped() {
+        let rc = RollupComputer::with_defaults();
+        // ROLLUP_DISTINCT_CAP = 64. Generate exactly 64 distinct UUIDs.
+        let lines: Vec<Vec<Token>> = (0..64)
+            .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
+            .collect();
+        let group = make_group("request <UUID>", lines);
+        let rollup = rc.compute(&group);
+
+        let entry = rollup.get("UUID").unwrap();
+        assert_eq!(entry.distinct_count, 64);
+        assert!(!entry.capped, "exactly at cap should NOT be capped");
+    }
+
+    #[test]
+    fn rollup_one_over_cap_is_capped() {
+        let rc = RollupComputer::with_defaults();
+        // 65 distinct UUIDs: first 64 are inserted, 65th triggers the cap.
+        let lines: Vec<Vec<Token>> = (0..65)
+            .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
+            .collect();
+        let group = make_group("request <UUID>", lines);
+        let rollup = rc.compute(&group);
+
+        let entry = rollup.get("UUID").unwrap();
+        assert_eq!(entry.distinct_count, 64, "capped at ROLLUP_DISTINCT_CAP");
+        assert!(entry.capped, "65th value should trigger capped flag");
+    }
+
+    #[test]
+    fn rollup_samples_capped_at_k() {
+        let rc = RollupComputer::with_defaults();
+        // ROLLUP_K = 7. Create 8 distinct UUIDs — samples should have 7.
+        let lines: Vec<Vec<Token>> = (0..8)
+            .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
+            .collect();
+        let group = make_group("request <UUID>", lines);
+        let rollup = rc.compute(&group);
+
+        let entry = rollup.get("UUID").unwrap();
+        assert_eq!(entry.distinct_count, 8);
+        assert_eq!(
+            entry.samples.len(),
+            ROLLUP_K,
+            "samples should be capped at K={ROLLUP_K}"
+        );
+    }
+
+    #[test]
+    fn rollup_deterministic_across_calls() {
+        let rc = RollupComputer::with_defaults();
+        let lines: Vec<Vec<Token>> = (0..20)
+            .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
+            .collect();
+        let group = make_group("request <UUID>", lines);
+
+        let rollup1 = rc.compute(&group);
+        let rollup2 = rc.compute(&group);
+        assert_eq!(rollup1, rollup2, "same group must produce identical rollup");
+    }
+
+    #[test]
+    fn rollup_different_templates_different_samples() {
+        let rc = RollupComputer::with_defaults();
+        // Same 20 values, but different normalized templates → different seeds.
+        let tokens: Vec<Vec<Token>> = (0..20)
+            .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
+            .collect();
+        let group_a = make_group("template A: <UUID>", tokens.clone());
+        let group_b = make_group("template B: <UUID>", tokens);
+
+        let rollup_a = rc.compute(&group_a);
+        let rollup_b = rc.compute(&group_b);
+
+        let samples_a = &rollup_a.get("UUID").unwrap().samples;
+        let samples_b = &rollup_b.get("UUID").unwrap().samples;
+
+        // Both have 7 samples drawn from the same 20 values but with
+        // different seeds, so the draws should (almost certainly) differ.
+        // This is probabilistic but with 20-choose-7 there are 77520
+        // possible draws — collision chance is negligible.
+        assert_ne!(
+            samples_a, samples_b,
+            "different templates should (almost certainly) produce different sample draws"
+        );
+    }
+
+    #[test]
+    fn rollup_samples_are_sorted() {
+        let rc = RollupComputer::with_defaults();
+        let lines: Vec<Vec<Token>> = (0..15)
+            .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
+            .collect();
+        let group = make_group("request <UUID>", lines);
+        let rollup = rc.compute(&group);
+
+        let entry = rollup.get("UUID").unwrap();
+        let mut sorted = entry.samples.clone();
+        sorted.sort();
+        assert_eq!(
+            entry.samples, sorted,
+            "samples must be lexicographically sorted"
+        );
+    }
+
+    #[test]
+    fn rollup_variation_keys_are_sorted() {
+        let rc = RollupComputer::with_defaults();
+        let group = make_group(
+            "mixed",
+            vec![vec![
+                Token::Uuid("u".into()),
+                Token::IPv4("1.2.3.4".into()),
+                Token::Path("/a".into()),
+            ]],
+        );
+        let rollup = rc.compute(&group);
+        let keys: Vec<&&str> = rollup.keys().collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(
+            keys, sorted,
+            "variation keys must be alphabetically sorted (BTreeMap)"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // render_compact_marker
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn marker_empty_rollup() {
+        let result = render_compact_marker(42, &BTreeMap::new(), None, None, 3, false);
+        assert_eq!(result, "[+42 similar]");
+    }
+
+    #[test]
+    fn marker_inline_samples_below_threshold() {
+        let mut rollup: GroupRollup = BTreeMap::new();
+        rollup.insert(
+            "PATH",
+            VariationEntry {
+                distinct_count: 2,
+                samples: vec!["/var/a".into(), "/var/b".into()],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(10, &rollup, None, None, 3, false);
+        assert_eq!(result, "[+10 similar | path×2 {/var/a, /var/b}]");
+    }
+
+    #[test]
+    fn marker_count_only_above_threshold() {
+        let mut rollup: GroupRollup = BTreeMap::new();
+        rollup.insert(
+            "PATH",
+            VariationEntry {
+                distinct_count: 5,
+                samples: vec![
+                    "/a".into(),
+                    "/b".into(),
+                    "/c".into(),
+                    "/d".into(),
+                    "/e".into(),
+                ],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(10, &rollup, None, None, 3, false);
+        // distinct > threshold → count-only, no inline samples
+        assert_eq!(result, "[+10 similar | path×5]");
+    }
+
+    #[test]
+    fn marker_capped_entry_has_plus_suffix() {
+        let mut rollup: GroupRollup = BTreeMap::new();
+        rollup.insert(
+            "HASH",
+            VariationEntry {
+                distinct_count: 64,
+                samples: vec!["abc".into(), "def".into()],
+                capped: true,
+            },
+        );
+        let result = render_compact_marker(100, &rollup, None, None, 3, false);
+        assert!(
+            result.contains("hash×64+"),
+            "capped entry needs '+': {result}"
+        );
+        // Capped entries should NOT show inline samples regardless of threshold
+        assert!(
+            !result.contains('{'),
+            "capped entry should not inline samples: {result}"
+        );
+    }
+
+    #[test]
+    fn marker_time_range_present() {
+        let result = render_compact_marker(
+            5,
+            &BTreeMap::new(),
+            Some("10:00:00"),
+            Some("10:05:00"),
+            3,
+            false,
+        );
+        assert_eq!(result, "[+5 similar | 10:00:00 → 10:05:00]");
+    }
+
+    #[test]
+    fn marker_time_range_suppressed_in_essence_mode() {
+        let result = render_compact_marker(
+            5,
+            &BTreeMap::new(),
+            Some("10:00:00"),
+            Some("10:05:00"),
+            3,
+            true, // essence mode
+        );
+        assert_eq!(
+            result, "[+5 similar]",
+            "essence mode must suppress time range"
+        );
+    }
+
+    #[test]
+    fn marker_sample_truncation_at_50_chars() {
+        let mut rollup: GroupRollup = BTreeMap::new();
+        let long_value = "a".repeat(51); // 51 chars → should be truncated
+        let exact_value = "b".repeat(50); // 50 chars → should NOT be truncated
+        rollup.insert(
+            "PATH",
+            VariationEntry {
+                distinct_count: 2,
+                samples: vec![exact_value.clone(), long_value],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(10, &rollup, None, None, 3, false);
+        // 50-char value: not truncated
+        assert!(
+            result.contains(&exact_value),
+            "50-char value should not be truncated"
+        );
+        // 51-char value: truncated to 49 chars + '…'
+        let truncated = format!("{}…", "a".repeat(49));
+        assert!(
+            result.contains(&truncated),
+            "51-char value should be truncated to 49+…: {result}"
+        );
+    }
+
+    #[test]
+    fn marker_multiple_entries_comma_separated() {
+        let mut rollup: GroupRollup = BTreeMap::new();
+        rollup.insert(
+            "IPV4",
+            VariationEntry {
+                distinct_count: 4,
+                samples: vec!["10.0.0.1".into(), "10.0.0.2".into()],
+                capped: false,
+            },
+        );
+        rollup.insert(
+            "UUID",
+            VariationEntry {
+                distinct_count: 7,
+                samples: vec!["aaa".into(), "bbb".into()],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(10, &rollup, None, None, 3, false);
+        // BTreeMap order: IPV4 before UUID
+        assert!(
+            result.contains("ipv4×4, uuid×7"),
+            "entries should be comma-separated, lowercase: {result}"
+        );
+    }
+
+    #[test]
+    fn marker_count_only_types_filtered_out() {
+        // Count-only types (empty samples, distinct > 0) should not appear
+        // in the marker unless distinct_count <= inline_threshold.
+        let mut rollup: GroupRollup = BTreeMap::new();
+        rollup.insert(
+            "TIMESTAMP",
+            VariationEntry {
+                distinct_count: 500,
+                samples: vec![],
+                capped: false,
+            },
+        );
+        rollup.insert(
+            "UUID",
+            VariationEntry {
+                distinct_count: 3,
+                samples: vec!["a".into(), "b".into(), "c".into()],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(10, &rollup, None, None, 3, false);
+        assert!(
+            !result.contains("timestamp"),
+            "count-only type with high cardinality should be filtered: {result}"
+        );
+        assert!(
+            result.contains("uuid×3"),
+            "sample-worthy type should appear: {result}"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Mutant-killing tests (targeted at cargo-mutants survivors)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn marker_zero_distinct_count_filtered_out() {
+        // Kills mutant: `distinct_count > 0` → `distinct_count >= 0`
+        // An entry with distinct_count=0 should never appear in the marker.
+        let mut rollup: GroupRollup = BTreeMap::new();
+        rollup.insert(
+            "UUID",
+            VariationEntry {
+                distinct_count: 0,
+                samples: vec![],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(10, &rollup, None, None, 3, false);
+        assert_eq!(
+            result, "[+10 similar]",
+            "zero-distinct entry must be filtered out"
+        );
+    }
+
+    #[test]
+    fn marker_truncation_exact_length() {
+        // Kills mutants: `SAMPLE_MAX_LEN - 1` → `+ 1` or `/ 1`
+        // The truncated output must be exactly 50 chars (49 content + '…').
+        let mut rollup: GroupRollup = BTreeMap::new();
+        let long_value = "x".repeat(100);
+        rollup.insert(
+            "PATH",
+            VariationEntry {
+                distinct_count: 1,
+                samples: vec![long_value],
+                capped: false,
+            },
+        );
+        let result = render_compact_marker(5, &rollup, None, None, 3, false);
+        // Extract the truncated sample from the marker: between { and }
+        let start = result.find('{').expect("should have inline samples") + 1;
+        let end = result.find('}').expect("should have closing brace");
+        let rendered_sample = &result[start..end];
+        // 49 'x' chars + '…' = 50 chars total
+        assert_eq!(
+            rendered_sample.chars().count(),
+            50,
+            "truncated sample should be exactly 50 chars: got '{rendered_sample}'"
+        );
+        assert!(
+            rendered_sample.ends_with('…'),
+            "truncated sample should end with '…': got '{rendered_sample}'"
+        );
+        assert_eq!(
+            rendered_sample.chars().filter(|&c| c == 'x').count(),
+            49,
+            "should have 49 content chars before '…'"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Property-based tests for rollup invariants
+    // ---------------------------------------------------------------
+
+    mod rollup_properties {
+        use super::*;
+        use proptest::collection::vec as pvec;
+        use proptest::prelude::*;
+
+        /// Generate a random sample-worthy token with a random string value.
+        fn arb_sample_worthy_token() -> impl Strategy<Value = Token> {
+            ("[a-z0-9]{1,20}", 0..6u8).prop_map(|(val, variant)| match variant {
+                0 => Token::Uuid(val),
+                1 => Token::IPv4(val),
+                2 => Token::Path(val),
+                3 => Token::Name(val),
+                4 => Token::Email(val),
+                _ => Token::QuotedString(val),
+            })
+        }
+
+        /// Generate a random count-only token.
+        fn arb_count_only_token() -> impl Strategy<Value = Token> {
+            ("[a-z0-9]{1,20}", 0..4u8).prop_map(|(val, variant)| match variant {
+                0 => Token::Timestamp(val),
+                1 => Token::Duration(val),
+                2 => Token::Number(val),
+                _ => Token::Size(val),
+            })
+        }
+
+        /// Generate a random token (either sample-worthy or count-only).
+        fn arb_token() -> impl Strategy<Value = Token> {
+            prop_oneof![arb_sample_worthy_token(), arb_count_only_token(),]
+        }
+
+        /// Generate a random PatternGroup for property testing.
+        fn arb_group() -> impl Strategy<Value = PatternGroup> {
+            (
+                "[a-z ]{5,30}",                       // normalized template
+                pvec(pvec(arb_token(), 0..8), 1..50), // 1-49 lines, 0-7 tokens each
+            )
+                .prop_map(|(normalized, token_lines)| make_group(&normalized, token_lines))
+        }
+
+        proptest! {
+            #[test]
+            fn samples_never_exceed_k(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                for (name, entry) in &rollup {
+                    prop_assert!(
+                        entry.samples.len() <= ROLLUP_K,
+                        "{name}: samples.len()={} > K={ROLLUP_K}",
+                        entry.samples.len()
+                    );
+                }
+            }
+
+            #[test]
+            fn capped_implies_distinct_at_cap(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                for (name, entry) in &rollup {
+                    if entry.capped {
+                        prop_assert!(
+                            entry.distinct_count >= ROLLUP_DISTINCT_CAP,
+                            "{name}: capped=true but distinct_count={} < cap={ROLLUP_DISTINCT_CAP}",
+                            entry.distinct_count
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn not_capped_implies_distinct_under_cap(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                for (name, entry) in &rollup {
+                    if !entry.capped {
+                        prop_assert!(
+                            entry.distinct_count <= ROLLUP_DISTINCT_CAP,
+                            "{name}: capped=false but distinct_count={} > cap={ROLLUP_DISTINCT_CAP}",
+                            entry.distinct_count
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn count_only_types_always_empty_samples(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                const COUNT_ONLY: &[&str] = &[
+                    "TIMESTAMP", "DURATION", "SIZE", "NUMBER",
+                    "PORT", "PID", "THREAD_ID", "KEY_VALUE",
+                    "LOG_WITH_MODULE", "STRUCTURED_MESSAGE",
+                ];
+                for name in COUNT_ONLY {
+                    if let Some(entry) = rollup.get(name) {
+                        prop_assert!(
+                            entry.samples.is_empty(),
+                            "{name}: count-only type has samples: {:?}",
+                            entry.samples
+                        );
+                    }
+                }
+            }
+
+            #[test]
+            fn compute_is_deterministic(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let r1 = rc.compute(&group);
+                let r2 = rc.compute(&group);
+                prop_assert_eq!(r1, r2);
+            }
+
+            #[test]
+            fn variation_keys_alphabetically_sorted(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                let keys: Vec<&&str> = rollup.keys().collect();
+                let mut sorted = keys.clone();
+                sorted.sort();
+                prop_assert_eq!(keys, sorted);
+            }
+
+            #[test]
+            fn samples_are_lexicographically_sorted(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                for (name, entry) in &rollup {
+                    let mut sorted = entry.samples.clone();
+                    sorted.sort();
+                    prop_assert!(
+                        entry.samples == sorted,
+                        "{name}: samples not sorted: {:?}", entry.samples
+                    );
+                }
+            }
+
+            #[test]
+            fn samples_subset_of_distinct_count(group in arb_group()) {
+                let rc = RollupComputer::with_defaults();
+                let rollup = rc.compute(&group);
+                for (name, entry) in &rollup {
+                    prop_assert!(
+                        entry.samples.len() <= entry.distinct_count,
+                        "{name}: samples.len()={} > distinct_count={}",
+                        entry.samples.len(), entry.distinct_count
+                    );
+                }
+            }
+        }
     }
 }
