@@ -1000,6 +1000,46 @@ impl PatternFolder {
         Ok((display, total_patterns, was_capped, fit_truncated))
     }
 
+    /// Format a single summary line, optionally truncating to `max_width`.
+    fn format_summary_line(count: usize, representative: &str, max_width: Option<usize>) -> String {
+        let prefix = format!("[{count}x] ");
+        match max_width {
+            Some(width) if prefix.len() + representative.len() > width => {
+                let avail = width.saturating_sub(prefix.len() + 3); // 3 for "..."
+                if avail > 20 {
+                    format!("{prefix}{}...", &representative[..avail])
+                } else {
+                    format!("{prefix}{representative}")
+                }
+            }
+            _ => format!("{prefix}{representative}"),
+        }
+    }
+
+    /// Format the coverage message for stderr.
+    fn format_coverage_message(
+        shown_count: usize,
+        total_patterns: usize,
+        shown_lines: usize,
+        total_lines: usize,
+        was_capped: bool,
+    ) -> String {
+        let coverage = if total_lines > 0 {
+            (shown_lines as f64 / total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+        if was_capped {
+            format!(
+                "({shown_count} of {total_patterns} patterns, {coverage:.0}% coverage — use --top N to adjust, or --top 0 for all)",
+            )
+        } else {
+            format!(
+                "({shown_count} of {total_patterns} patterns, {shown_lines} of {total_lines} lines, {coverage:.0}% coverage)",
+            )
+        }
+    }
+
     /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
     /// Uses the parallel pipeline for normalization, then merges groups with identical
     /// normalized text and displays representative original lines.
@@ -1022,18 +1062,7 @@ impl PatternFolder {
 
         // Output: one line per pattern with representative original line
         for (count, representative) in &display {
-            let prefix = format!("[{count}x] ");
-            match max_width {
-                Some(width) if prefix.len() + representative.len() > width => {
-                    let avail = width.saturating_sub(prefix.len() + 3); // 3 for "..."
-                    if avail > 20 {
-                        println!("{prefix}{}...", &representative[..avail]);
-                    } else {
-                        println!("{prefix}{representative}");
-                    }
-                }
-                _ => println!("{prefix}{representative}"),
-            }
+            println!("{}", Self::format_summary_line(*count, representative, max_width));
         }
 
         if fit_truncated > 0 {
@@ -1042,21 +1071,9 @@ impl PatternFolder {
 
         // Coverage info on stderr
         let shown_lines: usize = display.iter().map(|(c, _)| c).sum();
-        let coverage = if self.stats.total_lines > 0 {
-            (shown_lines as f64 / self.stats.total_lines as f64) * 100.0
-        } else {
-            0.0
-        };
-        if was_capped {
-            eprintln!(
-                "({shown_count} of {total_patterns} patterns, {coverage:.0}% coverage — use --top N to adjust, or --top 0 for all)",
-            );
-        } else {
-            eprintln!(
-                "({shown_count} of {total_patterns} patterns, {shown_lines} of {} lines, {coverage:.0}% coverage)",
-                self.stats.total_lines
-            );
-        }
+        eprintln!("{}", Self::format_coverage_message(
+            shown_count, total_patterns, shown_lines, self.stats.total_lines, was_capped,
+        ));
 
         Ok(())
     }
@@ -1452,14 +1469,15 @@ impl PatternFolder {
         Ok(())
     }
 
-    pub fn print_stats_json(&self, elapsed: Duration) -> Result<()> {
+    /// Build the JSON stats structure (testable, no I/O).
+    fn build_stats_json(&self, elapsed: Duration) -> StatsJson {
         let compression_ratio = if self.stats.total_lines > 0 {
             (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
         } else {
             0.0
         };
 
-        let stats_json = StatsJson {
+        StatsJson {
             input_lines: self.stats.total_lines,
             output_lines: self.stats.output_lines,
             compression_ratio,
@@ -1481,8 +1499,11 @@ impl PatternFolder {
                 kubernetes: self.stats.kubernetes,
                 emails: self.stats.emails,
             },
-        };
+        }
+    }
 
+    pub fn print_stats_json(&self, elapsed: Duration) -> Result<()> {
+        let stats_json = self.build_stats_json(elapsed);
         let stderr = io::stderr();
         let mut handle = stderr.lock();
         serde_json::to_writer(&mut handle, &stats_json)?;
@@ -3746,5 +3767,403 @@ mod tests {
             output.contains("ipv4") || output.contains("similar"),
             "collapsible group should have rollup or collapse marker, got: {output}"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // format_summary_line (extracted from finish_summary)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn summary_line_no_width() {
+        let line = PatternFolder::format_summary_line(5, "error occurred", None);
+        assert_eq!(line, "[5x] error occurred");
+    }
+
+    #[test]
+    fn summary_line_fits_in_width() {
+        let line = PatternFolder::format_summary_line(5, "error", Some(100));
+        assert_eq!(line, "[5x] error");
+    }
+
+    #[test]
+    fn summary_line_truncated() {
+        let long_rep = "a".repeat(100);
+        let line = PatternFolder::format_summary_line(5, &long_rep, Some(50));
+        assert!(line.ends_with("..."), "should truncate with ...: {line}");
+        assert!(line.len() <= 50);
+    }
+
+    #[test]
+    fn summary_line_avail_under_20_no_truncate() {
+        // Width so small that avail <= 20: don't truncate, just show full
+        let line = PatternFolder::format_summary_line(5, "abcdefghij", Some(10));
+        assert_eq!(line, "[5x] abcdefghij");
+    }
+
+    // ---------------------------------------------------------------
+    // format_coverage_message (extracted from finish_summary)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn coverage_msg_capped() {
+        let msg = PatternFolder::format_coverage_message(10, 50, 100, 200, true);
+        assert!(msg.contains("10 of 50 patterns"));
+        assert!(msg.contains("50% coverage"));
+        assert!(msg.contains("--top N"));
+    }
+
+    #[test]
+    fn coverage_msg_not_capped() {
+        let msg = PatternFolder::format_coverage_message(10, 10, 100, 200, false);
+        assert!(msg.contains("10 of 10 patterns"));
+        assert!(msg.contains("100 of 200 lines"));
+        assert!(msg.contains("50% coverage"));
+    }
+
+    #[test]
+    fn coverage_msg_zero_lines() {
+        let msg = PatternFolder::format_coverage_message(0, 0, 0, 0, false);
+        assert!(msg.contains("0% coverage"));
+    }
+
+    // ---------------------------------------------------------------
+    // build_stats_json (extracted from print_stats_json)
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn build_stats_json_zero_lines() {
+        let f = make_folder();
+        let json = f.build_stats_json(Duration::from_millis(100));
+        assert_eq!(json.compression_ratio, 0.0);
+        assert_eq!(json.input_lines, 0);
+        assert_eq!(json.elapsed_ms, 100);
+    }
+
+    #[test]
+    fn build_stats_json_with_data() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 50;
+        f.stats.output_lines = 50;
+        f.stats.timestamps = 10;
+        f.stats.ips = 5;
+        let json = f.build_stats_json(Duration::from_secs(1));
+        assert_eq!(json.compression_ratio, 50.0);
+        assert_eq!(json.input_lines, 100);
+        assert_eq!(json.output_lines, 50);
+        assert_eq!(json.elapsed_ms, 1000);
+        assert_eq!(json.pattern_hits.timestamps, 10);
+        assert_eq!(json.pattern_hits.ips, 5);
+    }
+
+    // ---------------------------------------------------------------
+    // print_stats boundary tests (already takes Writer)
+    // ---------------------------------------------------------------
+
+    // Boundary tests: > 90 and > 70 thresholds
+    // The code uses strict >, so exactly 90.0 is NOT "High" and exactly 70.0 is NOT "Moderate"
+
+    #[test]
+    fn print_stats_91_pct_is_high() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 91;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("High compression"), "91% should be high: {output}");
+    }
+
+    #[test]
+    fn print_stats_90_pct_is_moderate() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 90;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Moderate"), "exactly 90% is moderate, not high: {output}");
+    }
+
+    #[test]
+    fn print_stats_71_pct_is_moderate() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 71;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Moderate"), "71% should be moderate: {output}");
+    }
+
+    #[test]
+    fn print_stats_70_pct_is_low() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 70;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(!output.contains("High compression"), "70% is not high: {output}");
+        assert!(!output.contains("Moderate"), "70% is not moderate: {output}");
+    }
+
+    #[test]
+    fn print_stats_50_groups_no_warning() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.collapsed_groups = 50;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("High pattern repetition"),
+            "50 groups should not warn: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_51_groups_warning() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.collapsed_groups = 51;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("High pattern repetition"),
+            "51 groups should warn: {output}"
+        );
+    }
+
+    #[test]
+    fn print_stats_zero_counter_no_row() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.timestamps = 0;
+        f.stats.ips = 5;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(!output.contains("Timestamps"), "zero timestamps should have no row");
+        assert!(output.contains("IP Addresses"), "nonzero IPs should have a row");
+    }
+
+    // ---------------------------------------------------------------
+    // count_pattern_types: remaining token type tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn count_pattern_types_hash() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Hash(crate::patterns::HashType::MD5, "abc".into())]);
+        assert_eq!(f.stats.hashes, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_uuid() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Uuid("550e-8400".into())]);
+        assert_eq!(f.stats.uuids, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_pid() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Pid(1234)]);
+        assert_eq!(f.stats.pids, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_thread_id() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::ThreadID("5678".into())]);
+        assert_eq!(f.stats.pids, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_duration() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Duration("5s".into())]);
+        assert_eq!(f.stats.durations, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_size() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Size("1MB".into())]);
+        assert_eq!(f.stats.sizes, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_http_status() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::HttpStatus(200)]);
+        assert_eq!(f.stats.http_status, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_http_status_class() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::HttpStatusClass("2xx".into())]);
+        assert_eq!(f.stats.http_status, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_path() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Path("/var/log".into())]);
+        assert_eq!(f.stats.paths, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_json() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Json("{}".into())]);
+        assert_eq!(f.stats.paths, 1); // grouped with paths
+    }
+
+    #[test]
+    fn count_pattern_types_number() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Number("42".into())]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_quoted_string() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::QuotedString("hello".into())]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_name() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::Name("app".into())]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_bracket_context() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::BracketContext(vec!["error".into()])]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_kv_pair() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::KeyValuePair {
+            key: "k".into(),
+            value_type: "string".into(),
+        }]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_log_module() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::LogWithModule {
+            module: "mod".into(),
+            level: "error".into(),
+        }]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    #[test]
+    fn count_pattern_types_structured_message() {
+        let mut f = make_folder();
+        f.count_pattern_types(&[Token::StructuredMessage {
+            component: "api".into(),
+            level: "info".into(),
+        }]);
+        assert_eq!(f.stats.percentages, 1);
+    }
+
+    // ---------------------------------------------------------------
+    // sequential_clustering
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn sequential_clustering_empty_tokens_no_pattern() {
+        let mut f = make_folder();
+        let line = make_line("no patterns here", vec![]);
+        f.sequential_clustering(line).unwrap();
+        assert_eq!(f.stats.patterns_detected, 0);
+    }
+
+    #[test]
+    fn sequential_clustering_with_tokens_increments() {
+        let mut f = make_folder();
+        let line = make_line("error <IP>", vec![Token::IPv4("10.0.0.1".into())]);
+        f.sequential_clustering(line).unwrap();
+        assert_eq!(f.stats.patterns_detected, 1);
+        assert_eq!(f.stats.ips, 1);
+    }
+
+    // ---------------------------------------------------------------
+    // prepare_summary boundary tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn prepare_summary_exactly_30_not_capped() {
+        let mut f = make_folder();
+        for i in 0..30 {
+            f.buffer
+                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+        }
+        let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
+        assert!(!was_capped, "exactly 30 should not be capped");
+        assert_eq!(display.len(), 30);
+    }
+
+    #[test]
+    fn prepare_summary_31_is_capped() {
+        let mut f = make_folder();
+        for i in 0..31 {
+            f.buffer
+                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+        }
+        let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
+        assert!(was_capped, "31 should be capped");
+        assert_eq!(display.len(), 30);
+    }
+
+    #[test]
+    fn prepare_summary_top_zero_no_cap_50() {
+        let mut f = make_folder();
+        for i in 0..50 {
+            f.buffer
+                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+        }
+        let (display, _total, was_capped, _) = f.prepare_summary(Some(0), None).unwrap();
+        assert!(!was_capped);
+        assert_eq!(display.len(), 50);
+    }
+
+    #[test]
+    fn prepare_summary_fit_budget_10_of_50() {
+        let mut f = make_folder();
+        for i in 0..50 {
+            f.buffer
+                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+        }
+        let (display, _total, _was_capped, fit_truncated) =
+            f.prepare_summary(None, Some(10)).unwrap();
+        assert!(display.len() <= 10);
+        assert!(fit_truncated > 0);
+    }
+
+    // ---------------------------------------------------------------
+    // finish_top_n boundary tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn finish_top_n_zero_input_lines() {
+        let mut f = make_folder();
+        f.stats.total_lines = 0;
+        let (_, _, coverage) = f.finish_top_n(10).unwrap();
+        assert_eq!(coverage, 0);
     }
 }
