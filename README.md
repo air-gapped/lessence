@@ -6,17 +6,19 @@ Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually br
 $ kubectl logs deployment/api | lessence
 
 E0909 13:07:09 nestedpendingoperations.go:348] Operation for volume failed...
-[+1273 similar, varying: UUID, hash, name, path, timestamp]
+[+1273 similar | E0909 13:07:09 → E0909 13:45:17 | uuid×14, path×3 {/var/lib/pods/a, /var/lib/pods/b, /var/lib/pods/c}, hash×1273]
 W0909 13:07:12 transport.go:356] Unable to cancel request...
-[+1295 similar, varying: number, timestamp]
+[+1295 similar | W0909 13:07:12 → W0914 09:11:38 | number×2]
 E0909 13:07:12 controller.go:145] Failed to ensure lease exists...
-[+12 similar, varying: timestamp]
+[+12 similar | duration×1]
 ...
 
 Original: 70,548 lines → 1,129 lines (98.4% reduction)
 ```
 
-Three distinct problems, not 70,000. Now you know where to look.
+Three distinct problems, not 70,000. And the enriched marker tells you
+exactly which 14 UUIDs were affected and which 3 pod directories —
+information that used to require re-running the tool.
 
 ## For Coding Agents & LLMs
 
@@ -26,6 +28,26 @@ Three distinct problems, not 70,000. Now you know where to look.
 kubectl logs pod/api | lessence | claude -p "what's wrong?"
 kubectl logs pod/api | lessence --preflight | claude -p "analyze this log report"
 ```
+
+### Structured output for agents: `--format json`
+
+For programmatic consumption, `--format json` emits a JSONL stream —
+one JSON object per folded group plus a terminating summary record.
+Each group record carries per-token-type rollup metadata: distinct
+counts, deterministic samples, a capped flag, and a raw time range.
+Agents can answer "which pods?", "how many distinct UUIDs?", "when did
+this start?" from a single invocation without re-reading the log.
+
+```bash
+kubectl logs pod/api | lessence --format json \
+  | jq -r 'select(.type == "group" and .count >= 100)
+           | "\(.normalized): \(.variation.UUID.distinct_count) distinct UUIDs"'
+```
+
+Full schema: [`docs/format-json-schema.md`](docs/format-json-schema.md).
+Determinism is guaranteed (same input → byte-identical output, modulo
+`elapsed_ms`); the rollup parameters are corpus-calibrated, see
+[`docs/rollup-calibration.md`](docs/rollup-calibration.md).
 
 ## What It Does
 
@@ -103,7 +125,7 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 --preflight                JSON analysis report (for automation/CI)
 --essence                  Strip timestamps, see pure patterns
 --threads N                Thread count (default: all cores)
---format text|markdown     Output format
+--format text|markdown|json  Output format (json = JSONL for agents)
 -q, --quiet                Hide statistics footer (alias: --no-stats)
 --stats-json               Emit JSON statistics to stderr
 --top N                    Show only N most frequent patterns by count
