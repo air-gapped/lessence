@@ -3368,6 +3368,217 @@ mod tests {
         assert!(output.contains("0.0%"), "zero lines should show 0.0% compression");
     }
 
+    #[test]
+    fn print_stats_all_pattern_rows_appear() {
+        let mut f = make_folder();
+        f.stats.timestamps = 1;
+        f.stats.ips = 2;
+        f.stats.hashes = 3;
+        f.stats.uuids = 4;
+        f.stats.durations = 5;
+        f.stats.pids = 6;
+        f.stats.sizes = 7;
+        f.stats.percentages = 8;
+        f.stats.http_status = 9;
+        f.stats.paths = 10;
+        f.stats.kubernetes = 11;
+        f.stats.emails = 12;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("Timestamps"), "missing Timestamps row");
+        assert!(output.contains("IP Addresses"), "missing IP row");
+        assert!(output.contains("Hashes"), "missing Hashes row");
+        assert!(output.contains("UUIDs"), "missing UUIDs row");
+        assert!(output.contains("Durations"), "missing Durations row");
+        assert!(output.contains("Process IDs"), "missing PIDs row");
+        assert!(output.contains("File Sizes"), "missing Sizes row");
+        assert!(output.contains("Numbers/Percentages"), "missing Percentages row");
+        assert!(output.contains("HTTP Status"), "missing HTTP row");
+        assert!(output.contains("File Paths"), "missing Paths row");
+        assert!(output.contains("Kubernetes"), "missing K8s row");
+        assert!(output.contains("Email Addresses"), "missing Emails row");
+    }
+
+    #[test]
+    fn print_stats_compression_ratio_math() {
+        let mut f = make_folder();
+        f.stats.total_lines = 200;
+        f.stats.lines_saved = 150;
+        f.stats.output_lines = 50;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("75.0%"), "150/200 should be 75.0% reduction, got: {output}");
+        assert!(output.contains("200 lines"), "should show 200 original lines");
+        assert!(output.contains("50 lines"), "should show 50 compressed lines");
+    }
+
+    #[test]
+    fn print_stats_high_compression_recommendation() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 95;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("High compression ratio"),
+            "95% should trigger high compression recommendation"
+        );
+    }
+
+    #[test]
+    fn print_stats_low_compression_recommendation() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 30;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("Low compression ratio"),
+            "30% should trigger low compression recommendation"
+        );
+    }
+
+    #[test]
+    fn print_stats_moderate_compression_recommendation() {
+        let mut f = make_folder();
+        f.stats.total_lines = 100;
+        f.stats.lines_saved = 80;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("Moderate compression ratio"),
+            "80% should trigger moderate recommendation"
+        );
+    }
+
+    #[test]
+    fn print_stats_high_repetition_warning() {
+        let mut f = make_folder();
+        f.stats.collapsed_groups = 51;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("High pattern repetition"),
+            ">50 collapsed groups should trigger repetition warning"
+        );
+    }
+
+    #[test]
+    fn print_stats_no_repetition_warning_at_50() {
+        let mut f = make_folder();
+        f.stats.collapsed_groups = 50;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            !output.contains("High pattern repetition"),
+            "exactly 50 collapsed groups should NOT trigger warning"
+        );
+    }
+
+    #[test]
+    fn print_stats_summary_section_values() {
+        let mut f = make_folder();
+        f.stats.total_lines = 500;
+        f.stats.patterns_detected = 42;
+        f.stats.collapsed_groups = 10;
+        f.stats.lines_saved = 300;
+        f.stats.timestamps = 5;
+        let mut buf = Vec::new();
+        f.print_stats(&mut buf).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(output.contains("42"), "should show patterns_detected=42");
+        assert!(output.contains("10"), "should show collapsed_groups=10");
+        assert!(output.contains("300"), "should show lines_saved=300");
+    }
+
+    // ---------------------------------------------------------------
+    // format_group: lines_saved accounting
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn format_group_collapsed_lines_saved_count() {
+        // 5 lines, min_collapse=3: lines_saved = count - 3 = 2
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+            vec![Token::IPv4("10.0.0.5".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let _ = f.format_group(&group, &rollup).unwrap();
+        assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed: saved = 5-3 = 2");
+    }
+
+    #[test]
+    fn format_group_collapsed_at_min_saves_zero() {
+        // Exactly min_collapse=3 lines: lines_saved = 3-3 = 0
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let _ = f.format_group(&group, &rollup).unwrap();
+        assert_eq!(f.stats.lines_saved, 0, "3 lines at min_collapse: saved = 3-3 = 0");
+    }
+
+    #[test]
+    fn format_group_essence_mode_lines_saved() {
+        // In essence mode below min_collapse, lines_saved = count - 1 when count > 1
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            essence_mode: true,
+            ..Config::default()
+        });
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let _ = f.format_group(&group, &rollup).unwrap();
+        assert_eq!(f.stats.lines_saved, 1, "essence mode: 2 lines → saved = 2-1 = 1");
+    }
+
+    #[test]
+    fn format_group_no_collapse_no_lines_saved() {
+        // Below min_collapse in standard mode: no lines saved
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let _ = f.format_group(&group, &rollup).unwrap();
+        assert_eq!(f.stats.lines_saved, 0, "below min_collapse: no lines saved");
+    }
+
+    #[test]
+    fn format_group_collapsed_output_has_three_sections() {
+        // Collapsed group should have: first line, collapse marker, last line
+        let mut f = make_folder();
+        let group = make_group("error <IP>", vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+        ]);
+        let rollup = BTreeMap::new();
+        let output = f.format_group(&group, &rollup).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 3, "collapsed output should have 3 lines (first + marker + last)");
+    }
+
     // ---------------------------------------------------------------
     // finish_top_n
     // ---------------------------------------------------------------
