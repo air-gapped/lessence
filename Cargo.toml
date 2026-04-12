@@ -136,14 +136,24 @@ path = "tests/snapshot/test_output_snapshots.rs"
 name = "test_normalizer_properties"
 path = "tests/property/test_normalizer_properties.rs"
 
-# Benchmarks will be added later
-# [[bench]]
-# name = "pattern_detection"
-# harness = false
-#
-# [[bench]]
-# name = "folding_performance"
-# harness = false
+# Criterion benchmarks — perf gate for the structured-folding-output feature.
+# See docs/bench.md for how to record and compare baselines.
+# Files in examples/ are gitignored; benches skip gracefully when missing.
+[[bench]]
+name = "folder_e2e"
+harness = false
+
+[[bench]]
+name = "folder_streaming_only"
+harness = false
+
+[[bench]]
+name = "folder_parallel_e2e"
+harness = false
+
+[[bench]]
+name = "normalize_line"
+harness = false
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
