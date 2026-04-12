@@ -4,61 +4,44 @@
 // Uses scaling-ratio approach: 4x input should take ~4x time, not 16x.
 
 use lessence::patterns::email::EmailPatternDetector;
-use std::time::Instant;
-
-fn measure_email_detect(input: &str, iterations: u32) -> std::time::Duration {
-    let detector = EmailPatternDetector::new().unwrap();
-    for _ in 0..iterations / 10 {
-        let _ = detector.detect_and_replace(input);
-    }
-    let start = Instant::now();
-    for _ in 0..iterations {
-        let _ = detector.detect_and_replace(input);
-    }
-    start.elapsed()
-}
-
-fn assert_linear_scaling(label: &str, make_input: impl Fn(usize) -> String) {
-    let small = make_input(1);
-    let large = make_input(4);
-    let iters = 2000;
-
-    let time_small = measure_email_detect(&small, iters);
-    let time_large = measure_email_detect(&large, iters);
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-
-    assert!(
-        ratio < 8.0,
-        "{label}: scaling ratio {ratio:.1}x for 4x input (expected <8.0). \
-         small={small_ns}ns, large={large_ns}ns",
-        small_ns = time_small.as_nanos() / u128::from(iters),
-        large_ns = time_large.as_nanos() / u128::from(iters),
-    );
-}
 
 #[test]
 fn test_email_redos_long_local_part_scales_linearly() {
-    assert_linear_scaling("long_local_part", |multiplier| {
-        let len = 25 * multiplier;
-        format!("{}@{}.com!!!", "a".repeat(len), "b".repeat(len))
+    let small = format!("{}@{}.com!!!", "a".repeat(25), "b".repeat(25));
+    let large = format!("{}@{}.com!!!", "a".repeat(100), "b".repeat(100));
+
+    crate::common::assert_linear_scaling("long_local_part", &small, &large, |input| {
+        let detector = EmailPatternDetector::new().unwrap();
+        let _ = detector.detect_and_replace(input);
     });
 }
 
 #[test]
 fn test_email_redos_multiple_evil_patterns_scales_linearly() {
-    assert_linear_scaling("multiple_evil", |multiplier| {
-        let count = 2 * multiplier;
-        (0..count)
-            .map(|i| {
-                format!(
-                    "{}@{}.com!!!",
-                    "a".repeat(25),
-                    char::from(b'a' + (i % 26) as u8).to_string().repeat(25)
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" and ")
+    let small = (0..2)
+        .map(|i| {
+            format!(
+                "{}@{}.com!!!",
+                "a".repeat(25),
+                char::from(b'a' + (i % 26) as u8).to_string().repeat(25)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
+    let large = (0..8)
+        .map(|i| {
+            format!(
+                "{}@{}.com!!!",
+                "a".repeat(25),
+                char::from(b'a' + (i % 26) as u8).to_string().repeat(25)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" and ");
+
+    crate::common::assert_linear_scaling("multiple_evil", &small, &large, |input| {
+        let detector = EmailPatternDetector::new().unwrap();
+        let _ = detector.detect_and_replace(input);
     });
 }
 

@@ -87,35 +87,12 @@ fn test_token_format_consistency() {
 
 #[test]
 fn test_performance_scales_linearly() {
-    use std::time::Instant;
-
     let small = "2025-09-29T10:15:30Z ".repeat(250);
     let large = "2025-09-29T10:15:30Z ".repeat(1000);
-    let iters = 50;
 
-    // Warmup — stabilize allocator and regex caches
-    for _ in 0..10 {
-        let _ = UnifiedTimestampDetector::detect_and_replace(&small);
-        let _ = UnifiedTimestampDetector::detect_and_replace(&large);
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = UnifiedTimestampDetector::detect_and_replace(&small);
-    }
-    let time_small = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = UnifiedTimestampDetector::detect_and_replace(&large);
-    }
-    let time_large = start.elapsed();
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-    assert!(
-        ratio < 8.0,
-        "1000-timestamp detection should scale linearly: 4x input took {ratio:.1}x"
-    );
+    crate::common::assert_linear_scaling("1000_timestamps", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
+    });
 
     // Also verify correctness
     let (_result, tokens) = UnifiedTimestampDetector::detect_and_replace(&large);

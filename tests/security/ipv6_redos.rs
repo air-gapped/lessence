@@ -9,73 +9,50 @@
 // because both measurements are slowed proportionally.
 
 use lessence::patterns::network::NetworkDetector;
-use std::time::Instant;
-
-/// Measure how long NetworkDetector takes on a given input, averaged
-/// over multiple iterations to reduce noise.
-fn measure_network_detect(input: &str, iterations: u32) -> std::time::Duration {
-    // Warmup
-    for _ in 0..iterations / 10 {
-        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
-    }
-    let start = Instant::now();
-    for _ in 0..iterations {
-        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
-    }
-    start.elapsed()
-}
-
-/// Assert that processing scales linearly: 4x input should take ~4x time,
-/// not 16x (quadratic) or worse (exponential).
-fn assert_linear_scaling(label: &str, make_input: impl Fn(usize) -> String) {
-    let small = make_input(1);
-    let large = make_input(4);
-    let iters = 500;
-
-    let time_small = measure_network_detect(&small, iters);
-    let time_large = measure_network_detect(&large, iters);
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-
-    // Linear: ratio ≈ 4.0. Quadratic: ratio ≈ 16.0.
-    // Threshold of 8.0 gives 2x headroom for noise while catching ReDoS.
-    assert!(
-        ratio < 8.0,
-        "{label}: scaling ratio {ratio:.1}x for 4x input (expected <8.0, \
-         quadratic would be ~16.0). small={small_ns}ns, large={large_ns}ns",
-        small_ns = time_small.as_nanos() / u128::from(iters),
-        large_ns = time_large.as_nanos() / u128::from(iters),
-    );
-}
 
 #[test]
 fn test_ipv6_redos_repeated_groups_scales_linearly() {
-    assert_linear_scaling("repeated_groups", |multiplier| {
-        let groups = 8 * multiplier;
-        (0..groups)
-            .map(|i| format!("{:x}", i % 16))
-            .collect::<Vec<_>>()
-            .join(":")
-            + "::invalid"
+    let small = (0..8)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join(":")
+        + "::invalid";
+    let large = (0..32)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join(":")
+        + "::invalid";
+
+    crate::common::assert_linear_scaling("repeated_groups", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_ipv6_redos_double_colon_abuse_scales_linearly() {
-    assert_linear_scaling("double_colon_abuse", |multiplier| {
-        let groups = 5 * multiplier;
-        (0..groups)
-            .map(|i| format!("{:x}", i % 16))
-            .collect::<Vec<_>>()
-            .join("::")
-            + "::invalid"
+    let small = (0..5)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join("::")
+        + "::invalid";
+    let large = (0..20)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join("::")
+        + "::invalid";
+
+    crate::common::assert_linear_scaling("double_colon_abuse", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_ipv6_redos_long_pattern_scales_linearly() {
-    assert_linear_scaling("long_pattern", |multiplier| {
-        "a]b:".repeat(12 * multiplier) + "::invalid"
+    let small = "a]b:".repeat(12).to_string() + "::invalid";
+    let large = "a]b:".repeat(48).to_string() + "::invalid";
+
+    crate::common::assert_linear_scaling("long_pattern", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 

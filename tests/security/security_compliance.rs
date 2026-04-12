@@ -7,44 +7,15 @@ use lessence::config::Config;
 use lessence::patterns::email::EmailPatternDetector;
 use lessence::patterns::network::NetworkDetector;
 use lessence::patterns::timestamp::TimestampDetector;
-use std::time::Instant;
-
-fn assert_linear_scaling<F: Fn(&str, u32) -> std::time::Duration>(
-    label: &str,
-    small_input: &str,
-    large_input: &str,
-    measure: F,
-) {
-    let iters = 500;
-    let time_small = measure(small_input, iters);
-    let time_large = measure(large_input, iters);
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-
-    assert!(
-        ratio < 8.0,
-        "{label}: scaling ratio {ratio:.1}x (expected <8.0). \
-         small={small_ns}ns, large={large_ns}ns",
-        small_ns = time_small.as_nanos() / u128::from(iters),
-        large_ns = time_large.as_nanos() / u128::from(iters),
-    );
-}
 
 #[test]
 fn test_redos_protection_email() {
     let small = format!("{}@{}.com!!!", "a".repeat(25), "b".repeat(25));
     let large = format!("{}@{}.com!!!", "a".repeat(100), "b".repeat(100));
 
-    assert_linear_scaling("email_redos", &small, &large, |input, iters| {
+    crate::common::assert_linear_scaling("email_redos", &small, &large, |input| {
         let detector = EmailPatternDetector::new().unwrap();
-        for _ in 0..iters / 10 {
-            let _ = detector.detect_and_replace(input);
-        }
-        let start = Instant::now();
-        for _ in 0..iters {
-            let _ = detector.detect_and_replace(input);
-        }
-        start.elapsed()
+        let _ = detector.detect_and_replace(input);
     });
 }
 
@@ -53,15 +24,8 @@ fn test_redos_protection_timestamp() {
     let small = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(50));
     let large = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(200));
 
-    assert_linear_scaling("timestamp_redos", &small, &large, |input, iters| {
-        for _ in 0..iters / 10 {
-            let _ = TimestampDetector::detect_and_replace(input);
-        }
-        let start = Instant::now();
-        for _ in 0..iters {
-            let _ = TimestampDetector::detect_and_replace(input);
-        }
-        start.elapsed()
+    crate::common::assert_linear_scaling("timestamp_redos", &small, &large, |input| {
+        let _ = TimestampDetector::detect_and_replace(input);
     });
 }
 
@@ -76,15 +40,8 @@ fn test_redos_protection_ipv6() {
         .collect::<Vec<_>>()
         .join(":");
 
-    assert_linear_scaling("ipv6_redos", &small, &large, |input, iters| {
-        for _ in 0..iters / 10 {
-            let _ = NetworkDetector::detect_and_replace(input, true, false, false);
-        }
-        let start = Instant::now();
-        for _ in 0..iters {
-            let _ = NetworkDetector::detect_and_replace(input, true, false, false);
-        }
-        start.elapsed()
+    crate::common::assert_linear_scaling("ipv6_redos", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
@@ -190,8 +147,6 @@ fn test_pii_sanitization_flag_integration() {
 #[test]
 fn test_security_performance_overhead() {
     // Security features (sanitize_pii, max_line_length) must scale linearly.
-    // Scaling-ratio pattern: measure at N and 4N, assert ratio < 8.0.
-    // Linear (O(n)) → ratio ≈ 4.0. Quadratic → ratio ≈ 16.0.
     fn make_input(multiplier: usize) -> String {
         let count = 10 * multiplier;
         (0..count)
@@ -217,37 +172,12 @@ fn test_security_performance_overhead() {
     let small = make_input(1);
     let large = make_input(4);
     let normalizer = lessence::normalize::Normalizer::new(config);
-    let iters = 50;
 
-    // Warmup
-    for _ in 0..5 {
-        for line in small.lines() {
+    crate::common::assert_linear_scaling("security_overhead", &small, &large, |input| {
+        for line in input.lines() {
             let _ = normalizer.normalize_line(line.to_string());
         }
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        for line in small.lines() {
-            let _ = normalizer.normalize_line(line.to_string());
-        }
-    }
-    let time_small = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        for line in large.lines() {
-            let _ = normalizer.normalize_line(line.to_string());
-        }
-    }
-    let time_large = start.elapsed();
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-    assert!(
-        ratio < 8.0,
-        "Security features should scale linearly: 4x input took {ratio:.1}x \
-         (expected ~4.0, quadratic would be ~16.0)"
-    );
+    });
 }
 
 #[test]

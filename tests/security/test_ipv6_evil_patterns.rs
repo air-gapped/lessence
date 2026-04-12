@@ -5,102 +5,106 @@
 // Uses scaling-ratio approach: immune to CPU contention.
 
 use lessence::patterns::network::NetworkDetector;
-use std::time::Instant;
-
-fn measure_detect(input: &str, iters: u32) -> std::time::Duration {
-    for _ in 0..iters / 10 {
-        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
-    }
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
-    }
-    start.elapsed()
-}
-
-fn assert_linear(label: &str, make_input: impl Fn(usize) -> String) {
-    let small = make_input(1);
-    let large = make_input(4);
-    // High iteration count so each measurement spans >1ms even in release
-    // mode (where operations take ~2µs). This makes scheduler noise a
-    // negligible fraction of the total measurement.
-    let iters = 5000;
-
-    let time_small = measure_detect(&small, iters);
-    let time_large = measure_detect(&large, iters);
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-
-    assert!(
-        ratio < 8.0,
-        "{label}: ratio {ratio:.1}x for 4x input (expected <8.0). \
-         small={s}ns, large={l}ns",
-        s = time_small.as_nanos() / u128::from(iters),
-        l = time_large.as_nanos() / u128::from(iters),
-    );
-}
 
 // --- Evil patterns: scaling tests ---
 
 #[test]
 fn test_evil_excessive_hex_repetition_scales_linearly() {
-    assert_linear("excessive_hex", |m| {
-        (0..15 * m)
-            .map(|i| format!("{:x}", i % 16))
-            .collect::<Vec<_>>()
-            .join(":")
+    let small = (0..15)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join(":");
+    let large = (0..60)
+        .map(|i| format!("{:x}", i % 16))
+        .collect::<Vec<_>>()
+        .join(":");
+
+    crate::common::assert_linear_scaling("excessive_hex", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_evil_nested_groups_scales_linearly() {
-    assert_linear("nested_groups", |m| {
-        "a:b:c:d:e:f:"
-            .repeat(3 * m)
-            .trim_end_matches(':')
-            .to_string()
+    let small = "a:b:c:d:e:f:"
+        .repeat(3)
+        .trim_end_matches(':')
+        .to_string();
+    let large = "a:b:c:d:e:f:"
+        .repeat(12)
+        .trim_end_matches(':')
+        .to_string();
+
+    crate::common::assert_linear_scaling("nested_groups", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_evil_very_long_malformed_scales_linearly() {
-    assert_linear("long_malformed", |m| {
-        "0000:".repeat(5 * m).trim_end_matches(':').to_string()
+    let small = "0000:".repeat(5).trim_end_matches(':').to_string();
+    let large = "0000:".repeat(20).trim_end_matches(':').to_string();
+
+    crate::common::assert_linear_scaling("long_malformed", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_evil_repeated_colons_scales_linearly() {
-    assert_linear("repeated_colons", |m| ":".repeat(25 * m));
+    let small = ":".repeat(25);
+    let large = ":".repeat(100);
+
+    crate::common::assert_linear_scaling("repeated_colons", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
+    });
 }
 
 #[test]
 fn test_evil_invalid_chars_injection_scales_linearly() {
-    assert_linear("invalid_chars", |m| {
-        format!(
-            "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
-            "!".repeat(15 * m)
-        )
+    let small = format!(
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
+        "!".repeat(15)
+    );
+    let large = format!(
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
+        "!".repeat(60)
+    );
+
+    crate::common::assert_linear_scaling("invalid_chars", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_evil_mixed_valid_invalid_scales_linearly() {
-    assert_linear("mixed_chars", |m| {
-        format!(
-            "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
-            "@#$%^&*()".repeat(2 * m)
-        )
+    let small = format!(
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
+        "@#$%^&*()".repeat(2)
+    );
+    let large = format!(
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
+        "@#$%^&*()".repeat(8)
+    );
+
+    crate::common::assert_linear_scaling("mixed_chars", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 
 #[test]
 fn test_evil_ipv4_like_with_colons_scales_linearly() {
-    assert_linear("ipv4_colons", |m| {
-        "192.168.1.1:"
-            .repeat(4 * m)
-            .trim_end_matches(':')
-            .to_string()
+    let small = "192.168.1.1:"
+        .repeat(4)
+        .trim_end_matches(':')
+        .to_string();
+    let large = "192.168.1.1:"
+        .repeat(16)
+        .trim_end_matches(':')
+        .to_string();
+
+    crate::common::assert_linear_scaling("ipv4_colons", &small, &large, |input| {
+        let _ = NetworkDetector::detect_and_replace(input, true, false, false);
     });
 }
 

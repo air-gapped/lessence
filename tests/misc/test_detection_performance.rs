@@ -19,84 +19,95 @@ fn measure_detect(input: &str, iters: u32) -> std::time::Duration {
     start.elapsed()
 }
 
-fn assert_linear(label: &str, make_input: impl Fn(usize) -> String) {
-    let small = make_input(1);
-    let large = make_input(4);
-    let iters = 2000;
-
-    let time_small = measure_detect(&small, iters);
-    let time_large = measure_detect(&large, iters);
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-
-    assert!(
-        ratio < 8.0,
-        "{label}: ratio {ratio:.1}x for 4x input (expected <8.0). \
-         small={s}ns, large={l}ns",
-        s = time_small.as_nanos() / u128::from(iters),
-        l = time_large.as_nanos() / u128::from(iters),
-    );
-}
-
 #[test]
 fn test_single_timestamp_detection_scales_linearly() {
-    assert_linear("single_timestamp", |m| {
-        let padding = "Regular log text ".repeat(10 * m);
-        format!("{padding}2025-09-29T10:15:30Z end")
+    let small = format!("{}2025-09-29T10:15:30Z end", "Regular log text ".repeat(10));
+    let large = format!("{}2025-09-29T10:15:30Z end", "Regular log text ".repeat(40));
+
+    crate::common::assert_linear_scaling("single_timestamp", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     });
 }
 
 #[test]
 fn test_multiple_timestamp_detection_scales_linearly() {
-    assert_linear("multiple_timestamps", |m| {
+    let build = |count: usize| {
         let mut line = String::new();
-        for i in 0..3 * m {
-            line.push_str(&format!("2025-09-29T10:{i:02}:30Z event{i} "));
+        for i in 0..count {
+            line.push_str(&format!("2025-09-29T10:{:02}:30Z event{i} ", i % 60));
         }
         line
+    };
+    let small = build(3);
+    let large = build(12);
+
+    crate::common::assert_linear_scaling("multiple_timestamps", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     });
 }
 
 #[test]
 fn test_long_text_performance() {
     let base = "This is a longer log message with various content ";
-    assert_linear("long_text", |m| {
-        format!(
-            "{}2025-09-29T10:15:30Z{}",
-            base.repeat(12 * m),
-            base.repeat(12 * m),
-        )
+    let small = format!(
+        "{}2025-09-29T10:15:30Z{}",
+        base.repeat(12),
+        base.repeat(12),
+    );
+    let large = format!(
+        "{}2025-09-29T10:15:30Z{}",
+        base.repeat(48),
+        base.repeat(48),
+    );
+
+    crate::common::assert_linear_scaling("long_text", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     });
 }
 
 #[test]
 fn test_overlap_resolution_performance() {
     // Overlapping timestamps should still be linear
-    assert_linear("overlap", |m| {
+    let build = |count: usize| {
         let mut line = String::new();
-        for _ in 0..3 * m {
+        for _ in 0..count {
             line.push_str("2025-09-29T10:15:30.123456789Z ");
         }
         line
+    };
+    let small = build(3);
+    let large = build(12);
+
+    crate::common::assert_linear_scaling("overlap", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     });
 }
 
 #[test]
 fn test_no_match_performance() {
     // Non-matching input should be fast — and linear with input size
-    assert_linear("no_match", |m| {
-        "Regular log message without timestamps. Error 404 process 12345. ".repeat(10 * m)
+    let small = "Regular log message without timestamps. Error 404 process 12345. ".repeat(10);
+    let large = "Regular log message without timestamps. Error 404 process 12345. ".repeat(40);
+
+    crate::common::assert_linear_scaling("no_match", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     });
 }
 
 #[test]
 fn test_pattern_priority_performance() {
-    assert_linear("priority", |m| {
+    let build = |count: usize| {
         let mut line = String::new();
-        for _ in 0..2 * m {
+        for _ in 0..count {
             line.push_str("2025-09-29T10:15:30Z and E0929 13:07:09.181236 3116 ");
         }
         line
+    };
+    let small = build(2);
+    let large = build(8);
+
+    crate::common::assert_linear_scaling("priority", &small, &large, |input| {
+        let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     });
 }
 

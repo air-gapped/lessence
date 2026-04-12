@@ -2,6 +2,8 @@
 // Each test file is a submodule — one link step instead of 23.
 #![allow(clippy::all, unused_comparisons)]
 
+mod common;
+
 mod integration {
     mod test_basic_scenarios;
     mod test_binary_name;

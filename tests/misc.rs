@@ -1,6 +1,8 @@
 // Barrel file: consolidates remaining tests (input limits, PII, email,
 // detection performance, property tests, snapshots) into one binary.
 
+mod common;
+
 mod misc {
     mod input_limits;
     mod integration_email_compression;

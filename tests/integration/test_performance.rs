@@ -5,38 +5,16 @@
 // assert ratio < 8.0. This tests algorithmic complexity (O(n) vs O(n²))
 // and is immune to CPU speed, contention, and debug/release differences.
 
-use std::time::Instant;
 use lessence::patterns::timestamp::TimestampDetector;
 
 #[test]
 fn test_single_timestamp_scales_linearly() {
-    let small = "2025-09-29T10:15:30Z Simple log message";
-    let large = &format!("{small} {small} {small} {small}");
+    let small = "2025-09-29T10:15:30Z Simple log message".to_string();
+    let large = format!("{small} {small} {small} {small}");
 
-    let iters = 1000;
-
-    // Warmup
-    for _ in 0..100 {
-        let _ = TimestampDetector::detect_and_replace(small);
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(small);
-    }
-    let time_small = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(large);
-    }
-    let time_large = start.elapsed();
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-    assert!(
-        ratio < 8.0,
-        "Single timestamp detection should scale linearly: 4x input took {ratio:.1}x"
-    );
+    crate::common::assert_linear_scaling("single_timestamp", &small, &large, |input| {
+        let _ = TimestampDetector::detect_and_replace(input);
+    });
 }
 
 #[test]
@@ -45,29 +23,9 @@ fn test_multiple_timestamps_scales_linearly() {
     let small = base.to_string();
     let large = format!("{base} {base} {base} {base}");
 
-    let iters = 500;
-
-    for _ in 0..50 {
-        let _ = TimestampDetector::detect_and_replace(&small);
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(&small);
-    }
-    let time_small = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(&large);
-    }
-    let time_large = start.elapsed();
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-    assert!(
-        ratio < 8.0,
-        "Multiple timestamp detection should scale linearly: 4x input took {ratio:.1}x"
-    );
+    crate::common::assert_linear_scaling("multiple_timestamps", &small, &large, |input| {
+        let _ = TimestampDetector::detect_and_replace(input);
+    });
 }
 
 #[test]
@@ -76,29 +34,9 @@ fn test_no_timestamp_scales_linearly() {
     let small = base.to_string();
     let large = format!("{base} {base} {base} {base}");
 
-    let iters = 2000;
-
-    for _ in 0..100 {
-        let _ = TimestampDetector::detect_and_replace(&small);
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(&small);
-    }
-    let time_small = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(&large);
-    }
-    let time_large = start.elapsed();
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-    assert!(
-        ratio < 8.0,
-        "No-timestamp fast path should scale linearly: 4x input took {ratio:.1}x"
-    );
+    crate::common::assert_linear_scaling("no_timestamp", &small, &large, |input| {
+        let _ = TimestampDetector::detect_and_replace(input);
+    });
 }
 
 #[test]
@@ -107,30 +45,9 @@ fn test_long_line_scales_linearly() {
     let small = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(5), base_msg.repeat(5));
     let large = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(20), base_msg.repeat(20));
 
-    let iters = 1000;
-
-    for _ in 0..50 {
-        let _ = TimestampDetector::detect_and_replace(&small);
-        let _ = TimestampDetector::detect_and_replace(&large);
-    }
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(&small);
-    }
-    let time_small = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(&large);
-    }
-    let time_large = start.elapsed();
-
-    let ratio = time_large.as_nanos() as f64 / time_small.as_nanos().max(1) as f64;
-    assert!(
-        ratio < 8.0,
-        "Long line detection should scale linearly: 4x input took {ratio:.1}x"
-    );
+    crate::common::assert_linear_scaling("long_line", &small, &large, |input| {
+        let _ = TimestampDetector::detect_and_replace(input);
+    });
 }
 
 #[test]
@@ -179,6 +96,8 @@ fn test_concurrent_performance() {
 
 #[test]
 fn test_regex_cache_effectiveness() {
+    use std::time::Instant;
+
     let test_inputs = vec![
         "2025-09-29T10:15:30Z ISO format",
         "E0929 13:07:09.181236 3116 K8S format",

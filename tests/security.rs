@@ -1,5 +1,7 @@
 // Barrel file: consolidates all security and ReDoS tests into one binary.
 
+mod common;
+
 mod security {
     mod email_redos;
     mod ipv6_redos;
