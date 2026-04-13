@@ -3,7 +3,6 @@
 pub mod analyzer;
 pub mod cli;
 pub mod config;
-pub mod essence;
 pub mod folder;
 pub mod normalize;
 pub mod output;
