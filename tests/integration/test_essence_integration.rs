@@ -70,7 +70,6 @@ fn test_comprehensive_format_support() {
         ("2025-09-29 10:15:30,123", "Java Timestamp"),
         ("01/20/2025 10:15:30 AM", "US Date"),
         ("[20/Jan/2025:10:15:30 +0000]", "Apache Common"),
-
         // From original essence/processor.rs
         ("01/20/2025 10:15:30 PM", "Windows Event"),
         ("Jan 20 2025 10:15:30", "Git Commit Style"),
@@ -83,10 +82,14 @@ fn test_comprehensive_format_support() {
     for (input, description) in test_cases {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
-        assert!(result.contains("<TIMESTAMP>"),
-            "Failed to detect {description} format in: {input}");
-        assert!(!tokens.is_empty(),
-            "No tokens generated for {description} format in: {input}");
+        assert!(
+            result.contains("<TIMESTAMP>"),
+            "Failed to detect {description} format in: {input}"
+        );
+        assert!(
+            !tokens.is_empty(),
+            "No tokens generated for {description} format in: {input}"
+        );
     }
 }
 
@@ -101,10 +104,7 @@ fn test_pattern_priority_enforcement() {
         result.normalized_text.contains("<TIMESTAMP>"),
         "Should detect timestamp in: {input}"
     );
-    assert!(
-        !result.matches.is_empty(),
-        "Should have at least one match"
-    );
+    assert!(!result.matches.is_empty(), "Should have at least one match");
 }
 
 #[test]
@@ -124,8 +124,8 @@ fn test_unix_timestamp_false_positive_prevention() {
 
 #[test]
 fn test_thread_safety_in_essence_mode() {
-    use std::thread;
     use std::sync::Arc;
+    use std::thread;
 
     let test_input = Arc::new("2025-09-29T10:15:30Z Concurrent processing".to_string());
     let mut handles = vec![];
@@ -133,9 +133,8 @@ fn test_thread_safety_in_essence_mode() {
     // Spawn multiple threads to test concurrent access
     for _ in 0..50 {
         let input_clone = Arc::clone(&test_input);
-        let handle = thread::spawn(move || {
-            UnifiedTimestampDetector::detect_and_replace(&input_clone)
-        });
+        let handle =
+            thread::spawn(move || UnifiedTimestampDetector::detect_and_replace(&input_clone));
         handles.push(handle);
     }
 

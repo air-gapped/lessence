@@ -1,9 +1,9 @@
 // Integration Test: Thread Safety (T011)
 // Validates concurrent access to unified timestamp detection
 
-use std::thread;
-use std::sync::Arc;
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
+use std::sync::Arc;
+use std::thread;
 
 #[test]
 fn test_concurrent_pattern_access() {
@@ -30,7 +30,10 @@ fn test_concurrent_pattern_access() {
     assert!(!results.is_empty(), "Should have thread results");
     let first_result = results[0];
     for result in &results {
-        assert_eq!(*result, first_result, "All threads should see same pattern count");
+        assert_eq!(
+            *result, first_result,
+            "All threads should see same pattern count"
+        );
     }
     assert!(first_result >= 30, "Should meet constitutional requirement");
 }
@@ -68,7 +71,10 @@ fn test_concurrent_detection_operations() {
     // Verify all results are sensible
     for (result, token_count) in results {
         assert!(!result.is_empty(), "Result should not be empty");
-        assert!(result.contains("<TIMESTAMP>") || token_count == 0, "Should either have timestamp or no tokens");
+        assert!(
+            result.contains("<TIMESTAMP>") || token_count == 0,
+            "Should either have timestamp or no tokens"
+        );
         assert!(token_count <= 5, "Should not have excessive tokens"); // Sanity check
     }
 }
@@ -100,7 +106,10 @@ fn test_registry_thread_safety() {
     assert!(!results.is_empty(), "Should have results");
     let first = results[0];
     for count in &results {
-        assert_eq!(*count, first, "Pattern count should be consistent across threads");
+        assert_eq!(
+            *count, first,
+            "Pattern count should be consistent across threads"
+        );
     }
 }
 
@@ -116,7 +125,10 @@ fn test_stress_concurrent_access() {
             // Multiple operations per thread
             for _ in 0..10 {
                 let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&input_clone);
-                assert!(result.contains("<TIMESTAMP>"), "Should consistently detect timestamp");
+                assert!(
+                    result.contains("<TIMESTAMP>"),
+                    "Should consistently detect timestamp"
+                );
                 assert_eq!(tokens.len(), 1, "Should consistently find one token");
             }
         });
@@ -125,6 +137,8 @@ fn test_stress_concurrent_access() {
 
     // All operations should complete without panics or data races
     for handle in handles {
-        handle.join().expect("Stress test thread should complete successfully");
+        handle
+            .join()
+            .expect("Stress test thread should complete successfully");
     }
 }

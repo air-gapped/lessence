@@ -81,5 +81,8 @@ fn test_compression_ratio_calculation() {
         0.0
     };
 
-    assert!((compression_ratio - 75.0).abs() < 0.01, "Expected 75% compression");
+    assert!(
+        (compression_ratio - 75.0).abs() < 0.01,
+        "Expected 75% compression"
+    );
 }

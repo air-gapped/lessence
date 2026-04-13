@@ -1,5 +1,5 @@
-use lessence::patterns::key_value::KeyValueDetector;
 use lessence::patterns::Token;
+use lessence::patterns::key_value::KeyValueDetector;
 
 #[cfg(test)]
 mod tests {
@@ -19,8 +19,11 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = KeyValueDetector::detect_and_replace(test_case);
 
-            assert!(result.contains("<KEY_VALUE>"),
-                "Failed to detect key-value pair in: {}", test_case);
+            assert!(
+                result.contains("<KEY_VALUE>"),
+                "Failed to detect key-value pair in: {}",
+                test_case
+            );
             assert_eq!(tokens.len(), 1, "Should detect exactly one key-value token");
 
             if let Token::KeyValuePair { key, value_type } = &tokens[0] {
@@ -45,14 +48,24 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = KeyValueDetector::detect_and_replace(test_case);
 
-            assert!(tokens.len() >= 2,
-                "Should detect multiple key-value pairs in: {}", test_case);
-            assert!(result.contains("<KEY_VALUE>"),
-                "Should normalize key-value pairs in: {}", test_case);
+            assert!(
+                tokens.len() >= 2,
+                "Should detect multiple key-value pairs in: {}",
+                test_case
+            );
+            assert!(
+                result.contains("<KEY_VALUE>"),
+                "Should normalize key-value pairs in: {}",
+                test_case
+            );
 
             // All tokens should be KeyValuePair tokens
             for token in tokens {
-                if let Token::KeyValuePair { key: _, value_type: _ } = token {
+                if let Token::KeyValuePair {
+                    key: _,
+                    value_type: _,
+                } = token
+                {
                     // Valid KeyValuePair token
                 } else {
                     panic!("Expected all tokens to be KeyValuePair, got: {:?}", token);
@@ -81,9 +94,11 @@ mod tests {
             assert_eq!(tokens.len(), 1, "Should detect one key-value pair");
 
             if let Token::KeyValuePair { key: _, value_type } = &tokens[0] {
-                assert_eq!(value_type, expected_type,
+                assert_eq!(
+                    value_type, expected_type,
                     "Expected value type '{}' for input '{}', got '{}'",
-                    expected_type, test_input, value_type);
+                    expected_type, test_input, value_type
+                );
             } else {
                 panic!("Expected KeyValuePair token");
             }
@@ -103,10 +118,16 @@ mod tests {
         for line in config_logs {
             let (result, tokens) = KeyValueDetector::detect_and_replace(line);
 
-            assert!(tokens.len() >= 3,
-                "Should detect multiple config parameters in: {}", line);
-            assert!(result.contains("<KEY_VALUE>"),
-                "Should normalize config parameters in: {}", line);
+            assert!(
+                tokens.len() >= 3,
+                "Should detect multiple config parameters in: {}",
+                line
+            );
+            assert!(
+                result.contains("<KEY_VALUE>"),
+                "Should normalize config parameters in: {}",
+                line
+            );
 
             // Verify all detected tokens are key-value pairs
             for token in tokens {
@@ -131,8 +152,7 @@ mod tests {
         for line in metrics_logs {
             let (result, tokens) = KeyValueDetector::detect_and_replace(line);
 
-            assert!(!tokens.is_empty(),
-                "Should detect metrics in: {}", line);
+            assert!(!tokens.is_empty(), "Should detect metrics in: {}", line);
 
             // Check that percentage values are properly typed
             let has_percentage = tokens.iter().any(|token| {
@@ -162,12 +182,17 @@ mod tests {
         for line in app_logs {
             let (result, tokens) = KeyValueDetector::detect_and_replace(line);
 
-            assert!(tokens.len() >= 3,
-                "Should detect multiple application parameters in: {}", line);
+            assert!(
+                tokens.len() >= 3,
+                "Should detect multiple application parameters in: {}",
+                line
+            );
 
             // After normalization, similar operations should group better
-            assert!(result.contains("<KEY_VALUE>"),
-                "Should normalize application parameters");
+            assert!(
+                result.contains("<KEY_VALUE>"),
+                "Should normalize application parameters"
+            );
         }
     }
 
@@ -188,10 +213,17 @@ mod tests {
             // This depends on context - URL params might be valid to match
             // Programming assignments should not be matched
             if test_case.contains("variable =") || test_case.contains("x=y") {
-                assert_eq!(result, test_case,
-                    "Should not modify programming assignments: {}", test_case);
-                assert_eq!(tokens.len(), 0,
-                    "Should not detect tokens in programming context: {}", test_case);
+                assert_eq!(
+                    result, test_case,
+                    "Should not modify programming assignments: {}",
+                    test_case
+                );
+                assert_eq!(
+                    tokens.len(),
+                    0,
+                    "Should not detect tokens in programming context: {}",
+                    test_case
+                );
             }
         }
     }
@@ -200,17 +232,20 @@ mod tests {
     #[test]
     fn test_different_separators() {
         let separator_cases = vec![
-            "config: key=value, other=123",      // comma-separated
-            "params: key=value; other=123",      // semicolon-separated
-            "data key=value other=123",          // space-separated
-            "settings: key=value | other=123",   // pipe-separated
+            "config: key=value, other=123",    // comma-separated
+            "params: key=value; other=123",    // semicolon-separated
+            "data key=value other=123",        // space-separated
+            "settings: key=value | other=123", // pipe-separated
         ];
 
         for test_case in separator_cases {
             let (result, tokens) = KeyValueDetector::detect_and_replace(test_case);
 
-            assert!(tokens.len() >= 2,
-                "Should detect key-value pairs regardless of separator in: {}", test_case);
+            assert!(
+                tokens.len() >= 2,
+                "Should detect key-value pairs regardless of separator in: {}",
+                test_case
+            );
         }
     }
 
@@ -236,7 +271,8 @@ mod tests {
 
         // After normalization, configuration lines with same structure
         // but different values should be more similar for folding
-        let structural_patterns: Vec<_> = normalized_lines.iter()
+        let structural_patterns: Vec<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Count key-value tokens to see structural similarity
                 line.matches("<KEY_VALUE>").count()
@@ -244,15 +280,19 @@ mod tests {
             .collect();
 
         // Lines with same number of key-value pairs should group better
-        let db_lines = &structural_patterns[0..3];  // Database configs
-        let cache_lines = &structural_patterns[3..6];  // Cache configs
+        let db_lines = &structural_patterns[0..3]; // Database configs
+        let cache_lines = &structural_patterns[3..6]; // Cache configs
 
         // Database configs should have same structure
-        assert!(db_lines.iter().all(|&count| count == db_lines[0]),
-            "Database configs should have same structural pattern");
+        assert!(
+            db_lines.iter().all(|&count| count == db_lines[0]),
+            "Database configs should have same structural pattern"
+        );
 
         // Cache configs should have same structure
-        assert!(cache_lines.iter().all(|&count| count == cache_lines[0]),
-            "Cache configs should have same structural pattern");
+        assert!(
+            cache_lines.iter().all(|&count| count == cache_lines[0]),
+            "Cache configs should have same structural pattern"
+        );
     }
 }

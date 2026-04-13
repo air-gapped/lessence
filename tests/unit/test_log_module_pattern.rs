@@ -1,5 +1,5 @@
-use lessence::patterns::log_module::LogWithModuleDetector;
 use lessence::patterns::Token;
+use lessence::patterns::log_module::LogWithModuleDetector;
 
 #[cfg(test)]
 mod tests {
@@ -18,22 +18,42 @@ mod tests {
             let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             // Should detect log level + module pattern
-            assert!(!tokens.is_empty(),
-                "Should detect log with module pattern in: {}", log_line);
+            assert!(
+                !tokens.is_empty(),
+                "Should detect log with module pattern in: {}",
+                log_line
+            );
 
             let has_log_module = tokens.iter().any(|token| {
-                matches!(token, Token::LogWithModule { level: _, module: _ })
+                matches!(
+                    token,
+                    Token::LogWithModule {
+                        level: _,
+                        module: _
+                    }
+                )
             });
 
-            assert!(has_log_module,
-                "Should detect LogWithModule token in: {}", log_line);
+            assert!(
+                has_log_module,
+                "Should detect LogWithModule token in: {}",
+                log_line
+            );
 
-            if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                .find(|t| matches!(t, Token::LogWithModule { .. })) {
-                assert!(level == "error" || level == "warn" || level == "info",
-                    "Should detect valid log level: {}", level);
-                assert!(module.starts_with("mod_"),
-                    "Should detect Apache module: {}", module);
+            if let Some(Token::LogWithModule { level, module }) = tokens
+                .iter()
+                .find(|t| matches!(t, Token::LogWithModule { .. }))
+            {
+                assert!(
+                    level == "error" || level == "warn" || level == "info",
+                    "Should detect valid log level: {}",
+                    level
+                );
+                assert!(
+                    module.starts_with("mod_"),
+                    "Should detect Apache module: {}",
+                    module
+                );
             }
         }
     }
@@ -51,16 +71,30 @@ mod tests {
             let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             let has_log_module = tokens.iter().any(|token| {
-                matches!(token, Token::LogWithModule { level: _, module: _ })
+                matches!(
+                    token,
+                    Token::LogWithModule {
+                        level: _,
+                        module: _
+                    }
+                )
             });
 
             if has_log_module {
-                if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                    .find(|t| matches!(t, Token::LogWithModule { .. })) {
-                    assert!(["error", "warn", "info", "debug"].contains(&level.as_str()),
-                        "Should detect valid nginx log level: {}", level);
-                    assert!(module.contains("ngx_http") || module.contains("module"),
-                        "Should detect nginx module: {}", module);
+                if let Some(Token::LogWithModule { level, module }) = tokens
+                    .iter()
+                    .find(|t| matches!(t, Token::LogWithModule { .. }))
+                {
+                    assert!(
+                        ["error", "warn", "info", "debug"].contains(&level.as_str()),
+                        "Should detect valid nginx log level: {}",
+                        level
+                    );
+                    assert!(
+                        module.contains("ngx_http") || module.contains("module"),
+                        "Should detect nginx module: {}",
+                        module
+                    );
                 }
             }
         }
@@ -82,16 +116,30 @@ mod tests {
             // This test validates detection when the pattern exists
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
-                    matches!(token, Token::LogWithModule { level: _, module: _ })
+                    matches!(
+                        token,
+                        Token::LogWithModule {
+                            level: _,
+                            module: _
+                        }
+                    )
                 });
 
                 if has_log_module {
-                    if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                        .find(|t| matches!(t, Token::LogWithModule { .. })) {
-                        assert!(["error", "warn", "info", "debug"].contains(&level.as_str()),
-                            "Should detect valid systemd log level: {}", level);
-                        assert!(!module.is_empty(),
-                            "Should detect systemd component: {}", module);
+                    if let Some(Token::LogWithModule { level, module }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::LogWithModule { .. }))
+                    {
+                        assert!(
+                            ["error", "warn", "info", "debug"].contains(&level.as_str()),
+                            "Should detect valid systemd log level: {}",
+                            level
+                        );
+                        assert!(
+                            !module.is_empty(),
+                            "Should detect systemd component: {}",
+                            module
+                        );
                     }
                 }
             }
@@ -113,16 +161,30 @@ mod tests {
             // Syslog format: facility.level module: message
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
-                    matches!(token, Token::LogWithModule { level: _, module: _ })
+                    matches!(
+                        token,
+                        Token::LogWithModule {
+                            level: _,
+                            module: _
+                        }
+                    )
                 });
 
                 if has_log_module {
-                    if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                        .find(|t| matches!(t, Token::LogWithModule { .. })) {
-                        assert!(["error", "warn", "info", "debug"].contains(&level.as_str()),
-                            "Should detect valid syslog level: {}", level);
-                        assert!(!module.is_empty(),
-                            "Should detect syslog daemon: {}", module);
+                    if let Some(Token::LogWithModule { level, module }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::LogWithModule { .. }))
+                    {
+                        assert!(
+                            ["error", "warn", "info", "debug"].contains(&level.as_str()),
+                            "Should detect valid syslog level: {}",
+                            level
+                        );
+                        assert!(
+                            !module.is_empty(),
+                            "Should detect syslog daemon: {}",
+                            module
+                        );
                     }
                 }
             }
@@ -144,17 +206,31 @@ mod tests {
             // Modern logging frameworks often use [module] format
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
-                    matches!(token, Token::LogWithModule { level: _, module: _ })
+                    matches!(
+                        token,
+                        Token::LogWithModule {
+                            level: _,
+                            module: _
+                        }
+                    )
                 });
 
                 if has_log_module {
-                    if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                        .find(|t| matches!(t, Token::LogWithModule { .. })) {
-                        assert!(["ERROR", "INFO", "WARN", "DEBUG"].contains(&level.as_str()) ||
-                               ["error", "info", "warn", "debug"].contains(&level.as_str()),
-                            "Should detect valid framework log level: {}", level);
-                        assert!(!module.is_empty(),
-                            "Should detect framework module: {}", module);
+                    if let Some(Token::LogWithModule { level, module }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::LogWithModule { .. }))
+                    {
+                        assert!(
+                            ["ERROR", "INFO", "WARN", "DEBUG"].contains(&level.as_str())
+                                || ["error", "info", "warn", "debug"].contains(&level.as_str()),
+                            "Should detect valid framework log level: {}",
+                            level
+                        );
+                        assert!(
+                            !module.is_empty(),
+                            "Should detect framework module: {}",
+                            module
+                        );
                     }
                 }
             }
@@ -176,17 +252,30 @@ mod tests {
 
             // Should not detect log-with-module pattern in non-logging contexts
             let has_log_module = tokens.iter().any(|token| {
-                matches!(token, Token::LogWithModule { level: _, module: _ })
+                matches!(
+                    token,
+                    Token::LogWithModule {
+                        level: _,
+                        module: _
+                    }
+                )
             });
 
             if has_log_module {
                 // If detected, it should be a valid logging pattern
-                if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                    .find(|t| matches!(t, Token::LogWithModule { .. })) {
+                if let Some(Token::LogWithModule { level, module }) = tokens
+                    .iter()
+                    .find(|t| matches!(t, Token::LogWithModule { .. }))
+                {
                     // Strict validation for potential false positives
-                    assert!(["ERROR", "INFO", "WARN", "DEBUG", "error", "info", "warn", "debug"]
-                           .contains(&level.as_str()),
-                        "Detected level should be valid log level: {}", level);
+                    assert!(
+                        [
+                            "ERROR", "INFO", "WARN", "DEBUG", "error", "info", "warn", "debug"
+                        ]
+                        .contains(&level.as_str()),
+                        "Detected level should be valid log level: {}",
+                        level
+                    );
                 }
             }
         }
@@ -207,15 +296,26 @@ mod tests {
             // Should handle different case variations
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
-                    matches!(token, Token::LogWithModule { level: _, module: _ })
+                    matches!(
+                        token,
+                        Token::LogWithModule {
+                            level: _,
+                            module: _
+                        }
+                    )
                 });
 
                 if has_log_module {
-                    if let Some(Token::LogWithModule { level, module }) = tokens.iter()
-                        .find(|t| matches!(t, Token::LogWithModule { .. })) {
+                    if let Some(Token::LogWithModule { level, module }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::LogWithModule { .. }))
+                    {
                         // Level should be normalized to lowercase
-                        assert!(level.chars().all(|c| c.is_lowercase()),
-                            "Log level should be normalized to lowercase: {}", level);
+                        assert!(
+                            level.chars().all(|c| c.is_lowercase()),
+                            "Log level should be normalized to lowercase: {}",
+                            level
+                        );
                     }
                 }
             }
@@ -244,7 +344,8 @@ mod tests {
 
         // After normalization, similar log patterns with same level+module
         // should group better for folding
-        let module_patterns: Vec<_> = normalized_lines.iter()
+        let module_patterns: Vec<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Count LOG_WITH_MODULE tokens
                 line.matches("<LOG_WITH_MODULE>").count()
@@ -253,26 +354,35 @@ mod tests {
 
         // Each Apache log line should have log-with-module pattern
         for count in module_patterns {
-            assert!(count > 0, "Each Apache log should have log-with-module pattern");
+            assert!(
+                count > 0,
+                "Each Apache log should have log-with-module pattern"
+            );
         }
 
         // Lines with same module should be more similar after normalization
-        let mod_jk_lines: Vec<_> = normalized_lines.iter()
+        let mod_jk_lines: Vec<_> = normalized_lines
+            .iter()
             .filter(|line| line.contains("mod_jk") || line.contains("<LOG_WITH_MODULE>"))
             .collect();
 
-        assert!(!mod_jk_lines.is_empty(),
-            "Should have mod_jk lines for compression grouping");
+        assert!(
+            !mod_jk_lines.is_empty(),
+            "Should have mod_jk lines for compression grouping"
+        );
 
         // Similar module patterns should help compression
-        let unique_patterns: std::collections::HashSet<_> = normalized_lines.iter()
+        let unique_patterns: std::collections::HashSet<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Extract structural pattern after normalization
                 line.replace(|c: char| c.is_ascii_digit(), "N")
             })
             .collect();
 
-        assert!(unique_patterns.len() < apache_samples.len(),
-            "Module normalization should reduce pattern variety for better compression");
+        assert!(
+            unique_patterns.len() < apache_samples.len(),
+            "Module normalization should reduce pattern variety for better compression"
+        );
     }
 }

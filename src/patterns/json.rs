@@ -50,7 +50,6 @@ impl JsonDetector {
 
         (result, tokens)
     }
-
 }
 
 #[cfg(test)]
@@ -88,5 +87,4 @@ mod tests {
             );
         }
     }
-
 }

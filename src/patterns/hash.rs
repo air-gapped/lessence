@@ -128,7 +128,6 @@ impl HashDetector {
 
         (result, tokens)
     }
-
 }
 
 #[cfg(test)]

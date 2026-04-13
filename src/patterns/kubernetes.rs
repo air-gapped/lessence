@@ -306,7 +306,9 @@ mod tests {
         let text = "Error preparing data for pod kube-system/nginx-abc123: failed";
         let (result, tokens) = KubernetesDetector::detect_and_replace(text);
         assert!(
-            tokens.iter().any(|t| matches!(t, Token::KubernetesNamespace(_) | Token::PodName(_))),
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::KubernetesNamespace(_) | Token::PodName(_))),
             "should detect namespace or pod, got tokens: {tokens:?}"
         );
         assert!(
@@ -344,7 +346,10 @@ mod tests {
         let text = r#"volume kube-api-access-abc123 failed"#;
         let (result, tokens) = KubernetesDetector::detect_and_replace(text);
         // Should succeed without panic — the kube-api-access pattern has no capture group 1
-        assert!(result.contains("kube-api-access-<SUFFIX>"), "result: {result}");
+        assert!(
+            result.contains("kube-api-access-<SUFFIX>"),
+            "result: {result}"
+        );
         // kube-api-access patterns don't push VolumeName tokens (only named-capture patterns do)
         let _ = tokens; // just verify no panic
     }

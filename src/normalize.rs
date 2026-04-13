@@ -902,9 +902,13 @@ mod tests {
     fn structured_detection_brace_only() {
         // Input with { but no = — should still trigger structured detection
         let n = Normalizer::new(Config::default());
-        let line = n.normalize_line(r#"{"level":"error","component":"web","msg":"fail"}"#.into()).unwrap();
+        let line = n
+            .normalize_line(r#"{"level":"error","component":"web","msg":"fail"}"#.into())
+            .unwrap();
         assert!(
-            line.tokens.iter().any(|t| matches!(t, Token::StructuredMessage { .. })),
+            line.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
             "Brace-only input should trigger structured detection: {:?}",
             line.tokens
         );
@@ -915,10 +919,15 @@ mod tests {
         // Input with = but no { — should still trigger the structured/KV detection path
         // The || ensures both branches (contains '{') and (contains '=') individually pass
         let n = Normalizer::new(Config::default());
-        let line = n.normalize_line("level=error component=web msg=fail".into()).unwrap();
+        let line = n
+            .normalize_line("level=error component=web msg=fail".into())
+            .unwrap();
         // Either StructuredMessage or KeyValuePair tokens indicate the = path was taken
         assert!(
-            line.tokens.iter().any(|t| matches!(t, Token::StructuredMessage { .. } | Token::KeyValuePair { .. })),
+            line.tokens.iter().any(|t| matches!(
+                t,
+                Token::StructuredMessage { .. } | Token::KeyValuePair { .. }
+            )),
             "Equals-only input should trigger structured or KV detection: {:?}",
             line.tokens
         );
@@ -953,7 +962,9 @@ mod tests {
             ..Config::default()
         };
         let n = Normalizer::new(config);
-        let line = n.normalize_line("user test@example.com logged in".into()).unwrap();
+        let line = n
+            .normalize_line("user test@example.com logged in".into())
+            .unwrap();
         assert!(
             !line.tokens.iter().any(|t| matches!(t, Token::Email(_))),
             "Emails should NOT be detected when normalize_emails=false: {:?}",
@@ -968,7 +979,9 @@ mod tests {
         // Input with ' but no " — should still trigger quoted string detection path
         // Kills: || with && on `contains('"') || contains('\'')`
         let n = Normalizer::new(Config::default());
-        let line = n.normalize_line("mount 'very-long-volume-name-that-exceeds-threshold-ok' done".into()).unwrap();
+        let line = n
+            .normalize_line("mount 'very-long-volume-name-that-exceeds-threshold-ok' done".into())
+            .unwrap();
         // The ' path should be entered (if || is correct, either quote type suffices)
         // Just verify no panic — the detection may or may not produce tokens
         let _ = line;

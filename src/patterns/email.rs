@@ -244,7 +244,11 @@ mod tests {
         let local = "a".repeat(64);
         let domain_body = "b".repeat(321 - 64 - 1 - 4); // -local -@ -.com
         let email = format!("{local}@{domain_body}.com");
-        assert!(email.len() > 320, "email len {} should exceed 320", email.len());
+        assert!(
+            email.len() > 320,
+            "email len {} should exceed 320",
+            email.len()
+        );
         let detector = EmailPatternDetector::new().unwrap();
         assert!(!detector.validate_email(&email));
     }
@@ -261,7 +265,10 @@ mod tests {
         let email = format!("{local}@{domain_body}.com");
         assert_eq!(email.len(), 320, "email len should be exactly 320");
         let detector = EmailPatternDetector::new().unwrap();
-        assert!(detector.validate_email(&email), "320-char email should be accepted");
+        assert!(
+            detector.validate_email(&email),
+            "320-char email should be accepted"
+        );
     }
 
     #[test]
@@ -272,6 +279,9 @@ mod tests {
         let email = format!("{local}@{domain_body}.com");
         assert_eq!(email.len(), 321, "email len should be exactly 321");
         let detector = EmailPatternDetector::new().unwrap();
-        assert!(!detector.validate_email(&email), "321-char email should be rejected");
+        assert!(
+            !detector.validate_email(&email),
+            "321-char email should be rejected"
+        );
     }
 }

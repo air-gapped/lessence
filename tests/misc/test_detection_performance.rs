@@ -49,16 +49,8 @@ fn test_multiple_timestamp_detection_scales_linearly() {
 #[test]
 fn test_long_text_performance() {
     let base = "This is a longer log message with various content ";
-    let small = format!(
-        "{}2025-09-29T10:15:30Z{}",
-        base.repeat(12),
-        base.repeat(12),
-    );
-    let large = format!(
-        "{}2025-09-29T10:15:30Z{}",
-        base.repeat(48),
-        base.repeat(48),
-    );
+    let small = format!("{}2025-09-29T10:15:30Z{}", base.repeat(12), base.repeat(12),);
+    let large = format!("{}2025-09-29T10:15:30Z{}", base.repeat(48), base.repeat(48),);
 
     crate::common::assert_linear_scaling("long_text", &small, &large, |input| {
         let _ = UnifiedTimestampDetector::detect_with_metadata(input);

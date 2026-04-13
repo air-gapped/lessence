@@ -102,7 +102,6 @@ impl QuotedStringDetector {
 
         (result, tokens)
     }
-
 }
 
 #[cfg(test)]
@@ -355,7 +354,11 @@ mod tests {
         assert_eq!(content_23.len(), 23);
         let input_25 = format!(r#"x "{content_23}""#);
         let (result25, tokens25) = QuotedStringDetector::detect_and_replace(&input_25);
-        assert_eq!(tokens25.len(), 0, "25-char quoted string should NOT produce token: {result25}");
+        assert_eq!(
+            tokens25.len(),
+            0,
+            "25-char quoted string should NOT produce token: {result25}"
+        );
         assert_eq!(result25, input_25);
 
         // 24 chars content + 2 quotes = 26 total → > 25 → replaced
@@ -363,8 +366,15 @@ mod tests {
         assert_eq!(content_24.len(), 24);
         let input_26 = format!(r#"x "{content_24}""#);
         let (result26, tokens26) = QuotedStringDetector::detect_and_replace(&input_26);
-        assert_eq!(tokens26.len(), 1, "26-char quoted string should produce token: {result26}");
-        assert!(result26.contains("<QUOTED_STRING>"), "should be replaced: {result26}");
+        assert_eq!(
+            tokens26.len(),
+            1,
+            "26-char quoted string should produce token: {result26}"
+        );
+        assert!(
+            result26.contains("<QUOTED_STRING>"),
+            "should be replaced: {result26}"
+        );
     }
 
     #[test]

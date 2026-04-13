@@ -241,7 +241,9 @@ mod tests {
 
     #[test]
     fn http_ind_negative() {
-        assert!(!HttpStatusDetector::has_http_indicators("plain log message"));
+        assert!(!HttpStatusDetector::has_http_indicators(
+            "plain log message"
+        ));
     }
 
     // ---- classify_status_code: each match arm ----
@@ -284,7 +286,10 @@ mod tests {
         let input = r#"10.0.0.1 - - [01/Jan/2025:00:00:00 +0000] "GET /api HTTP/1.1" 200 1234"#;
         let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
         assert!(!tokens.is_empty(), "should detect HTTP status: {result}");
-        assert!(result.contains("<HTTP_STATUS"), "text should be modified: {result}");
+        assert!(
+            result.contains("<HTTP_STATUS"),
+            "text should be modified: {result}"
+        );
     }
 
     // ---- Mutant-killing: apply_access_log_pattern (replace with ()) ----

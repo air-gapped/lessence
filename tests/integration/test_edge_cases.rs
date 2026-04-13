@@ -30,18 +30,21 @@ fn test_very_long_line() {
 #[test]
 fn test_malformed_timestamps() {
     let malformed_cases = vec![
-        "2025-13-45T25:99:99Z",  // Invalid dates/times
-        "2025-02-30T10:15:30Z",  // Invalid date
-        "2025-09-29T25:15:30Z",  // Invalid hour
-        "20250929T101530Z",      // Missing separators
-        "2025/09/29T10:15:30Z",  // Wrong separators
+        "2025-13-45T25:99:99Z", // Invalid dates/times
+        "2025-02-30T10:15:30Z", // Invalid date
+        "2025-09-29T25:15:30Z", // Invalid hour
+        "20250929T101530Z",     // Missing separators
+        "2025/09/29T10:15:30Z", // Wrong separators
     ];
 
     for input in malformed_cases {
         let (result, _tokens) = TimestampDetector::detect_and_replace(input);
         // Should either reject completely or handle gracefully
         // Don't crash or produce invalid output
-        assert!(!result.is_empty(), "Should not crash on malformed input: {input}");
+        assert!(
+            !result.is_empty(),
+            "Should not crash on malformed input: {input}"
+        );
     }
 }
 
@@ -64,7 +67,10 @@ fn test_special_characters() {
 
     for input in test_cases {
         let (result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(result.contains("<TIMESTAMP>"), "Should handle special chars: {input}");
+        assert!(
+            result.contains("<TIMESTAMP>"),
+            "Should handle special chars: {input}"
+        );
         assert_eq!(tokens.len(), 1);
     }
 }
@@ -82,13 +88,16 @@ fn test_nested_brackets() {
 fn test_timestamp_at_boundaries() {
     let test_cases = vec![
         "2025-09-29T10:15:30Z",  // Only timestamp
-        "2025-09-29T10:15:30Z ",  // Timestamp at start
-        " 2025-09-29T10:15:30Z",  // Timestamp at end
+        "2025-09-29T10:15:30Z ", // Timestamp at start
+        " 2025-09-29T10:15:30Z", // Timestamp at end
     ];
 
     for input in test_cases {
         let (result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(result.contains("<TIMESTAMP>"), "Should detect at boundaries: {input}");
+        assert!(
+            result.contains("<TIMESTAMP>"),
+            "Should detect at boundaries: {input}"
+        );
         assert_eq!(tokens.len(), 1);
     }
 

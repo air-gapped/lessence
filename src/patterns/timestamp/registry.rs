@@ -428,25 +428,19 @@ mod tests {
     #[test]
     fn assign_priorities_unix_lowest() {
         let registry = TimestampRegistry::new();
-        let unix_pattern = registry
-            .get_patterns()
-            .iter()
-            .find(|p| {
+        let unix_pattern = registry.get_patterns().iter().find(|p| {
+            matches!(
+                p.format_type,
+                crate::patterns::timestamp::formats::TimestampFormat::UnixTimestamp
+            )
+        });
+        if let Some(up) = unix_pattern {
+            let structured_pattern = registry.get_patterns().iter().find(|p| {
                 matches!(
                     p.format_type,
-                    crate::patterns::timestamp::formats::TimestampFormat::UnixTimestamp
+                    crate::patterns::timestamp::formats::TimestampFormat::ISO8601Full
                 )
             });
-        if let Some(up) = unix_pattern {
-            let structured_pattern = registry
-                .get_patterns()
-                .iter()
-                .find(|p| {
-                    matches!(
-                        p.format_type,
-                        crate::patterns::timestamp::formats::TimestampFormat::ISO8601Full
-                    )
-                });
             if let Some(sp) = structured_pattern {
                 assert!(
                     up.priority.effective_score() > sp.priority.effective_score(),

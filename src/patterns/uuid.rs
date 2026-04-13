@@ -205,7 +205,9 @@ mod tests {
 
     #[test]
     fn uuid_ind_hyphen() {
-        assert!(UuidDetector::has_uuid_indicators("550e8400-e29b-41d4-a716-446655440000"));
+        assert!(UuidDetector::has_uuid_indicators(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ));
     }
 
     #[test]
@@ -231,7 +233,9 @@ mod tests {
     #[test]
     fn uuid_ind_long_hex() {
         // >20 chars with hex digits, no hyphens/req/trace/session
-        assert!(UuidDetector::has_uuid_indicators("id: 550e8400e29b41d4a716446655440000"));
+        assert!(UuidDetector::has_uuid_indicators(
+            "id: 550e8400e29b41d4a716446655440000"
+        ));
     }
 
     #[test]
@@ -273,18 +277,24 @@ mod tests {
     #[test]
     fn uuid_no_hyphens_insufficient_letters() {
         // 32 chars but only 4 letters
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens("12345678901234567890123456789012"));
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens(
+            "12345678901234567890123456789012"
+        ));
     }
 
     #[test]
     fn uuid_no_hyphens_insufficient_numbers() {
         // 32 chars but only 4 numbers
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens("abcdefabcdefabcdefabcdefabcdefab"));
+        assert!(!UuidDetector::looks_like_uuid_no_hyphens(
+            "abcdefabcdefabcdefabcdefabcdefab"
+        ));
     }
 
     #[test]
     fn uuid_no_hyphens_good_mix() {
-        assert!(UuidDetector::looks_like_uuid_no_hyphens("550e8400e29b41d4a716446655440000"));
+        assert!(UuidDetector::looks_like_uuid_no_hyphens(
+            "550e8400e29b41d4a716446655440000"
+        ));
     }
 
     // ---- is_likely_id: per-condition tests ----
@@ -361,7 +371,9 @@ mod tests {
     fn uuid_no_hyphens_exactly_5_numbers_passes() {
         // Kills mutant: `number_count > 4` → `number_count >= 4` (line 133)
         // 27 letters + 5 digits = 32 chars
-        let s: String = std::iter::repeat_n('a', 27).chain("01234".chars()).collect();
+        let s: String = std::iter::repeat_n('a', 27)
+            .chain("01234".chars())
+            .collect();
         assert_eq!(s.len(), 32);
         assert!(UuidDetector::looks_like_uuid_no_hyphens(&s));
     }

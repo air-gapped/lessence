@@ -26,14 +26,8 @@ fn test_evil_excessive_hex_repetition_scales_linearly() {
 
 #[test]
 fn test_evil_nested_groups_scales_linearly() {
-    let small = "a:b:c:d:e:f:"
-        .repeat(3)
-        .trim_end_matches(':')
-        .to_string();
-    let large = "a:b:c:d:e:f:"
-        .repeat(12)
-        .trim_end_matches(':')
-        .to_string();
+    let small = "a:b:c:d:e:f:".repeat(3).trim_end_matches(':').to_string();
+    let large = "a:b:c:d:e:f:".repeat(12).trim_end_matches(':').to_string();
 
     crate::common::assert_linear_scaling("nested_groups", &small, &large, |input| {
         let _ = NetworkDetector::detect_and_replace(input, true, false, false);
@@ -62,14 +56,8 @@ fn test_evil_repeated_colons_scales_linearly() {
 
 #[test]
 fn test_evil_invalid_chars_injection_scales_linearly() {
-    let small = format!(
-        "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
-        "!".repeat(15)
-    );
-    let large = format!(
-        "2001:0db8:85a3:0000:0000:8a2e:0370:7334{}",
-        "!".repeat(60)
-    );
+    let small = format!("2001:0db8:85a3:0000:0000:8a2e:0370:7334{}", "!".repeat(15));
+    let large = format!("2001:0db8:85a3:0000:0000:8a2e:0370:7334{}", "!".repeat(60));
 
     crate::common::assert_linear_scaling("invalid_chars", &small, &large, |input| {
         let _ = NetworkDetector::detect_and_replace(input, true, false, false);
@@ -94,14 +82,8 @@ fn test_evil_mixed_valid_invalid_scales_linearly() {
 
 #[test]
 fn test_evil_ipv4_like_with_colons_scales_linearly() {
-    let small = "192.168.1.1:"
-        .repeat(4)
-        .trim_end_matches(':')
-        .to_string();
-    let large = "192.168.1.1:"
-        .repeat(16)
-        .trim_end_matches(':')
-        .to_string();
+    let small = "192.168.1.1:".repeat(4).trim_end_matches(':').to_string();
+    let large = "192.168.1.1:".repeat(16).trim_end_matches(':').to_string();
 
     crate::common::assert_linear_scaling("ipv4_colons", &small, &large, |input| {
         let _ = NetworkDetector::detect_and_replace(input, true, false, false);

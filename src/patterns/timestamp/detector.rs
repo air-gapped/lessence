@@ -164,33 +164,45 @@ mod tests {
 
     #[test]
     fn has_timestamp_indicators_year_and_colon() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("2024-01-01 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "2024-01-01 10:00:00"
+        ));
     }
 
     #[test]
     fn has_timestamp_indicators_iso8601() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("foo:barT"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "foo:barT"
+        ));
     }
 
     #[test]
     fn has_timestamp_indicators_month_name() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Jan 1 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Jan 1 10:00:00"
+        ));
     }
 
     #[test]
     fn has_timestamp_indicators_k8s_level() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("I1025 10:00:00.000"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "I1025 10:00:00.000"
+        ));
     }
 
     #[test]
     fn has_timestamp_indicators_no_colon_rejects() {
-        assert!(!UnifiedTimestampDetector::has_timestamp_indicators("2024-01-01 no colon"));
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators(
+            "2024-01-01 no colon"
+        ));
     }
 
     #[test]
     fn has_timestamp_indicators_colon_but_no_date() {
         // Has colon but no year, date separator, month name, or k8s indicator
-        assert!(!UnifiedTimestampDetector::has_timestamp_indicators("foo:bar"));
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators(
+            "foo:bar"
+        ));
     }
 
     #[test]
@@ -200,14 +212,18 @@ mod tests {
 
     #[test]
     fn has_timestamp_indicators_bracket() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("[10:00:00]"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "[10:00:00]"
+        ));
     }
 
     // Additional per-condition tests for remaining || branches
 
     #[test]
     fn ts_ind_year_19() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("1999-01:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "1999-01:00"
+        ));
     }
 
     #[test]
@@ -218,134 +234,186 @@ mod tests {
 
     #[test]
     fn ts_ind_feb() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Feb 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Feb 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_mar() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Mar 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Mar 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_apr() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Apr 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Apr 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_may() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("May 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "May 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_jun() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Jun 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Jun 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_jul() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Jul 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Jul 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_aug() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Aug 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Aug 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_sep() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Sep 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Sep 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_oct() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Oct 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Oct 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_nov() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Nov 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Nov 1 10:00"
+        ));
     }
 
     #[test]
     fn ts_ind_dec() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("Dec 1 10:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "Dec 1 10:00"
+        ));
     }
 
     // K8s level prefixes: W, E, F and other month combinations
 
     #[test]
     fn ts_ind_w09() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("W0929 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "W0929 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_e09() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("E0929 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "E0929 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_f09() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("F0929 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "F0929 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_i09() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("I0929 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "I0929 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_i11() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("I1129 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "I1129 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_w11() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("W1129 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "W1129 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_e11() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("E1129 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "E1129 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_f11() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("F1129 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "F1129 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_i12() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("I1229 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "I1229 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_w12() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("W1229 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "W1229 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_e12() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("E1229 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "E1229 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_f12() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("F1229 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "F1229 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_w10() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("W1029 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "W1029 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_e10() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("E1029 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "E1029 10:00:00"
+        ));
     }
 
     #[test]
     fn ts_ind_f10() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("F1029 10:00:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "F1029 10:00:00"
+        ));
     }
 
     // ---- resolve_overlaps: boundary tests ----
@@ -412,12 +480,16 @@ mod tests {
     fn ts_ind_requires_colon() {
         // Kills mutant: `text.contains(':') &&` condition
         // Input with date indicators but NO colon should return false
-        assert!(!UnifiedTimestampDetector::has_timestamp_indicators("2024-01-01 no colon here"));
+        assert!(!UnifiedTimestampDetector::has_timestamp_indicators(
+            "2024-01-01 no colon here"
+        ));
     }
 
     #[test]
     fn ts_ind_colon_with_year_20() {
-        assert!(UnifiedTimestampDetector::has_timestamp_indicators("2024:00"));
+        assert!(UnifiedTimestampDetector::has_timestamp_indicators(
+            "2024:00"
+        ));
     }
 
     // ---- Mutant-killing: resolve_overlaps line 124 ----

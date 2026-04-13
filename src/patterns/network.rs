@@ -381,42 +381,82 @@ mod tests {
 
     #[test]
     fn net_ind_ip_dot() {
-        assert!(NetworkDetector::has_network_indicators("192.168.1.1", true, false, false));
+        assert!(NetworkDetector::has_network_indicators(
+            "192.168.1.1",
+            true,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn net_ind_ip_colon() {
-        assert!(NetworkDetector::has_network_indicators("2001:db8::1", true, false, false));
+        assert!(NetworkDetector::has_network_indicators(
+            "2001:db8::1",
+            true,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn net_ind_port_colon() {
-        assert!(NetworkDetector::has_network_indicators("host:8080", false, true, false));
+        assert!(NetworkDetector::has_network_indicators(
+            "host:8080",
+            false,
+            true,
+            false
+        ));
     }
 
     #[test]
     fn net_ind_fqdn_com() {
-        assert!(NetworkDetector::has_network_indicators("example.com", false, false, true));
+        assert!(NetworkDetector::has_network_indicators(
+            "example.com",
+            false,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn net_ind_fqdn_org() {
-        assert!(NetworkDetector::has_network_indicators("example.org", false, false, true));
+        assert!(NetworkDetector::has_network_indicators(
+            "example.org",
+            false,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn net_ind_fqdn_net() {
-        assert!(NetworkDetector::has_network_indicators("example.net", false, false, true));
+        assert!(NetworkDetector::has_network_indicators(
+            "example.net",
+            false,
+            false,
+            true
+        ));
     }
 
     #[test]
     fn net_ind_all_disabled() {
-        assert!(!NetworkDetector::has_network_indicators("192.168.1.1", false, false, false));
+        assert!(!NetworkDetector::has_network_indicators(
+            "192.168.1.1",
+            false,
+            false,
+            false
+        ));
     }
 
     #[test]
     fn net_ind_fqdn_no_dot() {
-        assert!(!NetworkDetector::has_network_indicators("localhost", false, false, true));
+        assert!(!NetworkDetector::has_network_indicators(
+            "localhost",
+            false,
+            false,
+            true
+        ));
     }
 
     // ---- detect_and_replace: file extension exclusions ----
@@ -448,7 +488,10 @@ mod tests {
     #[test]
     fn port_skip_java_file() {
         let (result, _) = NetworkDetector::detect_and_replace("App.java:200", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .java file: {result}");
+        assert!(
+            !result.contains("<PORT>"),
+            "should skip .java file: {result}"
+        );
     }
 
     #[test]
@@ -460,7 +503,10 @@ mod tests {
     #[test]
     fn port_skip_cpp_file() {
         let (result, _) = NetworkDetector::detect_and_replace("main.cpp:30", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .cpp file: {result}");
+        assert!(
+            !result.contains("<PORT>"),
+            "should skip .cpp file: {result}"
+        );
     }
 
     #[test]
@@ -623,12 +669,8 @@ mod tests {
     #[test]
     fn no_duplicate_ipv4_tokens() {
         // Two occurrences of the same IP should produce only one IPv4 token
-        let (_, tokens) = NetworkDetector::detect_and_replace(
-            "from 10.0.0.1 to 10.0.0.1",
-            true,
-            false,
-            false,
-        );
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace("from 10.0.0.1 to 10.0.0.1", true, false, false);
         let ip_count = tokens
             .iter()
             .filter(|t| matches!(t, Token::IPv4(s) if s == "10.0.0.1"))
@@ -770,10 +812,7 @@ mod tests {
         // normalize_fqdns=true, text has a dot but no "com"/"org"/"net" => should be false
         // kills: `&& with ||` on line 302 (the inner &&)
         assert!(!NetworkDetector::has_network_indicators(
-            "file.txt",
-            false,
-            false,
-            true
+            "file.txt", false, false, true
         ));
     }
 
@@ -782,10 +821,7 @@ mod tests {
         // normalize_fqdns=true, text has "com" but no dot => should be false
         // kills: `&& with ||` on the outer part of line 302
         assert!(!NetworkDetector::has_network_indicators(
-            "dotcom",
-            false,
-            false,
-            true
+            "dotcom", false, false, true
         ));
     }
 
@@ -836,7 +872,9 @@ mod tests {
         let (_, tokens) =
             NetworkDetector::detect_and_replace("connect example.com ok", false, false, true);
         assert!(
-            tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == "example.com")),
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv4(s) if s == "example.com")),
             "valid FQDN should produce IPv4 token: {tokens:?}"
         );
     }
@@ -845,11 +883,12 @@ mod tests {
     fn fqdn_leading_dot_no_token() {
         // Kills: delete ! on `!starts_with('.')`
         // Kills: && with || (leading dot should prevent token, not allow it)
-        let (_, tokens) =
-            NetworkDetector::detect_and_replace(".example.com", false, false, true);
+        let (_, tokens) = NetworkDetector::detect_and_replace(".example.com", false, false, true);
         // Leading dot → token should NOT be produced (text still replaced by regex)
         assert!(
-            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s.starts_with('.'))),
+            !tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv4(s) if s.starts_with('.'))),
             "leading dot FQDN should not produce token: {tokens:?}"
         );
     }
@@ -857,10 +896,11 @@ mod tests {
     #[test]
     fn fqdn_trailing_dot_no_token() {
         // Kills: delete ! on `!ends_with('.')`
-        let (_, tokens) =
-            NetworkDetector::detect_and_replace("example.com.", false, false, true);
+        let (_, tokens) = NetworkDetector::detect_and_replace("example.com.", false, false, true);
         assert!(
-            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
+            !tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
             "trailing dot FQDN should not produce token: {tokens:?}"
         );
     }

@@ -1063,7 +1063,10 @@ impl PatternFolder {
 
         // Output: one line per pattern with representative original line
         for (count, representative) in &display {
-            println!("{}", Self::format_summary_line(*count, representative, max_width));
+            println!(
+                "{}",
+                Self::format_summary_line(*count, representative, max_width)
+            );
         }
 
         if fit_truncated > 0 {
@@ -1072,9 +1075,16 @@ impl PatternFolder {
 
         // Coverage info on stderr
         let shown_lines: usize = display.iter().map(|(c, _)| c).sum();
-        eprintln!("{}", Self::format_coverage_message(
-            shown_count, total_patterns, shown_lines, self.stats.total_lines, was_capped,
-        ));
+        eprintln!(
+            "{}",
+            Self::format_coverage_message(
+                shown_count,
+                total_patterns,
+                shown_lines,
+                self.stats.total_lines,
+                was_capped,
+            )
+        );
 
         Ok(())
     }
@@ -2674,7 +2684,8 @@ mod tests {
     #[test]
     fn process_line_increments_total_lines() {
         let mut f = make_folder();
-        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1").unwrap();
+        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1")
+            .unwrap();
         assert_eq!(f.stats.total_lines, 1);
     }
 
@@ -2682,7 +2693,8 @@ mod tests {
     fn process_line_with_tokens_increments_patterns_detected() {
         let mut f = make_folder();
         // This line contains an IP which will be detected as a token
-        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1").unwrap();
+        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1")
+            .unwrap();
         assert!(
             f.stats.patterns_detected >= 1,
             "patterns_detected should be >= 1, got {}",
@@ -2716,17 +2728,23 @@ mod tests {
     fn process_line_identical_lines_cluster_into_one_group() {
         let mut f = make_folder();
         for _ in 0..5 {
-            f.process_line("2024-01-01 ERROR connection refused from 10.0.0.1").unwrap();
+            f.process_line("2024-01-01 ERROR connection refused from 10.0.0.1")
+                .unwrap();
         }
         // Similar lines should be in one group
-        assert_eq!(f.buffer.len(), 1, "identical lines should cluster into one group");
+        assert_eq!(
+            f.buffer.len(),
+            1,
+            "identical lines should cluster into one group"
+        );
         assert_eq!(f.buffer[0].count(), 5);
     }
 
     #[test]
     fn process_line_dissimilar_lines_create_separate_groups() {
         let mut f = make_folder();
-        f.process_line("2024-01-01 ERROR disk full on /dev/sda1").unwrap();
+        f.process_line("2024-01-01 ERROR disk full on /dev/sda1")
+            .unwrap();
         f.process_line("GET /api/health HTTP/1.1 200 OK").unwrap();
         assert!(
             f.buffer.len() >= 2,
@@ -2746,7 +2764,11 @@ mod tests {
         // Parallel mode buffers lines instead of processing immediately
         assert_eq!(result, None, "parallel mode should buffer, not process");
         assert_eq!(f.batch_buffer.len(), 1, "line should be in batch_buffer");
-        assert_eq!(f.buffer.len(), 0, "buffer should be empty until batch processes");
+        assert_eq!(
+            f.buffer.len(),
+            0,
+            "buffer should be empty until batch processes"
+        );
     }
 
     #[test]
@@ -2754,8 +2776,10 @@ mod tests {
         let mut f = make_folder();
         // Feed 5 similar lines — above min_collapse=3, so they should collapse
         for i in 0..5 {
-            f.process_line(&format!("2024-01-01 ERROR timeout connecting to 10.0.0.{i}"))
-                .unwrap();
+            f.process_line(&format!(
+                "2024-01-01 ERROR timeout connecting to 10.0.0.{i}"
+            ))
+            .unwrap();
         }
         let output = f.finish().unwrap();
         let joined = output.join("\n");
@@ -2808,7 +2832,10 @@ mod tests {
         let mut f = make_folder();
         // Add a group at position 1
         f.buffer.push(PatternGroup::new(
-            make_line("old line with 10.0.0.1", vec![Token::IPv4("10.0.0.1".into())]),
+            make_line(
+                "old line with 10.0.0.1",
+                vec![Token::IPv4("10.0.0.1".into())],
+            ),
             1,
         ));
         // Advance position counter well past safe_distance (100)
@@ -2822,10 +2849,8 @@ mod tests {
     fn flush_oldest_safe_group_does_not_flush_recent_group() {
         let mut f = make_folder();
         // Add a group at position 50
-        f.buffer.push(PatternGroup::new(
-            make_line("recent line", vec![]),
-            50,
-        ));
+        f.buffer
+            .push(PatternGroup::new(make_line("recent line", vec![]), 50));
         // Position counter is only 60 — well within safe_distance=100
         f.position_counter = 60;
         let result = f.flush_oldest_safe_group().unwrap();
@@ -2852,13 +2877,14 @@ mod tests {
         // Kills: > safe_distance → >= safe_distance
         // safe_distance = 100, so distance of exactly 100 should NOT flush
         let mut f = make_folder();
-        f.buffer.push(PatternGroup::new(
-            make_line("boundary line", vec![]),
-            1,
-        ));
+        f.buffer
+            .push(PatternGroup::new(make_line("boundary line", vec![]), 1));
         f.position_counter = 101; // distance = 101 - 1 = 100, exactly at boundary
         let result = f.flush_oldest_safe_group().unwrap();
-        assert_eq!(result, None, "distance of exactly 100 should NOT flush (> not >=)");
+        assert_eq!(
+            result, None,
+            "distance of exactly 100 should NOT flush (> not >=)"
+        );
 
         // distance = 101 SHOULD flush
         f.position_counter = 102; // distance = 102 - 1 = 101
@@ -2871,13 +2897,14 @@ mod tests {
         // Kills: current_position - group.position → current_position / group.position
         // With position=50, counter=160: 160-50=110 > 100 (flush), 160/50=3 (no flush)
         let mut f = make_folder();
-        f.buffer.push(PatternGroup::new(
-            make_line("division test", vec![]),
-            50,
-        ));
+        f.buffer
+            .push(PatternGroup::new(make_line("division test", vec![]), 50));
         f.position_counter = 160;
         let result = f.flush_oldest_safe_group().unwrap();
-        assert!(result.is_some(), "distance 110 should flush (subtraction gives 110, division gives 3)");
+        assert!(
+            result.is_some(),
+            "distance 110 should flush (subtraction gives 110, division gives 3)"
+        );
     }
 
     #[test]
@@ -2885,14 +2912,10 @@ mod tests {
         // Kills: group.position < oldest_position → <= oldest_position
         // Two groups at same position, different content — first should be selected
         let mut f = make_folder();
-        f.buffer.push(PatternGroup::new(
-            make_line("first_group_aaa", vec![]),
-            5,
-        ));
-        f.buffer.push(PatternGroup::new(
-            make_line("second_group_bbb", vec![]),
-            5,
-        ));
+        f.buffer
+            .push(PatternGroup::new(make_line("first_group_aaa", vec![]), 5));
+        f.buffer
+            .push(PatternGroup::new(make_line("second_group_bbb", vec![]), 5));
         f.position_counter = 200;
         let result = f.flush_oldest_safe_group().unwrap().unwrap();
         assert!(
@@ -2905,10 +2928,8 @@ mod tests {
     fn flush_accumulates_output_lines() {
         // Kills: output_lines += count → *= count (0 * N = 0)
         let mut f = make_folder();
-        f.buffer.push(PatternGroup::new(
-            make_line("output line", vec![]),
-            1,
-        ));
+        f.buffer
+            .push(PatternGroup::new(make_line("output line", vec![]), 1));
         f.position_counter = 200;
         assert_eq!(f.stats.output_lines, 0);
         let _result = f.flush_oldest_safe_group().unwrap();
@@ -2934,10 +2955,13 @@ mod tests {
     #[test]
     fn format_group_json_below_min_collapse_no_stats_change() {
         let mut f = make_folder_json();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+            ],
+        );
         assert_eq!(group.count(), 2); // below min_collapse=3
         let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
         assert_eq!(f.stats.collapsed_groups, 0);
@@ -2949,11 +2973,14 @@ mod tests {
     #[test]
     fn format_group_json_at_min_collapse_updates_stats() {
         let mut f = make_folder_json();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+            ],
+        );
         assert_eq!(group.count(), 3); // exactly min_collapse
         let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
         assert_eq!(f.stats.collapsed_groups, 1);
@@ -2969,14 +2996,23 @@ mod tests {
             essence_mode: true,
             ..Config::default()
         });
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+            ],
+        );
         let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
-        assert_eq!(f.stats.collapsed_groups, 0, "essence_mode should skip collapsed_groups");
-        assert_eq!(f.stats.lines_saved, 0, "essence_mode should skip lines_saved");
+        assert_eq!(
+            f.stats.collapsed_groups, 0,
+            "essence_mode should skip collapsed_groups"
+        );
+        assert_eq!(
+            f.stats.lines_saved, 0,
+            "essence_mode should skip lines_saved"
+        );
     }
 
     #[test]
@@ -2995,9 +3031,13 @@ mod tests {
     fn format_group_json_token_types_sorted() {
         let mut f = make_folder_json();
         // Use tokens whose type names sort alphabetically: "ipv4" < "uuid"
-        let group = make_group("error <IP> <UUID>", vec![
-            vec![Token::Uuid("aaa".into()), Token::IPv4("10.0.0.1".into())],
-        ]);
+        let group = make_group(
+            "error <IP> <UUID>",
+            vec![vec![
+                Token::Uuid("aaa".into()),
+                Token::IPv4("10.0.0.1".into()),
+            ]],
+        );
         let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         let types: Vec<&str> = v["token_types"]
@@ -3014,10 +3054,13 @@ mod tests {
     #[test]
     fn format_group_json_time_range_from_timestamps() {
         let mut f = make_folder_json();
-        let group = make_group("error <TIMESTAMP>", vec![
-            vec![Token::Timestamp("2024-01-01T00:00:00Z".into())],
-            vec![Token::Timestamp("2024-01-01T01:00:00Z".into())],
-        ]);
+        let group = make_group(
+            "error <TIMESTAMP>",
+            vec![
+                vec![Token::Timestamp("2024-01-01T00:00:00Z".into())],
+                vec![Token::Timestamp("2024-01-01T01:00:00Z".into())],
+            ],
+        );
         let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(
@@ -3086,7 +3129,10 @@ mod tests {
         f.print_summary_json(&mut buf, std::time::Duration::from_millis(0))
             .unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.ends_with('\n'), "summary JSON should end with newline");
+        assert!(
+            output.ends_with('\n'),
+            "summary JSON should end with newline"
+        );
     }
 
     #[test]
@@ -3161,11 +3207,23 @@ mod tests {
             Token::QuotedString("hello".into()),
             Token::Name("foo-bar".into()),
             Token::BracketContext(vec!["ERROR".into()]),
-            Token::KeyValuePair { key: "k".into(), value_type: "string".into() },
-            Token::LogWithModule { level: "INFO".into(), module: "main".into() },
-            Token::StructuredMessage { component: "api".into(), level: "info".into() },
+            Token::KeyValuePair {
+                key: "k".into(),
+                value_type: "string".into(),
+            },
+            Token::LogWithModule {
+                level: "INFO".into(),
+                module: "main".into(),
+            },
+            Token::StructuredMessage {
+                component: "api".into(),
+                level: "info".into(),
+            },
         ]);
-        assert_eq!(f.stats.percentages, 7, "Number/QuotedString/Name/BracketContext/KV/Log/Structured -> percentages");
+        assert_eq!(
+            f.stats.percentages, 7,
+            "Number/QuotedString/Name/BracketContext/KV/Log/Structured -> percentages"
+        );
     }
 
     #[test]
@@ -3227,11 +3285,14 @@ mod tests {
     #[test]
     fn format_group_at_min_collapse_collapses() {
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         assert!(
@@ -3260,7 +3321,10 @@ mod tests {
             ..Config::default()
         });
         // In essence mode, single-line groups output normalized text
-        let group = make_group("normalized <IP>", vec![vec![Token::IPv4("10.0.0.1".into())]]);
+        let group = make_group(
+            "normalized <IP>",
+            vec![vec![Token::IPv4("10.0.0.1".into())]],
+        );
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         assert_eq!(output, "normalized <IP>");
@@ -3275,7 +3339,10 @@ mod tests {
             ..Config::default()
         });
         // Build a group with email token where original contains the email
-        let mut line = make_line("user alice@test.com logged in", vec![Token::Email("alice@test.com".into())]);
+        let mut line = make_line(
+            "user alice@test.com logged in",
+            vec![Token::Email("alice@test.com".into())],
+        );
         line.original = "user alice@test.com logged in".to_string();
         let group = PatternGroup::new(line, 1);
         let rollup = BTreeMap::new();
@@ -3312,9 +3379,15 @@ mod tests {
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
         assert!(output.contains("Timestamps"), "should show Timestamps row");
-        assert!(output.contains("IP Addresses"), "should show IP Addresses row");
+        assert!(
+            output.contains("IP Addresses"),
+            "should show IP Addresses row"
+        );
         // emails is 0, so should NOT appear
-        assert!(!output.contains("Email Addresses"), "should not show Email row when 0");
+        assert!(
+            !output.contains("Email Addresses"),
+            "should not show Email row when 0"
+        );
     }
 
     #[test]
@@ -3323,7 +3396,10 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("0.0%"), "zero lines should show 0.0% compression");
+        assert!(
+            output.contains("0.0%"),
+            "zero lines should show 0.0% compression"
+        );
     }
 
     #[test]
@@ -3351,7 +3427,10 @@ mod tests {
         assert!(output.contains("Durations"), "missing Durations row");
         assert!(output.contains("Process IDs"), "missing PIDs row");
         assert!(output.contains("File Sizes"), "missing Sizes row");
-        assert!(output.contains("Numbers/Percentages"), "missing Percentages row");
+        assert!(
+            output.contains("Numbers/Percentages"),
+            "missing Percentages row"
+        );
         assert!(output.contains("HTTP Status"), "missing HTTP row");
         assert!(output.contains("File Paths"), "missing Paths row");
         assert!(output.contains("Kubernetes"), "missing K8s row");
@@ -3367,9 +3446,18 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("75.0%"), "150/200 should be 75.0% reduction, got: {output}");
-        assert!(output.contains("200 lines"), "should show 200 original lines");
-        assert!(output.contains("50 lines"), "should show 50 compressed lines");
+        assert!(
+            output.contains("75.0%"),
+            "150/200 should be 75.0% reduction, got: {output}"
+        );
+        assert!(
+            output.contains("200 lines"),
+            "should show 200 original lines"
+        );
+        assert!(
+            output.contains("50 lines"),
+            "should show 50 compressed lines"
+        );
     }
 
     #[test]
@@ -3464,13 +3552,16 @@ mod tests {
     fn format_group_collapsed_lines_saved_count() {
         // 5 lines, min_collapse=3: lines_saved = count - 3 = 2
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-            vec![Token::IPv4("10.0.0.5".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+                vec![Token::IPv4("10.0.0.5".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let _ = f.format_group(&group, &rollup).unwrap();
         assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed: saved = 5-3 = 2");
@@ -3480,14 +3571,20 @@ mod tests {
     fn format_group_collapsed_at_min_saves_zero() {
         // Exactly min_collapse=3 lines: lines_saved = 3-3 = 0
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let _ = f.format_group(&group, &rollup).unwrap();
-        assert_eq!(f.stats.lines_saved, 0, "3 lines at min_collapse: saved = 3-3 = 0");
+        assert_eq!(
+            f.stats.lines_saved, 0,
+            "3 lines at min_collapse: saved = 3-3 = 0"
+        );
     }
 
     #[test]
@@ -3499,23 +3596,32 @@ mod tests {
             essence_mode: true,
             ..Config::default()
         });
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let _ = f.format_group(&group, &rollup).unwrap();
-        assert_eq!(f.stats.lines_saved, 1, "essence mode: 2 lines → saved = 2-1 = 1");
+        assert_eq!(
+            f.stats.lines_saved, 1,
+            "essence mode: 2 lines → saved = 2-1 = 1"
+        );
     }
 
     #[test]
     fn format_group_no_collapse_no_lines_saved() {
         // Below min_collapse in standard mode: no lines saved
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let _ = f.format_group(&group, &rollup).unwrap();
         assert_eq!(f.stats.lines_saved, 0, "below min_collapse: no lines saved");
@@ -3525,16 +3631,23 @@ mod tests {
     fn format_group_collapsed_output_has_three_sections() {
         // Collapsed group should have: first line, collapse marker, last line
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         let lines: Vec<&str> = output.lines().collect();
-        assert_eq!(lines.len(), 3, "collapsed output should have 3 lines (first + marker + last)");
+        assert_eq!(
+            lines.len(),
+            3,
+            "collapsed output should have 3 lines (first + marker + last)"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -3546,14 +3659,16 @@ mod tests {
         let mut f = make_folder();
         // Group A: 5 lines
         for _ in 0..5 {
-            f.process_line("2024-01-01 ERROR timeout from 10.0.0.1").unwrap();
+            f.process_line("2024-01-01 ERROR timeout from 10.0.0.1")
+                .unwrap();
         }
         // Group B: 2 lines
         for _ in 0..2 {
             f.process_line("GET /api/health HTTP/1.1 200 OK").unwrap();
         }
         // Group C: 1 line
-        f.process_line("unique log entry with no pattern match").unwrap();
+        f.process_line("unique log entry with no pattern match")
+            .unwrap();
 
         let (top, total_groups, _coverage) = f.finish_top_n(2).unwrap();
         assert_eq!(top.len(), 2, "should return top 2");
@@ -3571,7 +3686,8 @@ mod tests {
         let mut f = make_folder();
         f.process_line("line A with 10.0.0.1").unwrap();
         f.process_line("line B with 10.0.0.2").unwrap();
-        f.process_line("line C with something else entirely different").unwrap();
+        f.process_line("line C with something else entirely different")
+            .unwrap();
         let (_top, total_groups, _coverage) = f.finish_top_n(10).unwrap();
         assert!(total_groups >= 1, "should have at least 1 group");
     }
@@ -3604,8 +3720,10 @@ mod tests {
     fn finish_drains_buffer_chronologically() {
         let mut f = make_folder();
         // Feed dissimilar lines to create multiple groups
-        f.process_line("2024-01-01 ERROR first unique line with 10.0.0.1").unwrap();
-        f.process_line("GET /api/v2/status HTTP/1.1 200 OK").unwrap();
+        f.process_line("2024-01-01 ERROR first unique line with 10.0.0.1")
+            .unwrap();
+        f.process_line("GET /api/v2/status HTTP/1.1 200 OK")
+            .unwrap();
         let output = f.finish().unwrap();
         assert!(output.len() >= 2, "should output at least 2 groups");
         // First group in output should be the first line (chronological)
@@ -3667,7 +3785,8 @@ mod tests {
     fn prepare_summary_sorts_descending() {
         let mut f = make_folder();
         // Group A: 1 line, Group B: 5 lines — B should come first
-        f.buffer.push(PatternGroup::new(make_line("small", vec![]), 1));
+        f.buffer
+            .push(PatternGroup::new(make_line("small", vec![]), 1));
         let mut big = PatternGroup::new(make_line("big", vec![]), 10);
         for i in 0..4 {
             big.add_line(make_line("big", vec![]), 11 + i);
@@ -3755,12 +3874,15 @@ mod tests {
         // Kills: >= min_collapse → < min_collapse
         // A group at min_collapse should get rollup metadata in the output
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+            ],
+        );
         assert_eq!(group.count(), 4); // >= min_collapse=3
         let output = f.format_group_dispatch(&group).unwrap();
         // Rollup produces variation markers with type names (e.g., "ipv4")
@@ -3874,7 +3996,10 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("High compression"), "91% should be high: {output}");
+        assert!(
+            output.contains("High compression"),
+            "91% should be high: {output}"
+        );
     }
 
     #[test]
@@ -3885,7 +4010,10 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("Moderate"), "exactly 90% is moderate, not high: {output}");
+        assert!(
+            output.contains("Moderate"),
+            "exactly 90% is moderate, not high: {output}"
+        );
     }
 
     #[test]
@@ -3896,7 +4024,10 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(output.contains("Moderate"), "71% should be moderate: {output}");
+        assert!(
+            output.contains("Moderate"),
+            "71% should be moderate: {output}"
+        );
     }
 
     #[test]
@@ -3907,8 +4038,14 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(!output.contains("High compression"), "70% is not high: {output}");
-        assert!(!output.contains("Moderate"), "70% is not moderate: {output}");
+        assert!(
+            !output.contains("High compression"),
+            "70% is not high: {output}"
+        );
+        assert!(
+            !output.contains("Moderate"),
+            "70% is not moderate: {output}"
+        );
     }
 
     #[test]
@@ -3948,8 +4085,14 @@ mod tests {
         let mut buf = Vec::new();
         f.print_stats(&mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
-        assert!(!output.contains("Timestamps"), "zero timestamps should have no row");
-        assert!(output.contains("IP Addresses"), "nonzero IPs should have a row");
+        assert!(
+            !output.contains("Timestamps"),
+            "zero timestamps should have no row"
+        );
+        assert!(
+            output.contains("IP Addresses"),
+            "nonzero IPs should have a row"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -4113,8 +4256,10 @@ mod tests {
     fn prepare_summary_exactly_30_not_capped() {
         let mut f = make_folder();
         for i in 0..30 {
-            f.buffer
-                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("pattern {i}"), vec![]),
+                i + 1,
+            ));
         }
         let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
         assert!(!was_capped, "exactly 30 should not be capped");
@@ -4125,8 +4270,10 @@ mod tests {
     fn prepare_summary_31_is_capped() {
         let mut f = make_folder();
         for i in 0..31 {
-            f.buffer
-                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("pattern {i}"), vec![]),
+                i + 1,
+            ));
         }
         let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
         assert!(was_capped, "31 should be capped");
@@ -4137,8 +4284,10 @@ mod tests {
     fn prepare_summary_top_zero_no_cap_50() {
         let mut f = make_folder();
         for i in 0..50 {
-            f.buffer
-                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("pattern {i}"), vec![]),
+                i + 1,
+            ));
         }
         let (display, _total, was_capped, _) = f.prepare_summary(Some(0), None).unwrap();
         assert!(!was_capped);
@@ -4149,8 +4298,10 @@ mod tests {
     fn prepare_summary_fit_budget_10_of_50() {
         let mut f = make_folder();
         for i in 0..50 {
-            f.buffer
-                .push(PatternGroup::new(make_line(&format!("pattern {i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("pattern {i}"), vec![]),
+                i + 1,
+            ));
         }
         let (display, _total, _was_capped, fit_truncated) =
             f.prepare_summary(None, Some(10)).unwrap();
@@ -4179,26 +4330,35 @@ mod tests {
     #[test]
     fn format_group_dispatch_below_min_collapse_no_rollup() {
         let mut f = make_folder(); // min_collapse = 3
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-        ]); // count = 2, below min_collapse = 3
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+            ],
+        ); // count = 2, below min_collapse = 3
         let output = f.format_group_dispatch(&group).unwrap();
         // Below min_collapse: no rollup marker, just the raw lines
-        assert!(!output.contains("similar"), "2 lines should not collapse: {output}");
+        assert!(
+            !output.contains("similar"),
+            "2 lines should not collapse: {output}"
+        );
     }
 
     #[test]
     fn format_group_dispatch_at_min_collapse_computes_rollup() {
         let mut f = make_folder(); // min_collapse = 3
         // Use enough varied tokens that rollup produces distinct output vs legacy
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-            vec![Token::IPv4("10.0.0.5".into())],
-        ]); // count = 5, well above min_collapse
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+                vec![Token::IPv4("10.0.0.5".into())],
+            ],
+        ); // count = 5, well above min_collapse
         let output = f.format_group_dispatch(&group).unwrap();
         // Rollup path produces "ipv4×N" markers; legacy produces "[+N similar, varying: ...]"
         // If >= is mutated to <, count=5 >= 3 would become 5 < 3 = false → empty rollup
@@ -4213,9 +4373,13 @@ mod tests {
     #[test]
     fn prepare_summary_returns_nonempty_for_nonempty_buffer() {
         let mut f = make_folder();
-        f.buffer.push(PatternGroup::new(make_line("error", vec![]), 1));
+        f.buffer
+            .push(PatternGroup::new(make_line("error", vec![]), 1));
         let (display, total, was_capped, fit_truncated) = f.prepare_summary(None, None).unwrap();
-        assert!(!display.is_empty(), "should return entries for non-empty buffer");
+        assert!(
+            !display.is_empty(),
+            "should return entries for non-empty buffer"
+        );
         assert_eq!(total, 1);
         assert!(!was_capped);
         assert_eq!(fit_truncated, 0);
@@ -4226,7 +4390,10 @@ mod tests {
     fn prepare_summary_top_zero_fit_budget_exact_boundary() {
         let mut f = make_folder();
         for i in 0..5 {
-            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
         }
         // top=0 + budget=5: sorted.len() == budget, NOT > budget → no truncation
         let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(5)).unwrap();
@@ -4238,7 +4405,10 @@ mod tests {
     fn prepare_summary_top_zero_fit_budget_over() {
         let mut f = make_folder();
         for i in 0..5 {
-            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
         }
         // top=0 + budget=3: sorted.len() > budget → truncate
         let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(3)).unwrap();
@@ -4251,7 +4421,10 @@ mod tests {
     fn prepare_summary_top_zero_fit_budget_one() {
         let mut f = make_folder();
         for i in 0..5 {
-            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
         }
         // budget=1, saturating_sub(1) = 0 → show 0 patterns, remaining = 5
         let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(1)).unwrap();
@@ -4264,7 +4437,10 @@ mod tests {
     fn prepare_summary_fit_budget_exact() {
         let mut f = make_folder();
         for i in 0..5 {
-            f.buffer.push(PatternGroup::new(make_line(&format!("p{i}"), vec![]), i + 1));
+            f.buffer.push(PatternGroup::new(
+                make_line(&format!("p{i}"), vec![]),
+                i + 1,
+            ));
         }
         // fit_budget=5, sorted.len()=5 → NOT > budget → no truncation
         let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
@@ -4287,7 +4463,10 @@ mod tests {
     fn summary_line_prefix_plus_rep_exactly_at_width() {
         // prefix "[5x] " = 5 chars + representative 25 chars = 30 = width → no truncation
         let line = PatternFolder::format_summary_line(5, &"x".repeat(25), Some(30));
-        assert!(!line.ends_with("..."), "exact fit should not truncate: {line}");
+        assert!(
+            !line.ends_with("..."),
+            "exact fit should not truncate: {line}"
+        );
     }
 
     #[test]
@@ -4296,7 +4475,10 @@ mod tests {
         // So: don't truncate (avail must be > 20)
         let long = "x".repeat(30);
         let line = PatternFolder::format_summary_line(5, &long, Some(28));
-        assert!(!line.ends_with("..."), "avail=20 should not truncate: {line}");
+        assert!(
+            !line.ends_with("..."),
+            "avail=20 should not truncate: {line}"
+        );
     }
 
     #[test]
@@ -4365,7 +4547,10 @@ mod tests {
         }
         let before = f.stats.output_lines;
         let _ = f.finish_top_n(10).unwrap();
-        assert!(f.stats.output_lines > before, "should increment output_lines");
+        assert!(
+            f.stats.output_lines > before,
+            "should increment output_lines"
+        );
     }
 
     // finish_top_n line 1139: > with >= on coverage calc
@@ -4387,25 +4572,34 @@ mod tests {
     #[test]
     fn format_group_empty_rollup_uses_legacy() {
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+            ],
+        );
         let empty_rollup = BTreeMap::new();
         let output = f.format_group(&group, &empty_rollup).unwrap();
         // Empty rollup → legacy format_collapsed_line path
-        assert!(output.contains("similar"), "empty rollup should use legacy: {output}");
+        assert!(
+            output.contains("similar"),
+            "empty rollup should use legacy: {output}"
+        );
     }
 
     #[test]
     fn format_group_nonempty_rollup_uses_compact() {
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+            ],
+        );
         let rollup = f.rollup_computer.compute(&group);
         let output = f.format_group(&group, &rollup).unwrap();
         // Non-empty rollup → compact marker path
@@ -4419,13 +4613,16 @@ mod tests {
     #[test]
     fn format_group_lines_saved_arithmetic() {
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-            vec![Token::IPv4("10.0.0.5".into())],
-        ]); // count = 5
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+                vec![Token::IPv4("10.0.0.5".into())],
+            ],
+        ); // count = 5
         let rollup = BTreeMap::new();
         f.format_group(&group, &rollup).unwrap();
         // lines_saved = count - 3 = 5 - 3 = 2
@@ -4442,11 +4639,14 @@ mod tests {
             essence_mode: false,
             ..Config::default()
         });
-        let group = make_group("user test@example.com logged in", vec![
-            vec![Token::Email("test@example.com".into())],
-            vec![Token::Email("test@example.com".into())],
-            vec![Token::Email("test@example.com".into())],
-        ]);
+        let group = make_group(
+            "user test@example.com logged in",
+            vec![
+                vec![Token::Email("test@example.com".into())],
+                vec![Token::Email("test@example.com".into())],
+                vec![Token::Email("test@example.com".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         // PII masking: email should be masked
@@ -4464,7 +4664,11 @@ mod tests {
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         // Single line: no "last line" section
-        assert_eq!(output.lines().count(), 1, "single line should have 1 line: {output}");
+        assert_eq!(
+            output.lines().count(),
+            1,
+            "single line should have 1 line: {output}"
+        );
     }
 
     #[test]
@@ -4474,7 +4678,10 @@ mod tests {
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         // Two lines, below min_collapse: both lines shown
-        assert!(output.lines().count() >= 2, "two lines should show both: {output}");
+        assert!(
+            output.lines().count() >= 2,
+            "two lines should show both: {output}"
+        );
     }
 
     // format_group line 1249: != with == on essence_mode first!=last
@@ -4487,18 +4694,24 @@ mod tests {
             ..Config::default()
         });
         // 4 lines, all same normalized text → in essence mode, last = first, suppress last
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let output = f.format_group(&group, &rollup).unwrap();
         let line_count = output.lines().count();
         // Essence mode with identical first/last normalized: last suppressed
         // Should have first line + collapsed marker, but NOT a third "last" line
-        assert!(line_count <= 2, "essence mode should suppress identical last: {output}");
+        assert!(
+            line_count <= 2,
+            "essence mode should suppress identical last: {output}"
+        );
     }
 
     // ---------------------------------------------------------------
@@ -4671,14 +4884,20 @@ mod tests {
     fn format_group_rollup_path_vs_legacy_path_output_differs() {
         // Non-empty rollup should produce compact marker (with type names)
         let mut f1 = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+            ],
+        );
         let rollup = f1.rollup_computer.compute(&group);
-        assert!(!rollup.is_empty(), "rollup should be non-empty for varied IPs");
+        assert!(
+            !rollup.is_empty(),
+            "rollup should be non-empty for varied IPs"
+        );
         let output_with_rollup = f1.format_group(&group, &rollup).unwrap();
 
         // Empty rollup should produce legacy format with "similar" and "varying"
@@ -4703,13 +4922,16 @@ mod tests {
         // Legacy path (empty rollup): collapsed count = count - 2
         // With 5 lines, the marker should say "+3 similar" (5-2=3)
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-            vec![Token::IPv4("10.0.0.5".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+                vec![Token::IPv4("10.0.0.5".into())],
+            ],
+        );
         let empty_rollup = BTreeMap::new();
         let output = f.format_group(&group, &empty_rollup).unwrap();
         // Legacy format: "[+3 similar, varying: ...]"
@@ -4724,14 +4946,17 @@ mod tests {
         // Rollup path: collapsed count = count - 2, lines_saved = count - 3
         // With 6 lines, the rollup marker should say "+4 similar" (6-2=4)
         let mut f = make_folder();
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-            vec![Token::IPv4("10.0.0.3".into())],
-            vec![Token::IPv4("10.0.0.4".into())],
-            vec![Token::IPv4("10.0.0.5".into())],
-            vec![Token::IPv4("10.0.0.6".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+                vec![Token::IPv4("10.0.0.3".into())],
+                vec![Token::IPv4("10.0.0.4".into())],
+                vec![Token::IPv4("10.0.0.5".into())],
+                vec![Token::IPv4("10.0.0.6".into())],
+            ],
+        );
         let rollup = f.rollup_computer.compute(&group);
         let output = f.format_group(&group, &rollup).unwrap();
         // Rollup format: "[+4 similar | ...]"
@@ -4990,10 +5215,13 @@ mod tests {
             essence_mode: true,
             ..Config::default()
         });
-        let group = make_group("error <IP>", vec![
-            vec![Token::IPv4("10.0.0.1".into())],
-            vec![Token::IPv4("10.0.0.2".into())],
-        ]);
+        let group = make_group(
+            "error <IP>",
+            vec![
+                vec![Token::IPv4("10.0.0.1".into())],
+                vec![Token::IPv4("10.0.0.2".into())],
+            ],
+        );
         let rollup = BTreeMap::new();
         let _ = f.format_group(&group, &rollup).unwrap();
         // count=2, in essence mode below min_collapse: lines_saved = 2-1 = 1
@@ -5015,8 +5243,10 @@ mod tests {
         let mut f = make_folder();
         f.stats.total_lines = 5;
         // Put lines in batch_buffer (simulating unprocessed parallel batch)
-        f.batch_buffer.push("2024-01-01 ERROR one 10.0.0.1".to_string());
-        f.batch_buffer.push("2024-01-01 ERROR two 10.0.0.2".to_string());
+        f.batch_buffer
+            .push("2024-01-01 ERROR one 10.0.0.1".to_string());
+        f.batch_buffer
+            .push("2024-01-01 ERROR two 10.0.0.2".to_string());
         assert!(!f.batch_buffer.is_empty());
         let result = f.finish_summary(None, None);
         assert!(result.is_ok());
@@ -5078,7 +5308,8 @@ mod tests {
         f.stats.total_lines = 0;
         // Even with a group in the buffer, coverage should be 0
         // because total_input_lines is 0
-        f.buffer.push(PatternGroup::new(make_line("error", vec![]), 1));
+        f.buffer
+            .push(PatternGroup::new(make_line("error", vec![]), 1));
         let (_, _, coverage) = f.finish_top_n(10).unwrap();
         assert_eq!(
             coverage, 0,
@@ -5096,10 +5327,7 @@ mod tests {
         }
         f.buffer.push(group);
         let (_, _, coverage) = f.finish_top_n(10).unwrap();
-        assert_eq!(
-            coverage, 100,
-            "10/10 lines should be 100% coverage"
-        );
+        assert_eq!(coverage, 100, "10/10 lines should be 100% coverage");
     }
 
     // ---------------------------------------------------------------
@@ -5142,17 +5370,25 @@ mod tests {
         f.stats.ips = 7;
         f.stats.timestamps = 3;
         let stats = f.get_stats();
-        assert_eq!(stats.total_lines, 42, "get_stats should return current total_lines");
+        assert_eq!(
+            stats.total_lines, 42,
+            "get_stats should return current total_lines"
+        );
         assert_eq!(stats.ips, 7, "get_stats should return current ips");
-        assert_eq!(stats.timestamps, 3, "get_stats should return current timestamps");
+        assert_eq!(
+            stats.timestamps, 3,
+            "get_stats should return current timestamps"
+        );
     }
 
     #[test]
     fn get_stats_reflects_processing() {
         let mut f = make_folder();
         // Process some lines to populate stats
-        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1").unwrap();
-        f.process_line("2024-01-01 10:00:01 INFO world 192.168.1.2").unwrap();
+        f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1")
+            .unwrap();
+        f.process_line("2024-01-01 10:00:01 INFO world 192.168.1.2")
+            .unwrap();
         let stats = f.get_stats();
         assert_eq!(stats.total_lines, 2, "should have processed 2 lines");
         assert!(

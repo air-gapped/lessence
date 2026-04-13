@@ -1,5 +1,5 @@
-use lessence::patterns::http_status::HttpStatusDetector;
 use lessence::patterns::Token;
+use lessence::patterns::http_status::HttpStatusDetector;
 
 #[cfg(test)]
 mod tests {
@@ -17,9 +17,16 @@ mod tests {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
             // Should detect and replace status codes with class token
-            assert!(result.contains("<HTTP_STATUS_2XX>"),
-                "Failed to detect 2xx status in: {}", test_case);
-            assert_eq!(tokens.len(), 1, "Should detect exactly one HTTP status token");
+            assert!(
+                result.contains("<HTTP_STATUS_2XX>"),
+                "Failed to detect 2xx status in: {}",
+                test_case
+            );
+            assert_eq!(
+                tokens.len(),
+                1,
+                "Should detect exactly one HTTP status token"
+            );
 
             if let Token::HttpStatusClass(class) = &tokens[0] {
                 assert_eq!(class, "2xx", "Should classify as 2xx");
@@ -40,8 +47,11 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
-            assert!(result.contains("<HTTP_STATUS_3XX>"),
-                "Failed to detect 3xx status in: {}", test_case);
+            assert!(
+                result.contains("<HTTP_STATUS_3XX>"),
+                "Failed to detect 3xx status in: {}",
+                test_case
+            );
             assert_eq!(tokens.len(), 1);
 
             if let Token::HttpStatusClass(class) = &tokens[0] {
@@ -63,8 +73,11 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
-            assert!(result.contains("<HTTP_STATUS_4XX>"),
-                "Failed to detect 4xx status in: {}", test_case);
+            assert!(
+                result.contains("<HTTP_STATUS_4XX>"),
+                "Failed to detect 4xx status in: {}",
+                test_case
+            );
             assert_eq!(tokens.len(), 1);
 
             if let Token::HttpStatusClass(class) = &tokens[0] {
@@ -86,8 +99,11 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
-            assert!(result.contains("<HTTP_STATUS_5XX>"),
-                "Failed to detect 5xx status in: {}", test_case);
+            assert!(
+                result.contains("<HTTP_STATUS_5XX>"),
+                "Failed to detect 5xx status in: {}",
+                test_case
+            );
             assert_eq!(tokens.len(), 1);
 
             if let Token::HttpStatusClass(class) = &tokens[0] {
@@ -115,7 +131,8 @@ mod tests {
 
         // After normalization, these should be more similar
         // All should have the same pattern structure, just different status classes
-        let normalized_patterns: Vec<_> = all_results.iter()
+        let normalized_patterns: Vec<_> = all_results
+            .iter()
             .map(|line| {
                 // Count unique status class tokens
                 line.matches("<HTTP_STATUS_").count()
@@ -124,7 +141,10 @@ mod tests {
 
         // Each line should have exactly one HTTP status token
         for count in normalized_patterns {
-            assert_eq!(count, 1, "Each line should have exactly one HTTP status token");
+            assert_eq!(
+                count, 1,
+                "Each line should have exactly one HTTP status token"
+            );
         }
     }
 
@@ -141,10 +161,17 @@ mod tests {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
             // Should not detect HTTP status classes in non-HTTP contexts
-            assert_eq!(result, test_case,
-                "Should not modify non-HTTP status: {}", test_case);
-            assert_eq!(tokens.len(), 0,
-                "Should not detect tokens in non-HTTP context: {}", test_case);
+            assert_eq!(
+                result, test_case,
+                "Should not modify non-HTTP status: {}",
+                test_case
+            );
+            assert_eq!(
+                tokens.len(),
+                0,
+                "Should not detect tokens in non-HTTP context: {}",
+                test_case
+            );
         }
     }
 
@@ -156,8 +183,14 @@ mod tests {
 
         // Should detect both status codes
         assert_eq!(tokens.len(), 2, "Should detect both HTTP status codes");
-        assert!(result.contains("<HTTP_STATUS_2XX>"), "Should detect 200 as 2xx");
-        assert!(result.contains("<HTTP_STATUS_5XX>"), "Should detect 502 as 5xx");
+        assert!(
+            result.contains("<HTTP_STATUS_2XX>"),
+            "Should detect 200 as 2xx"
+        );
+        assert!(
+            result.contains("<HTTP_STATUS_5XX>"),
+            "Should detect 502 as 5xx"
+        );
     }
 
     #[ignore = "stale: detector behavior changed, test expectations need updating"]
@@ -187,7 +220,9 @@ mod tests {
 
         // We expect fewer unique patterns after status code normalization
         // This enables better folding and compression
-        assert!(unique_patterns.len() < sample_nginx_logs.len(),
-            "Status normalization should reduce unique patterns for better compression");
+        assert!(
+            unique_patterns.len() < sample_nginx_logs.len(),
+            "Status normalization should reduce unique patterns for better compression"
+        );
     }
 }

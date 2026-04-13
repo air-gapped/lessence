@@ -1,7 +1,7 @@
 // Integration Test: Basic Pattern Replacement Scenarios (T012)
 // Validates fundamental timestamp detection and replacement behavior
 
-use lessence::patterns::timestamp::{UnifiedTimestampDetector, TimestampDetector};
+use lessence::patterns::timestamp::{TimestampDetector, UnifiedTimestampDetector};
 
 #[test]
 fn test_iso8601_basic_detection() {
@@ -86,7 +86,10 @@ fn test_partial_timestamp_rejection() {
     let (_result, tokens) = TimestampDetector::detect_and_replace(input);
 
     // Should either not match or match what's valid
-    assert!(tokens.len() <= 1, "Should not over-match partial timestamps");
+    assert!(
+        tokens.len() <= 1,
+        "Should not over-match partial timestamps"
+    );
 }
 
 #[test]
@@ -98,7 +101,11 @@ fn test_api_compatibility() {
     let (new_result, new_tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
     assert_eq!(old_result, new_result, "API compatibility broken");
-    assert_eq!(old_tokens.len(), new_tokens.len(), "Token count should match");
+    assert_eq!(
+        old_tokens.len(),
+        new_tokens.len(),
+        "Token count should match"
+    );
 }
 
 #[test]
@@ -111,7 +118,10 @@ fn test_whitespace_handling() {
 
     for input in test_cases {
         let (result, tokens) = TimestampDetector::detect_and_replace(input);
-        assert!(result.contains("<TIMESTAMP>"), "Should handle whitespace: {input}");
+        assert!(
+            result.contains("<TIMESTAMP>"),
+            "Should handle whitespace: {input}"
+        );
         assert_eq!(tokens.len(), 1, "Should find one timestamp: {input}");
     }
 }

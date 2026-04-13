@@ -27,8 +27,14 @@ fn test_timestamp_redos_repeated_dots_scales_linearly() {
 
 #[test]
 fn test_timestamp_redos_k8s_excessive_digits_scales_linearly() {
-    let small = format!("E0909 13:07:09.{} 3116 kubelet.go:123] test", "1".repeat(25));
-    let large = format!("E0909 13:07:09.{} 3116 kubelet.go:123] test", "1".repeat(100));
+    let small = format!(
+        "E0909 13:07:09.{} 3116 kubelet.go:123] test",
+        "1".repeat(25)
+    );
+    let large = format!(
+        "E0909 13:07:09.{} 3116 kubelet.go:123] test",
+        "1".repeat(100)
+    );
 
     crate::common::assert_linear_scaling("k8s_excessive_digits", &small, &large, |input| {
         let _ = TimestampDetector::detect_and_replace(input);

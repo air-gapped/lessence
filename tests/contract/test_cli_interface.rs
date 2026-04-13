@@ -44,8 +44,15 @@ fn contract_removed_flag_error() {
 
     let output = child.wait_with_output().expect("Failed to wait");
 
-    assert!(!output.status.success(), "Should fail with removed --single-thread flag");
-    assert_eq!(output.status.code(), Some(2), "Should return Clap error code 2");
+    assert!(
+        !output.status.success(),
+        "Should fail with removed --single-thread flag"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "Should return Clap error code 2"
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -90,7 +97,9 @@ fn contract_multi_thread_unchanged() {
         .expect("Failed to spawn command");
 
     if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(b"test line 1\ntest line 2\ntest line 3\n").ok();
+        stdin
+            .write_all(b"test line 1\ntest line 2\ntest line 3\n")
+            .ok();
     }
 
     let output = child.wait_with_output().expect("Failed to wait");

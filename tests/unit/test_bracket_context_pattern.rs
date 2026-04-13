@@ -1,5 +1,5 @@
-use lessence::patterns::bracket_context::BracketContextDetector;
 use lessence::patterns::Token;
+use lessence::patterns::bracket_context::BracketContextDetector;
 
 #[cfg(test)]
 mod tests {
@@ -17,9 +17,16 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
 
-            assert!(result.contains("<BRACKET_CONTEXT>"),
-                "Failed to detect bracket context in: {}", test_case);
-            assert_eq!(tokens.len(), 1, "Should detect exactly one bracket context token");
+            assert!(
+                result.contains("<BRACKET_CONTEXT>"),
+                "Failed to detect bracket context in: {}",
+                test_case
+            );
+            assert_eq!(
+                tokens.len(),
+                1,
+                "Should detect exactly one bracket context token"
+            );
 
             if let Token::BracketContext(contexts) = &tokens[0] {
                 assert_eq!(contexts.len(), 1, "Should detect one context");
@@ -41,12 +48,23 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
 
-            assert!(result.contains("<BRACKET_CONTEXT>"),
-                "Failed to detect bracket context in: {}", test_case);
-            assert_eq!(tokens.len(), 1, "Should detect exactly one bracket context token for chained contexts");
+            assert!(
+                result.contains("<BRACKET_CONTEXT>"),
+                "Failed to detect bracket context in: {}",
+                test_case
+            );
+            assert_eq!(
+                tokens.len(),
+                1,
+                "Should detect exactly one bracket context token for chained contexts"
+            );
 
             if let Token::BracketContext(contexts) = &tokens[0] {
-                assert!(contexts.len() >= 2, "Should detect multiple contexts: {:?}", contexts);
+                assert!(
+                    contexts.len() >= 2,
+                    "Should detect multiple contexts: {:?}",
+                    contexts
+                );
             } else {
                 panic!("Expected BracketContext token, got: {:?}", tokens[0]);
             }
@@ -69,11 +87,16 @@ mod tests {
             normalized_lines.push(normalized);
 
             // Each line should have at least one bracket context
-            assert!(!tokens.is_empty(), "Should detect bracket contexts in: {}", line);
+            assert!(
+                !tokens.is_empty(),
+                "Should detect bracket contexts in: {}",
+                line
+            );
         }
 
         // After normalization, similar log patterns should group better
-        let unique_bracket_patterns: std::collections::HashSet<_> = normalized_lines.iter()
+        let unique_bracket_patterns: std::collections::HashSet<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Extract the bracket context part
                 line.split("<BRACKET_CONTEXT>").collect::<Vec<_>>()
@@ -81,7 +104,10 @@ mod tests {
             .collect();
 
         // Normalization should help group similar log patterns
-        assert!(unique_bracket_patterns.len() > 0, "Should detect bracket patterns");
+        assert!(
+            unique_bracket_patterns.len() > 0,
+            "Should detect bracket patterns"
+        );
     }
 
     #[test]
@@ -99,20 +125,28 @@ mod tests {
 
             // Should detect [error], [warn] as bracket contexts
             // Note: timestamps should be handled by timestamp pattern detector
-            assert!(!tokens.is_empty(), "Should detect bracket contexts in Apache logs: {}", line);
+            assert!(
+                !tokens.is_empty(),
+                "Should detect bracket contexts in Apache logs: {}",
+                line
+            );
 
             // Check that we're detecting the log level bracket
             let has_log_level = tokens.iter().any(|token| {
                 if let Token::BracketContext(contexts) = token {
-                    contexts.iter().any(|ctx|
+                    contexts.iter().any(|ctx| {
                         ctx == "error" || ctx == "warn" || ctx == "info" || ctx == "debug"
-                    )
+                    })
                 } else {
                     false
                 }
             });
 
-            assert!(has_log_level, "Should detect log level bracket context in: {}", line);
+            assert!(
+                has_log_level,
+                "Should detect log level bracket context in: {}",
+                line
+            );
         }
     }
 
@@ -127,9 +161,16 @@ mod tests {
         for line in systemd_logs {
             let (result, tokens) = BracketContextDetector::detect_and_replace(line);
 
-            assert!(!tokens.is_empty(), "Should detect bracket contexts in systemd logs: {}", line);
-            assert!(result.contains("<BRACKET_CONTEXT>"),
-                "Should normalize bracket contexts in: {}", line);
+            assert!(
+                !tokens.is_empty(),
+                "Should detect bracket contexts in systemd logs: {}",
+                line
+            );
+            assert!(
+                result.contains("<BRACKET_CONTEXT>"),
+                "Should normalize bracket contexts in: {}",
+                line
+            );
         }
     }
 
@@ -147,10 +188,17 @@ mod tests {
             let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
 
             // Should not detect bracket contexts in non-logging contexts
-            assert_eq!(result, test_case,
-                "Should not modify non-logging brackets: {}", test_case);
-            assert_eq!(tokens.len(), 0,
-                "Should not detect tokens in non-logging context: {}", test_case);
+            assert_eq!(
+                result, test_case,
+                "Should not modify non-logging brackets: {}",
+                test_case
+            );
+            assert_eq!(
+                tokens.len(),
+                0,
+                "Should not detect tokens in non-logging context: {}",
+                test_case
+            );
         }
     }
 
@@ -166,7 +214,11 @@ mod tests {
             let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
 
             // Should detect square bracket contexts but not other bracket types
-            assert!(!tokens.is_empty(), "Should detect square bracket contexts in: {}", test_case);
+            assert!(
+                !tokens.is_empty(),
+                "Should detect square bracket contexts in: {}",
+                test_case
+            );
 
             // Verify we only detected square brackets, not parentheses or braces
             for token in tokens {
@@ -208,7 +260,8 @@ mod tests {
 
         // After bracket context normalization, lines with same context patterns
         // should be more similar for folding
-        let context_patterns: Vec<_> = normalized_lines.iter()
+        let context_patterns: Vec<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Count bracket context tokens
                 line.matches("<BRACKET_CONTEXT>").count()
@@ -217,19 +270,28 @@ mod tests {
 
         // Each line should have bracket context tokens
         for count in context_patterns {
-            assert!(count > 0, "Each microservices log should have bracket contexts");
+            assert!(
+                count > 0,
+                "Each microservices log should have bracket contexts"
+            );
         }
 
         // Lines with same bracket patterns should be more similar after normalization
-        let unique_patterns: std::collections::HashSet<_> = normalized_lines.iter()
+        let unique_patterns: std::collections::HashSet<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Extract the pattern after bracket normalization
-                line.replace(|c: char| c.is_ascii_lowercase() || c.is_ascii_uppercase(), "X")
+                line.replace(
+                    |c: char| c.is_ascii_lowercase() || c.is_ascii_uppercase(),
+                    "X",
+                )
             })
             .collect();
 
         // Should have fewer unique patterns than original for better compression
-        assert!(unique_patterns.len() < microservices_sample.len(),
-            "Bracket normalization should reduce pattern variety for better compression");
+        assert!(
+            unique_patterns.len() < microservices_sample.len(),
+            "Bracket normalization should reduce pattern variety for better compression"
+        );
     }
 }

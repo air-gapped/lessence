@@ -42,8 +42,16 @@ fn test_no_timestamp_scales_linearly() {
 #[test]
 fn test_long_line_scales_linearly() {
     let base_msg = "This is a longer log message with more content ";
-    let small = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(5), base_msg.repeat(5));
-    let large = format!("{}2025-09-29T10:15:30Z{}", base_msg.repeat(20), base_msg.repeat(20));
+    let small = format!(
+        "{}2025-09-29T10:15:30Z{}",
+        base_msg.repeat(5),
+        base_msg.repeat(5)
+    );
+    let large = format!(
+        "{}2025-09-29T10:15:30Z{}",
+        base_msg.repeat(20),
+        base_msg.repeat(20)
+    );
 
     crate::common::assert_linear_scaling("long_line", &small, &large, |input| {
         let _ = TimestampDetector::detect_and_replace(input);
@@ -56,7 +64,11 @@ fn test_pattern_compilation_succeeds() {
     use lessence::patterns::timestamp::TimestampRegistry;
     let registry = TimestampRegistry::new();
     let patterns = registry.get_patterns();
-    assert!(patterns.len() >= 30, "Should have sufficient patterns, got {}", patterns.len());
+    assert!(
+        patterns.len() >= 30,
+        "Should have sufficient patterns, got {}",
+        patterns.len()
+    );
 }
 
 #[test]
@@ -71,8 +83,8 @@ fn test_memory_usage_stability() {
 
 #[test]
 fn test_concurrent_performance() {
-    use std::thread;
     use std::sync::Arc;
+    use std::thread;
 
     let input = Arc::new("2025-09-29T10:15:30Z Concurrent test message".to_string());
 

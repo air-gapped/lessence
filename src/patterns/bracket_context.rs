@@ -306,38 +306,52 @@ mod tests {
     #[test]
     fn bracket_ind_requires_open_bracket() {
         // Has ] but not [
-        assert!(!BracketContextDetector::has_bracket_indicators("error] happened"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "error] happened"
+        ));
     }
 
     #[test]
     fn bracket_ind_requires_close_bracket() {
         // Has [ but not ]
-        assert!(!BracketContextDetector::has_bracket_indicators("[error happened"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "[error happened"
+        ));
     }
 
     #[test]
     fn bracket_ind_positive() {
-        assert!(BracketContextDetector::has_bracket_indicators("[error] happened"));
+        assert!(BracketContextDetector::has_bracket_indicators(
+            "[error] happened"
+        ));
     }
 
     #[test]
     fn bracket_ind_excludes_ipv6() {
-        assert!(!BracketContextDetector::has_bracket_indicators("[2001:db8::1]"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "[2001:db8::1]"
+        ));
     }
 
     #[test]
     fn bracket_ind_excludes_array_access() {
-        assert!(!BracketContextDetector::has_bracket_indicators("data array[0] value"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "data array[0] value"
+        ));
     }
 
     #[test]
     fn bracket_ind_excludes_index() {
-        assert!(!BracketContextDetector::has_bracket_indicators("at index[5] pos"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "at index[5] pos"
+        ));
     }
 
     #[test]
     fn bracket_ind_excludes_url_params() {
-        assert!(!BracketContextDetector::has_bracket_indicators("[x] param=value"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "[x] param=value"
+        ));
     }
 
     #[test]
@@ -347,114 +361,158 @@ mod tests {
 
     #[test]
     fn bracket_ind_excludes_regex() {
-        assert!(!BracketContextDetector::has_bracket_indicators("[0-9] pattern"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "[0-9] pattern"
+        ));
     }
 
     #[test]
     fn bracket_ind_excludes_k8s() {
-        assert!(!BracketContextDetector::has_bracket_indicators("[error] kubelet started"));
+        assert!(!BracketContextDetector::has_bracket_indicators(
+            "[error] kubelet started"
+        ));
     }
 
     // ---- has_kubernetes_indicators: per-condition tests ----
 
     #[test]
     fn k8s_ind_kubernetes_io() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("kubernetes.io/name"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "kubernetes.io/name"
+        ));
     }
 
     #[test]
     fn k8s_ind_namespace() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("namespace/default"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "namespace/default"
+        ));
     }
 
     #[test]
     fn k8s_ind_pod() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("pod/nginx-abc"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "pod/nginx-abc"
+        ));
     }
 
     #[test]
     fn k8s_ind_service() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("service/web"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "service/web"
+        ));
     }
 
     #[test]
     fn k8s_ind_configmap() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("configmap/cfg"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "configmap/cfg"
+        ));
     }
 
     #[test]
     fn k8s_ind_secret() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("secret/tls"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "secret/tls"
+        ));
     }
 
     #[test]
     fn k8s_ind_deployment() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("deployment/app"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "deployment/app"
+        ));
     }
 
     #[test]
     fn k8s_ind_volumes() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("volumes/data"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "volumes/data"
+        ));
     }
 
     #[test]
     fn k8s_ind_projected_dash() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("projected-token"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "projected-token"
+        ));
     }
 
     #[test]
     fn k8s_ind_volume_subpath() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("volume-subpath check"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "volume-subpath check"
+        ));
     }
 
     #[test]
     fn k8s_ind_projected() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("using projected volume"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "using projected volume"
+        ));
     }
 
     #[test]
     fn k8s_ind_apiserver() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("apiserver health"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "apiserver health"
+        ));
     }
 
     #[test]
     fn k8s_ind_kube_prefix() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("kube-dns ready"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "kube-dns ready"
+        ));
     }
 
     #[test]
     fn k8s_ind_kubelet() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("kubelet started"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "kubelet started"
+        ));
     }
 
     #[test]
     fn k8s_ind_kube_proxy() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("kube-proxy running"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "kube-proxy running"
+        ));
     }
 
     #[test]
     fn k8s_ind_kube_scheduler() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("kube-scheduler leader"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "kube-scheduler leader"
+        ));
     }
 
     #[test]
     fn k8s_ind_kube_controller() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("kube-controller ready"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "kube-controller ready"
+        ));
     }
 
     #[test]
     fn k8s_ind_etcd() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("etcd cluster"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "etcd cluster"
+        ));
     }
 
     #[test]
     fn k8s_ind_coredns() {
-        assert!(BracketContextDetector::has_kubernetes_indicators("coredns serving"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "coredns serving"
+        ));
     }
 
     #[test]
     fn k8s_ind_negative() {
-        assert!(!BracketContextDetector::has_kubernetes_indicators("plain log message"));
+        assert!(!BracketContextDetector::has_kubernetes_indicators(
+            "plain log message"
+        ));
     }
 
     #[test]
@@ -575,13 +633,17 @@ mod tests {
         // Input has kube-scheduler but NOT kubelet, kube-proxy, etcd, coredns, etc.
         // "kube-scheduler" also contains "kube-" so it would match that branch too.
         // But the specific `kube-scheduler` branch must independently work.
-        assert!(BracketContextDetector::has_kubernetes_indicators("the kube-scheduler elected leader"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "the kube-scheduler elected leader"
+        ));
     }
 
     #[test]
     fn k8s_ind_kube_controller_only() {
         // Kills mutant: `|| with &&` on kube-controller (line 68)
-        assert!(BracketContextDetector::has_kubernetes_indicators("the kube-controller is ready"));
+        assert!(BracketContextDetector::has_kubernetes_indicators(
+            "the kube-controller is ready"
+        ));
     }
 
     // ---- Mutant-killing: apply_chained_bracket_pattern inner logic ----
@@ -590,7 +652,8 @@ mod tests {
     fn chained_brackets_require_two_contexts() {
         // Kills mutant on contexts.len() >= 2 (line 81)
         // Single bracket should NOT trigger chained pattern
-        let (result, tokens) = BracketContextDetector::detect_and_replace("[error] something failed");
+        let (result, tokens) =
+            BracketContextDetector::detect_and_replace("[error] something failed");
         // Single bracket should trigger single pattern, not chained
         assert!(!tokens.is_empty(), "should detect [error]");
         assert!(result.contains("<BRACKET_CONTEXT>"));
@@ -599,9 +662,16 @@ mod tests {
     #[test]
     fn chained_brackets_with_logging_contexts() {
         // Kills mutant on are_logging_contexts check (line 81, 92)
-        let (result, tokens) = BracketContextDetector::detect_and_replace("[error] [upstream] request failed");
+        let (result, tokens) =
+            BracketContextDetector::detect_and_replace("[error] [upstream] request failed");
         assert!(
-            tokens.iter().any(|t| if let Token::BracketContext(ctxs) = t { ctxs.len() >= 2 } else { false }),
+            tokens
+                .iter()
+                .any(|t| if let Token::BracketContext(ctxs) = t {
+                    ctxs.len() >= 2
+                } else {
+                    false
+                }),
             "should detect chained contexts: {tokens:?}"
         );
         assert!(result.contains("<BRACKET_CONTEXT>"), "result: {result}");
@@ -614,8 +684,17 @@ mod tests {
         let input = "[zzz] [qqq] something";
         let (result, tokens) = BracketContextDetector::detect_and_replace(input);
         // Neither zzz nor qqq is a logging context, so no chained detection
-        let chained = tokens.iter().any(|t| if let Token::BracketContext(ctxs) = t { ctxs.len() >= 2 } else { false });
-        assert!(!chained, "non-logging chains should not be detected: {tokens:?}");
+        let chained = tokens.iter().any(|t| {
+            if let Token::BracketContext(ctxs) = t {
+                ctxs.len() >= 2
+            } else {
+                false
+            }
+        });
+        assert!(
+            !chained,
+            "non-logging chains should not be detected: {tokens:?}"
+        );
         // Single brackets might still be detected or not
         let _ = result;
     }

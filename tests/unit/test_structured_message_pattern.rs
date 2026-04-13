@@ -1,5 +1,5 @@
-use lessence::patterns::structured::StructuredMessageDetector;
 use lessence::patterns::Token;
+use lessence::patterns::structured::StructuredMessageDetector;
 
 #[cfg(test)]
 mod tests {
@@ -18,22 +18,42 @@ mod tests {
         for log_line in k8s_logs {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
-            assert!(!tokens.is_empty(),
-                "Should detect structured message in: {}", log_line);
+            assert!(
+                !tokens.is_empty(),
+                "Should detect structured message in: {}",
+                log_line
+            );
 
             let has_structured = tokens.iter().any(|token| {
-                matches!(token, Token::StructuredMessage { component: _, level: _ })
+                matches!(
+                    token,
+                    Token::StructuredMessage {
+                        component: _,
+                        level: _
+                    }
+                )
             });
 
-            assert!(has_structured,
-                "Should detect StructuredMessage token in: {}", log_line);
+            assert!(
+                has_structured,
+                "Should detect StructuredMessage token in: {}",
+                log_line
+            );
 
-            if let Some(Token::StructuredMessage { component, level }) = tokens.iter()
-                .find(|t| matches!(t, Token::StructuredMessage { .. })) {
-                assert!(["info", "error", "warn", "debug"].contains(&level.as_str()),
-                    "Should detect valid K8s log level: {}", level);
-                assert!(["kubelet", "scheduler", "proxy", "controller"].contains(&component.as_str()),
-                    "Should detect K8s component: {}", component);
+            if let Some(Token::StructuredMessage { component, level }) = tokens
+                .iter()
+                .find(|t| matches!(t, Token::StructuredMessage { .. }))
+            {
+                assert!(
+                    ["info", "error", "warn", "debug"].contains(&level.as_str()),
+                    "Should detect valid K8s log level: {}",
+                    level
+                );
+                assert!(
+                    ["kubelet", "scheduler", "proxy", "controller"].contains(&component.as_str()),
+                    "Should detect K8s component: {}",
+                    component
+                );
             }
         }
     }
@@ -52,16 +72,30 @@ mod tests {
             // Docker logs might have nested structure - detect if present
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
-                    matches!(token, Token::StructuredMessage { component: _, level: _ })
+                    matches!(
+                        token,
+                        Token::StructuredMessage {
+                            component: _,
+                            level: _
+                        }
+                    )
                 });
 
                 if has_structured {
-                    if let Some(Token::StructuredMessage { component, level }) = tokens.iter()
-                        .find(|t| matches!(t, Token::StructuredMessage { .. })) {
-                        assert!(!level.is_empty(),
-                            "Should detect valid Docker log level: {}", level);
-                        assert!(!component.is_empty(),
-                            "Should detect Docker component: {}", component);
+                    if let Some(Token::StructuredMessage { component, level }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::StructuredMessage { .. }))
+                    {
+                        assert!(
+                            !level.is_empty(),
+                            "Should detect valid Docker log level: {}",
+                            level
+                        );
+                        assert!(
+                            !component.is_empty(),
+                            "Should detect Docker component: {}",
+                            component
+                        );
                     }
                 }
             }
@@ -82,18 +116,36 @@ mod tests {
 
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
-                    matches!(token, Token::StructuredMessage { component: _, level: _ })
+                    matches!(
+                        token,
+                        Token::StructuredMessage {
+                            component: _,
+                            level: _
+                        }
+                    )
                 });
 
                 if has_structured {
-                    if let Some(Token::StructuredMessage { component, level }) = tokens.iter()
-                        .find(|t| matches!(t, Token::StructuredMessage { .. })) {
-                        assert!(["INFO", "ERROR", "WARN", "DEBUG", "info", "error", "warn", "debug"]
-                               .contains(&level.as_str()),
-                            "Should detect valid cloud service log level: {}", level);
-                        assert!(component.contains("api") || component.contains("service") ||
-                               component.contains("balancer") || component.len() > 0,
-                            "Should detect cloud service component: {}", component);
+                    if let Some(Token::StructuredMessage { component, level }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::StructuredMessage { .. }))
+                    {
+                        assert!(
+                            [
+                                "INFO", "ERROR", "WARN", "DEBUG", "info", "error", "warn", "debug"
+                            ]
+                            .contains(&level.as_str()),
+                            "Should detect valid cloud service log level: {}",
+                            level
+                        );
+                        assert!(
+                            component.contains("api")
+                                || component.contains("service")
+                                || component.contains("balancer")
+                                || component.len() > 0,
+                            "Should detect cloud service component: {}",
+                            component
+                        );
                     }
                 }
             }
@@ -113,16 +165,30 @@ mod tests {
 
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
-                    matches!(token, Token::StructuredMessage { component: _, level: _ })
+                    matches!(
+                        token,
+                        Token::StructuredMessage {
+                            component: _,
+                            level: _
+                        }
+                    )
                 });
 
                 if has_structured {
-                    if let Some(Token::StructuredMessage { component, level }) = tokens.iter()
-                        .find(|t| matches!(t, Token::StructuredMessage { .. })) {
-                        assert!(!level.is_empty(),
-                            "Should detect valid framework log level: {}", level);
-                        assert!(!component.is_empty(),
-                            "Should detect framework component: {}", component);
+                    if let Some(Token::StructuredMessage { component, level }) = tokens
+                        .iter()
+                        .find(|t| matches!(t, Token::StructuredMessage { .. }))
+                    {
+                        assert!(
+                            !level.is_empty(),
+                            "Should detect valid framework log level: {}",
+                            level
+                        );
+                        assert!(
+                            !component.is_empty(),
+                            "Should detect framework component: {}",
+                            component
+                        );
                     }
                 }
             }
@@ -146,12 +212,21 @@ mod tests {
             // Should handle various structured logging formats
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
-                    matches!(token, Token::StructuredMessage { component: _, level: _ })
+                    matches!(
+                        token,
+                        Token::StructuredMessage {
+                            component: _,
+                            level: _
+                        }
+                    )
                 });
 
                 if has_structured {
-                    assert!(result.contains("<STRUCTURED_MESSAGE>"),
-                        "Should normalize structured message in: {}", log_line);
+                    assert!(
+                        result.contains("<STRUCTURED_MESSAGE>"),
+                        "Should normalize structured message in: {}",
+                        log_line
+                    );
                 }
             }
         }
@@ -160,10 +235,10 @@ mod tests {
     #[test]
     fn test_no_false_positives() {
         let non_structured_cases = vec![
-            r#"{"user_id": 12345, "action": "login", "result": "success"}"#,  // Data JSON, not log
+            r#"{"user_id": 12345, "action": "login", "result": "success"}"#, // Data JSON, not log
             r#"Regular log message without structure"#,
             r#"Some JSON data: {"config": {"timeout": 30}}"#,
-            r#"{"api_response": {"data": [], "status": 200}}"#,  // API response
+            r#"{"api_response": {"data": [], "status": 200}}"#, // API response
             "Plain text log entry",
             "Error: something went wrong (not structured)",
         ];
@@ -173,18 +248,31 @@ mod tests {
 
             // Should not detect structured logging patterns in non-log JSON or plain text
             let has_structured = tokens.iter().any(|token| {
-                matches!(token, Token::StructuredMessage { component: _, level: _ })
+                matches!(
+                    token,
+                    Token::StructuredMessage {
+                        component: _,
+                        level: _
+                    }
+                )
             });
 
             if has_structured {
                 // If detected, should be a valid structured log
-                if let Some(Token::StructuredMessage { component, level }) = tokens.iter()
-                    .find(|t| matches!(t, Token::StructuredMessage { .. })) {
+                if let Some(Token::StructuredMessage { component, level }) = tokens
+                    .iter()
+                    .find(|t| matches!(t, Token::StructuredMessage { .. }))
+                {
                     // Very strict validation for potential false positives
-                    assert!(["INFO", "ERROR", "WARN", "DEBUG", "TRACE", "FATAL",
-                           "info", "error", "warn", "debug", "trace", "fatal"]
-                           .contains(&level.as_str()),
-                        "Detected level should be valid log level: {}", level);
+                    assert!(
+                        [
+                            "INFO", "ERROR", "WARN", "DEBUG", "TRACE", "FATAL", "info", "error",
+                            "warn", "debug", "trace", "fatal"
+                        ]
+                        .contains(&level.as_str()),
+                        "Detected level should be valid log level: {}",
+                        level
+                    );
                 }
             }
         }
@@ -212,7 +300,8 @@ mod tests {
 
         // After normalization, structured logs with same service+level+message
         // should group better for folding
-        let service_patterns: Vec<_> = normalized_lines.iter()
+        let service_patterns: Vec<_> = normalized_lines
+            .iter()
             .map(|line| {
                 // Count structured message tokens
                 line.matches("<STRUCTURED_MESSAGE>").count()
@@ -221,19 +310,24 @@ mod tests {
 
         // Each structured log should have at least one structured message token
         for count in service_patterns {
-            assert!(count >= 0, "Should detect structured patterns in microservices logs");
+            assert!(
+                count >= 0,
+                "Should detect structured patterns in microservices logs"
+            );
         }
 
         // Similar service patterns should help compression
-        let user_api_lines: Vec<_> = normalized_lines.iter()
+        let user_api_lines: Vec<_> = normalized_lines
+            .iter()
             .enumerate()
-            .filter(|(i, _)| *i < 3)  // First 3 are user-api
+            .filter(|(i, _)| *i < 3) // First 3 are user-api
             .map(|(_, line)| line)
             .collect();
 
         if !user_api_lines.is_empty() {
             // User API logs should have similar structure after normalization
-            let structural_similarity = user_api_lines.iter()
+            let structural_similarity = user_api_lines
+                .iter()
                 .map(|line| {
                     // Remove variable parts to see structural similarity
                     line.replace(|c: char| c.is_ascii_alphanumeric(), "X")
@@ -241,8 +335,10 @@ mod tests {
                 .collect::<std::collections::HashSet<_>>();
 
             // Similar service logs should have very similar structure
-            assert!(structural_similarity.len() <= 2,
-                "Similar service logs should have similar structure for compression");
+            assert!(
+                structural_similarity.len() <= 2,
+                "Similar service logs should have similar structure for compression"
+            );
         }
     }
 
@@ -257,13 +353,16 @@ mod tests {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
             // Should potentially detect multiple structured messages
-            let structured_count = tokens.iter()
+            let structured_count = tokens
+                .iter()
                 .filter(|token| matches!(token, Token::StructuredMessage { .. }))
                 .count();
 
             if structured_count > 1 {
-                assert!(result.matches("<STRUCTURED_MESSAGE>").count() == structured_count,
-                    "Should replace all structured messages in line");
+                assert!(
+                    result.matches("<STRUCTURED_MESSAGE>").count() == structured_count,
+                    "Should replace all structured messages in line"
+                );
             }
         }
     }
@@ -271,18 +370,19 @@ mod tests {
     #[test]
     fn test_edge_cases() {
         let edge_cases = vec![
-            r#"{"level":"info"}"#,  // Missing component
-            r#"{"component":"api"}"#,  // Missing level
-            r#"{"level":"info","component":"api"}"#,  // Missing message
-            r#"{"level":"info","component":"api","msg":""}"#,  // Empty message
-            r#"{"level":"","component":"api","msg":"test"}"#,  // Empty level
+            r#"{"level":"info"}"#,                            // Missing component
+            r#"{"component":"api"}"#,                         // Missing level
+            r#"{"level":"info","component":"api"}"#,          // Missing message
+            r#"{"level":"info","component":"api","msg":""}"#, // Empty message
+            r#"{"level":"","component":"api","msg":"test"}"#, // Empty level
         ];
 
         for test_case in edge_cases {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
             // Should be conservative with incomplete structured logs
-            let structured_count = tokens.iter()
+            let structured_count = tokens
+                .iter()
                 .filter(|token| matches!(token, Token::StructuredMessage { .. }))
                 .count();
 
@@ -290,8 +390,10 @@ mod tests {
                 // If detected, should have valid components
                 for token in &tokens {
                     if let Token::StructuredMessage { component, level } = token {
-                        assert!(!component.is_empty() || !level.is_empty(),
-                            "Should have at least component or level");
+                        assert!(
+                            !component.is_empty() || !level.is_empty(),
+                            "Should have at least component or level"
+                        );
                     }
                 }
             }

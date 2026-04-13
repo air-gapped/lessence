@@ -1,8 +1,6 @@
 // Contract Test: Constitutional Compliance for Unified Timestamp System
 
-use lessence::patterns::timestamp::{
-    TimestampFormat, TimestampRegistry, UnifiedTimestampDetector,
-};
+use lessence::patterns::timestamp::{TimestampFormat, TimestampRegistry, UnifiedTimestampDetector};
 
 #[test]
 fn test_pattern_count_constitutional_requirement() {
@@ -17,8 +15,8 @@ fn test_pattern_count_constitutional_requirement() {
 
 #[test]
 fn test_thread_safety_constitutional_requirement() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
 
     let counter = Arc::new(AtomicUsize::new(0));
@@ -39,7 +37,9 @@ fn test_thread_safety_constitutional_requirement() {
     }
 
     for handle in handles {
-        handle.join().expect("Thread panicked — thread safety violation");
+        handle
+            .join()
+            .expect("Thread panicked — thread safety violation");
     }
 
     assert_eq!(counter.load(Ordering::SeqCst), 2000);
@@ -93,7 +93,10 @@ fn test_priority_ordering_constitutional_requirement() {
         })
         .collect();
 
-    assert!(!unix_patterns.is_empty(), "Must have Unix timestamp patterns");
+    assert!(
+        !unix_patterns.is_empty(),
+        "Must have Unix timestamp patterns"
+    );
 
     for pattern in &unix_patterns {
         assert!(

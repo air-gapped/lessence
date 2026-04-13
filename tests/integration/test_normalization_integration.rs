@@ -103,17 +103,17 @@ fn test_performance_scales_linearly() {
 fn test_edge_case_handling() {
     // Test edge cases that might break the normalization flow
     let edge_cases = vec![
-        "",  // Empty string
-        "No timestamps here at all",  // No matches
-        "2025-13-45T25:99:99Z",  // Invalid but pattern-matching timestamp
-        "Almost 2025-09-29T10:15 timestamp",  // Partial match
-        "Nested [2025-09-29T10:15:30Z] timestamps",  // Bracketed
+        "",                                         // Empty string
+        "No timestamps here at all",                // No matches
+        "2025-13-45T25:99:99Z",                     // Invalid but pattern-matching timestamp
+        "Almost 2025-09-29T10:15 timestamp",        // Partial match
+        "Nested [2025-09-29T10:15:30Z] timestamps", // Bracketed
     ];
 
     for input in edge_cases {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         // Should not panic or crash
-        assert!(result.len() >= 0);  // Basic sanity check
-        assert!(tokens.len() >= 0);  // Basic sanity check
+        assert!(result.len() >= 0); // Basic sanity check
+        assert!(tokens.len() >= 0); // Basic sanity check
     }
 }

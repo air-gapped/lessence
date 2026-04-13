@@ -452,7 +452,9 @@ mod tests {
 
     #[test]
     fn kv_indicators_url_excluded() {
-        assert!(!KeyValueDetector::has_key_value_indicators("visit https://example.com"));
+        assert!(!KeyValueDetector::has_key_value_indicators(
+            "visit https://example.com"
+        ));
     }
 
     #[test]
@@ -599,17 +601,26 @@ mod tests {
 
     #[test]
     fn classify_url_http() {
-        assert_eq!(KeyValueDetector::classify_value_type("http://example.com"), "url");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("http://example.com"),
+            "url"
+        );
     }
 
     #[test]
     fn classify_url_https() {
-        assert_eq!(KeyValueDetector::classify_value_type("https://example.com"), "url");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("https://example.com"),
+            "url"
+        );
     }
 
     #[test]
     fn classify_url_ftp() {
-        assert_eq!(KeyValueDetector::classify_value_type("ftp://files.com"), "url");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("ftp://files.com"),
+            "url"
+        );
     }
 
     #[test]
@@ -621,42 +632,66 @@ mod tests {
 
     #[test]
     fn config_pattern_timeout_suffix() {
-        assert!(KeyValueDetector::is_common_config_pattern("read_timeout", "30s"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "read_timeout",
+            "30s"
+        ));
     }
 
     #[test]
     fn config_pattern_limit_suffix() {
-        assert!(KeyValueDetector::is_common_config_pattern("connection_limit", "100"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "connection_limit",
+            "100"
+        ));
     }
 
     #[test]
     fn config_pattern_size_suffix() {
-        assert!(KeyValueDetector::is_common_config_pattern("buffer_size", "4096"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "buffer_size",
+            "4096"
+        ));
     }
 
     #[test]
     fn config_pattern_count_suffix() {
-        assert!(KeyValueDetector::is_common_config_pattern("retry_count", "3"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "retry_count",
+            "3"
+        ));
     }
 
     #[test]
     fn config_pattern_rate_suffix() {
-        assert!(KeyValueDetector::is_common_config_pattern("error_rate", "0.01"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "error_rate",
+            "0.01"
+        ));
     }
 
     #[test]
     fn config_pattern_usage_suffix() {
-        assert!(KeyValueDetector::is_common_config_pattern("cpu_usage", "75%"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "cpu_usage",
+            "75%"
+        ));
     }
 
     #[test]
     fn config_pattern_max_prefix() {
-        assert!(KeyValueDetector::is_common_config_pattern("max_retries", "5"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "max_retries",
+            "5"
+        ));
     }
 
     #[test]
     fn config_pattern_min_prefix() {
-        assert!(KeyValueDetector::is_common_config_pattern("min_connections", "1"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "min_connections",
+            "1"
+        ));
     }
 
     #[test]
@@ -666,7 +701,10 @@ mod tests {
 
     #[test]
     fn config_pattern_value_pct() {
-        assert!(KeyValueDetector::is_common_config_pattern("threshold", "50%"));
+        assert!(KeyValueDetector::is_common_config_pattern(
+            "threshold",
+            "50%"
+        ));
     }
 
     #[test]
@@ -693,72 +731,128 @@ mod tests {
 
     #[test]
     fn kv_ctx_excludes_if() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("if", "true", "if x=true then"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "if",
+            "true",
+            "if x=true then"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_for() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("for", "x", "for i=0; i<n"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "for",
+            "x",
+            "for i=0; i<n"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_while() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("while", "x", "while x=true"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "while",
+            "x",
+            "while x=true"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_switch() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("switch", "x", "switch x=val"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "switch",
+            "x",
+            "switch x=val"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_math_plus() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x + y = 1"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "x",
+            "1",
+            "x + y = 1"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_math_minus() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x - y = 1"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "x",
+            "1",
+            "x - y = 1"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_math_mul() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x * y = 1"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "x",
+            "1",
+            "x * y = 1"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_math_div() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("x", "1", "x / y = 1"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "x",
+            "1",
+            "x / y = 1"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_select() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "SELECT col FROM t"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "col",
+            "v",
+            "SELECT col FROM t"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_insert() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "INSERT INTO t"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "col",
+            "v",
+            "INSERT INTO t"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_update() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "UPDATE t SET col=v"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "col",
+            "v",
+            "UPDATE t SET col=v"
+        ));
     }
 
     #[test]
     fn kv_ctx_excludes_delete_sql() {
-        assert!(!KeyValueDetector::is_valid_key_value_context("col", "v", "DELETE FROM t"));
+        assert!(!KeyValueDetector::is_valid_key_value_context(
+            "col",
+            "v",
+            "DELETE FROM t"
+        ));
     }
 
     #[test]
     fn kv_ctx_valid_key() {
-        assert!(KeyValueDetector::is_valid_key_value_context("timeout", "30", "timeout=30"));
+        assert!(KeyValueDetector::is_valid_key_value_context(
+            "timeout",
+            "30",
+            "timeout=30"
+        ));
     }
 
     #[test]
     fn kv_ctx_config_pattern() {
-        assert!(KeyValueDetector::is_valid_key_value_context("read_timeout", "100ms", "read_timeout=100ms"));
+        assert!(KeyValueDetector::is_valid_key_value_context(
+            "read_timeout",
+            "100ms",
+            "read_timeout=100ms"
+        ));
     }
 
     // ---- is_ip_address: per-branch tests ----
@@ -822,7 +916,10 @@ mod tests {
     #[test]
     fn config_context_returns_false_for_non_config() {
         // Input without any config keywords should return false
-        assert!(!KeyValueDetector::is_config_context("just a plain log line with no keywords", 0));
+        assert!(!KeyValueDetector::is_config_context(
+            "just a plain log line with no keywords",
+            0
+        ));
     }
 
     // ---- Mutant-killing: is_valid_key_value_context SQL exclusion per-keyword ----
@@ -831,7 +928,9 @@ mod tests {
     fn kv_ctx_excludes_select_only() {
         // Has SELECT but not INSERT, UPDATE, DELETE
         assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "SELECT id FROM users"
+            "timeout",
+            "30",
+            "SELECT id FROM users"
         ));
     }
 
@@ -839,7 +938,9 @@ mod tests {
     fn kv_ctx_excludes_insert_only() {
         // Has INSERT but not SELECT, UPDATE, DELETE
         assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "INSERT INTO users VALUES (1)"
+            "timeout",
+            "30",
+            "INSERT INTO users VALUES (1)"
         ));
     }
 
@@ -847,7 +948,9 @@ mod tests {
     fn kv_ctx_excludes_update_only() {
         // Has UPDATE but not SELECT, INSERT, DELETE
         assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "UPDATE users SET name='x'"
+            "timeout",
+            "30",
+            "UPDATE users SET name='x'"
         ));
     }
 
@@ -855,7 +958,9 @@ mod tests {
     fn kv_ctx_excludes_delete_only() {
         // Has DELETE but not SELECT, INSERT, UPDATE
         assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "DELETE FROM users WHERE id=1"
+            "timeout",
+            "30",
+            "DELETE FROM users WHERE id=1"
         ));
     }
 
@@ -895,7 +1000,9 @@ mod tests {
     fn kv_ctx_valid_key_from_list_timeout() {
         // "timeout" is in valid_keys list, not a config pattern key
         assert!(KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "setting timeout=30"
+            "timeout",
+            "30",
+            "setting timeout=30"
         ));
     }
 
@@ -904,7 +1011,9 @@ mod tests {
         // "read_timeout" matches is_common_config_pattern (ends_with "_timeout")
         // but is NOT in the valid_keys list directly
         assert!(KeyValueDetector::is_valid_key_value_context(
-            "read_timeout", "100ms", "read_timeout=100ms"
+            "read_timeout",
+            "100ms",
+            "read_timeout=100ms"
         ));
     }
 
@@ -932,7 +1041,9 @@ mod tests {
 
     #[test]
     fn logging_json_positive() {
-        assert!(KeyValueDetector::is_logging_json(r#"{"level":"info","msg":"ok"}"#));
+        assert!(KeyValueDetector::is_logging_json(
+            r#"{"level":"info","msg":"ok"}"#
+        ));
     }
 
     #[test]
@@ -966,11 +1077,15 @@ mod tests {
         // Kills mutant: `|| with &&` on valid_keys.contains vs is_common_config_pattern (line 332)
         // Key "max_retries" is NOT in valid_keys array but IS a config pattern (starts_with "max_")
         assert!(KeyValueDetector::is_valid_key_value_context(
-            "max_retries", "5", "max_retries=5"
+            "max_retries",
+            "5",
+            "max_retries=5"
         ));
         // Verify it's not in the valid_keys list
         assert!(!KeyValueDetector::is_valid_key_value_context(
-            "max_retries", "5", "SELECT max_retries FROM t"
+            "max_retries",
+            "5",
+            "SELECT max_retries FROM t"
         ));
     }
 
@@ -979,7 +1094,9 @@ mod tests {
         // "timeout" IS in valid_keys but "timeout" does NOT match config pattern
         // (no _timeout suffix, no max_/min_ prefix, value "30" has no unit suffix)
         assert!(KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "timeout=30"
+            "timeout",
+            "30",
+            "timeout=30"
         ));
     }
 }

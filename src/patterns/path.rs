@@ -264,7 +264,6 @@ impl PathDetector {
 
         normalized
     }
-
 }
 
 #[cfg(test)]
