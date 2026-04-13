@@ -57,9 +57,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_json_struct_volume_spec() {
+        // JSON_STRUCT matches escaped JSON structures
+        let input = r#"spec \"{volumeName: test-vol, podName: test-pod}\""#;
+        let (result, tokens) = JsonDetector::detect_and_replace(input);
+        assert!(
+            result.contains("<VOLUME_SPEC>"),
+            "should detect volume spec: {result}"
+        );
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn test_json_struct_k8s_object() {
+        let input = r#"object \"{ObjectMeta: name_test}\""#;
+        let (result, tokens) = JsonDetector::detect_and_replace(input);
+        assert!(
+            result.contains("<K8S_OBJECT>"),
+            "should detect K8s object: {result}"
+        );
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn test_json_struct_generic() {
+        let input = r#"data \"{key: value, status: ok}\""#;
+        let (result, tokens) = JsonDetector::detect_and_replace(input);
+        assert!(
+            result.contains("<JSON_DATA>"),
+            "should detect generic JSON: {result}"
+        );
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
     fn test_json_structure_detection() {
-        // JSON_STRUCT regex requires a literal backslash before { (for escaped JSON)
-        // Plain {key: value} structures are not matched by this detector
+        // EVENT_OBJECT regex matches &Event{...}
         let matching_cases = vec![("&Event{Type: Warning}", "<EVENT_OBJECT>")];
 
         for (input, expected_replacement) in matching_cases {

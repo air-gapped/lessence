@@ -182,6 +182,56 @@ mod tests {
         assert_eq!(tokens.len(), 0);
     }
 
+    // ---- Coverage: untested hash lengths ----
+
+    #[test]
+    fn detect_sha512_128_chars() {
+        let hash = "a".repeat(128);
+        let text = format!("hash: {hash}");
+        let (result, tokens) = HashDetector::detect_and_replace(&text);
+        assert!(
+            result.contains("<HASH>"),
+            "SHA512 should be detected: {result}"
+        );
+        assert!(matches!(&tokens[0], Token::Hash(HashType::SHA512, _)));
+    }
+
+    #[test]
+    fn detect_generic_56_chars() {
+        let hash = "a".repeat(56);
+        let text = format!("hash: {hash}");
+        let (result, tokens) = HashDetector::detect_and_replace(&text);
+        assert!(result.contains("<HASH>"), "56-char hash: {result}");
+        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(56), _)));
+    }
+
+    #[test]
+    fn detect_generic_48_chars() {
+        let hash = "a".repeat(48);
+        let text = format!("hash: {hash}");
+        let (result, tokens) = HashDetector::detect_and_replace(&text);
+        assert!(result.contains("<HASH>"), "48-char hash: {result}");
+        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(48), _)));
+    }
+
+    #[test]
+    fn detect_generic_24_chars() {
+        let hash = "a".repeat(24);
+        let text = format!("hash: {hash}");
+        let (result, tokens) = HashDetector::detect_and_replace(&text);
+        assert!(result.contains("<HASH>"), "24-char hash: {result}");
+        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(24), _)));
+    }
+
+    #[test]
+    fn detect_generic_16_chars() {
+        let hash = "a".repeat(16);
+        let text = format!("hash: {hash}");
+        let (result, tokens) = HashDetector::detect_and_replace(&text);
+        assert!(result.contains("<HASH>"), "16-char hash: {result}");
+        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(16), _)));
+    }
+
     // ---- has_hex_run: boundary tests ----
 
     #[test]
