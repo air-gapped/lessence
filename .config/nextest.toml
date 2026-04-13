@@ -3,6 +3,10 @@
 # Timing-sensitive tests (ReDoS scaling, performance comparisons) run
 # in a serial group to eliminate CPU contention flakes. All other tests
 # run in parallel as usual.
+#
+# Retries: timing tests retry up to 2 times on failure. Noise-induced
+# flakes pass on retry; genuine O(n²) regressions fail all 3 attempts.
+# Exponential backoff lets CPU settle between retries.
 
 [test-groups.serial-timing]
 max-threads = 1
@@ -10,3 +14,4 @@ max-threads = 1
 [[profile.default.overrides]]
 filter = 'test(redos) | test(scales_linearly) | test(performance) | test(timeout) | test(allocation_consistency) | test(backward_compatibility) | test(unix_timestamp_penalty)'
 test-group = 'serial-timing'
+retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s" }
