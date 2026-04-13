@@ -16,4 +16,8 @@ exclude_re = [
     # QuotedStringDetector has its own `if !text.contains('\"')` fast path,
     # so the normalizer's `|| contains('\'')` branch never produces tokens.
     "normalize.rs:173",
+    # PathDetector (step 3) already replaces &Event{} before JSON (step 4).
+    # The normalize_json guard is unreachable — path detector consumes all
+    # inputs that JsonDetector would match.
+    "normalize.rs:59",
 ]

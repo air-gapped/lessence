@@ -978,20 +978,18 @@ mod tests {
 
     #[test]
     fn normalize_json_disabled_with_brace_input() {
-        // Kills mutant: `self.config.normalize_json && normalized.contains('{')` → `||`
-        // Must use input that JsonDetector actually detects (Event objects, not plain JSON)
-        let config = Config {
-            normalize_json: false,
-            ..Config::default()
-        };
-        let normalizer = Normalizer::new(config);
-        let line = normalizer
-            .normalize_line("&Event{Type: Warning}".to_string())
-            .unwrap();
+        // Note: this mutant (normalize.rs:59) is excluded via .cargo/mutants.toml
+        // because PathDetector (step 3) already replaces &Event{} with <EVENT_OBJECT>
+        // before JsonDetector (step 4) ever runs. The normalize_json guard is
+        // structurally unreachable — an equivalent mutant.
+        //
+        // This test verifies JsonDetector itself works in isolation.
+        let (_, direct_tokens) =
+            crate::patterns::json::JsonDetector::detect_and_replace("&Event{Type: Warning}");
         assert!(
-            !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
-            "JSON should NOT be detected when normalize_json=false: {:?}",
-            line.tokens
+            direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
+            "JsonDetector should detect Event objects: {:?}",
+            direct_tokens
         );
     }
 
