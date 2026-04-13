@@ -67,14 +67,4 @@ pub struct LogLine {
     pub hash: u64,
 }
 
-impl LogLine {
-    #[allow(dead_code)]
-    pub fn new(original: String) -> Self {
-        Self {
-            original,
-            normalized: String::new(),
-            tokens: Vec::new(),
-            hash: 0,
-        }
-    }
-}
+impl LogLine {}

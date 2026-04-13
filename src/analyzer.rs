@@ -320,6 +320,7 @@ impl LogAnalyzer {
     }
 
     /// Create analysis result from processed folder statistics (for preflight mode)
+    /// Create analysis result from processed folder statistics (for preflight mode)
     pub fn from_folder_stats(
         folder: &crate::folder::PatternFolder,
         _config: &Config,
@@ -376,5 +377,261 @@ impl LogAnalyzer {
                 ips: vec![],
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn default_config() -> Config {
+        Config::default()
+    }
+
+    // ---- analyze ----
+
+    #[test]
+    fn analyze_empty_input() {
+        let input = Cursor::new("");
+        let result = LogAnalyzer::analyze(input, &default_config()).unwrap();
+        assert_eq!(result.total_lines, 0);
+    }
+
+    #[test]
+    fn analyze_single_line() {
+        let input = Cursor::new("2024-01-01 10:00:00 error at 10.0.0.1");
+        let result = LogAnalyzer::analyze(input, &default_config()).unwrap();
+        assert_eq!(result.total_lines, 1);
+        assert!(result.pattern_distribution.timestamps > 0 || result.pattern_distribution.ips > 0);
+    }
+
+    #[test]
+    fn analyze_multiple_lines() {
+        let input = Cursor::new(
+            "2024-01-01 10:00:00 error at 10.0.0.1\n\
+             2024-01-01 10:00:01 error at 10.0.0.2\n\
+             2024-01-01 10:00:02 error at 10.0.0.3\n",
+        );
+        let result = LogAnalyzer::analyze(input, &default_config()).unwrap();
+        assert_eq!(result.total_lines, 3);
+    }
+
+    #[test]
+    fn analyze_compression_estimates_populated() {
+        let lines: Vec<String> = (0..20)
+            .map(|i| format!("2024-01-01 10:00:{i:02} error at 10.0.0.{}", i % 256))
+            .collect();
+        let input = Cursor::new(lines.join("\n"));
+        let result = LogAnalyzer::analyze(input, &default_config()).unwrap();
+        assert!(!result.estimated_compression.default.is_empty());
+        assert!(!result.estimated_compression.aggressive.is_empty());
+    }
+
+    // ---- update_pattern_counts ----
+
+    #[test]
+    fn update_counts_timestamp() {
+        let mut counts = PatternDistribution {
+            timestamps: 0,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let mut samples = SamplePatterns {
+            paths: vec![],
+            numbers: vec![],
+            timestamps: vec![],
+            ips: vec![],
+        };
+        LogAnalyzer::update_pattern_counts(
+            &[Token::Timestamp("2024-01-01".into())],
+            &mut counts,
+            &mut samples,
+        );
+        assert_eq!(counts.timestamps, 1);
+        assert_eq!(samples.timestamps.len(), 1);
+    }
+
+    #[test]
+    fn update_counts_ip() {
+        let mut counts = PatternDistribution {
+            timestamps: 0,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let mut samples = SamplePatterns {
+            paths: vec![],
+            numbers: vec![],
+            timestamps: vec![],
+            ips: vec![],
+        };
+        LogAnalyzer::update_pattern_counts(
+            &[Token::IPv4("10.0.0.1".into())],
+            &mut counts,
+            &mut samples,
+        );
+        assert_eq!(counts.ips, 1);
+        assert_eq!(samples.ips.len(), 1);
+    }
+
+    #[test]
+    fn update_counts_path() {
+        let mut counts = PatternDistribution {
+            timestamps: 0,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let mut samples = SamplePatterns {
+            paths: vec![],
+            numbers: vec![],
+            timestamps: vec![],
+            ips: vec![],
+        };
+        LogAnalyzer::update_pattern_counts(
+            &[Token::Path("/var/log".into())],
+            &mut counts,
+            &mut samples,
+        );
+        assert_eq!(counts.paths, 1);
+        assert_eq!(samples.paths.len(), 1);
+    }
+
+    #[test]
+    fn update_counts_samples_capped_at_5() {
+        let mut counts = PatternDistribution {
+            timestamps: 0,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let mut samples = SamplePatterns {
+            paths: vec![],
+            numbers: vec![],
+            timestamps: vec![],
+            ips: vec![],
+        };
+        for i in 0..10 {
+            LogAnalyzer::update_pattern_counts(
+                &[Token::IPv4(format!("10.0.0.{i}"))],
+                &mut counts,
+                &mut samples,
+            );
+        }
+        assert_eq!(counts.ips, 10);
+        assert_eq!(samples.ips.len(), 5, "samples should be capped at 5");
+    }
+
+    // ---- generate_recommendations ----
+
+    #[test]
+    fn recommendations_high_paths() {
+        let patterns = PatternDistribution {
+            timestamps: 0,
+            ips: 0,
+            paths: 30,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let recs = LogAnalyzer::generate_recommendations(&patterns, 100);
+        assert!(recs.iter().any(|r| r.contains("--paths")));
+    }
+
+    #[test]
+    fn recommendations_high_timestamps() {
+        let patterns = PatternDistribution {
+            timestamps: 90,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let recs = LogAnalyzer::generate_recommendations(&patterns, 100);
+        assert!(recs.iter().any(|r| r.contains("timestamp")));
+    }
+
+    #[test]
+    fn recommendations_low_patterns() {
+        let patterns = PatternDistribution {
+            timestamps: 1,
+            ips: 0,
+            paths: 0,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let recs = LogAnalyzer::generate_recommendations(&patterns, 100);
+        assert!(
+            recs.iter()
+                .any(|r| r.contains("Warning") || r.contains("minimal"))
+        );
+    }
+
+    #[test]
+    fn recommendations_empty_gets_default() {
+        let patterns = PatternDistribution {
+            timestamps: 50,
+            ips: 30,
+            paths: 10,
+            hashes: 0,
+            numbers: 0,
+            uuids: 0,
+            pids: 0,
+        };
+        let recs = LogAnalyzer::generate_recommendations(&patterns, 100);
+        assert!(!recs.is_empty());
+    }
+
+    // ---- strip_ansi_codes ----
+
+    #[test]
+    fn strip_ansi_removes_codes() {
+        let input = "\x1b[31mERROR\x1b[0m: something failed";
+        let result = LogAnalyzer::strip_ansi_codes(input);
+        assert_eq!(result, "ERROR: something failed");
+    }
+
+    #[test]
+    fn strip_ansi_no_codes() {
+        let input = "plain text";
+        assert_eq!(LogAnalyzer::strip_ansi_codes(input), "plain text");
+    }
+
+    // ---- from_folder_stats ----
+
+    #[test]
+    fn from_folder_stats_basic() {
+        let config = Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            ..Config::default()
+        };
+        let mut folder = crate::folder::PatternFolder::new(config.clone());
+        // Process some lines to build stats
+        folder.process_line("2024-01-01 10:00:00 error").unwrap();
+        folder.process_line("2024-01-01 10:00:01 error").unwrap();
+
+        let result = LogAnalyzer::from_folder_stats(&folder, &config).unwrap();
+        assert_eq!(result.total_lines, 2);
+        assert!(!result.recommendations.is_empty());
     }
 }
