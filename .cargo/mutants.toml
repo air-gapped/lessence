@@ -5,3 +5,15 @@ profile = "mutants"
 
 # Skip lint checking — mutated code triggers warnings that waste time.
 cap_lints = true
+
+# Equivalent mutants: mutations that don't change observable behavior.
+# These are structurally impossible to kill — the mutation produces
+# identical results due to redundant guards or regex guarantees.
+exclude_re = [
+    # FQDN_REGEX already guarantees no leading/trailing dots (\b anchor)
+    # so the contains('.')/starts_with/ends_with checks are redundant.
+    "network.rs:207",
+    # QuotedStringDetector has its own `if !text.contains('\"')` fast path,
+    # so the normalizer's `|| contains('\'')` branch never produces tokens.
+    "normalize.rs:173",
+]

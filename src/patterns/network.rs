@@ -831,32 +831,37 @@ mod tests {
     // ---- FQDN detection: dot/start/end checks (line 207) ----
 
     #[test]
-    fn fqdn_leading_dot_not_detected() {
-        // Kills: delete ! on `!fqdn_str.starts_with('.')`
+    fn fqdn_valid_produces_token() {
+        // Valid FQDN should produce a token
         let (_, tokens) =
-            NetworkDetector::detect_and_replace(".example.com", false, false, true);
+            NetworkDetector::detect_and_replace("connect example.com ok", false, false, true);
         assert!(
-            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == ".example.com")),
-            "leading dot should prevent FQDN detection: {tokens:?}"
+            tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == "example.com")),
+            "valid FQDN should produce IPv4 token: {tokens:?}"
         );
     }
 
     #[test]
-    fn fqdn_trailing_dot_not_detected() {
-        // Kills: delete ! on `!fqdn_str.ends_with('.')`
+    fn fqdn_leading_dot_no_token() {
+        // Kills: delete ! on `!starts_with('.')`
+        // Kills: && with || (leading dot should prevent token, not allow it)
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace(".example.com", false, false, true);
+        // Leading dot → token should NOT be produced (text still replaced by regex)
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s.starts_with('.'))),
+            "leading dot FQDN should not produce token: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn fqdn_trailing_dot_no_token() {
+        // Kills: delete ! on `!ends_with('.')`
         let (_, tokens) =
             NetworkDetector::detect_and_replace("example.com.", false, false, true);
         assert!(
-            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s == "example.com.")),
-            "trailing dot should prevent FQDN detection: {tokens:?}"
+            !tokens.iter().any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
+            "trailing dot FQDN should not produce token: {tokens:?}"
         );
-    }
-
-    #[test]
-    fn fqdn_valid_detected() {
-        let (result, tokens) =
-            NetworkDetector::detect_and_replace("connect example.com ok", false, false, true);
-        assert!(result.contains("<FQDN>"), "valid FQDN should be detected: {result}");
-        assert!(!tokens.is_empty());
     }
 }

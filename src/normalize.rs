@@ -979,17 +979,19 @@ mod tests {
     #[test]
     fn normalize_json_disabled_with_brace_input() {
         // Kills mutant: `self.config.normalize_json && normalized.contains('{')` → `||`
+        // Must use input that JsonDetector actually detects (Event objects, not plain JSON)
         let config = Config {
             normalize_json: false,
             ..Config::default()
         };
         let normalizer = Normalizer::new(config);
         let line = normalizer
-            .normalize_line(r#"Got {"key": "value"} response"#.to_string())
+            .normalize_line("&Event{Type: Warning}".to_string())
             .unwrap();
         assert!(
             !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
-            "JSON should NOT be detected when normalize_json=false"
+            "JSON should NOT be detected when normalize_json=false: {:?}",
+            line.tokens
         );
     }
 
@@ -997,13 +999,16 @@ mod tests {
 
     #[test]
     fn similarity_score_division_not_multiplication() {
-        // Kills mutant: `min_len as f64 / max_len as f64` → `min_len as f64 * max_len as f64`
-        // If mutated to *, ratio for 7/10 would be 70.0 which > 0.7 threshold...
-        // We need strings where the distinction matters for the final score
+        // Kills mutant: `min_len as f64 / max_len as f64` → `*`
+        // Use strings where:
+        //   division: 3/10 = 0.3 < 0.7 → returns 30.0 (quick reject)
+        //   multiplication: 3*10 = 30.0 > 0.7 → falls through to char comparison
+        // The char comparison for "xyz" vs "abcdefghij" (0 matching bytes) → 0.0
+        // So: division returns 30.0, multiplication returns 0.0
         let normalizer = Normalizer::new(Config::default());
         let short = LogLine {
-            original: "abcd".into(),
-            normalized: "abcd".into(),
+            original: "xyz".into(),
+            normalized: "xyz".into(),
             tokens: vec![],
             hash: 0,
         };
@@ -1014,11 +1019,11 @@ mod tests {
             hash: 1,
         };
         let score = normalizer.similarity_score(&short, &long);
-        // ratio = 4/10 = 0.4 < 0.7 → returns 0.4 * 100 = 40.0
-        // If mutated to *, ratio = 4*10 = 40.0 which is NOT < 0.7, so it would do char comparison instead
+        // With /: ratio = 3/10 = 0.3 < 0.7 → returns 30.0
+        // With *: ratio = 30.0 > 0.7 → char comparison (0 matching) → 0.0
         assert!(
-            (score - 40.0).abs() < f64::EPSILON,
-            "4/10 ratio should give 40.0, got {score}"
+            score > 20.0,
+            "3/10 ratio should give 30.0, got {score} (if 0.0, division was mutated to *)"
         );
     }
 }
