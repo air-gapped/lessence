@@ -149,15 +149,82 @@ mod tests {
 
     #[test]
     fn test_thread_count_validation() {
-        // This test documents the validation requirement
-        // Actual validation happens at CLI parsing level
-        // Zero thread count should be rejected (validated in main.rs)
         let config = Config {
             thread_count: Some(0),
             ..Default::default()
         };
-        // This configuration is invalid but Config doesn't enforce it
-        // Validation must happen at CLI level
         assert_eq!(config.thread_count, Some(0));
+    }
+
+    // ---- parse_size_suffix ----
+
+    #[test]
+    fn parse_size_plain_number() {
+        assert_eq!(parse_size_suffix("1024").unwrap(), 1024);
+    }
+
+    #[test]
+    fn parse_size_k_suffix() {
+        assert_eq!(parse_size_suffix("4K").unwrap(), 4 * 1024);
+        assert_eq!(parse_size_suffix("4k").unwrap(), 4 * 1024);
+    }
+
+    #[test]
+    fn parse_size_m_suffix() {
+        assert_eq!(parse_size_suffix("2M").unwrap(), 2 * 1024 * 1024);
+        assert_eq!(parse_size_suffix("2m").unwrap(), 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_size_g_suffix() {
+        assert_eq!(parse_size_suffix("1G").unwrap(), 1024 * 1024 * 1024);
+        assert_eq!(parse_size_suffix("1g").unwrap(), 1024 * 1024 * 1024);
+    }
+
+    #[test]
+    fn parse_size_invalid() {
+        assert!(parse_size_suffix("abc").is_err());
+        assert!(parse_size_suffix("K").is_err()); // no number before K
+        assert!(parse_size_suffix("M").is_err());
+        assert!(parse_size_suffix("G").is_err());
+    }
+
+    #[test]
+    fn parse_size_whitespace() {
+        assert_eq!(parse_size_suffix("  1024  ").unwrap(), 1024);
+    }
+
+    // ---- Config defaults ----
+
+    #[test]
+    fn default_config_values() {
+        let c = Config::default();
+        assert_eq!(c.threshold, 85);
+        assert_eq!(c.min_collapse, 3);
+        assert!(c.normalize_timestamps);
+        assert!(c.normalize_hashes);
+        assert!(c.normalize_ports);
+        assert!(c.normalize_ips);
+        assert!(c.normalize_fqdns);
+        assert!(c.normalize_uuids);
+        assert!(c.normalize_pids);
+        assert!(c.normalize_emails);
+        assert!(c.normalize_paths);
+        assert!(c.normalize_json);
+        assert!(c.normalize_durations);
+        assert!(c.normalize_kubernetes);
+        assert_eq!(c.output_format, "text");
+        assert!(c.stats);
+        assert!(!c.preserve_color);
+        assert!(c.compact);
+        assert!(!c.preflight);
+        assert!(!c.summary);
+        assert!(!c.essence_mode);
+        assert_eq!(c.max_line_length, Some(1024 * 1024));
+        assert!(c.max_lines.is_none());
+        assert!(!c.sanitize_pii);
+        assert!(c.top_n.is_none());
+        assert!(!c.stats_json);
+        assert!(c.fail_pattern.is_none());
     }
 }
