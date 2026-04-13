@@ -84,12 +84,16 @@ mod tests {
 
     #[test]
     fn effective_score_each_family() {
-        let s = PatternPriority::new(10, FormatFamily::Structured).effective_score();
-        let a = PatternPriority::new(10, FormatFamily::Application).effective_score();
-        let r = PatternPriority::new(10, FormatFamily::Regional).effective_score();
-        let d = PatternPriority::new(10, FormatFamily::Database).effective_score();
-        let l = PatternPriority::new(10, FormatFamily::Legacy).effective_score();
-        let u = PatternPriority::new(10, FormatFamily::Unix).effective_score();
-        assert!(s < a && a < r && r < d && d < l && l < u);
+        let structured = PatternPriority::new(10, FormatFamily::Structured).effective_score();
+        let application = PatternPriority::new(10, FormatFamily::Application).effective_score();
+        let regional = PatternPriority::new(10, FormatFamily::Regional).effective_score();
+        let database = PatternPriority::new(10, FormatFamily::Database).effective_score();
+        let legacy = PatternPriority::new(10, FormatFamily::Legacy).effective_score();
+        let unix = PatternPriority::new(10, FormatFamily::Unix).effective_score();
+        assert!(structured < application);
+        assert!(application < regional);
+        assert!(regional < database);
+        assert!(database < legacy);
+        assert!(legacy < unix);
     }
 }

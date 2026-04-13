@@ -99,9 +99,7 @@ fn test_effective_score_calculation() {
     // Unix should have much higher effective score (lower priority)
     assert!(
         unix_score > structured_score,
-        "Unix effective score ({}) should be higher than structured score ({})",
-        unix_score,
-        structured_score
+        "Unix effective score ({unix_score}) should be higher than structured score ({structured_score})"
     );
 }
 

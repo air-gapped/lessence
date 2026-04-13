@@ -48,8 +48,8 @@ fn test_ipv6_redos_double_colon_abuse_scales_linearly() {
 
 #[test]
 fn test_ipv6_redos_long_pattern_scales_linearly() {
-    let small = "a]b:".repeat(12).to_string() + "::invalid";
-    let large = "a]b:".repeat(48).to_string() + "::invalid";
+    let small = "a]b:".repeat(12).clone() + "::invalid";
+    let large = "a]b:".repeat(48).clone() + "::invalid";
 
     crate::common::assert_linear_scaling("long_pattern", &small, &large, |input| {
         let _ = NetworkDetector::detect_and_replace(input, true, false, false);

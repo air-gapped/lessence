@@ -887,10 +887,12 @@ mod tests {
 
     #[test]
     fn normalize_line_json_disabled_no_detection() {
-        let mut config = Config::default();
-        config.normalize_json = false;
+        let config = Config {
+            normalize_json: false,
+            ..Config::default()
+        };
         let n = Normalizer::new(config);
-        let line = n.normalize_line(r#"&Event{Type: Warning}"#.into()).unwrap();
+        let line = n.normalize_line(r"&Event{Type: Warning}".into()).unwrap();
         // With JSON detection disabled, Event objects should NOT be detected
         assert!(
             !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
@@ -1001,8 +1003,7 @@ mod tests {
             crate::patterns::json::JsonDetector::detect_and_replace("&Event{Type: Warning}");
         assert!(
             direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
-            "JsonDetector should detect Event objects: {:?}",
-            direct_tokens
+            "JsonDetector should detect Event objects: {direct_tokens:?}"
         );
     }
 

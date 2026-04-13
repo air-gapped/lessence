@@ -20,8 +20,7 @@ mod tests {
             // Should detect log level + module pattern
             assert!(
                 !tokens.is_empty(),
-                "Should detect log with module pattern in: {}",
-                log_line
+                "Should detect log with module pattern in: {log_line}"
             );
 
             let has_log_module = tokens.iter().any(|token| {
@@ -36,8 +35,7 @@ mod tests {
 
             assert!(
                 has_log_module,
-                "Should detect LogWithModule token in: {}",
-                log_line
+                "Should detect LogWithModule token in: {log_line}"
             );
 
             if let Some(Token::LogWithModule { level, module }) = tokens
@@ -46,13 +44,11 @@ mod tests {
             {
                 assert!(
                     level == "error" || level == "warn" || level == "info",
-                    "Should detect valid log level: {}",
-                    level
+                    "Should detect valid log level: {level}"
                 );
                 assert!(
                     module.starts_with("mod_"),
-                    "Should detect Apache module: {}",
-                    module
+                    "Should detect Apache module: {module}"
                 );
             }
         }
@@ -87,13 +83,11 @@ mod tests {
                 {
                     assert!(
                         ["error", "warn", "info", "debug"].contains(&level.as_str()),
-                        "Should detect valid nginx log level: {}",
-                        level
+                        "Should detect valid nginx log level: {level}"
                     );
                     assert!(
                         module.contains("ngx_http") || module.contains("module"),
-                        "Should detect nginx module: {}",
-                        module
+                        "Should detect nginx module: {module}"
                     );
                 }
             }
@@ -132,13 +126,11 @@ mod tests {
                     {
                         assert!(
                             ["error", "warn", "info", "debug"].contains(&level.as_str()),
-                            "Should detect valid systemd log level: {}",
-                            level
+                            "Should detect valid systemd log level: {level}"
                         );
                         assert!(
                             !module.is_empty(),
-                            "Should detect systemd component: {}",
-                            module
+                            "Should detect systemd component: {module}"
                         );
                     }
                 }
@@ -177,14 +169,9 @@ mod tests {
                     {
                         assert!(
                             ["error", "warn", "info", "debug"].contains(&level.as_str()),
-                            "Should detect valid syslog level: {}",
-                            level
+                            "Should detect valid syslog level: {level}"
                         );
-                        assert!(
-                            !module.is_empty(),
-                            "Should detect syslog daemon: {}",
-                            module
-                        );
+                        assert!(!module.is_empty(), "Should detect syslog daemon: {module}");
                     }
                 }
             }
@@ -223,13 +210,11 @@ mod tests {
                         assert!(
                             ["ERROR", "INFO", "WARN", "DEBUG"].contains(&level.as_str())
                                 || ["error", "info", "warn", "debug"].contains(&level.as_str()),
-                            "Should detect valid framework log level: {}",
-                            level
+                            "Should detect valid framework log level: {level}"
                         );
                         assert!(
                             !module.is_empty(),
-                            "Should detect framework module: {}",
-                            module
+                            "Should detect framework module: {module}"
                         );
                     }
                 }
@@ -273,8 +258,7 @@ mod tests {
                             "ERROR", "INFO", "WARN", "DEBUG", "error", "info", "warn", "debug"
                         ]
                         .contains(&level.as_str()),
-                        "Detected level should be valid log level: {}",
-                        level
+                        "Detected level should be valid log level: {level}"
                     );
                 }
             }
@@ -312,9 +296,8 @@ mod tests {
                     {
                         // Level should be normalized to lowercase
                         assert!(
-                            level.chars().all(|c| c.is_lowercase()),
-                            "Log level should be normalized to lowercase: {}",
-                            level
+                            level.chars().all(char::is_lowercase),
+                            "Log level should be normalized to lowercase: {level}"
                         );
                     }
                 }

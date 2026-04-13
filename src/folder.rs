@@ -3959,7 +3959,7 @@ mod tests {
     fn build_stats_json_zero_lines() {
         let f = make_folder();
         let json = f.build_stats_json(Duration::from_millis(100));
-        assert_eq!(json.compression_ratio, 0.0);
+        assert!(json.compression_ratio.abs() < f64::EPSILON);
         assert_eq!(json.input_lines, 0);
         assert_eq!(json.elapsed_ms, 100);
     }
@@ -3973,7 +3973,7 @@ mod tests {
         f.stats.timestamps = 10;
         f.stats.ips = 5;
         let json = f.build_stats_json(Duration::from_secs(1));
-        assert_eq!(json.compression_ratio, 50.0);
+        assert!((json.compression_ratio - 50.0).abs() < f64::EPSILON);
         assert_eq!(json.input_lines, 100);
         assert_eq!(json.output_lines, 50);
         assert_eq!(json.elapsed_ms, 1000);

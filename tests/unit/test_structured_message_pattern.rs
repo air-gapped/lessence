@@ -20,8 +20,7 @@ mod tests {
 
             assert!(
                 !tokens.is_empty(),
-                "Should detect structured message in: {}",
-                log_line
+                "Should detect structured message in: {log_line}"
             );
 
             let has_structured = tokens.iter().any(|token| {
@@ -36,8 +35,7 @@ mod tests {
 
             assert!(
                 has_structured,
-                "Should detect StructuredMessage token in: {}",
-                log_line
+                "Should detect StructuredMessage token in: {log_line}"
             );
 
             if let Some(Token::StructuredMessage { component, level }) = tokens
@@ -46,13 +44,11 @@ mod tests {
             {
                 assert!(
                     ["info", "error", "warn", "debug"].contains(&level.as_str()),
-                    "Should detect valid K8s log level: {}",
-                    level
+                    "Should detect valid K8s log level: {level}"
                 );
                 assert!(
                     ["kubelet", "scheduler", "proxy", "controller"].contains(&component.as_str()),
-                    "Should detect K8s component: {}",
-                    component
+                    "Should detect K8s component: {component}"
                 );
             }
         }
@@ -88,13 +84,11 @@ mod tests {
                     {
                         assert!(
                             !level.is_empty(),
-                            "Should detect valid Docker log level: {}",
-                            level
+                            "Should detect valid Docker log level: {level}"
                         );
                         assert!(
                             !component.is_empty(),
-                            "Should detect Docker component: {}",
-                            component
+                            "Should detect Docker component: {component}"
                         );
                     }
                 }
@@ -135,16 +129,14 @@ mod tests {
                                 "INFO", "ERROR", "WARN", "DEBUG", "info", "error", "warn", "debug"
                             ]
                             .contains(&level.as_str()),
-                            "Should detect valid cloud service log level: {}",
-                            level
+                            "Should detect valid cloud service log level: {level}"
                         );
                         assert!(
                             component.contains("api")
                                 || component.contains("service")
                                 || component.contains("balancer")
                                 || component.len() > 0,
-                            "Should detect cloud service component: {}",
-                            component
+                            "Should detect cloud service component: {component}"
                         );
                     }
                 }
@@ -181,13 +173,11 @@ mod tests {
                     {
                         assert!(
                             !level.is_empty(),
-                            "Should detect valid framework log level: {}",
-                            level
+                            "Should detect valid framework log level: {level}"
                         );
                         assert!(
                             !component.is_empty(),
-                            "Should detect framework component: {}",
-                            component
+                            "Should detect framework component: {component}"
                         );
                     }
                 }
@@ -224,8 +214,7 @@ mod tests {
                 if has_structured {
                     assert!(
                         result.contains("<STRUCTURED_MESSAGE>"),
-                        "Should normalize structured message in: {}",
-                        log_line
+                        "Should normalize structured message in: {log_line}"
                     );
                 }
             }
@@ -236,7 +225,7 @@ mod tests {
     fn test_no_false_positives() {
         let non_structured_cases = vec![
             r#"{"user_id": 12345, "action": "login", "result": "success"}"#, // Data JSON, not log
-            r#"Regular log message without structure"#,
+            r"Regular log message without structure",
             r#"Some JSON data: {"config": {"timeout": 30}}"#,
             r#"{"api_response": {"data": [], "status": 200}}"#, // API response
             "Plain text log entry",
@@ -270,8 +259,7 @@ mod tests {
                             "warn", "debug", "trace", "fatal"
                         ]
                         .contains(&level.as_str()),
-                        "Detected level should be valid log level: {}",
-                        level
+                        "Detected level should be valid log level: {level}"
                     );
                 }
             }

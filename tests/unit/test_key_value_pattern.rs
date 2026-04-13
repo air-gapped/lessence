@@ -21,8 +21,7 @@ mod tests {
 
             assert!(
                 result.contains("<KEY_VALUE>"),
-                "Failed to detect key-value pair in: {}",
-                test_case
+                "Failed to detect key-value pair in: {test_case}"
             );
             assert_eq!(tokens.len(), 1, "Should detect exactly one key-value token");
 
@@ -50,13 +49,11 @@ mod tests {
 
             assert!(
                 tokens.len() >= 2,
-                "Should detect multiple key-value pairs in: {}",
-                test_case
+                "Should detect multiple key-value pairs in: {test_case}"
             );
             assert!(
                 result.contains("<KEY_VALUE>"),
-                "Should normalize key-value pairs in: {}",
-                test_case
+                "Should normalize key-value pairs in: {test_case}"
             );
 
             // All tokens should be KeyValuePair tokens
@@ -68,7 +65,7 @@ mod tests {
                 {
                     // Valid KeyValuePair token
                 } else {
-                    panic!("Expected all tokens to be KeyValuePair, got: {:?}", token);
+                    panic!("Expected all tokens to be KeyValuePair, got: {token:?}");
                 }
             }
         }
@@ -96,8 +93,7 @@ mod tests {
             if let Token::KeyValuePair { key: _, value_type } = &tokens[0] {
                 assert_eq!(
                     value_type, expected_type,
-                    "Expected value type '{}' for input '{}', got '{}'",
-                    expected_type, test_input, value_type
+                    "Expected value type '{expected_type}' for input '{test_input}', got '{value_type}'"
                 );
             } else {
                 panic!("Expected KeyValuePair token");
@@ -120,13 +116,11 @@ mod tests {
 
             assert!(
                 tokens.len() >= 3,
-                "Should detect multiple config parameters in: {}",
-                line
+                "Should detect multiple config parameters in: {line}"
             );
             assert!(
                 result.contains("<KEY_VALUE>"),
-                "Should normalize config parameters in: {}",
-                line
+                "Should normalize config parameters in: {line}"
             );
 
             // Verify all detected tokens are key-value pairs
@@ -152,7 +146,7 @@ mod tests {
         for line in metrics_logs {
             let (result, tokens) = KeyValueDetector::detect_and_replace(line);
 
-            assert!(!tokens.is_empty(), "Should detect metrics in: {}", line);
+            assert!(!tokens.is_empty(), "Should detect metrics in: {line}");
 
             // Check that percentage values are properly typed
             let has_percentage = tokens.iter().any(|token| {
@@ -184,8 +178,7 @@ mod tests {
 
             assert!(
                 tokens.len() >= 3,
-                "Should detect multiple application parameters in: {}",
-                line
+                "Should detect multiple application parameters in: {line}"
             );
 
             // After normalization, similar operations should group better
@@ -215,14 +208,12 @@ mod tests {
             if test_case.contains("variable =") || test_case.contains("x=y") {
                 assert_eq!(
                     result, test_case,
-                    "Should not modify programming assignments: {}",
-                    test_case
+                    "Should not modify programming assignments: {test_case}"
                 );
                 assert_eq!(
                     tokens.len(),
                     0,
-                    "Should not detect tokens in programming context: {}",
-                    test_case
+                    "Should not detect tokens in programming context: {test_case}"
                 );
             }
         }
@@ -243,8 +234,7 @@ mod tests {
 
             assert!(
                 tokens.len() >= 2,
-                "Should detect key-value pairs regardless of separator in: {}",
-                test_case
+                "Should detect key-value pairs regardless of separator in: {test_case}"
             );
         }
     }

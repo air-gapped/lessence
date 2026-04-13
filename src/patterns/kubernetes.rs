@@ -343,7 +343,7 @@ mod tests {
         // A kube-api-access match has only capture group 0 (no group 1), so
         // len() == 1, meaning > 1 is false. If mutated to >= 1, it would try
         // capture.get(1) on a None, which would panic or produce wrong tokens.
-        let text = r#"volume kube-api-access-abc123 failed"#;
+        let text = r"volume kube-api-access-abc123 failed";
         let (result, tokens) = KubernetesDetector::detect_and_replace(text);
         // Should succeed without panic — the kube-api-access pattern has no capture group 1
         assert!(

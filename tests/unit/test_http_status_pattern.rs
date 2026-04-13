@@ -19,8 +19,7 @@ mod tests {
             // Should detect and replace status codes with class token
             assert!(
                 result.contains("<HTTP_STATUS_2XX>"),
-                "Failed to detect 2xx status in: {}",
-                test_case
+                "Failed to detect 2xx status in: {test_case}"
             );
             assert_eq!(
                 tokens.len(),
@@ -49,8 +48,7 @@ mod tests {
 
             assert!(
                 result.contains("<HTTP_STATUS_3XX>"),
-                "Failed to detect 3xx status in: {}",
-                test_case
+                "Failed to detect 3xx status in: {test_case}"
             );
             assert_eq!(tokens.len(), 1);
 
@@ -75,8 +73,7 @@ mod tests {
 
             assert!(
                 result.contains("<HTTP_STATUS_4XX>"),
-                "Failed to detect 4xx status in: {}",
-                test_case
+                "Failed to detect 4xx status in: {test_case}"
             );
             assert_eq!(tokens.len(), 1);
 
@@ -101,8 +98,7 @@ mod tests {
 
             assert!(
                 result.contains("<HTTP_STATUS_5XX>"),
-                "Failed to detect 5xx status in: {}",
-                test_case
+                "Failed to detect 5xx status in: {test_case}"
             );
             assert_eq!(tokens.len(), 1);
 
@@ -163,14 +159,12 @@ mod tests {
             // Should not detect HTTP status classes in non-HTTP contexts
             assert_eq!(
                 result, test_case,
-                "Should not modify non-HTTP status: {}",
-                test_case
+                "Should not modify non-HTTP status: {test_case}"
             );
             assert_eq!(
                 tokens.len(),
                 0,
-                "Should not detect tokens in non-HTTP context: {}",
-                test_case
+                "Should not detect tokens in non-HTTP context: {test_case}"
             );
         }
     }
