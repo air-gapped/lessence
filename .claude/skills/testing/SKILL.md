@@ -16,8 +16,16 @@ description: >-
 ```bash
 cargo test --lib              # Unit tests only (fast, <2s)
 cargo nextest run --release   # Full suite in release mode (CI)
-make ci                       # Full CI pipeline (fmt + clippy + test + deny)
+make ci                       # Full CI pipeline (fmt + clippy + doc + build + test + deny)
 ```
+
+`make ci` runs automatically via `.githooks/pre-push` before every
+push — blocks the push on failure. A PostToolUse hook in
+`.claude/settings.json` also auto-runs `cargo fmt --all` after any
+`.rs` Edit/Write from Claude Code, so fmt drift never accumulates
+between commits during a Claude session. These two layers mean
+CI rarely fails on lint or fmt unless someone explicitly bypasses
+the hooks with `--no-verify`.
 
 ## Test Speed Rules
 
@@ -56,7 +64,16 @@ let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
     .expect("failed to run lessence");
 ```
 
-Tests in subdirectories need `[[test]]` entries in `Cargo.toml`.
+Tests use a **barrel pattern**. `tests/` has 5 barrel files
+(`unit.rs`, `integration.rs`, `contract.rs`, `security.rs`,
+`misc.rs`), each of which imports submodules from its same-named
+subdirectory via `mod foo;` declarations. Adding a new test means
+dropping a `.rs` file into the right subdirectory and adding a
+`mod your_test_name;` line to the barrel — not adding a new
+`[[test]]` entry to `Cargo.toml`. A separate `[[test]]` entry
+creates a separate test binary (one link step per file), which
+is exactly the compile-time cost the barrel pattern exists to
+avoid. See the comment on the `[[test]]` blocks in `Cargo.toml`.
 
 ### Folding Tests
 
@@ -104,8 +121,8 @@ These run outside CI. See `make help` for all targets.
 make fuzz                     # Fuzz normalizer (nightly, 5 min default)
 make fuzz FUZZ_WORKERS=8      # Parallel fuzzing on 8 cores
 make fuzz-fold                # Fuzz full folding pipeline
-make mutants                  # Mutation testing, full suite (~hours)
-make mutants-quick            # Mutation testing, unit tests only (~40 min)
+make mutants                  # Mutation testing, unit tests via -C --lib (~40 min)
+make mutants-full             # Mutation testing, full suite including integration (~hours)
 make coverage                 # HTML code coverage report
 ```
 
@@ -117,12 +134,41 @@ and `fuzz_fold` (full pipeline). Corpus persists between runs.
 
 ### Mutation Testing (cargo-mutants)
 
-Runs with `systemd-run --scope -p MemoryMax=16G` to prevent OOM.
-Default 2 parallel jobs, 30s timeout per mutant.
+Runs wrapped in `systemd-run --scope -p MemoryMax=$(MUTANTS_MEM_MAX)`
+to cap memory (default 48G). The relevant knobs, all overridable on
+the `make` command line:
 
-Interpret results: "missed" means a mutant survived — either no test covers
-that code path, or the test doesn't assert tightly enough. With `--lib`
-(quick mode), integration-only code shows as missed — that's expected.
+- `MUTANTS_JOBS` (default `8`) — parallel mutant jobs
+- `MUTANTS_TIMEOUT_MULT` (default `3`) — timeout multiplier (NOT
+  an absolute seconds value; cargo-mutants times a baseline test
+  run and uses `baseline × multiplier` as the per-mutant timeout)
+- `MUTANTS_MEM_MAX` (default `48G`) — systemd memory cap
+
+Example: `make mutants MUTANTS_JOBS=4 MUTANTS_MEM_MAX=24G` for a
+memory-constrained machine.
+
+Interpret results: "missed" means a mutant survived — either no test
+covers that code path, or the test doesn't assert tightly enough.
+With `-C --lib` (what `make mutants` uses), integration-only code
+shows as missed — that's expected, use `make mutants-full` to
+include it.
+
+**Structurally equivalent mutants** — mutations that can't change
+observable behavior because of an earlier guard or redundant check
+— live in `.cargo/mutants.toml` under `exclude_re`. Currently:
+
+- `network.rs:207` — FQDN regex's `\b` anchors already guarantee
+  the `contains('.')` / `starts_with` / `ends_with` checks
+- `normalize.rs:59` — PathDetector (step 3) replaces `&Event{}`
+  before JsonDetector (step 4) can see it, so the `normalize_json`
+  guard is structurally unreachable for that input shape
+- `normalize.rs:173` — `QuotedStringDetector` has its own
+  `if !text.contains('"')` fast path, making the normalizer's
+  `|| contains('\'')` branch dead for token emission
+
+If cargo-mutants reports a "missed" mutant on one of those lines,
+don't try to kill it — add to the exclusion list if a new equivalent
+is found.
 
 ### Code Coverage (cargo-llvm-cov)
 
@@ -137,15 +183,22 @@ don't block the report.
 
 ```
 tests/
-  unit/              # Pattern detector unit tests
-  integration/       # CLI and end-to-end tests
-  contract/          # API contract tests
-  security/          # ReDoS scaling tests
-  property/          # Property-based tests (proptest)
-  snapshot/          # Output snapshot tests (insta)
-  benchmarks/        # Detection performance scaling tests
-  fixtures/          # Test data + log_generator.rs
-.config/nextest.toml # Serial group for timing-sensitive tests
+  unit.rs              # Barrel — pulls in unit/ submodules
+  unit/                # Pattern detector unit tests
+  integration.rs       # Barrel — pulls in integration/ submodules
+  integration/         # CLI and end-to-end tests
+  contract.rs          # Barrel — pulls in contract/ submodules
+  contract/            # API contract tests
+  security.rs          # Barrel — pulls in security/ submodules
+  security/            # ReDoS scaling + evil-pattern tests
+  misc.rs              # Barrel — pulls in misc/ submodules
+  misc/                # Perf/property/snapshot/PII/limits/email tests
+  common/mod.rs        # Shared test helpers (imported by barrels)
+  fixtures/            # Test data + log_generator.rs
+  property/            # Proptest regressions (auto-generated; do not commit)
+  snapshot/snapshots/  # Insta snapshot files (committed, reviewed via `insta review`)
+.config/nextest.toml   # Serial group + retries for timing tests
+.cargo/mutants.toml    # Mutants config + exclude_re for equivalents
 ```
 
 ## Nextest Configuration
@@ -154,7 +207,15 @@ tests/
 timing-sensitive tests with `max-threads = 1`. Filter pattern:
 
 ```
-test(redos) | test(scales_linearly) | test(performance) | ...
+test(redos) | test(scales_linearly) | test(performance) | test(timeout)
+| test(allocation_consistency) | test(backward_compatibility)
+| test(unix_timestamp_penalty)
 ```
 
 This eliminates flakes from CPU contention in parallel test runs.
+
+Tests in that group also retry up to 2 times with exponential backoff
+(500ms → 5s max). Rationale: noise-induced flakes on a busy machine
+pass on retry; genuine regressions (e.g. quadratic scaling) fail all
+three attempts. If a test is intermittently failing but always passing
+on retry, that's noise — leave it. If it fails all three runs, investigate.
