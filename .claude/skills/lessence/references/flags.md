@@ -33,7 +33,7 @@ for a specific count, or drill into specific patterns with default mode.
 
 `timestamp`, `hash`, `network`, `uuid`, `email`, `path`, `duration`,
 `json`, `kubernetes`, `http-status`, `brackets`, `key-value`, `process`,
-`quoted-string`, `name`, `decimal`
+`quoted-string`, `name`
 
 Example: `--disable-patterns timestamp,uuid` to keep timestamps and UUIDs literal.
 

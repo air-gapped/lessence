@@ -40,7 +40,6 @@ const VALID_PATTERNS: &[&str] = &[
     "process",
     "quoted-string",
     "name",
-    "decimal",
 ];
 
 fn validate_min_collapse(s: &str) -> Result<usize, String> {

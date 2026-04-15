@@ -63,7 +63,7 @@ src/
 --preserve-color           Keep ANSI codes
 ```
 
-Valid pattern names (16): `timestamp`, `hash`, `network`, `uuid`, `email`, `path`, `duration`, `json`, `kubernetes`, `http-status`, `brackets`, `key-value`, `process`, `quoted-string`, `name`, `decimal`
+Valid pattern names (15): `timestamp`, `hash`, `network`, `uuid`, `email`, `path`, `duration`, `json`, `kubernetes`, `http-status`, `brackets`, `key-value`, `process`, `quoted-string`, `name`
 
 ## Design Principles
 
