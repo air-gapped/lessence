@@ -41,7 +41,7 @@ terminal_size = "0.4.4"
 # Keep default-features enabled: the `alloc` feature (on by default) is
 # what gates `IndexedRandom::choose_multiple`, and we deliberately skip
 # pulling in rand_core for thread-local RNGs we don't use.
-rand = { version = "0.9", default-features = false, features = ["alloc"] }
+rand = { version = "0.10", default-features = false, features = ["alloc"] }
 rand_chacha = "0.9"
 
 [dev-dependencies]
