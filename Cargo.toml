@@ -42,7 +42,7 @@ terminal_size = "0.4.4"
 # what gates `IndexedRandom::choose_multiple`, and we deliberately skip
 # pulling in rand_core for thread-local RNGs we don't use.
 rand = { version = "0.9", default-features = false, features = ["alloc"] }
-rand_chacha = "0.9"
+rand_chacha = "0.10"
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
