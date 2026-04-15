@@ -56,9 +56,11 @@ The timestamp system uses a unified registry (`patterns/timestamp/registry.rs`):
 - **LazyLock** for thread-safe static initialization
 
 Key files:
+- `patterns/timestamp/mod.rs` — public API re-exports + `TimestampDetector` legacy shim that `normalize.rs` calls into
 - `patterns/timestamp/registry.rs` — pattern definitions and merging
-- `patterns/timestamp/detector.rs` — detection engine
+- `patterns/timestamp/detector.rs` — `UnifiedTimestampDetector` (the actual engine behind the shim)
 - `patterns/timestamp/formats.rs` — format enum and metadata
+- `patterns/timestamp/priority.rs` — `PatternPriority` + `FormatFamily` (implements the overlap-resolution logic)
 
 ## Adding a New Pattern
 
@@ -74,4 +76,15 @@ Key files:
 
 ## Essence Mode
 
-`essence/processor.rs` removes timestamps from normalized output, replacing them with `<TIMESTAMP>`. Uses the same unified timestamp registry as the main detector.
+`--essence` is a flag on `Config` (`config.rs:24` `essence_mode: bool`), not a
+separate module. The standalone `essence/` module was deleted as dead code.
+
+Timestamps are already tokenized to `<TIMESTAMP>` by the normal `TimestampDetector`
+in every mode — that's not essence-specific. What `--essence` actually does is
+**suppress timestamp variations during variation-type aggregation**
+(`normalize.rs:355-358`): when comparing the first and last line in a group,
+timestamp token differences are ignored, so groups that differ only by timestamp
+don't get flagged as "varying: timestamp" in the rollup.
+
+Net effect: structural comparison between log periods works, because the same
+template with a different time now counts as the same pattern.
