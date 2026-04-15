@@ -13,11 +13,16 @@ lessence --format markdown app.log        # markdown output
 ## Build & Test
 
 ```bash
+make ci                                   # fmt + clippy + test + deny — run before every push
 cargo build --release
-cargo test --lib                          # unit tests
+cargo test --lib                          # quick unit tests during dev
 cargo test --tests                        # integration tests
 ./target/release/lessence --version       # verify binary
 ```
+
+A pre-push hook (`.githooks/pre-push`) runs `make ci` automatically and
+blocks the push on failure. Bypass with `git push --no-verify` only with
+good reason.
 
 ## Architecture
 

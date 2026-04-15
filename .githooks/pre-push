@@ -1,0 +1,20 @@
+#!/bin/sh
+# Pre-push hook: run `make ci` to mirror the server-side gate
+# (fmt + clippy + doc + build + test + deny). Blocks the push on failure.
+#
+# Bypass with `git push --no-verify` if you truly need to — e.g. pushing
+# a branch you know will be squashed, or recovering from a tooling outage.
+# Do not bypass to "fix CI in a follow-up commit"; fix it here.
+
+set -e
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    BLUE='\033[0;34m'
+    NC='\033[0m'
+else
+    BLUE=''
+    NC=''
+fi
+
+printf "%spre-push:%s running make ci...\n" "$BLUE" "$NC"
+make ci
