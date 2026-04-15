@@ -7,6 +7,21 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    # Keep rand + rand_chacha locked together. Bumping one without the
+    # other pulls in two copies of rand_core and fails to compile (see
+    # closed PRs #33 and #38). Major bump to 0.10 is deferred — see the
+    # comment above the `rand` dep in Cargo.toml for the full rationale.
+    groups:
+      rand-ecosystem:
+        patterns:
+          - "rand"
+          - "rand_chacha"
+          - "rand_core"
+    ignore:
+      - dependency-name: "rand"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "rand_chacha"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /

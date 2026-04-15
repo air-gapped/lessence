@@ -41,6 +41,27 @@ terminal_size = "0.4.4"
 # Keep default-features enabled: the `alloc` feature (on by default) is
 # what gates `IndexedRandom::choose_multiple`, and we deliberately skip
 # pulling in rand_core for thread-local RNGs we don't use.
+#
+# Pinned to 0.9, not 0.10, on purpose. Revisit only when one of the
+# "when to migrate" conditions below is true:
+#   - A security advisory lands against 0.9.x (RUSTSEC-2026-0097 is
+#     already fixed in 0.9.3 and does not affect our seeded use anyway).
+#   - The 0.9 line stops receiving patch releases.
+#   - We need something 0.10 adds (unlikely — our surface is two calls).
+# Why not now:
+#   - rand 0.10 only promises stream stability for StdRng, not for
+#     ChaCha8Rng (now a re-export from the `chacha20` crate under a
+#     `chacha` feature). The sampler was also renamed `choose_multiple`
+#     → `sample` in the same release. Either of those could shift the
+#     exact draw without any compile error, silently re-baselining every
+#     insta snapshot touching rollup metadata and invalidating agent
+#     caches keyed on output. The determinism contract above is the
+#     whole reason we use this crate, so drift here is a regression
+#     even when it "still works".
+#   - rand and rand_chacha must be bumped together (separate PRs hit
+#     two-copies-of-rand_core and fail to compile — see closed PRs #33
+#     and #38). Dependabot is grouped + 0.10-major-ignored accordingly
+#     in .github/dependabot.yml.
 rand = { version = "0.9", default-features = false, features = ["alloc"] }
 rand_chacha = "0.9"
 
