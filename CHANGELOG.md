@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.4.1](https://github.com/air-gapped/lessence/compare/v0.4.0...v0.4.1) (2026-04-15)
+
+
+### Bug Fixes
+
+* eliminate flaky scaling tests with median-of-3 and nextest retries ([0a99de3](https://github.com/air-gapped/lessence/commit/0a99de3b009d8ca9cd538063264a653704bd92d7))
+* **folder:** guard apply_pii_masking against empty emails and non-advancing loops ([117e031](https://github.com/air-gapped/lessence/commit/117e0316fd443919a4a5f5a843d844c6a0c54dd3))
+* honor --disable-patterns for json, kubernetes, and 5 other silent no-ops ([fe1ccf2](https://github.com/air-gapped/lessence/commit/fe1ccf2df8a1512ff99969f95a20acae5f11c936))
+* remove --disable-patterns decimal (never implemented; use duration) ([8ef9666](https://github.com/air-gapped/lessence/commit/8ef9666003289b0d7a4de892d0ed5b757eefd9b9))
+
+
+### Performance
+
+* optimize mutation testing from ~2.3s to ~0.7s per mutant ([79cf133](https://github.com/air-gapped/lessence/commit/79cf1333431ff23d92c2d44637f4532e947123db))
+* optimize test suite from 17.6s to 2.5s in debug mode (7x faster) ([264b724](https://github.com/air-gapped/lessence/commit/264b724dd1d85b5564cbf024f99082b72b8f9acd))
+
 ## [0.4.0](https://github.com/air-gapped/lessence/compare/v0.3.1...v0.4.0) (2026-04-12)
 
 
