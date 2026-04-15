@@ -1067,12 +1067,16 @@ mod tests {
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_quoted = false, input);
         assert!(
-            on.tokens.iter().any(|t| matches!(t, Token::QuotedString(_))),
+            on.tokens
+                .iter()
+                .any(|t| matches!(t, Token::QuotedString(_))),
             "expected QuotedString token with detector ON, got {:?}",
             on.tokens
         );
         assert!(
-            !off.tokens.iter().any(|t| matches!(t, Token::QuotedString(_))),
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::QuotedString(_))),
             "expected NO QuotedString token with detector OFF, got {:?}",
             off.tokens
         );
@@ -1127,18 +1131,16 @@ mod tests {
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_http_status = false, input);
         assert!(
-            on.tokens.iter().any(|t| matches!(
-                t,
-                Token::HttpStatus(_) | Token::HttpStatusClass(_)
-            )),
+            on.tokens
+                .iter()
+                .any(|t| matches!(t, Token::HttpStatus(_) | Token::HttpStatusClass(_))),
             "expected HTTP status token with detector ON, got {:?}",
             on.tokens
         );
         assert!(
-            !off.tokens.iter().any(|t| matches!(
-                t,
-                Token::HttpStatus(_) | Token::HttpStatusClass(_)
-            )),
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::HttpStatus(_) | Token::HttpStatusClass(_))),
             "expected NO HTTP status token with detector OFF, got {:?}",
             off.tokens
         );
