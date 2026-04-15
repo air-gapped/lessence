@@ -110,7 +110,7 @@ impl Normalizer {
         // NEW PATTERNS FROM 001-READ-THE-CURRENT (Now correctly placed AFTER Kubernetes)
 
         // HttpStatusClass - Groups HTTP status codes (200-299 → 2xx, etc.)
-        {
+        if self.config.normalize_http_status {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::http_status::HttpStatusDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -118,7 +118,7 @@ impl Normalizer {
         }
 
         // BracketContext - Detects [error] [mod_jk] style patterns
-        if normalized.contains('[') {
+        if self.config.normalize_brackets && normalized.contains('[') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::bracket_context::BracketContextDetector::detect_and_replace(
                     &normalized,
@@ -128,7 +128,7 @@ impl Normalizer {
         }
 
         // KeyValuePair - Detects config=value, metrics patterns
-        if normalized.contains('=') {
+        if self.config.normalize_key_value && normalized.contains('=') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::key_value::KeyValueDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -164,13 +164,15 @@ impl Normalizer {
 
         // 11. NAMES (generic hyphenated component names with variable suffixes)
         // Runs after specific patterns to catch remaining variable names
-        let (new_normalized, mut new_tokens) = NameDetector::detect_and_replace(&normalized);
-        normalized = new_normalized;
-        tokens.append(&mut new_tokens);
+        if self.config.normalize_names {
+            let (new_normalized, mut new_tokens) = NameDetector::detect_and_replace(&normalized);
+            normalized = new_normalized;
+            tokens.append(&mut new_tokens);
+        }
 
         // 12. QUOTED STRINGS (generic quoted variables - high priority for mount operations)
         // Must run after paths to catch normalized quoted paths properly
-        if normalized.contains('"') || normalized.contains('\'') {
+        if self.config.normalize_quoted && (normalized.contains('"') || normalized.contains('\'')) {
             let (new_normalized, mut new_tokens) =
                 QuotedStringDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
@@ -1004,6 +1006,141 @@ mod tests {
         assert!(
             direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
             "JsonDetector should detect Event objects: {direct_tokens:?}"
+        );
+    }
+
+    // ---- Mutant-killing: --disable-patterns guards at the Normalizer boundary ----
+    // Each test uses an input that provably triggers its detector (default on),
+    // then asserts the corresponding token type disappears when the guard is off.
+
+    fn run(config_mut: impl FnOnce(&mut Config), input: &str) -> LogLine {
+        let mut config = Config::default();
+        config_mut(&mut config);
+        Normalizer::new(config)
+            .normalize_line(input.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn normalize_kubernetes_disabled_suppresses_k8s_tokens() {
+        let input = "volume \"kube-api-access-abc123\" (projected) failed to mount for pod kube-system/test-pod";
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_kubernetes = false, input);
+        assert!(
+            on.tokens.iter().any(|t| matches!(
+                t,
+                Token::KubernetesNamespace(_) | Token::PodName(_) | Token::VolumeName(_)
+            )),
+            "expected k8s token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens.iter().any(|t| matches!(
+                t,
+                Token::KubernetesNamespace(_) | Token::PodName(_) | Token::VolumeName(_)
+            )),
+            "expected NO k8s token with detector OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
+    fn normalize_names_disabled_suppresses_name_tokens() {
+        let input = "service api-deploy-abc123-x1y2 started";
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_names = false, input);
+        assert!(
+            on.tokens.iter().any(|t| matches!(t, Token::Name(_))),
+            "expected Name token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens.iter().any(|t| matches!(t, Token::Name(_))),
+            "expected NO Name token with detector OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
+    fn normalize_quoted_disabled_suppresses_quoted_tokens() {
+        let input = "message \"some variable value here\" done";
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_quoted = false, input);
+        assert!(
+            on.tokens.iter().any(|t| matches!(t, Token::QuotedString(_))),
+            "expected QuotedString token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens.iter().any(|t| matches!(t, Token::QuotedString(_))),
+            "expected NO QuotedString token with detector OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
+    fn normalize_brackets_disabled_suppresses_bracket_context_tokens() {
+        let input = "[error] [mod_jk] request failed";
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_brackets = false, input);
+        assert!(
+            on.tokens
+                .iter()
+                .any(|t| matches!(t, Token::BracketContext(_))),
+            "expected BracketContext token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::BracketContext(_))),
+            "expected NO BracketContext token with detector OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
+    fn normalize_key_value_disabled_suppresses_kv_tokens() {
+        let input = "level=error status=500 user_id=42";
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_key_value = false, input);
+        assert!(
+            on.tokens
+                .iter()
+                .any(|t| matches!(t, Token::KeyValuePair { .. })),
+            "expected KeyValuePair token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::KeyValuePair { .. })),
+            "expected NO KeyValuePair token with detector OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
+    fn normalize_http_status_disabled_suppresses_http_tokens() {
+        let input =
+            r#"127.0.0.1 - - [25/Dec/2023:10:15:30 +0000] "POST /api/login HTTP/1.1" 401 256"#;
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_http_status = false, input);
+        assert!(
+            on.tokens.iter().any(|t| matches!(
+                t,
+                Token::HttpStatus(_) | Token::HttpStatusClass(_)
+            )),
+            "expected HTTP status token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens.iter().any(|t| matches!(
+                t,
+                Token::HttpStatus(_) | Token::HttpStatusClass(_)
+            )),
+            "expected NO HTTP status token with detector OFF, got {:?}",
+            off.tokens
         );
     }
 

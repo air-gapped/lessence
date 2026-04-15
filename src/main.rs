@@ -108,7 +108,9 @@ struct Cli {
     #[arg(long, default_value_t = 3, value_parser = validate_min_collapse)]
     min_collapse: usize,
 
-    /// Disable specific pattern groups: timestamp,hash,network,uuid,email,path,duration (comma-separated)
+    /// Disable specific pattern groups (comma-separated). Valid names: timestamp, hash,
+    /// network, uuid, process, email, path, duration, json, kubernetes, http-status,
+    /// brackets, key-value, quoted-string, name.
     #[arg(long, value_delimiter = ',', value_parser = validate_pattern_names)]
     disable_patterns: Vec<String>,
 
@@ -223,9 +225,14 @@ fn main() -> Result<()> {
         normalize_pids: !cli.disable_patterns.contains(&"process".to_string()),
         normalize_emails: !cli.disable_patterns.contains(&"email".to_string()),
         normalize_paths: !cli.disable_patterns.contains(&"path".to_string()),
-        normalize_json: true, // Always enabled for modern log formats
+        normalize_json: !cli.disable_patterns.contains(&"json".to_string()),
         normalize_durations: !cli.disable_patterns.contains(&"duration".to_string()),
-        normalize_kubernetes: true, // Always enabled for cloud-native logs
+        normalize_kubernetes: !cli.disable_patterns.contains(&"kubernetes".to_string()),
+        normalize_http_status: !cli.disable_patterns.contains(&"http-status".to_string()),
+        normalize_brackets: !cli.disable_patterns.contains(&"brackets".to_string()),
+        normalize_key_value: !cli.disable_patterns.contains(&"key-value".to_string()),
+        normalize_quoted: !cli.disable_patterns.contains(&"quoted-string".to_string()),
+        normalize_names: !cli.disable_patterns.contains(&"name".to_string()),
         output_format: cli.format,
         stats: !cli.no_stats, // Default true unless explicitly disabled
         preserve_color: cli.preserve_color,

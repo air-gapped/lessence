@@ -68,7 +68,6 @@ fn test_pattern_error_lists_all_valid_patterns() {
         "process",
         "quoted-string",
         "name",
-        "decimal",
     ];
 
     for pattern in expected_patterns {

@@ -14,6 +14,11 @@ pub struct Config {
     pub normalize_json: bool,
     pub normalize_durations: bool,
     pub normalize_kubernetes: bool,
+    pub normalize_http_status: bool,
+    pub normalize_brackets: bool,
+    pub normalize_key_value: bool,
+    pub normalize_quoted: bool,
+    pub normalize_names: bool,
     pub output_format: String,
     pub stats: bool,
     pub preserve_color: bool,
@@ -50,6 +55,11 @@ impl Default for Config {
             normalize_json: true,
             normalize_durations: true,
             normalize_kubernetes: true,
+            normalize_http_status: true,
+            normalize_brackets: true,
+            normalize_key_value: true,
+            normalize_quoted: true,
+            normalize_names: true,
             output_format: "text".to_string(),
             stats: true,
             preserve_color: false,
@@ -213,6 +223,11 @@ mod tests {
         assert!(c.normalize_json);
         assert!(c.normalize_durations);
         assert!(c.normalize_kubernetes);
+        assert!(c.normalize_http_status);
+        assert!(c.normalize_brackets);
+        assert!(c.normalize_key_value);
+        assert!(c.normalize_quoted);
+        assert!(c.normalize_names);
         assert_eq!(c.output_format, "text");
         assert!(c.stats);
         assert!(!c.preserve_color);
