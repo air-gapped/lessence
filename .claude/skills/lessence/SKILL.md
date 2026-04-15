@@ -1,11 +1,16 @@
 ---
 name: lessence
 description: >-
-  Find the essence of massive logs. lessence ("log essence") folds repetitive lines
-  and reveals error patterns. Use when: checking logs, anything not normal, wall of
-  logs, too much output, can't find the error, what's the pattern, kubectl logs,
-  docker logs, CI failures, crash loops, test failures, compress logs, journalctl,
-  feed logs to LLM, reduce context, triage.
+  lessence ("log essence") compresses repetitive log lines into patterns while
+  preserving every unique line. Finds the essence of massive logs — the signal
+  without the noise.
+when_to_use: >-
+  Triggers on "checking logs", "wall of logs", "too much output", "can't find
+  the error", "what's the pattern", "compress logs", "feed logs to LLM",
+  "reduce context", or when looking at kubectl logs, docker logs, journalctl
+  output, CI failures, crash loops, test failures, or anything not normal in
+  log output. Use for triage of any large log.
+license: MIT
 ---
 
 # lessence — Extract the Essence of Your Logs
@@ -44,9 +49,6 @@ lessence --human < app.log            # fits terminal height, implies --summary
 lessence --summary < app.log          # one-line-per-pattern (caps at 30, use --top N to adjust)
 lessence --preflight < app.log        # JSON stats for automation/CI
 
-# Structured JSON output — best for AI agents
-lessence --format json < app.log      # JSONL: one JSON object per folded group + summary
-
 # Feed compressed logs to an LLM
 kubectl logs pod/api | lessence | claude -p "what's wrong?"
 kubectl logs pod/api | lessence --format json | claude -p "analyze this structured log report"
@@ -56,7 +58,7 @@ lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
 lessence -q < app.log                 # suppress stats footer
 lessence --format markdown < app.log  # markdown for incident reports
-lessence --format json < app.log      # JSONL with rollup metadata for agents
+lessence --format json < app.log      # JSONL with rollup metadata (best for agents)
 lessence --stats-json < app.log       # machine-readable stats on stderr
 ```
 
@@ -117,14 +119,13 @@ is a `"summary"` with aggregate statistics. Key fields per group:
 
 Full schema: `docs/format-json-schema.md`.
 
-## Structured JSON Output (for agents)
+## Agent Triage Pipeline
 
-**When you are an AI agent processing logs, prefer `--format json` over
-text mode.** The JSON output carries per-group rollup metadata that lets
-you answer triage questions from a single invocation without re-reading
-the raw log.
+For agent-driven triage, pair `--format json` with `jq`. The JSON
+output carries per-group rollup metadata (distinct counts, sample
+values, time ranges) so follow-up questions resolve from the saved
+summary without a second `lessence` invocation.
 
-### Agent triage pipeline
 ```bash
 # Step 1: get the structured summary
 lessence --format json < app.log > /tmp/summary.jsonl
@@ -146,16 +147,9 @@ jq -r 'select(.type == "group") | .variation | to_entries[] | select(.value.capp
 jq 'select(.type == "summary") | {input_lines, output_lines, compression_ratio}' /tmp/summary.jsonl
 ```
 
-### Why JSON over text for agents
-- **No re-running.** Text mode shows `uuid×14` but not WHICH UUIDs. JSON
-  mode gives the actual sample values, so you can answer follow-up
-  questions from context without a second `lessence` invocation.
-- **Queryable with jq.** Filter, sort, and extract exactly the fields
-  the user's question requires.
-- **Deterministic.** Same input = byte-identical output (except
-  `elapsed_ms`). Safe to cache and diff.
-- **Streaming.** JSONL format — parse line by line, stop when you have
-  enough context. No need to wait for full output.
+Output is deterministic (same input → byte-identical output except
+`elapsed_ms`), safe to cache, and streamable — JSONL parses line by
+line.
 
 ## Triage Workflows
 
