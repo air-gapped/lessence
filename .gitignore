@@ -2,6 +2,7 @@ target/
 mutants.out*/
 fuzz/artifacts/
 fuzz/corpus/
+fuzz/Cargo.lock
 examples/
 .blocklist
 .ideas/
