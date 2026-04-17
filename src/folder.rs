@@ -51,7 +51,7 @@ pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
     }
 
     // Sort ranges in reverse order (replace from end to preserve indices)
-    email_ranges.sort_by(|a, b| b.0.cmp(&a.0));
+    email_ranges.sort_by_key(|r| std::cmp::Reverse(r.0));
 
     // Replace each email with <EMAIL> token
     for (start, end) in email_ranges {
@@ -957,7 +957,7 @@ impl PatternFolder {
 
         // Sort by count descending
         let mut sorted: Vec<(usize, String)> = merged.into_values().collect();
-        sorted.sort_by(|a, b| b.0.cmp(&a.0));
+        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.0));
 
         let total_patterns = sorted.len();
         const DEFAULT_SUMMARY_CAP: usize = 30;
@@ -1125,7 +1125,7 @@ impl PatternFolder {
             self.buffer.drain(..).map(|g| (g.count(), g)).collect();
 
         // Sort by count descending
-        groups_with_counts.sort_by(|a, b| b.0.cmp(&a.0));
+        groups_with_counts.sort_by_key(|g| std::cmp::Reverse(g.0));
 
         let total_groups = groups_with_counts.len();
         let total_input_lines = self.stats.total_lines;
