@@ -44,33 +44,17 @@ lessence app.log                      # compress a file
 kubectl logs deploy/api | lessence    # pipe anything through it
 cargo test 2>&1 | lessence            # capture stderr too
 
-# Start here — one screen, no scrolling
-lessence --human < app.log            # fits terminal height, implies --summary
-lessence --summary < app.log          # one-line-per-pattern (caps at 30, use --top N to adjust)
-lessence --preflight < app.log        # JSON stats for automation/CI
-
-# Feed compressed logs to an LLM
-kubectl logs pod/api | lessence | claude -p "what's wrong?"
-kubectl logs pod/api | lessence --format json | claude -p "analyze this structured log report"
+# Agent-friendly output (prefer these when piping into Claude)
+lessence --format json < app.log      # JSONL with rollup metadata — best for follow-up jq queries
+lessence --preflight < app.log        # JSON compression analysis (no folded output)
+lessence --stats-json < app.log       # machine-readable stats on stderr
+lessence --summary < app.log          # compact one-line-per-pattern overview (caps at 30, use --top N to adjust)
 
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
 lessence -q < app.log                 # suppress stats footer
-lessence --format markdown < app.log  # markdown for incident reports
-lessence --format json < app.log      # JSONL with rollup metadata (best for agents)
-lessence --stats-json < app.log       # machine-readable stats on stderr
 ```
-
-**For large logs, start with `--human`** (alias `--fit`) — adapts output to
-terminal height so results stay visible after the command returns. For a
-specific count, use `--summary --top N`. Then drill into specific patterns
-with default mode.
-
-**For agent/programmatic use, prefer `--format json`** over text mode. The
-JSON output carries per-group rollup metadata (distinct counts, sample
-values, time ranges) that lets agents answer follow-up questions without
-re-running the tool. See "Structured JSON Output" below.
 
 ## Reading the Output
 
@@ -117,14 +101,10 @@ is a `"summary"` with aggregate statistics. Key fields per group:
 - **`capped: true`** — distinct_count is a lower bound (at least 64 and possibly more).
 - **`normalized`** — the template with `<TOKEN>` placeholders; this is what lessence groups by.
 
-Full schema: `docs/format-json-schema.md`.
-
 ## Agent Triage Pipeline
 
-For agent-driven triage, pair `--format json` with `jq`. The JSON
-output carries per-group rollup metadata (distinct counts, sample
-values, time ranges) so follow-up questions resolve from the saved
-summary without a second `lessence` invocation.
+Save `--format json` output once, then answer follow-up questions with
+`jq` from the saved summary — no second `lessence` invocation needed.
 
 ```bash
 # Step 1: get the structured summary
@@ -162,25 +142,22 @@ volume of logs. Start here unless exploring unknown patterns.
 
 ### Full pipeline (for investigation)
 ```bash
-# 1. One screen overview
-lessence --human < app.log
-
-# 2. Worth compressing further?
+# 1. Is the log even worth compressing?
 lessence --preflight < app.log
 
-# 3. Find errors specifically
-lessence -q < app.log | grep -i error
+# 2. Compact overview (patterns + counts only)
+lessence --summary -q < app.log
 
-# 4. Full compressed view when needed
-lessence < app.log
+# 3. Full compressed view
+lessence -q < app.log
 
-# 5. Structured triage (agent-friendly)
+# 4. Structured triage for follow-up jq queries
 lessence --format json < app.log | jq 'select(.type == "group" and .count > 100)'
 ```
 
 ### Crash-looping pod
 ```bash
-kubectl logs deploy/api --previous | lessence --human
+kubectl logs deploy/api --previous | lessence --summary -q
 # Then drill in:
 kubectl logs deploy/api --previous | lessence -q | grep -i error
 ```
@@ -256,12 +233,3 @@ repeating problem in crash loops, capacity planning.
   (`--sanitize-pii`, `--max-line-length`, `--max-lines`), pattern control
   (`--threshold`, `--min-collapse`, `--disable-patterns`), and CI integration
   (`--fail-on-pattern`). Consult when needing a flag beyond the core set above.
-
-## Installation
-
-```bash
-cargo binstall lessence   # prebuilt binary
-cargo install lessence    # from source
-```
-
-Available for Linux (x86_64, aarch64), macOS (x86_64, aarch64), and Windows.

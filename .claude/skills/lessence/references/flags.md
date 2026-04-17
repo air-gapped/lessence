@@ -4,7 +4,7 @@
 
 | Flag | Description |
 |------|-------------|
-| `--fit` / `--human` | One screen overview that stays visible after the command returns. Adapts to your terminal height — no scrolling. Implies `--summary`. |
+| `--fit` / `--human` | One screen overview that stays visible after the command returns. Adapts to terminal height — no scrolling. Implies `--summary`. |
 | `--summary` | One-line-per-pattern frequency overview. Shows original representative lines, not normalized tokens. Combine with `--top N` for compact output. |
 | `--preflight` | JSON analysis report to stdout for automation/CI. Shows compression ratio, pattern counts, recommendations. |
 
