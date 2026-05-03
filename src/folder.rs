@@ -955,9 +955,13 @@ impl PatternFolder {
                 .or_insert((count, representative));
         }
 
-        // Sort by count descending
+        // Sort by count descending; ties broken by the representative line
+        // ascending so the order is deterministic across runs. Without this
+        // secondary key, ahash's per-process HashMap iteration order
+        // determines which tied entry wins the `--top N` cutoff, making the
+        // visible summary differ between processes on the same input.
         let mut sorted: Vec<(usize, String)> = merged.into_values().collect();
-        sorted.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        sorted.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
         let total_patterns = sorted.len();
         const DEFAULT_SUMMARY_CAP: usize = 30;
@@ -1124,8 +1128,14 @@ impl PatternFolder {
         let mut groups_with_counts: Vec<(usize, PatternGroup)> =
             self.buffer.drain(..).map(|g| (g.count(), g)).collect();
 
-        // Sort by count descending
-        groups_with_counts.sort_by_key(|g| std::cmp::Reverse(g.0));
+        // Sort by count descending; ties broken by the group's normalized
+        // representative ascending so the cutoff at `take(n)` is
+        // deterministic across runs (otherwise ahash's per-process HashMap
+        // iteration order shuffles tied entries past the cap).
+        groups_with_counts.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.first().normalized.cmp(&b.1.first().normalized))
+        });
 
         let total_groups = groups_with_counts.len();
         let total_input_lines = self.stats.total_lines;
