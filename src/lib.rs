@@ -7,6 +7,7 @@ pub mod folder;
 pub mod normalize;
 pub mod output;
 pub mod patterns;
+pub mod report;
 
 pub use analyzer::LogAnalyzer;
 pub use config::Config;
