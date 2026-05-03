@@ -172,6 +172,9 @@ strip = true
 
 [profile.bench]
 debug = true
+# Bench inherits from release, which sets strip = true. We want debug
+# symbols preserved so profilers (perf, samply) can resolve frames.
+strip = false
 
 # Faster test execution in debug mode. opt-level=1 recovers 3-5x runtime
 # vs opt-level=0 for CPU-bound regex/normalization code, with only ~15%
