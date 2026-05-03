@@ -70,6 +70,15 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      # mimalloc has C source that needs a musl-targeted C compiler when
+      # building for x86_64-unknown-linux-musl. ubuntu-latest doesn't ship
+      # musl-tools by default; install it before the upload action runs
+      # `cargo build`. No untrusted input is interpolated — `matrix.target`
+      # is a static config value, and the run: command is a literal.
+      - name: Install musl cross-compile toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
       - name: Build and upload
         uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:

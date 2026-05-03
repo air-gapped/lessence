@@ -5,6 +5,18 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::path::PathBuf;
 use std::time::Instant;
 
+// Override the global allocator with mimalloc on musl-target builds. musl's
+// default malloc is dramatically slower than glibc's ptmalloc under the
+// kind of multi-threaded allocation pressure log normalization produces —
+// observed 4-19× slowdown on this codebase, matching the 2-20× range the
+// rust-cli ecosystem reports (ripgrep, fd, et al. ship the same fix).
+// On glibc we keep the system allocator; ptmalloc is already fast enough
+// and avoiding mimalloc's slightly higher resident-memory cost there is
+// preferable for dev builds.
+#[cfg(target_env = "musl")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod analyzer;
 mod cli;
 mod config;

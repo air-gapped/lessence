@@ -65,6 +65,17 @@ terminal_size = "0.4.4"
 rand = { version = "0.9", default-features = false, features = ["alloc"] }
 rand_chacha = "0.9"
 
+# mimalloc replaces musl's malloc on musl-target release builds. musl's
+# default malloc is 4-19× slower than glibc's ptmalloc on this codebase
+# under multi-threaded allocation pressure (see comment in src/main.rs).
+# `default-features = false` disables the bundled "secure" hardening
+# layer, which costs ~10% perf for guard-page protection that lessence
+# doesn't need (the input is parsed, not executed). The crate links
+# statically and adds no shared-library dependency, preserving the
+# fully-standalone single-file musl distribution we ship.
+[target.'cfg(target_env = "musl")'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3.0"
