@@ -1,0 +1,63 @@
+#!/bin/sh
+# Commit-msg hook: warn-and-block when the conventional-commit type would
+# trigger a release-please version bump and a public changelog entry.
+#
+# Per CLAUDE.md ("Commits" section): only feat:, fix:, perf: are
+# user-facing and bump the version. All other types (chore:, refactor:,
+# test:, style:, ci:, build:, docs:) are hidden from release notes.
+#
+# This hook catches the common slip of typing `fix:` for internal
+# determinism / hygiene work that no CLI user reported. It runs at
+# commit-msg time so it fires for both `git commit -m ...` and the
+# editor flow.
+#
+# Bypass when the type is genuinely correct:
+#   RELEASE_COMMIT=1 git commit ...
+# Or skip all hooks (also bypasses pre-commit secret scanning, etc.):
+#   git commit --no-verify
+
+set -e
+
+msg_file="$1"
+first_line=$(sed -n '1p' "$msg_file")
+
+# Skip empty messages and merge/fixup/squash flows (those start with #)
+case "$first_line" in
+    ""|\#*) exit 0 ;;
+esac
+
+# Match: feat:, feat(scope):, feat!:, feat(scope)!: (and fix/perf same)
+case "$first_line" in
+    feat:*|feat\(*\):*|feat!:*|feat\(*\)!:*|\
+    fix:*|fix\(*\):*|fix!:*|fix\(*\)!:*|\
+    perf:*|perf\(*\):*|perf!:*|perf\(*\)!:*)
+        if [ -n "${RELEASE_COMMIT:-}" ]; then
+            exit 0
+        fi
+
+        if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
+            YELLOW='\033[0;33m'
+            BOLD='\033[1m'
+            NC='\033[0m'
+        else
+            YELLOW=''
+            BOLD=''
+            NC=''
+        fi
+
+        type=$(printf '%s' "$first_line" | sed -E 's/^([a-z]+).*/\1/')
+
+        printf "\n%s⚠  Release-triggering commit type: '%s%s:%s'%s\n" "$YELLOW" "$BOLD" "$type" "$NC" "$NC" >&2
+        printf "   This will bump the version and add a changelog line on the next push.\n\n" >&2
+        printf "   First line: %s\n\n" "$first_line" >&2
+        printf "   If genuinely user-facing (a user-reported bug, new feature, or perf\n" >&2
+        printf "   win users would notice), retry with:\n" >&2
+        printf "       RELEASE_COMMIT=1 git commit ...   # bypass this hook only\n" >&2
+        printf "       git commit --no-verify ...        # bypass all hooks\n\n" >&2
+        printf "   Otherwise reword to chore:/refactor:/test:/style:/ci:/build:/docs:\n" >&2
+        printf "   per CLAUDE.md \"Commits\" section.\n\n" >&2
+        exit 1
+        ;;
+esac
+
+exit 0
