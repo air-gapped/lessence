@@ -1,4 +1,51 @@
 use super::Token;
+use regex::Regex;
+use std::sync::LazyLock;
+
+// All regexes are compiled once and reused. The previous shape — calling
+// `Regex::new(pattern)` inside each per-line normalize function — recompiled
+// the entire NFA/DFA on every invocation, which dominated CPU time on
+// kubernetes-heavy logs (≈30–40% of cycles in compiler/Utf8Compiler paths
+// per profiling).
+
+static NS_REGEXES: LazyLock<[Regex; 4]> = LazyLock::new(|| {
+    [
+        Regex::new(r"Namespace:([a-z0-9][a-z0-9-]*[a-z0-9])").unwrap(),
+        Regex::new(r"namespace:([a-z0-9][a-z0-9-]*[a-z0-9])").unwrap(),
+        Regex::new(r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/").unwrap(),
+        Regex::new(r"_([a-z0-9][a-z0-9-]*[a-z0-9])\(").unwrap(),
+    ]
+});
+
+static VOLUME_REGEXES: LazyLock<[Regex; 5]> = LazyLock::new(|| {
+    [
+        Regex::new(r#"volume "kube-api-access-[a-z0-9]+""#).unwrap(),
+        Regex::new(r"volume kube-api-access-[a-z0-9]+").unwrap(),
+        Regex::new(r#"volume "([a-z0-9][a-z0-9-]*[a-z0-9]-secret)""#).unwrap(),
+        Regex::new(r#"volume "([a-z0-9][a-z0-9-]*[a-z0-9]-token)""#).unwrap(),
+        Regex::new(r"volume (oidc-token)").unwrap(),
+    ]
+});
+
+static PLUGIN_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"plugin type="([^"]+)""#).unwrap());
+
+static POD_REGEXES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+    [
+        Regex::new(r"Name:([a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]+)").unwrap(),
+        Regex::new(r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/([a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]+)")
+            .unwrap(),
+    ]
+});
+
+static NAME_FIELD_REGEXES: LazyLock<[Regex; 4]> = LazyLock::new(|| {
+    [
+        Regex::new(r#"([a-zA-Z]*[Nn]ame): "([^"]+)""#).unwrap(),
+        Regex::new(r#"([a-zA-Z]*[Nn]ame)="([^"]+)""#).unwrap(),
+        Regex::new(r"([a-zA-Z]*[Nn]ame):([a-zA-Z0-9-]+)\b").unwrap(),
+        Regex::new(r"([a-zA-Z]*[Nn]ame)=([a-zA-Z0-9-]+)\b").unwrap(),
+    ]
+});
 
 pub struct KubernetesDetector;
 
@@ -38,43 +85,33 @@ impl KubernetesDetector {
 
     /// Normalize Kubernetes namespaces
     fn normalize_namespaces(text: String) -> (String, Vec<Token>) {
-        let patterns = [
-            // Namespace patterns in various contexts
-            r"Namespace:([a-z0-9][a-z0-9-]*[a-z0-9])",
-            r"namespace:([a-z0-9][a-z0-9-]*[a-z0-9])",
-            r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/",
-            r"_([a-z0-9][a-z0-9-]*[a-z0-9])\(",
-        ];
-
         let mut result = text;
         let mut tokens = Vec::new();
 
-        for pattern in &patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                let captures: Vec<_> = re.captures_iter(&result).collect();
-                for capture in captures {
-                    if let Some(namespace) = capture.get(1) {
-                        let namespace_str = namespace.as_str();
-                        // Only normalize common Kubernetes namespaces
-                        if Self::is_common_k8s_namespace(namespace_str) {
-                            tokens.push(Token::KubernetesNamespace(namespace_str.to_string()));
-                        }
+        for re in NS_REGEXES.iter() {
+            let captures: Vec<_> = re.captures_iter(&result).collect();
+            for capture in captures {
+                if let Some(namespace) = capture.get(1) {
+                    let namespace_str = namespace.as_str();
+                    // Only normalize common Kubernetes namespaces
+                    if Self::is_common_k8s_namespace(namespace_str) {
+                        tokens.push(Token::KubernetesNamespace(namespace_str.to_string()));
                     }
                 }
-                result = re
-                    .replace_all(&result, |caps: &regex::Captures| {
-                        let namespace = caps.get(1).unwrap().as_str();
-                        if Self::is_common_k8s_namespace(namespace) {
-                            caps.get(0)
-                                .unwrap()
-                                .as_str()
-                                .replace(namespace, "<NAMESPACE>")
-                        } else {
-                            caps.get(0).unwrap().as_str().to_string()
-                        }
-                    })
-                    .to_string();
             }
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let namespace = caps.get(1).unwrap().as_str();
+                    if Self::is_common_k8s_namespace(namespace) {
+                        caps.get(0)
+                            .unwrap()
+                            .as_str()
+                            .replace(namespace, "<NAMESPACE>")
+                    } else {
+                        caps.get(0).unwrap().as_str().to_string()
+                    }
+                })
+                .to_string();
         }
 
         (result, tokens)
@@ -83,45 +120,33 @@ impl KubernetesDetector {
     /// Normalize volume names
     #[mutants::skip] // capture.len() > 1 is always true: the regexes always have a capture group
     fn normalize_volume_names(text: String) -> (String, Vec<Token>) {
-        let patterns = [
-            // kube-api-access volumes with suffixes
-            r#"volume "kube-api-access-[a-z0-9]+""#,
-            r"volume kube-api-access-[a-z0-9]+",
-            // Other common volume patterns
-            r#"volume "([a-z0-9][a-z0-9-]*[a-z0-9]-secret)""#,
-            r#"volume "([a-z0-9][a-z0-9-]*[a-z0-9]-token)""#,
-            r"volume (oidc-token)",
-        ];
-
         let mut result = text;
         let mut tokens = Vec::new();
 
-        for pattern in &patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                let captures: Vec<_> = re.captures_iter(&result).collect();
-                for capture in captures {
-                    if capture.len() > 1
-                        && let Some(volume) = capture.get(1)
-                    {
-                        tokens.push(Token::VolumeName(volume.as_str().to_string()));
-                    }
+        for re in VOLUME_REGEXES.iter() {
+            let captures: Vec<_> = re.captures_iter(&result).collect();
+            for capture in captures {
+                if capture.len() > 1
+                    && let Some(volume) = capture.get(1)
+                {
+                    tokens.push(Token::VolumeName(volume.as_str().to_string()));
                 }
-                result = re
-                    .replace_all(&result, |caps: &regex::Captures| {
-                        if caps.get(0).unwrap().as_str().contains("kube-api-access") {
-                            caps.get(0)
-                                .unwrap()
-                                .as_str()
-                                .replace("kube-api-access-", "kube-api-access-<SUFFIX>")
-                        } else {
-                            caps.get(0)
-                                .unwrap()
-                                .as_str()
-                                .replace(caps.get(1).unwrap().as_str(), "<VOLUME_NAME>")
-                        }
-                    })
-                    .to_string();
             }
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    if caps.get(0).unwrap().as_str().contains("kube-api-access") {
+                        caps.get(0)
+                            .unwrap()
+                            .as_str()
+                            .replace("kube-api-access-", "kube-api-access-<SUFFIX>")
+                    } else {
+                        caps.get(0)
+                            .unwrap()
+                            .as_str()
+                            .replace(caps.get(1).unwrap().as_str(), "<VOLUME_NAME>")
+                    }
+                })
+                .to_string();
         }
 
         (result, tokens)
@@ -129,52 +154,41 @@ impl KubernetesDetector {
 
     /// Normalize plugin types
     fn normalize_plugin_types(text: String) -> (String, Vec<Token>) {
-        let pattern = r#"plugin type="([^"]+)""#;
         let mut result = text;
         let mut tokens = Vec::new();
 
-        if let Ok(re) = regex::Regex::new(pattern) {
-            let captures: Vec<_> = re.captures_iter(&result).collect();
-            for capture in captures {
-                if let Some(plugin) = capture.get(1) {
-                    tokens.push(Token::PluginType(plugin.as_str().to_string()));
-                }
+        let captures: Vec<_> = PLUGIN_REGEX.captures_iter(&result).collect();
+        for capture in captures {
+            if let Some(plugin) = capture.get(1) {
+                tokens.push(Token::PluginType(plugin.as_str().to_string()));
             }
-            result = re
-                .replace_all(&result, r#"plugin type="<PLUGIN>""#)
-                .to_string();
         }
+        result = PLUGIN_REGEX
+            .replace_all(&result, r#"plugin type="<PLUGIN>""#)
+            .to_string();
 
         (result, tokens)
     }
 
     /// Normalize pod names
     fn normalize_pod_names(text: String) -> (String, Vec<Token>) {
-        let patterns = [
-            // Common Kubernetes pod naming patterns
-            r"Name:([a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]+)",
-            r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/([a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]+)",
-        ];
-
         let mut result = text;
         let mut tokens = Vec::new();
 
-        for pattern in &patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                let captures: Vec<_> = re.captures_iter(&result).collect();
-                for capture in captures {
-                    if let Some(pod_name) = capture.get(capture.len() - 1) {
-                        tokens.push(Token::PodName(pod_name.as_str().to_string()));
-                    }
+        for re in POD_REGEXES.iter() {
+            let captures: Vec<_> = re.captures_iter(&result).collect();
+            for capture in captures {
+                if let Some(pod_name) = capture.get(capture.len() - 1) {
+                    tokens.push(Token::PodName(pod_name.as_str().to_string()));
                 }
-                result = re
-                    .replace_all(&result, |caps: &regex::Captures| {
-                        let full_match = caps.get(0).unwrap().as_str();
-                        let pod_name = caps.get(caps.len() - 1).unwrap().as_str();
-                        full_match.replace(pod_name, "<POD_NAME>")
-                    })
-                    .to_string();
             }
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let full_match = caps.get(0).unwrap().as_str();
+                    let pod_name = caps.get(caps.len() - 1).unwrap().as_str();
+                    full_match.replace(pod_name, "<POD_NAME>")
+                })
+                .to_string();
         }
 
         (result, tokens)
@@ -182,50 +196,38 @@ impl KubernetesDetector {
 
     /// Normalize any field ending with Name: or name=
     fn normalize_name_fields(text: String) -> (String, Vec<Token>) {
-        let patterns = [
-            // Field names ending with Name: or name: (with quoted values)
-            r#"([a-zA-Z]*[Nn]ame): "([^"]+)""#,
-            r#"([a-zA-Z]*[Nn]ame)="([^"]+)""#,
-            // Field names ending with Name: or name: (with unquoted simple values)
-            // Use word boundaries instead of requiring trailing space to avoid backtracking
-            r"([a-zA-Z]*[Nn]ame):([a-zA-Z0-9-]+)\b",
-            r"([a-zA-Z]*[Nn]ame)=([a-zA-Z0-9-]+)\b",
-        ];
-
         let mut result = text;
         let mut tokens = Vec::new();
 
-        for pattern in &patterns {
-            if let Ok(re) = regex::Regex::new(pattern) {
-                let captures: Vec<_> = re.captures_iter(&result).collect();
-                for capture in captures {
-                    if let Some(value) = capture.get(2) {
-                        tokens.push(Token::KubernetesNamespace(value.as_str().to_string()));
-                        // Reuse namespace token for simplicity
-                    }
+        for re in NAME_FIELD_REGEXES.iter() {
+            let captures: Vec<_> = re.captures_iter(&result).collect();
+            for capture in captures {
+                if let Some(value) = capture.get(2) {
+                    tokens.push(Token::KubernetesNamespace(value.as_str().to_string()));
+                    // Reuse namespace token for simplicity
                 }
-                result = re
-                    .replace_all(&result, |caps: &regex::Captures| {
-                        let field_name = caps.get(1).unwrap().as_str();
-                        let full_match = caps.get(0).unwrap().as_str();
-                        if full_match.contains('=') {
-                            // Handle name= pattern
-                            if full_match.contains('"') {
-                                format!("{field_name}=\"<K8S_NAME>\"")
-                            } else {
-                                format!("{field_name}=<K8S_NAME>")
-                            }
-                        } else {
-                            // Handle Name: pattern
-                            if full_match.contains('"') {
-                                format!("{field_name}: \"<K8S_NAME>\"")
-                            } else {
-                                format!("{field_name}: <K8S_NAME>")
-                            }
-                        }
-                    })
-                    .to_string();
             }
+            result = re
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let field_name = caps.get(1).unwrap().as_str();
+                    let full_match = caps.get(0).unwrap().as_str();
+                    if full_match.contains('=') {
+                        // Handle name= pattern
+                        if full_match.contains('"') {
+                            format!("{field_name}=\"<K8S_NAME>\"")
+                        } else {
+                            format!("{field_name}=<K8S_NAME>")
+                        }
+                    } else {
+                        // Handle Name: pattern
+                        if full_match.contains('"') {
+                            format!("{field_name}: \"<K8S_NAME>\"")
+                        } else {
+                            format!("{field_name}: <K8S_NAME>")
+                        }
+                    }
+                })
+                .to_string();
         }
 
         (result, tokens)
