@@ -6,7 +6,13 @@ permissions:
 
 on:
   release:
-    types: [published]
+    # `created` fires on draft creation (release-please v5 creates drafts) so
+    # binaries get pre-built and attached to the draft for review before the
+    # release goes live to users.
+    # `released` fires when a draft is promoted to published (or a release is
+    # created already-published) — that's when crates.io publish should run.
+    # Per-job `if:` gates below split which event triggers which job.
+    types: [created, released]
 
 env:
   CARGO_TERM_COLOR: always
@@ -14,6 +20,10 @@ env:
 
 jobs:
   publish-crate:
+    # Only run when the release is actually published, not on draft creation.
+    # crates.io publishes are immutable; we never want to fire this for a
+    # draft that might be deleted.
+    if: github.event.action == 'released'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,6 +46,10 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
   build-binaries:
+    # Run on draft creation so the artifacts are attached before the release
+    # is published. Skip on `released` to avoid rebuilding the same artifacts
+    # when a draft is promoted.
+    if: github.event.action == 'created'
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
