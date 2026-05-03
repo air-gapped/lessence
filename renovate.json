@@ -15,6 +15,11 @@
       "description": "Never automerge GitHub Actions — require human review",
       "matchManagers": ["github-actions"],
       "automerge": false
+    },
+    {
+      "description": "Pin rand + rand_chacha to 0.9.x — see Cargo.toml comment. rand 0.10 only promises stream stability for StdRng, not ChaCha8Rng (now a re-export from `chacha20` under a `chacha` feature), and renamed `choose_multiple` → `sample`. Either change would silently shift the seeded draws we rely on for deterministic snapshot tests and agent-cacheable output. Renovate doesn't read .github/dependabot.yml, so this needs a separate rule here.",
+      "matchPackageNames": ["rand", "rand_chacha"],
+      "allowedVersions": "<0.10"
     }
   ]
 }
