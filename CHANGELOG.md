@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.4.2](https://github.com/air-gapped/lessence/compare/v0.4.1...v0.4.2) (2026-05-03)
+
+
+### Performance
+
+* cache kubernetes detector regexes in LazyLock ([9779568](https://github.com/air-gapped/lessence/commit/97795680b5332fbeed56324de7b1086f21a6ca5e))
+* use mimalloc as global allocator on musl ([88e4f04](https://github.com/air-gapped/lessence/commit/88e4f04e097d8f87218b1d80577290937e1d90d2))
+
 ## [0.4.1](https://github.com/air-gapped/lessence/compare/v0.4.0...v0.4.1) (2026-04-15)
 
 

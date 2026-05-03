@@ -1,6 +1,6 @@
 [package]
 name = "lessence"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 rust-version = "1.90"
 description = "Extract the essence of your logs — compress repetitive lines while preserving all unique information"
