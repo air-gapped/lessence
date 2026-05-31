@@ -6,13 +6,20 @@ permissions:
 
 on:
   release:
-    # `created` fires on draft creation (release-please v5 creates drafts) so
-    # binaries get pre-built and attached to the draft for review before the
-    # release goes live to users.
-    # `released` fires when a draft is promoted to published (or a release is
-    # created already-published) — that's when crates.io publish should run.
-    # Per-job `if:` gates below split which event triggers which job.
-    types: [created, released]
+    # `released` fires when a release is published (a draft promoted to live, or
+    # created already-published). Both jobs key off it: publish-crate runs
+    # `cargo publish`, build-binaries compiles + attaches the per-target binaries.
+    # NOTE: we do NOT use `created` — release-please's bot-created drafts do not
+    # emit a `created` workflow event, so binaries must be built at publish time.
+    types: [released]
+  # Manual recovery: rebuild + reattach binaries for an existing tag (e.g. a
+  # release that published without them).
+  #   gh workflow run release-build.yml -f tag=vX.Y.Z
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build + attach binaries for (e.g. v0.4.3)
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,7 +36,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
@@ -46,10 +53,9 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
 
   build-binaries:
-    # Run on draft creation so the artifacts are attached before the release
-    # is published. Skip on `released` to avoid rebuilding the same artifacts
-    # when a draft is promoted.
-    if: github.event.action == 'created'
+    # Build + attach the per-target binaries when the release is published, or
+    # on a manual workflow_dispatch recovery run for a given tag.
+    if: github.event.action == 'released' || github.event_name == 'workflow_dispatch'
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -71,7 +77,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
@@ -101,5 +107,5 @@ jobs:
           tar: unix
           zip: windows
           checksum: sha256
-          ref: refs/tags/${{ github.event.release.tag_name }}
+          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
           token: ${{ secrets.GITHUB_TOKEN }}
