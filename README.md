@@ -132,7 +132,7 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 --fail-on-pattern REGEX    Exit 1 if input matches (for CI gating)
 --completions SHELL        Generate shell completions (bash/zsh/fish)
 --threshold 75             Similarity % (0-100, lower = more grouping)
---min-collapse 3           Min similar lines before folding (min: 2)
+--min-collapse 3           Min similar lines before folding (min: 3)
 --disable-patterns X,Y     Turn off specific detectors
 --sanitize-pii             Replace emails with <EMAIL>
 --preserve-color           Keep ANSI escape codes

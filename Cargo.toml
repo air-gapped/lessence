@@ -180,6 +180,9 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+# Catch integer overflow/underflow in release builds (e.g. an out-of-range
+# min_collapse feeding `count - 3`) instead of silently wrapping.
+overflow-checks = true
 
 [profile.bench]
 debug = true

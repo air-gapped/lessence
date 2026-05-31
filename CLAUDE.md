@@ -63,7 +63,7 @@ src/
 --completions SHELL        Generate shell completions (bash/zsh/fish/elvish/powershell)
 --disable-patterns X,Y     Disable specific pattern detectors
 --threshold 75             Similarity percentage (0-100)
---min-collapse 3           Minimum lines before folding (min: 2)
+--min-collapse 3           Minimum lines before folding (min: 3)
 --sanitize-pii             Mask email addresses
 --preserve-color           Keep ANSI codes
 ```

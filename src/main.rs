@@ -30,11 +30,35 @@ use analyzer::LogAnalyzer;
 use config::Config;
 use folder::PatternFolder;
 
-/// Strip ANSI escape codes from text
+/// Strip terminal escape sequences and bare control characters from text.
+///
+/// Delegates to the single shared sanitizer in [`analyzer::strip_terminal_escapes`]
+/// so the binary and the analyzer module can never drift apart. This removes
+/// CSI, OSC (BEL- or ST-terminated, e.g. window-title and OSC 8 hyperlinks),
+/// DCS/APC/PM/SOS, lone ESC, and bare C0 controls (CR/BS/VT/FF) that would
+/// otherwise reach the operator's terminal verbatim.
 fn strip_ansi_codes(text: &str) -> String {
-    static ANSI_REGEX: std::sync::LazyLock<regex::Regex> =
-        std::sync::LazyLock::new(|| regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]").unwrap());
-    ANSI_REGEX.replace_all(text, "").to_string()
+    analyzer::strip_terminal_escapes(text)
+}
+
+/// Wrap untrusted log content in a CommonMark code fence so it cannot inject
+/// markdown structure (headings, links, images, raw HTML) when the report is
+/// rendered or ingested by an LLM/agent. The fence uses a backtick run one
+/// longer than the longest run present in `content` (min 3), so embedded
+/// triple-backticks can't close the fence early.
+fn markdown_code_fence(content: &str) -> String {
+    let mut longest_run = 0usize;
+    let mut current_run = 0usize;
+    for ch in content.chars() {
+        if ch == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    let fence = "`".repeat((longest_run + 1).max(3));
+    format!("{fence}\n{content}\n{fence}")
 }
 
 const VALID_PATTERNS: &[&str] = &[
@@ -60,9 +84,12 @@ fn validate_min_collapse(s: &str) -> Result<usize, String> {
         .parse::<usize>()
         .map_err(|_| format!("invalid number: '{s}'"))?;
 
-    if value < 2 {
+    // A collapsed group emits three lines (first / summary / last), so
+    // lines_saved = count - 3 only makes sense for groups of 3+. Values
+    // below 3 would EXPAND a 2-line group and underflow lines_saved.
+    if value < 3 {
         return Err(format!(
-            "'{value}' must be at least 2 (minimum meaningful folding group)"
+            "'{value}' must be at least 3 (minimum meaningful folding group)"
         ));
     }
     Ok(value)
@@ -117,7 +144,7 @@ struct Cli {
     #[arg(long, default_value_t = 75, value_parser = clap::value_parser!(u8).range(0..=100))]
     threshold: u8,
 
-    /// Minimum lines before folding
+    /// Minimum lines before folding (min: 3)
     #[arg(long, default_value_t = 3, value_parser = validate_min_collapse)]
     min_collapse: usize,
 
@@ -513,7 +540,7 @@ fn main() -> Result<()> {
         let original_lines = stats.total_lines;
         let compressed_lines = stats.output_lines; // Use tracked output lines (not collected_outputs.len())
         let compression_ratio = if original_lines > 0 {
-            100.0 * (original_lines - compressed_lines) as f64 / original_lines as f64
+            100.0 * original_lines.saturating_sub(compressed_lines) as f64 / original_lines as f64
         } else {
             0.0
         };
@@ -559,13 +586,14 @@ fn main() -> Result<()> {
                 write_line(&mut handle, "## Compressed Logs\n".to_string())?;
 
                 for (i, output) in collected_outputs.iter().enumerate() {
+                    // Untrusted log content always goes inside a fence whose
+                    // backtick run is longer than any run in the content, so it
+                    // cannot break out and inject markdown/HTML structure.
                     if output.contains('+') && output.contains("similar") {
                         write_line(&mut handle, format!("### Entry {} (Folded)\n", i + 1))?;
-                        write_line(&mut handle, "```".to_string())?;
-                        write_line(&mut handle, output.clone())?;
-                        write_line(&mut handle, "```\n".to_string())?;
+                        write_line(&mut handle, format!("{}\n", markdown_code_fence(output)))?;
                     } else {
-                        write_line(&mut handle, format!("{output}\n"))?;
+                        write_line(&mut handle, format!("{}\n", markdown_code_fence(output)))?;
                     }
                 }
             }
@@ -603,4 +631,36 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_min_collapse_rejects_below_floor() {
+        // 2 would make a 2-line group collapse and compute
+        // lines_saved = count - 3 = 2 - 3, which underflows. The
+        // validator must reject it at the CLI boundary.
+        let err = validate_min_collapse("2").expect_err("2 must be rejected");
+        assert!(
+            err.contains("at least 3"),
+            "error should state the floor of 3, got: {err}"
+        );
+        // The old floor and below must also be rejected.
+        assert!(validate_min_collapse("1").is_err());
+        assert!(validate_min_collapse("0").is_err());
+    }
+
+    #[test]
+    fn validate_min_collapse_accepts_default_and_above() {
+        assert_eq!(
+            validate_min_collapse("3").expect("3 is the default floor"),
+            3
+        );
+        assert_eq!(
+            validate_min_collapse("10").expect("above floor accepted"),
+            10
+        );
+    }
 }

@@ -764,7 +764,7 @@ impl PatternFolder {
             // All lines except the one emitted as the representative
             // are accounted for as "saved". Matches text-mode lines_saved
             // semantics as closely as the JSON schema permits.
-            self.stats.lines_saved += group.count() - 1;
+            self.stats.lines_saved += group.count().saturating_sub(1);
         }
 
         // Collect unique token type names from first and last lines.
@@ -1010,7 +1010,13 @@ impl PatternFolder {
             Some(width) if prefix.len() + representative.len() > width => {
                 let avail = width.saturating_sub(prefix.len() + 3); // 3 for "..."
                 if avail > 20 {
-                    format!("{prefix}{}...", &representative[..avail])
+                    // Snap the byte budget down to a UTF-8 char boundary so a
+                    // multibyte char straddling `avail` can't panic the slice.
+                    let mut end = avail;
+                    while !representative.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{prefix}{}...", &representative[..end])
                 } else {
                     format!("{prefix}{representative}")
                 }
@@ -1208,7 +1214,11 @@ impl PatternFolder {
     fn format_group(&mut self, group: &PatternGroup, rollup: &GroupRollup) -> Result<String> {
         if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
             self.stats.collapsed_groups += 1;
-            self.stats.lines_saved += group.count() - 3; // First, summary, and last lines are output
+            // First, summary, and last lines are output. saturating_sub
+            // guards against a directly-constructed Config (the CLI floor
+            // is 3, but `Config.min_collapse` is a public field) that lets
+            // a 2-line group reach here and underflow count - 3.
+            self.stats.lines_saved += group.count().saturating_sub(3);
 
             // Phase 4: when the rollup has any worthwhile content, render
             // the richer compact marker directly. Otherwise fall through
@@ -1292,7 +1302,7 @@ impl PatternFolder {
                 result.push_str(line_text);
                 // Track lines saved (all duplicate lines in the group)
                 if group.count() > 1 {
-                    self.stats.lines_saved += group.count() - 1;
+                    self.stats.lines_saved += group.count().saturating_sub(1);
                 }
             } else {
                 // Standard mode: output all lines individually (with optional PII masking)
@@ -3932,6 +3942,17 @@ mod tests {
         // Width so small that avail <= 20: don't truncate, just show full
         let line = PatternFolder::format_summary_line(5, "abcdefghij", Some(10));
         assert_eq!(line, "[5x] abcdefghij");
+    }
+
+    #[test]
+    fn summary_line_truncates_on_multibyte_char_boundary() {
+        // A 3-byte char (™ = U+2122, 3 bytes UTF-8) repeated, with the
+        // truncation byte budget (avail = 30 - 5 - 3 = 22) landing inside a
+        // char. Slicing at the raw byte index would panic; must snap down.
+        let rep = "\u{2122}".repeat(30); // 90 bytes, none on a 22-byte boundary
+        let line = PatternFolder::format_summary_line(5, &rep, Some(30));
+        assert!(line.ends_with("..."), "should truncate: {line}");
+        assert!(line.len() <= 30, "should fit in width: len={}", line.len());
     }
 
     // ---------------------------------------------------------------

@@ -19,7 +19,7 @@ fn test_min_collapse_rejects_zero() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("must be at least 2"),
+        stderr.contains("must be at least 3"),
         "Error message should explain minimum value. Got: {stderr}"
     );
 }
@@ -38,7 +38,7 @@ fn test_min_collapse_rejects_one() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("must be at least 2"),
+        stderr.contains("must be at least 3"),
         "Error message should explain minimum value. Got: {stderr}"
     );
 }
@@ -166,9 +166,31 @@ fn test_disable_patterns_accepts_valid_names() {
 }
 
 #[test]
-fn test_min_collapse_accepts_two() {
-    let mut child = lessence()
+fn test_min_collapse_rejects_two() {
+    // Floor raised to 3: a 2-line group would expand to 3 output lines
+    // (first/summary/last) and underflow lines_saved (count - 3), so 2 is no
+    // longer a meaningful folding minimum.
+    let output = lessence()
         .args(["--min-collapse", "2"])
+        .output()
+        .expect("Failed to run command");
+
+    assert!(
+        !output.status.success(),
+        "Should exit with error for --min-collapse 2 (floor is now 3)"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("must be at least 3"),
+        "Error message should explain minimum value. Got: {stderr}"
+    );
+}
+
+#[test]
+fn test_min_collapse_accepts_three() {
+    let mut child = lessence()
+        .args(["--min-collapse", "3"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -185,7 +207,7 @@ fn test_min_collapse_accepts_two() {
 
     assert!(
         output.status.success(),
-        "Should accept min-collapse 2 (boundary value). Stderr: {}",
+        "Should accept min-collapse 3 (boundary value). Stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
 }

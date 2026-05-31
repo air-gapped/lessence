@@ -112,20 +112,35 @@ impl UnifiedTimestampDetector {
         });
 
         let mut resolved = Vec::new();
-        let mut used_positions = Vec::new();
+        // Accepted, mutually-disjoint intervals keyed by start position.
+        // A BTreeMap lets each candidate's overlap test probe only its two
+        // neighbouring intervals in O(log k) instead of scanning every
+        // accepted interval, keeping resolution O(M log M) rather than O(M^2)
+        // on adversarial inputs (e.g. a 1 MB line of disjoint timestamps).
+        let mut used_positions: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
 
         for candidate in matches {
-            let candidate_range = candidate.start_pos..candidate.end_pos;
+            let (start, end) = (candidate.start_pos, candidate.end_pos);
 
-            // Check if this candidate overlaps with any already selected match
-            let overlaps = used_positions
-                .iter()
-                .any(|used_range: &std::ops::Range<usize>| {
-                    candidate_range.start < used_range.end && candidate_range.end > used_range.start
-                });
+            // Accepted intervals are disjoint, so at most two neighbours can
+            // touch this candidate: the one starting at or before `start`
+            // (overlaps iff its end > start) and the one starting at or after
+            // `start` (overlaps iff its start < end). This preserves the
+            // original `start < used.end && end > used.start` semantics while
+            // making the test O(log k) per candidate.
+            let predecessor_overlaps = used_positions
+                .range(..=start)
+                .next_back()
+                .is_some_and(|(_, &used_end)| used_end > start);
+            let successor_overlaps = used_positions
+                .range(start..)
+                .next()
+                .is_some_and(|(&used_start, _)| used_start < end);
+            let overlaps = predecessor_overlaps || successor_overlaps;
 
             if !overlaps {
-                used_positions.push(candidate_range);
+                used_positions.insert(start, end);
                 resolved.push(candidate);
             }
         }
@@ -515,5 +530,42 @@ mod tests {
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 1, "only highest priority should survive");
         assert_eq!(result[0].start_pos, 0);
+    }
+
+    #[test]
+    fn resolve_overlaps_many_disjoint_bounded() {
+        // Regression for F-006: a crafted line yields thousands of disjoint
+        // timestamp candidates. The old linear used_positions scan made this
+        // O(M^2) (CPU-DoS); the BTreeMap neighbour probe keeps it O(M log M).
+        // We assert correctness on a large disjoint input — every disjoint
+        // match must survive — which also exercises the sub-quadratic path
+        // for thousands of candidates.
+        const N: usize = 20_000;
+        // Disjoint intervals 0..1, 2..3, 4..5, ... (a one-unit gap between each)
+        // so none overlap; all must be retained.
+        let matches: Vec<_> = (0..N).map(|i| make_match(i * 2, i * 2 + 1, 90)).collect();
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), N, "every disjoint match must survive");
+        // Output is position-sorted and preserves each interval.
+        for (i, m) in result.iter().enumerate() {
+            assert_eq!(m.start_pos, i * 2);
+            assert_eq!(m.end_pos, i * 2 + 1);
+        }
+    }
+
+    #[test]
+    fn resolve_overlaps_many_overlapping_one_wins() {
+        // Adversarial counterpart: thousands of mutually-overlapping
+        // candidates. Highest priority (added first in priority order) wins
+        // and blocks all others; the neighbour probe still runs in O(log k).
+        const N: usize = 20_000;
+        // All share position 0..N+1; give the first the highest specificity.
+        let mut matches: Vec<_> = (0..N)
+            .map(|i| make_match(0, N + 1, 10 + i as u32))
+            .collect();
+        matches.reverse(); // highest specificity no longer first in input order
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(result.len(), 1, "all overlap; only top priority survives");
+        assert_eq!(result[0].priority.specificity_score, 10 + (N as u32 - 1));
     }
 }
