@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.4.3](https://github.com/air-gapped/lessence/compare/v0.4.2...v0.4.3) (2026-05-31)
+
+
+### Bug Fixes
+
+* prevent crashes and injection from crafted log lines ([da1800b](https://github.com/air-gapped/lessence/commit/da1800bf5abb09074fb15cb33a41e909226ab470))
+
 ## [0.4.2](https://github.com/air-gapped/lessence/compare/v0.4.1...v0.4.2) (2026-05-03)
 
 
