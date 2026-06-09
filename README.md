@@ -131,7 +131,7 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 --top N                    Show only N most frequent patterns by count
 --fail-on-pattern REGEX    Exit 1 if input matches (for CI gating)
 --completions SHELL        Generate shell completions (bash/zsh/fish)
---threshold 75             Similarity % (0-100, lower = more grouping)
+--threshold 75             % of tokens lines must share to group (raise to 85 for stricter splitting)
 --min-collapse 3           Min similar lines before folding (min: 3)
 --disable-patterns X,Y     Turn off specific detectors
 --sanitize-pii             Replace emails with <EMAIL>

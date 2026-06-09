@@ -140,7 +140,7 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Similarity percentage required to collapse (0-100)
+    /// Percent of tokens two lines must share to group (0-100). Raise (e.g. 85) for stricter, per-message splitting; lower for more folding
     #[arg(long, default_value_t = 75, value_parser = clap::value_parser!(u8).range(0..=100))]
     threshold: u8,
 

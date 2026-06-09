@@ -25,7 +25,7 @@ for a specific count, or drill into specific patterns with default mode.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--essence` | off | Strip timestamps before normalization. Lines differing only by time merge. Useful for comparing log structure across time periods. |
-| `--threshold N` | 75 | Similarity percentage (0-100) required to group lines — since 0.4.4, the share of whitespace tokens two normalized lines have in common (longest common subsequence, so an inserted token no longer breaks grouping). Lower = more aggressive grouping. |
+| `--threshold N` | 75 | Similarity percentage (0-100) required to group lines — since 0.4.4, the share of whitespace tokens two normalized lines have in common (longest common subsequence, so an inserted token no longer breaks grouping). Lower = more aggressive grouping; raise to ~85 when distinct-but-similar messages (e.g. different quoted log messages of the same shape) fold together and per-message granularity is wanted. |
 | `--min-collapse N` | 3 | Minimum lines in a group before folding. 3 is also the floor — the binary rejects lower values. |
 | `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. |
 
