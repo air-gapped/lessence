@@ -1291,6 +1291,37 @@ mod tests {
     }
 
     #[test]
+    fn normalize_key_value_disabled_suppresses_structured_logfmt_tokens() {
+        // Pins the logfmt half of the StructuredMessage gate. The detector
+        // demonstrably fires on this input when called directly...
+        let input = "level=info component=api-gateway msg=ready";
+        let (_, direct) =
+            crate::patterns::structured::StructuredMessageDetector::detect_and_replace(input);
+        assert!(
+            direct
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "detector itself must fire on {input:?}, got {direct:?}"
+        );
+        // ...so with key-value (and json) disabled, the pipeline must not
+        // invoke it: no StructuredMessage token may appear.
+        let off = run(
+            |c| {
+                c.normalize_key_value = false;
+                c.normalize_json = false;
+            },
+            input,
+        );
+        assert!(
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "expected NO StructuredMessage token with key-value OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
     fn normalize_kubernetes_disabled_suppresses_k8s_tokens() {
         let input = "volume \"kube-api-access-abc123\" (projected) failed to mount for pod kube-system/test-pod";
         let on = run(|_| {}, input);

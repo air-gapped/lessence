@@ -2575,11 +2575,25 @@ fn count_pattern_types_quoted_string() {
 }
 
 #[test]
+fn count_pattern_types_fqdn() {
+    let mut f = make_folder();
+    f.count_pattern_types(&[Token::Fqdn("example.com".into())]);
+    assert_eq!(f.stats.fqdns, 1);
+    assert_eq!(f.stats.ips, 0, "FQDNs must not count as IPs");
+    // Accumulates (kills += -> -= / *= mutants).
+    f.count_pattern_types(&[Token::Fqdn("example.org".into())]);
+    assert_eq!(f.stats.fqdns, 2);
+}
+
+#[test]
 fn count_pattern_types_name() {
     let mut f = make_folder();
     f.count_pattern_types(&[Token::Name("app".into())]);
     assert_eq!(f.stats.names, 1);
     assert_eq!(f.stats.percentages, 0);
+    // Second hit must accumulate (kills += -> -= / *= mutants).
+    f.count_pattern_types(&[Token::Name("app".into())]);
+    assert_eq!(f.stats.names, 2);
 }
 
 #[test]

@@ -568,4 +568,20 @@ mod tests {
         assert_eq!(result.len(), 1, "all overlap; only top priority survives");
         assert_eq!(result[0].priority.specificity_score, 10 + (N as u32 - 1));
     }
+
+    #[test]
+    fn resolve_overlaps_rejects_candidate_overlapping_successor() {
+        // High-priority match at [10,20); lower-priority candidate [5,15)
+        // starts BEFORE it. The successor check (used_start < end) must
+        // reject it — only the predecessor check was previously pinned.
+        let matches = vec![make_match(10, 20, 10), make_match(5, 15, 1)];
+        let result = UnifiedTimestampDetector::resolve_overlaps(matches);
+        assert_eq!(
+            result.len(),
+            1,
+            "overlapping low-priority candidate must be dropped"
+        );
+        assert_eq!(result[0].start_pos, 10);
+        assert_eq!(result[0].priority.specificity_score, 10);
+    }
 }

@@ -1114,4 +1114,15 @@ mod tests {
             "timeout=30"
         ));
     }
+
+    #[test]
+    fn general_pattern_line_exclusion_blocks_valid_pair() {
+        // A math-expression line fails line_allows_key_value even though
+        // "timeout=30" is a valid pair: nothing may be replaced (kills
+        // the && -> || mutant joining the two gates).
+        let line = "calc x + y timeout=30 done";
+        let (result, tokens) = KeyValueDetector::detect_and_replace(line);
+        assert_eq!(result, line);
+        assert!(tokens.is_empty(), "no tokens expected, got {tokens:?}");
+    }
 }
