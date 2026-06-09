@@ -1,6 +1,5 @@
 ---
 source: tests/misc/test_output_snapshots.rs
-assertion_line: 65
 expression: normalized
 ---
 {
@@ -11,16 +10,24 @@ expression: normalized
   "lines_saved": 0,
   "output_lines": 4,
   "pattern_hits": {
+    "brackets": 0,
     "durations": 0,
     "emails": 0,
     "hashes": 0,
     "http_status": 0,
     "ips": 0,
+    "json": 0,
+    "key_values": 0,
     "kubernetes": 0,
+    "log_modules": 0,
+    "names": 0,
     "paths": 0,
     "percentages": 0,
     "pids": 0,
+    "ports": 0,
+    "quoted_strings": 0,
     "sizes": 0,
+    "structured": 0,
     "timestamps": 0,
     "uuids": 0
   },

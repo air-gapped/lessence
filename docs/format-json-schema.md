@@ -142,6 +142,7 @@ Exactly one, at the end of the stream.
   "pattern_hits": {
     "timestamps": 73421,
     "ips": 12043,
+    "ports": 1204,
     "hashes": 8734,
     "uuids": 2891,
     "pids": 421,
@@ -150,6 +151,13 @@ Exactly one, at the end of the stream.
     "sizes": 15,
     "percentages": 3401,
     "paths": 23811,
+    "json": 88,
+    "quoted_strings": 412,
+    "names": 96,
+    "brackets": 1031,
+    "key_values": 2210,
+    "log_modules": 14,
+    "structured": 7,
     "kubernetes": 312,
     "emails": 0
   }
@@ -165,10 +173,10 @@ Exactly one, at the end of the stream.
 | `output_lines` | integer | Total lines in the formatted output (sum of lines per flushed group record — one line per group in JSON mode). |
 | `compression_ratio` | number | `(lines_saved / input_lines) * 100`. Zero if no compression. |
 | `collapsed_groups` | integer | Number of groups with `count >= min_collapse`. |
-| `lines_saved` | integer | Total lines that were folded away (input - output equivalent). |
+| `lines_saved` | integer | Total lines that were folded away, relative to what the active format emits: text mode emits first + marker + last per collapsed group (count − 3 saved), JSON mode emits one record per group (count − 1 saved). |
 | `patterns_detected` | integer | Total number of lines where at least one pattern token was detected. |
 | `elapsed_ms` | integer | Wall-clock milliseconds from start of processing. **This is the only intentionally non-deterministic field.** Diff tools should exclude it when comparing runs. |
-| `pattern_hits` | object | Per-category token-hit counts. Keys are lowercase category names matching the legacy `--stats-json` output for backwards compatibility. |
+| `pattern_hits` | object | Per-category token-hit counts, one key per token type (nothing is lumped — ports, json, quoted_strings, names, brackets, key_values, log_modules and structured each have their own counter since v0.5). Keys are lowercase category names shared with `--stats-json`. |
 
 ## Determinism
 

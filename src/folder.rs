@@ -129,9 +129,10 @@ pub struct FoldingStats {
     pub collapsed_groups: usize,
     pub lines_saved: usize,
     pub patterns_detected: usize,
-    // Pattern distribution counters
+    // Pattern distribution counters — one per token category, no lumping.
     pub timestamps: usize,
     pub ips: usize,
+    pub ports: usize,
     pub hashes: usize,
     pub uuids: usize,
     pub pids: usize,
@@ -140,8 +141,131 @@ pub struct FoldingStats {
     pub sizes: usize,
     pub percentages: usize,
     pub paths: usize,
+    pub json: usize,
+    pub quoted_strings: usize,
+    pub names: usize,
+    pub brackets: usize,
+    pub key_values: usize,
+    pub log_modules: usize,
+    pub structured: usize,
     pub kubernetes: usize,
-    pub emails: usize, // Track email pattern detections
+    pub emails: usize,
+}
+
+impl FoldingStats {
+    /// Every pattern category as (footer label, count, footer description).
+    /// Single source of truth for the Pattern Distribution table and the
+    /// active-category count, so a new counter cannot be forgotten in one
+    /// place but not the other.
+    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 20] {
+        [
+            (
+                "Timestamps",
+                self.timestamps,
+                "Log timestamps, dates, times",
+            ),
+            ("IP Addresses", self.ips, "IPv4, IPv6, network addresses"),
+            ("Ports", self.ports, "Network port numbers"),
+            (
+                "Hashes",
+                self.hashes,
+                "Pod UIDs, container IDs, volume names, checksums",
+            ),
+            (
+                "UUIDs",
+                self.uuids,
+                "Request IDs, trace IDs, unique identifiers",
+            ),
+            (
+                "Durations",
+                self.durations,
+                "Timeouts, latencies, elapsed times",
+            ),
+            (
+                "Process IDs",
+                self.pids,
+                "PIDs, thread IDs, process identifiers",
+            ),
+            (
+                "File Sizes",
+                self.sizes,
+                "Memory usage, file sizes, data volumes",
+            ),
+            (
+                "Numbers/Percentages",
+                self.percentages,
+                "CPU usage, percentages, metrics",
+            ),
+            (
+                "HTTP Status",
+                self.http_status,
+                "Response codes, error codes",
+            ),
+            ("File Paths", self.paths, "File paths, URLs, directories"),
+            ("JSON", self.json, "Inline JSON objects"),
+            (
+                "Quoted Strings",
+                self.quoted_strings,
+                "Quoted values and messages",
+            ),
+            ("Names", self.names, "Hyphenated component names"),
+            (
+                "Bracket Contexts",
+                self.brackets,
+                "[error] [module] logging contexts",
+            ),
+            (
+                "Key-Value Pairs",
+                self.key_values,
+                "key=value configuration and metrics",
+            ),
+            (
+                "Log Modules",
+                self.log_modules,
+                "[level] module logging patterns",
+            ),
+            (
+                "Structured Messages",
+                self.structured,
+                "JSON/logfmt structured log envelopes",
+            ),
+            (
+                "Kubernetes",
+                self.kubernetes,
+                "Namespaces, volumes, plugins, pod names",
+            ),
+            (
+                "Email Addresses",
+                self.emails,
+                "RFC 5322 email addresses, user accounts",
+            ),
+        ]
+    }
+
+    fn pattern_hits(&self) -> PatternHits {
+        PatternHits {
+            timestamps: self.timestamps,
+            ips: self.ips,
+            ports: self.ports,
+            hashes: self.hashes,
+            uuids: self.uuids,
+            pids: self.pids,
+            durations: self.durations,
+            http_status: self.http_status,
+            sizes: self.sizes,
+            percentages: self.percentages,
+            paths: self.paths,
+            json: self.json,
+            quoted_strings: self.quoted_strings,
+            names: self.names,
+            brackets: self.brackets,
+            key_values: self.key_values,
+            log_modules: self.log_modules,
+            structured: self.structured,
+            kubernetes: self.kubernetes,
+            emails: self.emails,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -160,6 +284,7 @@ struct StatsJson {
 struct PatternHits {
     timestamps: usize,
     ips: usize,
+    ports: usize,
     hashes: usize,
     uuids: usize,
     pids: usize,
@@ -168,6 +293,13 @@ struct PatternHits {
     sizes: usize,
     percentages: usize,
     paths: usize,
+    json: usize,
+    quoted_strings: usize,
+    names: usize,
+    brackets: usize,
+    key_values: usize,
+    log_modules: usize,
+    structured: usize,
     kubernetes: usize,
     emails: usize,
 }
@@ -822,20 +954,7 @@ impl PatternFolder {
                 lines_saved: self.stats.lines_saved,
                 patterns_detected: self.stats.patterns_detected,
                 elapsed_ms: elapsed.as_millis() as u64,
-                pattern_hits: PatternHits {
-                    timestamps: self.stats.timestamps,
-                    ips: self.stats.ips,
-                    hashes: self.stats.hashes,
-                    uuids: self.stats.uuids,
-                    pids: self.stats.pids,
-                    durations: self.stats.durations,
-                    http_status: self.stats.http_status,
-                    sizes: self.stats.sizes,
-                    percentages: self.stats.percentages,
-                    paths: self.stats.paths,
-                    kubernetes: self.stats.kubernetes,
-                    emails: self.stats.emails,
-                },
+                pattern_hits: self.stats.pattern_hits(),
             },
         };
         serde_json::to_writer(&mut *writer, &record)?;
@@ -1183,29 +1302,27 @@ impl PatternFolder {
             match token {
                 Token::Timestamp(_) => self.stats.timestamps += 1,
                 Token::IPv4(_) | Token::IPv6(_) => self.stats.ips += 1,
-                Token::Port(_) => self.stats.ips += 1, // Count ports with IPs
+                Token::Port(_) => self.stats.ports += 1,
                 Token::Hash(_, _) => self.stats.hashes += 1,
                 Token::Uuid(_) => self.stats.uuids += 1,
                 Token::Pid(_) | Token::ThreadID(_) => self.stats.pids += 1,
                 Token::Duration(_) => self.stats.durations += 1,
                 Token::Size(_) => self.stats.sizes += 1,
                 Token::Number(_) => self.stats.percentages += 1, // Numbers often include percentages
-                Token::HttpStatus(_) => self.stats.http_status += 1,
+                Token::HttpStatus(_) | Token::HttpStatusClass(_) => self.stats.http_status += 1,
                 Token::Path(_) => self.stats.paths += 1,
-                Token::Json(_) => self.stats.paths += 1, // Group with paths for stats
-                Token::QuotedString(_) => self.stats.percentages += 1, // Group with percentages for now
-                Token::Name(_) => self.stats.percentages += 1, // Group with generic patterns
+                Token::Json(_) => self.stats.json += 1,
+                Token::QuotedString(_) => self.stats.quoted_strings += 1,
+                Token::Name(_) => self.stats.names += 1,
                 Token::KubernetesNamespace(_)
                 | Token::VolumeName(_)
                 | Token::PluginType(_)
                 | Token::PodName(_) => self.stats.kubernetes += 1,
-                // New patterns from 001-read-the-current
-                Token::HttpStatusClass(_) => self.stats.http_status += 1,
-                Token::BracketContext(_) => self.stats.percentages += 1, // Group with generic patterns
-                Token::KeyValuePair { .. } => self.stats.percentages += 1, // Group with generic patterns
-                Token::LogWithModule { .. } => self.stats.percentages += 1, // Group with generic patterns
-                Token::StructuredMessage { .. } => self.stats.percentages += 1, // Group with generic patterns
-                Token::Email(_) => self.stats.emails += 1, // Track email patterns separately
+                Token::BracketContext(_) => self.stats.brackets += 1,
+                Token::KeyValuePair { .. } => self.stats.key_values += 1,
+                Token::LogWithModule { .. } => self.stats.log_modules += 1,
+                Token::StructuredMessage { .. } => self.stats.structured += 1,
+                Token::Email(_) => self.stats.emails += 1,
             }
         }
     }
@@ -1368,89 +1485,10 @@ impl PatternFolder {
         writeln!(writer, "| Pattern Type | Count | Description |")?;
         writeln!(writer, "|--------------|-------|-------------|")?;
 
-        if self.stats.timestamps > 0 {
-            writeln!(
-                writer,
-                "| Timestamps | {} | Log timestamps, dates, times |",
-                self.stats.timestamps
-            )?;
-        }
-        if self.stats.ips > 0 {
-            writeln!(
-                writer,
-                "| IP Addresses | {} | IPv4, IPv6, ports, network addresses |",
-                self.stats.ips
-            )?;
-        }
-        if self.stats.hashes > 0 {
-            writeln!(
-                writer,
-                "| Hashes | {} | Pod UIDs, container IDs, volume names, checksums |",
-                self.stats.hashes
-            )?;
-        }
-        if self.stats.uuids > 0 {
-            writeln!(
-                writer,
-                "| UUIDs | {} | Request IDs, trace IDs, unique identifiers |",
-                self.stats.uuids
-            )?;
-        }
-        if self.stats.durations > 0 {
-            writeln!(
-                writer,
-                "| Durations | {} | Timeouts, latencies, elapsed times |",
-                self.stats.durations
-            )?;
-        }
-        if self.stats.pids > 0 {
-            writeln!(
-                writer,
-                "| Process IDs | {} | PIDs, thread IDs, process identifiers |",
-                self.stats.pids
-            )?;
-        }
-        if self.stats.sizes > 0 {
-            writeln!(
-                writer,
-                "| File Sizes | {} | Memory usage, file sizes, data volumes |",
-                self.stats.sizes
-            )?;
-        }
-        if self.stats.percentages > 0 {
-            writeln!(
-                writer,
-                "| Numbers/Percentages | {} | CPU usage, percentages, metrics |",
-                self.stats.percentages
-            )?;
-        }
-        if self.stats.http_status > 0 {
-            writeln!(
-                writer,
-                "| HTTP Status | {} | Response codes, error codes |",
-                self.stats.http_status
-            )?;
-        }
-        if self.stats.paths > 0 {
-            writeln!(
-                writer,
-                "| File Paths | {} | File paths, URLs, directories |",
-                self.stats.paths
-            )?;
-        }
-        if self.stats.kubernetes > 0 {
-            writeln!(
-                writer,
-                "| Kubernetes | {} | Namespaces, volumes, plugins, pod names |",
-                self.stats.kubernetes
-            )?;
-        }
-        if self.stats.emails > 0 {
-            writeln!(
-                writer,
-                "| Email Addresses | {} | RFC 5322 email addresses, user accounts |",
-                self.stats.emails
-            )?;
+        for (label, count, description) in self.stats.pattern_counters() {
+            if count > 0 {
+                writeln!(writer, "| {label} | {count} | {description} |")?;
+            }
         }
 
         writeln!(writer)?;
@@ -1516,20 +1554,7 @@ impl PatternFolder {
             lines_saved: self.stats.lines_saved,
             patterns_detected: self.stats.patterns_detected,
             elapsed_ms: elapsed.as_millis() as u64,
-            pattern_hits: PatternHits {
-                timestamps: self.stats.timestamps,
-                ips: self.stats.ips,
-                hashes: self.stats.hashes,
-                uuids: self.stats.uuids,
-                pids: self.stats.pids,
-                durations: self.stats.durations,
-                http_status: self.stats.http_status,
-                sizes: self.stats.sizes,
-                percentages: self.stats.percentages,
-                paths: self.stats.paths,
-                kubernetes: self.stats.kubernetes,
-                emails: self.stats.emails,
-            },
+            pattern_hits: self.stats.pattern_hits(),
         }
     }
 
@@ -1544,41 +1569,11 @@ impl PatternFolder {
     }
 
     fn count_active_pattern_types(&self) -> usize {
-        let mut count = 0;
-        if self.stats.timestamps > 0 {
-            count += 1;
-        }
-        if self.stats.ips > 0 {
-            count += 1;
-        }
-        if self.stats.hashes > 0 {
-            count += 1;
-        }
-        if self.stats.uuids > 0 {
-            count += 1;
-        }
-        if self.stats.durations > 0 {
-            count += 1;
-        }
-        if self.stats.pids > 0 {
-            count += 1;
-        }
-        if self.stats.sizes > 0 {
-            count += 1;
-        }
-        if self.stats.percentages > 0 {
-            count += 1;
-        }
-        if self.stats.http_status > 0 {
-            count += 1;
-        }
-        if self.stats.paths > 0 {
-            count += 1;
-        }
-        if self.stats.kubernetes > 0 {
-            count += 1;
-        }
-        count
+        self.stats
+            .pattern_counters()
+            .iter()
+            .filter(|(_, count, _)| *count > 0)
+            .count()
     }
 
     /// Parallel batch processing: normalize in parallel, cluster sequentially
@@ -3195,8 +3190,9 @@ mod tests {
             Token::IPv6("::1".into()),
             Token::Port(8080),
         ]);
-        // IPv4 + IPv6 + Port all count as ips
-        assert_eq!(f.stats.ips, 3);
+        // IPv4 + IPv6 count as ips; ports have their own counter
+        assert_eq!(f.stats.ips, 2);
+        assert_eq!(f.stats.ports, 1);
     }
 
     #[test]
@@ -3239,10 +3235,14 @@ mod tests {
                 level: "info".into(),
             },
         ]);
-        assert_eq!(
-            f.stats.percentages, 7,
-            "Number/QuotedString/Name/BracketContext/KV/Log/Structured -> percentages"
-        );
+        // Every token type lands in its own counter — nothing is lumped.
+        assert_eq!(f.stats.percentages, 1, "only Number counts as percentages");
+        assert_eq!(f.stats.quoted_strings, 1);
+        assert_eq!(f.stats.names, 1);
+        assert_eq!(f.stats.brackets, 1);
+        assert_eq!(f.stats.key_values, 1);
+        assert_eq!(f.stats.log_modules, 1);
+        assert_eq!(f.stats.structured, 1);
     }
 
     #[test]
@@ -4196,7 +4196,8 @@ mod tests {
     fn count_pattern_types_json() {
         let mut f = make_folder();
         f.count_pattern_types(&[Token::Json("{}".into())]);
-        assert_eq!(f.stats.paths, 1); // grouped with paths
+        assert_eq!(f.stats.json, 1);
+        assert_eq!(f.stats.paths, 0);
     }
 
     #[test]
@@ -4210,21 +4211,24 @@ mod tests {
     fn count_pattern_types_quoted_string() {
         let mut f = make_folder();
         f.count_pattern_types(&[Token::QuotedString("hello".into())]);
-        assert_eq!(f.stats.percentages, 1);
+        assert_eq!(f.stats.quoted_strings, 1);
+        assert_eq!(f.stats.percentages, 0);
     }
 
     #[test]
     fn count_pattern_types_name() {
         let mut f = make_folder();
         f.count_pattern_types(&[Token::Name("app".into())]);
-        assert_eq!(f.stats.percentages, 1);
+        assert_eq!(f.stats.names, 1);
+        assert_eq!(f.stats.percentages, 0);
     }
 
     #[test]
     fn count_pattern_types_bracket_context() {
         let mut f = make_folder();
         f.count_pattern_types(&[Token::BracketContext(vec!["error".into()])]);
-        assert_eq!(f.stats.percentages, 1);
+        assert_eq!(f.stats.brackets, 1);
+        assert_eq!(f.stats.percentages, 0);
     }
 
     #[test]
@@ -4234,7 +4238,8 @@ mod tests {
             key: "k".into(),
             value_type: "string".into(),
         }]);
-        assert_eq!(f.stats.percentages, 1);
+        assert_eq!(f.stats.key_values, 1);
+        assert_eq!(f.stats.percentages, 0);
     }
 
     #[test]
@@ -4244,7 +4249,8 @@ mod tests {
             module: "mod".into(),
             level: "error".into(),
         }]);
-        assert_eq!(f.stats.percentages, 1);
+        assert_eq!(f.stats.log_modules, 1);
+        assert_eq!(f.stats.percentages, 0);
     }
 
     #[test]
@@ -4254,7 +4260,8 @@ mod tests {
             component: "api".into(),
             level: "info".into(),
         }]);
-        assert_eq!(f.stats.percentages, 1);
+        assert_eq!(f.stats.structured, 1);
+        assert_eq!(f.stats.percentages, 0);
     }
 
     // ---------------------------------------------------------------
