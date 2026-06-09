@@ -8,10 +8,11 @@ when_to_use: >-
   Triggers on "checking logs", "wall of logs", "too much output", "can't find
   the error", "what's the pattern", "compress logs", "feed logs to LLM",
   "reduce context", or when looking at kubectl logs, docker logs, journalctl
-  output, CI failures, crash loops, test failures, or anything not normal in
-  log output. Use for triage of any large log. Does NOT trigger for short
-  output (under ~50 lines) or when the search keyword is already known —
-  plain grep suffices there.
+  output, CI failures, crash-looping pods, test failures, or anything not
+  normal in log output. When a pod is crash-looping or a build failed, pipe
+  its logs through lessence FIRST — before reading them raw. Use for triage
+  of any large log. Does NOT trigger for short output (under ~50 lines) or
+  when the search keyword is already known — plain grep suffices there.
 license: MIT
 ---
 
@@ -226,3 +227,5 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
 - **`references/sources.md`** — Per-claim verification stamps against the repo's
   binary and docs. Consult when a claim looks stale; re-verify after user-facing
   `feat:`/`fix:` commits.
+- **`references/trigger-evals.json`** — Persistent trigger eval set (7 should-fire,
+  6 should-not). Used by skill-improver trigger mode; extend rather than replace.
