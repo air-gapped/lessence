@@ -95,16 +95,23 @@ fn test_constitutional_compliance_kubelet() {
     println!("  Input: {input_lines}, Output: {output_lines}, Ratio: {ratio:.1}%");
 
     assert!(
-        output_lines <= 1100,
-        "CONSTITUTIONAL VIOLATION: {output_lines} > 1100 lines"
+        output_lines <= 700,
+        "CONSTITUTIONAL VIOLATION: {output_lines} > 700 lines"
     );
     assert!(
-        ratio >= 98.4,
-        "CONSTITUTIONAL VIOLATION: {ratio:.1}% < 98.4%"
+        ratio >= 99.0,
+        "CONSTITUTIONAL VIOLATION: {ratio:.1}% < 99.0%"
     );
+    // Range calibrated against the token-LCS similarity metric (measured
+    // 380 on this corpus). The lower bound guards against over-merging,
+    // the upper bound against under-folding regressions. The pre-LCS
+    // positional metric produced 800-1100 because one inserted token
+    // cascaded into a near-zero score and split groups that belonged
+    // together (e.g. 32 separate nestedpendingoperations groups differing
+    // only in volume UUIDs).
     assert!(
-        (800..=1100).contains(&output_lines),
-        "Output {output_lines} outside expected range [800, 1100]"
+        (300..=700).contains(&output_lines),
+        "Output {output_lines} outside expected range [300, 700]"
     );
 }
 
