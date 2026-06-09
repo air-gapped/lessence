@@ -1,0 +1,1666 @@
+use anyhow::Result;
+use rand::prelude::*;
+use rand_chacha::ChaCha8Rng;
+use serde::Serialize;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::{self, Write};
+use std::time::Duration;
+
+use crate::config::Config;
+use crate::normalize::Normalizer;
+use crate::patterns::{LogLine, Token};
+
+/// Apply PII masking to original text by replacing email addresses with `<EMAIL>` tokens
+///
+/// Takes the original log line text and detected tokens, returns masked text with
+/// all Token::Email instances replaced with the literal `<EMAIL>` string.
+///
+/// # Arguments
+/// * `original` - Original log line text (may contain email addresses)
+/// * `tokens` - Detected pattern tokens (including Token::Email variants)
+///
+/// # Returns
+/// Modified string with all detected emails replaced by `<EMAIL>` tokens
+///
+/// # Performance
+/// O(n × m) where n = text length, m = email count
+/// Expected overhead: <1% of total line processing time
+pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
+    let mut result = original.to_string();
+    let mut email_ranges = Vec::new();
+
+    // Collect all email token positions
+    for token in tokens {
+        if let Token::Email(email) = token {
+            if email.is_empty() {
+                continue;
+            }
+            // Find all occurrences of this email in original text
+            let mut start = 0;
+            while let Some(pos) = result[start..].find(email) {
+                let abs_pos = start + pos;
+                email_ranges.push((abs_pos, abs_pos + email.len()));
+                let next = abs_pos + email.len();
+                if next <= start {
+                    break; // Defensive: loop must always advance
+                }
+                start = next;
+            }
+        }
+    }
+
+    // Sort ranges in reverse order (replace from end to preserve indices)
+    email_ranges.sort_by_key(|r| std::cmp::Reverse(r.0));
+
+    // Replace each email with <EMAIL> token
+    for (start, end) in email_ranges {
+        result.replace_range(start..end, "<EMAIL>");
+    }
+
+    result
+}
+
+#[derive(Debug)]
+struct PatternGroup {
+    lines: Vec<LogLine>,
+    position: usize, // Position when first line was encountered
+    /// Input line number of the first line in this group (1-indexed).
+    /// Used by the JSON output path; ignored by text/markdown formatting.
+    first_line_no: usize,
+    /// Input line number of the most recently added line in this group.
+    /// Updated on every add_line().
+    last_line_no: usize,
+}
+
+impl PatternGroup {
+    fn new(line: LogLine, position: usize) -> Self {
+        Self {
+            lines: vec![line],
+            position,
+            first_line_no: position,
+            last_line_no: position,
+        }
+    }
+
+    fn add_line(&mut self, line: LogLine, line_no: usize) {
+        self.lines.push(line);
+        self.last_line_no = line_no;
+    }
+
+    fn should_collapse(&self, min_collapse: usize) -> bool {
+        self.lines.len() >= min_collapse
+    }
+
+    fn first(&self) -> &LogLine {
+        &self.lines[0]
+    }
+
+    fn last(&self) -> &LogLine {
+        &self.lines[self.lines.len() - 1]
+    }
+
+    fn count(&self) -> usize {
+        self.lines.len()
+    }
+}
+
+pub struct PatternFolder {
+    config: Config,
+    normalizer: Normalizer,
+    buffer: Vec<PatternGroup>,
+    stats: FoldingStats,
+    position_counter: usize,
+    batch_buffer: Vec<String>,
+    /// Monotonic counter for JSON group record `id` fields. Incremented
+    /// exactly once per flushed group in JSON mode. Stays at 0 in text /
+    /// markdown modes. Stable within a run.
+    next_json_id: usize,
+    /// Rollup computer — runs on every group at flush time regardless of
+    /// output format, so the perf gate applies uniformly to text and
+    /// JSON modes. Parameters (K, distinct_cap) are calibrated against
+    /// the full corpus; see `docs/rollup-calibration.md` for evidence.
+    rollup_computer: RollupComputer,
+}
+
+#[derive(Debug, Default)]
+pub struct FoldingStats {
+    pub total_lines: usize,
+    pub output_lines: usize, // Actual compressed output lines (excluding summary)
+    pub collapsed_groups: usize,
+    pub lines_saved: usize,
+    pub patterns_detected: usize,
+    // Pattern distribution counters — one per token category, no lumping.
+    pub timestamps: usize,
+    pub ips: usize,
+    pub ports: usize,
+    pub fqdns: usize,
+    pub hashes: usize,
+    pub uuids: usize,
+    pub pids: usize,
+    pub durations: usize,
+    pub http_status: usize,
+    pub sizes: usize,
+    pub percentages: usize,
+    pub paths: usize,
+    pub json: usize,
+    pub quoted_strings: usize,
+    pub names: usize,
+    pub brackets: usize,
+    pub key_values: usize,
+    pub log_modules: usize,
+    pub structured: usize,
+    pub kubernetes: usize,
+    pub emails: usize,
+}
+
+impl FoldingStats {
+    /// Every pattern category as (footer label, count, footer description).
+    /// Single source of truth for the Pattern Distribution table and the
+    /// active-category count, so a new counter cannot be forgotten in one
+    /// place but not the other.
+    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 21] {
+        [
+            (
+                "Timestamps",
+                self.timestamps,
+                "Log timestamps, dates, times",
+            ),
+            ("IP Addresses", self.ips, "IPv4, IPv6, network addresses"),
+            ("Ports", self.ports, "Network port numbers"),
+            ("Hostnames", self.fqdns, "Fully-qualified domain names"),
+            (
+                "Hashes",
+                self.hashes,
+                "Pod UIDs, container IDs, volume names, checksums",
+            ),
+            (
+                "UUIDs",
+                self.uuids,
+                "Request IDs, trace IDs, unique identifiers",
+            ),
+            (
+                "Durations",
+                self.durations,
+                "Timeouts, latencies, elapsed times",
+            ),
+            (
+                "Process IDs",
+                self.pids,
+                "PIDs, thread IDs, process identifiers",
+            ),
+            (
+                "File Sizes",
+                self.sizes,
+                "Memory usage, file sizes, data volumes",
+            ),
+            (
+                "Numbers/Percentages",
+                self.percentages,
+                "CPU usage, percentages, metrics",
+            ),
+            (
+                "HTTP Status",
+                self.http_status,
+                "Response codes, error codes",
+            ),
+            ("File Paths", self.paths, "File paths, URLs, directories"),
+            ("JSON", self.json, "Inline JSON objects"),
+            (
+                "Quoted Strings",
+                self.quoted_strings,
+                "Quoted values and messages",
+            ),
+            ("Names", self.names, "Hyphenated component names"),
+            (
+                "Bracket Contexts",
+                self.brackets,
+                "[error] [module] logging contexts",
+            ),
+            (
+                "Key-Value Pairs",
+                self.key_values,
+                "key=value configuration and metrics",
+            ),
+            (
+                "Log Modules",
+                self.log_modules,
+                "[level] module logging patterns",
+            ),
+            (
+                "Structured Messages",
+                self.structured,
+                "JSON/logfmt structured log envelopes",
+            ),
+            (
+                "Kubernetes",
+                self.kubernetes,
+                "Namespaces, volumes, plugins, pod names",
+            ),
+            (
+                "Email Addresses",
+                self.emails,
+                "RFC 5322 email addresses, user accounts",
+            ),
+        ]
+    }
+
+    fn pattern_hits(&self) -> PatternHits {
+        PatternHits {
+            timestamps: self.timestamps,
+            ips: self.ips,
+            ports: self.ports,
+            fqdns: self.fqdns,
+            hashes: self.hashes,
+            uuids: self.uuids,
+            pids: self.pids,
+            durations: self.durations,
+            http_status: self.http_status,
+            sizes: self.sizes,
+            percentages: self.percentages,
+            paths: self.paths,
+            json: self.json,
+            quoted_strings: self.quoted_strings,
+            names: self.names,
+            brackets: self.brackets,
+            key_values: self.key_values,
+            log_modules: self.log_modules,
+            structured: self.structured,
+            kubernetes: self.kubernetes,
+            emails: self.emails,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct StatsJson {
+    input_lines: usize,
+    output_lines: usize,
+    compression_ratio: f64,
+    collapsed_groups: usize,
+    lines_saved: usize,
+    patterns_detected: usize,
+    elapsed_ms: u64,
+    pattern_hits: PatternHits,
+}
+
+#[derive(Serialize)]
+struct PatternHits {
+    timestamps: usize,
+    ips: usize,
+    ports: usize,
+    fqdns: usize,
+    hashes: usize,
+    uuids: usize,
+    pids: usize,
+    durations: usize,
+    http_status: usize,
+    sizes: usize,
+    percentages: usize,
+    paths: usize,
+    json: usize,
+    quoted_strings: usize,
+    names: usize,
+    brackets: usize,
+    key_values: usize,
+    log_modules: usize,
+    structured: usize,
+    kubernetes: usize,
+    emails: usize,
+}
+
+// -------------------------------------------------------------------------
+// JSONL output schema (Phase 2 — no rollups yet).
+//
+// One `GroupRecord` per flushed PatternGroup is emitted to stdout. After the
+// main loop, exactly one `SummaryRecord` terminates the stream. The `type`
+// field discriminates the two. The schema is documented in docs/format-json-schema.md.
+//
+// Phase 3 will add a `variation` field to `GroupRecord`. Phase 2 leaves room
+// for it but does not emit it.
+// -------------------------------------------------------------------------
+
+/// A reference to a line of the original input. `line_no` is the 1-indexed
+/// input position of the line. In parallel mode it is approximate
+/// (batch-granular); in single-threaded mode it is exact.
+#[derive(Serialize)]
+struct LineRef {
+    line: String,
+    line_no: usize,
+}
+
+/// Raw timestamp strings observed in the first and last lines of the group.
+/// Both fields may be null if the corresponding line had no detected
+/// timestamp token. Strings are compared as raw input order (no parsing).
+#[derive(Serialize)]
+struct TimeRange {
+    first_seen: Option<String>,
+    last_seen: Option<String>,
+}
+
+/// One folded-group record in the JSONL stream.
+#[derive(Serialize)]
+struct GroupRecord {
+    #[serde(rename = "type")]
+    record_type: &'static str, // always "group"
+    id: usize,
+    count: usize,
+    /// Sorted list of token type discriminant names present in the group's
+    /// first or last line. Deterministic across runs.
+    token_types: Vec<&'static str>,
+    /// The first line's normalized form (with `<TOKEN>` placeholders).
+    normalized: String,
+    first: LineRef,
+    last: LineRef,
+    time_range: TimeRange,
+    /// Per-token-type variation metadata (Phase 3): distinct counts plus
+    /// deterministic samples for sample-worthy types. The key order is
+    /// stable (BTreeMap) so agents can diff records across runs.
+    variation: GroupRollup,
+}
+
+/// Terminal summary record for the JSONL stream. Flattens the existing
+/// `StatsJson` fields and adds a `type: "summary"` discriminant so JSONL
+/// consumers can branch cleanly on the record type.
+#[derive(Serialize)]
+struct SummaryRecord {
+    #[serde(rename = "type")]
+    record_type: &'static str, // always "summary"
+    #[serde(flatten)]
+    stats: StatsJson,
+}
+
+/// Discriminant name for a Token, used in `GroupRecord.token_types` and
+/// (in Phase 3) as the key in the `variation` map. Stable across
+/// serialisation runs because each variant returns a `&'static str`.
+fn token_type_name(token: &Token) -> &'static str {
+    match token {
+        Token::Timestamp(_) => "TIMESTAMP",
+        Token::IPv4(_) => "IPV4",
+        Token::IPv6(_) => "IPV6",
+        Token::Fqdn(_) => "FQDN",
+        Token::Port(_) => "PORT",
+        Token::Hash(_, _) => "HASH",
+        Token::Uuid(_) => "UUID",
+        Token::Pid(_) => "PID",
+        Token::ThreadID(_) => "THREAD_ID",
+        Token::Path(_) => "PATH",
+        Token::Json(_) => "JSON",
+        Token::Duration(_) => "DURATION",
+        Token::Size(_) => "SIZE",
+        Token::Number(_) => "NUMBER",
+        Token::HttpStatus(_) => "HTTP_STATUS",
+        Token::QuotedString(_) => "QUOTED_STRING",
+        Token::Name(_) => "NAME",
+        Token::KubernetesNamespace(_) => "K8S_NAMESPACE",
+        Token::VolumeName(_) => "K8S_VOLUME",
+        Token::PluginType(_) => "K8S_PLUGIN",
+        Token::PodName(_) => "K8S_POD",
+        Token::HttpStatusClass(_) => "HTTP_STATUS_CLASS",
+        Token::BracketContext(_) => "BRACKET_CONTEXT",
+        Token::KeyValuePair { .. } => "KEY_VALUE",
+        Token::LogWithModule { .. } => "LOG_WITH_MODULE",
+        Token::StructuredMessage { .. } => "STRUCTURED_MESSAGE",
+        Token::Email(_) => "EMAIL",
+    }
+}
+
+/// Extract the first `Token::Timestamp(s)` value from a slice, if any.
+fn first_timestamp_in(tokens: &[Token]) -> Option<String> {
+    tokens.iter().find_map(|t| match t {
+        Token::Timestamp(s) => Some(s.clone()),
+        _ => None,
+    })
+}
+
+// -------------------------------------------------------------------------
+// Rollup metadata.
+//
+// Per-group rollups capture what VARIES inside a folded group: for each
+// token type that appeared in the group, the distinct-value count and a
+// small deterministic sample of those values. Agents use this to answer
+// triage questions without re-reading the raw log — "is this one UUID
+// repeating or 1273 distinct UUIDs?", "which paths were affected?", etc.
+//
+// See .ideas/structured-folding-output-for-agents.md for design rationale
+// and docs/rollup-calibration.md for the evidence behind the constants
+// below.
+// -------------------------------------------------------------------------
+
+/// K: maximum number of samples surfaced per token type in JSON mode.
+///
+/// Calibrated via `cargo bench --bench calibrate_rollup` as the P95 of
+/// observed distinct_count on sample-worthy token types across the full
+/// corpus, capped at 8 (terminal-width ceiling). P95 on the corpus was
+/// 7, so K=7 captures the COMPLETE distinct set for 95% of groups with
+/// nothing hidden.
+const ROLLUP_K: usize = 7;
+
+/// Maximum distinct values tracked per (group, token type).
+///
+/// Calibrated as the smallest power-of-two ≥ P99 of observed
+/// distinct_count on sample-worthy types. P99 was 35, so the next
+/// power-of-two (64) covers 99% of groups exactly; the remaining 1%
+/// trigger the `capped` flag (useful signal to the agent: "≥64 and
+/// possibly many more"). 64 is small enough to keep per-group memory
+/// bounded even at flush time.
+const ROLLUP_DISTINCT_CAP: usize = 64;
+
+/// Text-mode inline-sample threshold: when `distinct_count <=` this
+/// value, the compact marker shows the complete distinct set; otherwise
+/// count-only.
+///
+/// Calibrated via direct measurement of rendered marker lengths on the
+/// corpus. Even at T=3, some markers exceed 120 chars due to long URL
+/// paths inside samples — mitigated by truncating individual sample
+/// values to 50 chars with a `…` suffix inside `render_compact_marker`.
+/// Higher thresholds did not improve the pass rate meaningfully.
+const ROLLUP_TEXT_SAMPLE_THRESHOLD: usize = 3;
+
+/// One entry in the variation map: count, samples (possibly truncated),
+/// and `capped` flag indicating whether the cap was hit.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+struct VariationEntry {
+    pub distinct_count: usize,
+    pub samples: Vec<String>,
+    pub capped: bool,
+}
+
+/// Full rollup for a single group — a sorted map from token type name to
+/// its variation entry. BTreeMap gives deterministic iteration order,
+/// which flows through to the JSON field order.
+type GroupRollup = BTreeMap<&'static str, VariationEntry>;
+
+/// Is this token type worth surfacing as samples (i.e., does the value
+/// carry identity information useful to an agent)?
+///
+/// - **Sample-worthy** (identity types): UUID, IP, Path, Email, Hash,
+///   Kubernetes objects, HTTP status, quoted strings, names, bracket
+///   context, structured JSON — values an agent uses to identify which
+///   specific entities were involved.
+/// - **Count-only** (measurement types): Timestamp, Port, Pid, ThreadID,
+///   Duration, Size, Number, KeyValuePair, LogWithModule,
+///   StructuredMessage — values where "how many distinct" is useful but
+///   showing specific values is noise.
+///
+/// The Phase 5 calibration may move token types between categories based
+/// on observed real-world value-to-noise ratio.
+fn is_sample_worthy(token: &Token) -> bool {
+    matches!(
+        token,
+        Token::Uuid(_)
+            | Token::IPv4(_)
+            | Token::IPv6(_)
+            | Token::Fqdn(_)
+            | Token::Path(_)
+            | Token::Email(_)
+            | Token::Hash(_, _)
+            | Token::KubernetesNamespace(_)
+            | Token::VolumeName(_)
+            | Token::PluginType(_)
+            | Token::PodName(_)
+            | Token::QuotedString(_)
+            | Token::Name(_)
+            | Token::HttpStatus(_)
+            | Token::HttpStatusClass(_)
+            | Token::BracketContext(_)
+            | Token::Json(_)
+    )
+}
+
+/// Extract the string representation of a token for sampling.
+/// Used only for sample-worthy token types; count-only types use
+/// `hash_token_value` instead to avoid retaining large strings.
+fn token_value_string(token: &Token) -> String {
+    match token {
+        Token::Timestamp(s)
+        | Token::IPv4(s)
+        | Token::IPv6(s)
+        | Token::Fqdn(s)
+        | Token::Uuid(s)
+        | Token::Path(s)
+        | Token::Json(s)
+        | Token::Duration(s)
+        | Token::Size(s)
+        | Token::Number(s)
+        | Token::QuotedString(s)
+        | Token::Name(s)
+        | Token::KubernetesNamespace(s)
+        | Token::VolumeName(s)
+        | Token::PluginType(s)
+        | Token::PodName(s)
+        | Token::ThreadID(s)
+        | Token::HttpStatusClass(s)
+        | Token::Email(s) => s.clone(),
+        Token::Hash(_, s) => s.clone(),
+        Token::BracketContext(parts) => parts.join(","),
+        Token::Port(p) => p.to_string(),
+        Token::HttpStatus(s) => s.to_string(),
+        Token::Pid(p) => p.to_string(),
+        Token::KeyValuePair { key, value_type } => format!("{key}={value_type}"),
+        Token::LogWithModule { level, module } => format!("{level}:{module}"),
+        Token::StructuredMessage { component, level } => format!("{component}:{level}"),
+    }
+}
+
+/// Hash a token value to a u64. Used for count-only tracking of
+/// high-cardinality types (Timestamp, Number, Duration, ...) where
+/// retaining full strings would blow the memory budget.
+///
+/// Uses the same FNV-1a hashing as `seed_for_group` — NOT
+/// `ahash::AHasher::default()` — so `distinct_count` is deterministic
+/// across processes. For count-only types this mostly matters when the
+/// distinct_cap is hit: the specific set of tracked hashes would
+/// otherwise depend on per-process randomness, which in turn could
+/// shift `distinct_count` by one on cap boundaries. Keeping everything
+/// fixed-seed sidesteps that class of flake entirely.
+fn hash_token_value(token: &Token) -> u64 {
+    // Reuse `token_value_string` to get a canonical string representation,
+    // then run FNV-1a over its bytes. This is slower than hashing field
+    // bytes directly but keeps the code in one place. Count-only tokens
+    // are rare per line compared to the total workload, so the overhead
+    // is negligible relative to pattern detection.
+    let canonical = token_value_string(token);
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+    let mut h: u64 = FNV_OFFSET;
+    for b in canonical.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// Seed for the deterministic sample RNG. Derived from the group's
+/// normalized template so the same template → the same seed → the same
+/// sample draw. This is the non-negotiable determinism contract.
+///
+/// Uses FNV-1a — NOT `ahash::AHasher::default()`, which seeds randomly
+/// per process and breaks determinism across runs. FNV-1a is trivially
+/// cross-platform and cross-version stable. Quality is sufficient for
+/// seeding a ChaCha8Rng; we're not defending a hash table.
+fn seed_for_group(normalized: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0100_0000_01b3;
+    let mut h: u64 = FNV_OFFSET;
+    for b in normalized.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// Render the text-mode compact marker for a collapsed group, using
+/// the rollup metadata computed at flush time.
+///
+/// Output shape:
+///   `[+N similar | first_ts → last_ts | TYPE×count {s1, s2}, TYPE×count]`
+///
+/// - The word `similar` is kept for backwards compatibility with the
+///   existing test suite (many tests grep for it).
+/// - The time-range segment is only included when both `first_ts` and
+///   `last_ts` are present (they come from the first `Token::Timestamp`
+///   in the respective line's tokens). In essence mode, timestamps are
+///   omitted even when present.
+/// - Variation entries render with samples inline when
+///   `distinct_count <= inline_threshold` and the entry is not capped,
+///   else count-only (with a trailing `+` for capped entries).
+/// - If the rollup is empty (either because the group was too small to
+///   compute, or because none of its token types varied), falls back to
+///   the minimal `[+N similar]` form. This keeps text output coherent
+///   when the Phase 3 min_collapse guard skips rollup computation.
+fn render_compact_marker(
+    count: usize,
+    rollup: &GroupRollup,
+    first_ts: Option<&str>,
+    last_ts: Option<&str>,
+    inline_threshold: usize,
+    essence_mode: bool,
+) -> String {
+    let mut out = format!("[+{count} similar");
+
+    // Time range segment. Keep raw strings — the plan deliberately
+    // avoided timestamp parsing (see design doc §Why flush-time).
+    if !essence_mode && let (Some(a), Some(b)) = (first_ts, last_ts) {
+        out.push_str(" | ");
+        out.push_str(a);
+        out.push_str(" → ");
+        out.push_str(b);
+    }
+
+    // Variation segment. Skip count-only types from the inline render —
+    // "TIMESTAMP×1000" noise would dominate the marker with no
+    // information payoff. Sample-worthy types always get rendered.
+    let worthy: Vec<(&&'static str, &VariationEntry)> = rollup
+        .iter()
+        .filter(|(_, entry)| !entry.samples.is_empty() || entry.distinct_count <= inline_threshold)
+        .filter(|(_, entry)| entry.distinct_count > 0)
+        .collect();
+
+    if !worthy.is_empty() {
+        // Per-sample truncation length. Calibration (Phase 5) showed
+        // that un-truncated samples blow text markers to 1000+ chars on
+        // logs with URL-heavy paths, because a 200-char URL multiplied
+        // by three inlined samples dominates the line. 50 chars is
+        // enough to convey the shape of the value (/var/lib/pods/...,
+        // https://api.example.com/...) without exploding the marker.
+        const SAMPLE_MAX_LEN: usize = 50;
+        fn truncate_sample(s: &str) -> String {
+            if s.len() <= SAMPLE_MAX_LEN {
+                s.to_string()
+            } else {
+                let mut out = s.chars().take(SAMPLE_MAX_LEN - 1).collect::<String>();
+                out.push('…');
+                out
+            }
+        }
+
+        out.push_str(" | ");
+        let mut first = true;
+        for (name, entry) in &worthy {
+            if !first {
+                out.push_str(", ");
+            }
+            first = false;
+            // Text-mode convention is lowercase token type names (matches
+            // the existing `summarize_variation_types` output in
+            // `normalize.rs` that integration tests assert against).
+            // JSON mode keeps UPPERCASE keys in the `variation` map
+            // — the two conventions are deliberately different.
+            out.push_str(&name.to_lowercase());
+            out.push('×');
+            out.push_str(&entry.distinct_count.to_string());
+            if entry.capped {
+                out.push('+');
+            }
+            // Inline samples when the full distinct set fits.
+            if entry.distinct_count <= inline_threshold
+                && !entry.capped
+                && !entry.samples.is_empty()
+            {
+                out.push_str(" {");
+                let truncated: Vec<String> =
+                    entry.samples.iter().map(|s| truncate_sample(s)).collect();
+                out.push_str(&truncated.join(", "));
+                out.push('}');
+            }
+        }
+    }
+
+    out.push(']');
+    out
+}
+
+/// Intermediate accumulator for one (group, token_type) pair during
+/// rollup computation. Sample-worthy types retain strings; count-only
+/// types retain u64 hashes. Both cap at `distinct_cap`.
+enum Accumulator {
+    /// Sample-worthy: retain full values so we can draw samples.
+    Values(HashSet<String>),
+    /// Count-only: retain only hashes so memory stays bounded.
+    Hashes(HashSet<u64>),
+}
+
+impl Accumulator {
+    fn len(&self) -> usize {
+        match self {
+            Self::Values(s) => s.len(),
+            Self::Hashes(s) => s.len(),
+        }
+    }
+}
+
+/// Stateless rollup computer. One per `PatternFolder`. Parameters
+/// (K, distinct_cap) are supplied by the constructor, defaulting to
+/// the calibrated `ROLLUP_*` constants via `with_defaults`.
+struct RollupComputer {
+    k: usize,
+    distinct_cap: usize,
+}
+
+impl RollupComputer {
+    fn new(k: usize, distinct_cap: usize) -> Self {
+        Self { k, distinct_cap }
+    }
+
+    fn with_defaults() -> Self {
+        Self::new(ROLLUP_K, ROLLUP_DISTINCT_CAP)
+    }
+
+    /// Compute the rollup for one group. Iterates the group's lines
+    /// once, bucketing each token into its per-type accumulator, then
+    /// draws the final samples and produces one VariationEntry per
+    /// token type that appeared.
+    ///
+    /// Complexity: O(total_tokens_in_group). Memory bound:
+    /// `sum(min(distinct, cap)) × per-entry-size`, where per-entry-size
+    /// is `sizeof(u64)` for count-only and `value_len` for sample-worthy.
+    fn compute(&self, group: &PatternGroup) -> GroupRollup {
+        // Flags + accumulators, keyed by token type name.
+        // Kept as BTreeMap so the final JSON serialisation is sorted.
+        let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
+
+        // Upper bound on distinct values per token type: can't exceed
+        // the number of lines in the group. Pre-allocating HashSets
+        // with this hint avoids the grow-rehash cycle that shows up
+        // disproportionately in parallel-mode flush timing.
+        let capacity_hint = group.lines.len().min(self.distinct_cap);
+
+        for line in &group.lines {
+            for token in &line.tokens {
+                let name = token_type_name(token);
+                let sample_worthy = is_sample_worthy(token);
+
+                let entry = per_type.entry(name).or_insert_with(|| {
+                    (
+                        if sample_worthy {
+                            Accumulator::Values(HashSet::with_capacity(capacity_hint))
+                        } else {
+                            Accumulator::Hashes(HashSet::with_capacity(capacity_hint))
+                        },
+                        false, // capped flag
+                    )
+                });
+
+                // Skip the insert if already capped — keeps cost bounded
+                // and prevents per-insert growth beyond the cap.
+                if entry.1 {
+                    continue;
+                }
+
+                match &mut entry.0 {
+                    Accumulator::Values(s) => {
+                        if s.len() >= self.distinct_cap {
+                            entry.1 = true;
+                        } else {
+                            s.insert(token_value_string(token));
+                        }
+                    }
+                    Accumulator::Hashes(s) => {
+                        if s.len() >= self.distinct_cap {
+                            entry.1 = true;
+                        } else {
+                            s.insert(hash_token_value(token));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Finalise: draw samples deterministically from each Accumulator.
+        // Seed is per-group so same template → same draw.
+        let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(&group.first().normalized));
+        let mut out: GroupRollup = BTreeMap::new();
+        for (name, (acc, capped)) in per_type {
+            let distinct_count = acc.len();
+            let samples = match acc {
+                Accumulator::Values(s) => {
+                    // Collect distinct values into a Vec, then let
+                    // SliceRandom draw K uniformly. The HashSet's
+                    // iteration order is unreliable across allocator
+                    // versions; the intermediate Vec must therefore be
+                    // sorted before sampling so the per-group seed ↔
+                    // same sample draw invariant holds across hash
+                    // seeds. This is load-bearing for determinism.
+                    let mut distinct: Vec<String> = s.into_iter().collect();
+                    distinct.sort();
+                    let drawn_refs: Vec<&String> =
+                        distinct.choose_multiple(&mut rng, self.k).collect();
+                    let mut drawn: Vec<String> = drawn_refs.into_iter().cloned().collect();
+                    // Sort the drawn sample itself for a stable JSON
+                    // representation regardless of draw order.
+                    drawn.sort();
+                    drawn
+                }
+                Accumulator::Hashes(_) => Vec::new(),
+            };
+            out.insert(
+                name,
+                VariationEntry {
+                    distinct_count,
+                    samples,
+                    capped,
+                },
+            );
+        }
+        out
+    }
+}
+
+impl PatternFolder {
+    pub fn new(config: Config) -> Self {
+        let normalizer = Normalizer::new(config.clone());
+
+        Self {
+            config,
+            normalizer,
+            buffer: Vec::new(),
+            stats: FoldingStats::default(),
+            position_counter: 0,
+            batch_buffer: Vec::new(),
+            next_json_id: 0,
+            rollup_computer: RollupComputer::with_defaults(),
+        }
+    }
+
+    /// Is the configured output format the JSON (JSONL) variant?
+    fn is_json_output(&self) -> bool {
+        matches!(self.config.output_format.as_str(), "json" | "jsonl")
+    }
+
+    /// Format a group for the configured output mode.
+    ///
+    /// Rollup metadata is computed unconditionally here — regardless of
+    /// output format — so that the perf gate applies uniformly to both
+    /// text and JSON modes. This is the single insertion point for the
+    /// feature's flush-time cost. Text mode (Phase 4) renders a richer
+    /// compact marker from the rollup; JSON mode (Phase 3) serialises
+    /// the rollup as the `variation` field.
+    ///
+    /// Groups smaller than `min_collapse` skip the rollup entirely —
+    /// there's no useful variation summary to report for a group of one
+    /// or two lines, and the allocation cost of building empty
+    /// accumulators dominated flush-time overhead in parallel mode
+    /// before this guard was added. The `variation` field in JSON mode
+    /// remains present (as an empty `{}`) so the schema shape is
+    /// unchanged; only the compute cost is skipped.
+    fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
+        let rollup = if group.count() >= self.config.min_collapse {
+            self.rollup_computer.compute(group)
+        } else {
+            BTreeMap::new()
+        };
+        if self.is_json_output() {
+            self.format_group_json(group, rollup)
+        } else {
+            self.format_group(group, &rollup)
+        }
+    }
+
+    /// Serialise one group as a JSONL record. Returns a single JSON object
+    /// string **without** a trailing newline — the caller's `writeln!`
+    /// supplies it. This matches `format_group`'s text-mode contract so the
+    /// main loop's output path works uniformly for both formats.
+    ///
+    /// `output_lines` is updated by the *caller* (same as `format_group`
+    /// via `formatted.lines().count()`) so both formatting paths keep
+    /// stats coherent with no double-counting.
+    fn format_group_json(
+        &mut self,
+        group: &PatternGroup,
+        variation: GroupRollup,
+    ) -> Result<String> {
+        let id = self.next_json_id;
+        self.next_json_id += 1;
+
+        // Keep `collapsed_groups` and `lines_saved` coherent with
+        // --stats-json output in JSON mode: a group with >= min_collapse
+        // lines counts as "collapsed" even though JSON mode always emits
+        // one record per group regardless of size. Without this, summary
+        // statistics would differ between text-mode and JSON-mode runs
+        // of the same input.
+        if group.count() >= self.config.min_collapse && !self.config.essence_mode {
+            self.stats.collapsed_groups += 1;
+            // All lines except the one emitted as the representative
+            // are accounted for as "saved". Matches text-mode lines_saved
+            // semantics as closely as the JSON schema permits.
+            self.stats.lines_saved += group.count().saturating_sub(1);
+        }
+
+        // Collect unique token type names from first and last lines.
+        // BTreeSet gives us deterministic sorted output for free.
+        let mut token_types: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
+        for t in &group.first().tokens {
+            token_types.insert(token_type_name(t));
+        }
+        for t in &group.last().tokens {
+            token_types.insert(token_type_name(t));
+        }
+
+        let record = GroupRecord {
+            record_type: "group",
+            id,
+            count: group.count(),
+            token_types: token_types.into_iter().collect(),
+            normalized: group.first().normalized.clone(),
+            first: LineRef {
+                line: group.first().original.clone(),
+                line_no: group.first_line_no,
+            },
+            last: LineRef {
+                line: group.last().original.clone(),
+                line_no: group.last_line_no,
+            },
+            time_range: TimeRange {
+                first_seen: first_timestamp_in(&group.first().tokens),
+                last_seen: first_timestamp_in(&group.last().tokens),
+            },
+            variation,
+        };
+
+        Ok(serde_json::to_string(&record)?)
+    }
+
+    /// Emit the terminal summary record for a JSONL stream. Called once,
+    /// after the main loop and `finish()` have drained all groups.
+    /// Writes to `writer` (stdout in the main binary path) and ends with
+    /// a trailing newline so the JSONL stream terminates cleanly.
+    pub fn print_summary_json(&self, writer: &mut impl io::Write, elapsed: Duration) -> Result<()> {
+        let compression_ratio = if self.stats.total_lines > 0 {
+            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+        let record = SummaryRecord {
+            record_type: "summary",
+            stats: StatsJson {
+                input_lines: self.stats.total_lines,
+                output_lines: self.stats.output_lines,
+                compression_ratio,
+                collapsed_groups: self.stats.collapsed_groups,
+                lines_saved: self.stats.lines_saved,
+                patterns_detected: self.stats.patterns_detected,
+                elapsed_ms: elapsed.as_millis() as u64,
+                pattern_hits: self.stats.pattern_hits(),
+            },
+        };
+        serde_json::to_writer(&mut *writer, &record)?;
+        writeln!(writer)?;
+        Ok(())
+    }
+
+    pub fn process_line(&mut self, line: &str) -> Result<Option<String>> {
+        self.stats.total_lines += 1;
+        self.position_counter += 1;
+
+        // Parallel processing: batch lines for parallel pattern detection
+        if self.config.thread_count != Some(1) {
+            self.batch_buffer.push(line.to_string());
+
+            if self.batch_buffer.len() >= 10_000 {
+                self.process_batch()?;
+            }
+
+            return Ok(None);
+        }
+
+        // Single-thread mode: sequential processing
+        let normalized_line = self.normalizer.normalize_line(line.to_string())?;
+
+        if !normalized_line.tokens.is_empty() {
+            self.stats.patterns_detected += 1;
+            self.count_pattern_types(&normalized_line.tokens);
+        }
+
+        // Try to find a matching group in the buffer
+        let mut match_index = None;
+        for (i, group) in self.buffer.iter().enumerate() {
+            if self.normalizer.are_similar(&normalized_line, group.first()) {
+                match_index = Some(i);
+                break;
+            }
+        }
+
+        if let Some(index) = match_index {
+            self.buffer[index].add_line(normalized_line, self.position_counter);
+        } else {
+            // Create a new group at current position
+            self.buffer
+                .push(PatternGroup::new(normalized_line, self.position_counter));
+        }
+
+        // Smart flushing: flush groups that are old enough to be safe
+        if self.should_flush_buffer() {
+            return self.flush_oldest_safe_group();
+        }
+
+        Ok(None)
+    }
+
+    fn flush_oldest_safe_group(&mut self) -> Result<Option<String>> {
+        // Only flush groups that have been "untouched" for a while
+        // This ensures we won't see new similar lines that could belong to them
+        if self.buffer.is_empty() {
+            return Ok(None);
+        }
+
+        // Find the oldest group that hasn't been updated recently
+        let current_position = self.position_counter;
+        let safe_distance = 100; // Lines since last update to consider "safe"
+
+        let mut oldest_index = None;
+        let mut oldest_position = usize::MAX;
+
+        for (i, group) in self.buffer.iter().enumerate() {
+            // A group is "safe" to flush if:
+            // 1. It has enough lines to collapse OR it's far behind current position
+            // 2. It's likely no more similar lines will come
+            let is_old_enough = current_position - group.position > safe_distance;
+            let is_ready = group.should_collapse(self.config.min_collapse) || is_old_enough;
+
+            if is_ready && group.position < oldest_position {
+                oldest_position = group.position;
+                oldest_index = Some(i);
+            }
+        }
+
+        if let Some(index) = oldest_index {
+            let group = self.buffer.remove(index);
+            let formatted = self.format_group_dispatch(&group)?;
+            // Track output lines: count newlines in formatted output + 1 for the last line
+            self.stats.output_lines += formatted.lines().count();
+            return Ok(Some(formatted));
+        }
+
+        Ok(None)
+    }
+
+    /// Prepare summary data: flush batches, merge groups by normalized text,
+    /// sort by count descending, apply top-N / fit-budget / default cap.
+    /// Returns (display_items, total_patterns, was_capped, fit_truncated).
+    fn prepare_summary(
+        &mut self,
+        top_n: Option<usize>,
+        fit_budget: Option<usize>,
+    ) -> Result<(Vec<(usize, String)>, usize, bool, usize)> {
+        if !self.batch_buffer.is_empty() {
+            self.process_batch()?;
+        }
+
+        // Merge groups with the same normalized text (default mode keeps them
+        // separate for chronological ordering, but summary wants global counts)
+        let mut merged: HashMap<String, (usize, String)> = HashMap::new();
+        for group in &self.buffer {
+            let key = group.first().normalized.clone();
+            let count = group.count();
+            let representative = group.first().original.clone();
+            merged
+                .entry(key)
+                .and_modify(|(c, _)| *c += count)
+                .or_insert((count, representative));
+        }
+
+        // Sort by count descending; ties broken by the representative line
+        // ascending so the order is deterministic across runs. Without this
+        // secondary key, ahash's per-process HashMap iteration order
+        // determines which tied entry wins the `--top N` cutoff, making the
+        // visible summary differ between processes on the same input.
+        let mut sorted: Vec<(usize, String)> = merged.into_values().collect();
+        sorted.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+
+        let total_patterns = sorted.len();
+        const DEFAULT_SUMMARY_CAP: usize = 30;
+
+        // Apply limit: explicit --top N, --fit budget, or default cap of 30
+        let (display, was_capped, fit_truncated): (Vec<_>, bool, usize) = if let Some(0) = top_n {
+            // --top 0 means show all (no limit, --fit still applies)
+            if let Some(budget) = fit_budget {
+                if sorted.len() > budget {
+                    let show = budget.saturating_sub(1);
+                    let remaining = sorted.len() - show;
+                    (sorted.into_iter().take(show).collect(), false, remaining)
+                } else {
+                    (sorted, false, 0)
+                }
+            } else {
+                (sorted, false, 0)
+            }
+        } else if let Some(n) = top_n {
+            (sorted.into_iter().take(n).collect(), false, 0)
+        } else if let Some(budget) = fit_budget {
+            // --fit replaces the default cap with terminal height
+            if sorted.len() > budget {
+                let show = budget.saturating_sub(1);
+                let remaining = sorted.len() - show;
+                (sorted.into_iter().take(show).collect(), false, remaining)
+            } else {
+                (sorted, false, 0)
+            }
+        } else if total_patterns > DEFAULT_SUMMARY_CAP {
+            (
+                sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(),
+                true,
+                0,
+            )
+        } else {
+            (sorted, false, 0)
+        };
+
+        Ok((display, total_patterns, was_capped, fit_truncated))
+    }
+
+    /// Format a single summary line, optionally truncating to `max_width`.
+    fn format_summary_line(count: usize, representative: &str, max_width: Option<usize>) -> String {
+        let prefix = format!("[{count}x] ");
+        match max_width {
+            Some(width) if prefix.len() + representative.len() > width => {
+                let avail = width.saturating_sub(prefix.len() + 3); // 3 for "..."
+                if avail > 20 {
+                    // Snap the byte budget down to a UTF-8 char boundary so a
+                    // multibyte char straddling `avail` can't panic the slice.
+                    let mut end = avail;
+                    while !representative.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    format!("{prefix}{}...", &representative[..end])
+                } else {
+                    format!("{prefix}{representative}")
+                }
+            }
+            _ => format!("{prefix}{representative}"),
+        }
+    }
+
+    /// Format the coverage message for stderr.
+    fn format_coverage_message(
+        shown_count: usize,
+        total_patterns: usize,
+        shown_lines: usize,
+        total_lines: usize,
+        was_capped: bool,
+    ) -> String {
+        let coverage = if total_lines > 0 {
+            (shown_lines as f64 / total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+        if was_capped {
+            format!(
+                "({shown_count} of {total_patterns} patterns, {coverage:.0}% coverage — use --top N to adjust, or --top 0 for all)",
+            )
+        } else {
+            format!(
+                "({shown_count} of {total_patterns} patterns, {shown_lines} of {total_lines} lines, {coverage:.0}% coverage)",
+            )
+        }
+    }
+
+    /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
+    /// Uses the parallel pipeline for normalization, then merges groups with identical
+    /// normalized text and displays representative original lines.
+    #[cfg_attr(test, mutants::skip)] // Thin I/O wrapper: writes to stdout/stderr which cannot be captured in unit tests without refactoring
+    pub fn finish_summary(
+        &mut self,
+        top_n: Option<usize>,
+        fit_budget: Option<usize>,
+    ) -> Result<()> {
+        let (display, total_patterns, was_capped, fit_truncated) =
+            self.prepare_summary(top_n, fit_budget)?;
+        let shown_count = display.len();
+
+        // Detect terminal width for summary truncation (unlimited when piped)
+        use std::io::IsTerminal;
+        let max_width: Option<usize> = if std::io::stdout().is_terminal() {
+            terminal_size::terminal_size().map(|(w, _)| w.0 as usize)
+        } else {
+            None
+        };
+
+        // Output: one line per pattern with representative original line.
+        // Like every other stdout path, a broken pipe (e.g. `| head`) is a
+        // clean exit, not an error.
+        let stdout = io::stdout();
+        let mut handle = stdout.lock();
+        let mut write_line = |s: String| -> Result<()> {
+            match writeln!(handle, "{s}") {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                    std::process::exit(0);
+                }
+                Err(e) => Err(e.into()),
+            }
+        };
+        for (count, representative) in &display {
+            write_line(Self::format_summary_line(*count, representative, max_width))?;
+        }
+
+        if fit_truncated > 0 {
+            write_line(format!(
+                "... {fit_truncated} more patterns (remove --fit for full output)"
+            ))?;
+        }
+
+        // Coverage info on stderr
+        let shown_lines: usize = display.iter().map(|(c, _)| c).sum();
+        eprintln!(
+            "{}",
+            Self::format_coverage_message(
+                shown_count,
+                total_patterns,
+                shown_lines,
+                self.stats.total_lines,
+                was_capped,
+            )
+        );
+
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<String>> {
+        // Constitutional compliance: Process any remaining batch
+        if !self.batch_buffer.is_empty() {
+            self.process_batch()?;
+        }
+
+        let mut output = Vec::new();
+
+        // Sort groups by position to maintain chronological order
+        self.buffer.sort_by_key(|group| group.position);
+
+        // Flush all remaining groups in chronological order. take() empties
+        // the buffer in O(1); the old remove(0) loop shifted the whole
+        // vector on every iteration (O(n²) in buffered groups).
+        for group in std::mem::take(&mut self.buffer) {
+            let formatted = self.format_group_dispatch(&group)?;
+            // Track output lines: count newlines in formatted output + 1 for the last line
+            self.stats.output_lines += formatted.lines().count();
+            output.push(formatted);
+        }
+
+        Ok(output)
+    }
+
+    /// Finish processing and return the top N groups by frequency.
+    /// Returns (count, formatted_output) pairs sorted by count descending,
+    /// plus (total_groups, total_lines_covered_by_shown).
+    pub fn finish_top_n(&mut self, n: usize) -> Result<(Vec<(usize, String)>, usize, usize)> {
+        if !self.batch_buffer.is_empty() {
+            self.process_batch()?;
+        }
+
+        // Collect all groups with their counts
+        let mut groups_with_counts: Vec<(usize, PatternGroup)> =
+            self.buffer.drain(..).map(|g| (g.count(), g)).collect();
+
+        // Sort by count descending; ties broken by the group's normalized
+        // representative ascending so the cutoff at `take(n)` is
+        // deterministic across runs (otherwise ahash's per-process HashMap
+        // iteration order shuffles tied entries past the cap).
+        groups_with_counts.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| a.1.first().normalized.cmp(&b.1.first().normalized))
+        });
+
+        let total_groups = groups_with_counts.len();
+        let total_input_lines = self.stats.total_lines;
+
+        // Take top N
+        let top_groups: Vec<(usize, PatternGroup)> =
+            groups_with_counts.into_iter().take(n).collect();
+
+        let lines_covered: usize = top_groups.iter().map(|(c, _)| c).sum();
+
+        let mut output = Vec::new();
+        for (count, group) in top_groups {
+            let formatted = self.format_group_dispatch(&group)?;
+            self.stats.output_lines += formatted.lines().count();
+            output.push((count, formatted));
+        }
+
+        // Store total_input_lines for coverage calc
+        Ok((
+            output,
+            total_groups,
+            if total_input_lines > 0 {
+                (lines_covered as f64 / total_input_lines as f64 * 100.0) as usize
+            } else {
+                0
+            },
+        ))
+    }
+
+    /// Determine if buffer should be flushed based on memory management
+    fn should_flush_buffer(&self) -> bool {
+        // Constitutional flush threshold: Use dynamic memory management instead of arbitrary limits
+        // This maintains pattern detection quality while following "complete files in memory" principle
+        const CONSTITUTIONAL_FLUSH_THRESHOLD: usize = 1000;
+        self.buffer.len() > CONSTITUTIONAL_FLUSH_THRESHOLD
+    }
+
+    fn count_pattern_types(&mut self, tokens: &[Token]) {
+        for token in tokens {
+            match token {
+                Token::Timestamp(_) => self.stats.timestamps += 1,
+                Token::IPv4(_) | Token::IPv6(_) => self.stats.ips += 1,
+                Token::Fqdn(_) => self.stats.fqdns += 1,
+                Token::Port(_) => self.stats.ports += 1,
+                Token::Hash(_, _) => self.stats.hashes += 1,
+                Token::Uuid(_) => self.stats.uuids += 1,
+                Token::Pid(_) | Token::ThreadID(_) => self.stats.pids += 1,
+                Token::Duration(_) => self.stats.durations += 1,
+                Token::Size(_) => self.stats.sizes += 1,
+                Token::Number(_) => self.stats.percentages += 1, // Numbers often include percentages
+                Token::HttpStatus(_) | Token::HttpStatusClass(_) => self.stats.http_status += 1,
+                Token::Path(_) => self.stats.paths += 1,
+                Token::Json(_) => self.stats.json += 1,
+                Token::QuotedString(_) => self.stats.quoted_strings += 1,
+                Token::Name(_) => self.stats.names += 1,
+                Token::KubernetesNamespace(_)
+                | Token::VolumeName(_)
+                | Token::PluginType(_)
+                | Token::PodName(_) => self.stats.kubernetes += 1,
+                Token::BracketContext(_) => self.stats.brackets += 1,
+                Token::KeyValuePair { .. } => self.stats.key_values += 1,
+                Token::LogWithModule { .. } => self.stats.log_modules += 1,
+                Token::StructuredMessage { .. } => self.stats.structured += 1,
+                Token::Email(_) => self.stats.emails += 1,
+            }
+        }
+    }
+
+    #[cfg_attr(test, mutants::skip)] // PII masking interactions with essence_mode create equivalent mutants: sanitize_pii && !essence_mode branch is hard to distinguish from replacing the whole conditional
+    fn format_group(&mut self, group: &PatternGroup, rollup: &GroupRollup) -> Result<String> {
+        if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
+            self.stats.collapsed_groups += 1;
+            // First, summary, and last lines are output. saturating_sub
+            // guards against a directly-constructed Config (the CLI floor
+            // is 3, but `Config.min_collapse` is a public field) that lets
+            // a 2-line group reach here and underflow count - 3.
+            self.stats.lines_saved += group.count().saturating_sub(3);
+
+            // Phase 4: when the rollup has any worthwhile content, render
+            // the richer compact marker directly. Otherwise fall through
+            // to the legacy `format_collapsed_line` path — this applies
+            // to small groups whose rollup was skipped (see
+            // `format_group_dispatch`), keeping behaviour unchanged for
+            // that code path.
+            let collapsed_line = if !rollup.is_empty() {
+                let first_ts = first_timestamp_in(&group.first().tokens);
+                let last_ts = first_timestamp_in(&group.last().tokens);
+                render_compact_marker(
+                    group.count() - 2,
+                    rollup,
+                    first_ts.as_deref(),
+                    last_ts.as_deref(),
+                    ROLLUP_TEXT_SAMPLE_THRESHOLD,
+                    self.config.essence_mode,
+                )
+            } else {
+                self.normalizer.format_collapsed_line(
+                    group.first(),
+                    group.last(),
+                    group.count() - 2, // Don't count first and last in collapse count
+                )
+            };
+
+            // Format output: first line, collapsed summary, last line
+            let mut result = String::new();
+            let first_line = if self.config.essence_mode {
+                // Constitutional essence mode: use timestamp-removed text
+                &group.first().normalized
+            } else {
+                // Standard mode: use original text (with optional PII masking)
+                &group.first().original
+            };
+
+            // Apply PII masking if enabled
+            let first_line_output = if self.config.sanitize_pii && !self.config.essence_mode {
+                apply_pii_masking(first_line, &group.first().tokens)
+            } else {
+                first_line.clone()
+            };
+            result.push_str(&first_line_output);
+            result.push('\n');
+            result.push_str(&collapsed_line);
+
+            // Only add last line if it's different from first
+            if group.count() > 1 {
+                let last_line = if self.config.essence_mode {
+                    // Constitutional essence mode: use timestamp-removed text
+                    &group.last().normalized
+                } else {
+                    // Standard mode: use original text (with optional PII masking)
+                    &group.last().original
+                };
+
+                // In essence mode, only show last line if it's actually different from first
+                // (after timestamp tokenization, truly similar lines should have identical normalized text)
+                if !self.config.essence_mode || first_line != last_line {
+                    result.push('\n');
+
+                    // Apply PII masking if enabled
+                    let last_line_output = if self.config.sanitize_pii && !self.config.essence_mode
+                    {
+                        apply_pii_masking(last_line, &group.last().tokens)
+                    } else {
+                        last_line.clone()
+                    };
+                    result.push_str(&last_line_output);
+                }
+            }
+
+            Ok(result)
+        } else {
+            // Output lines individually
+            let mut result = String::new();
+
+            if self.config.essence_mode {
+                // In essence mode, show only the first occurrence of each unique pattern
+                let line_text = &group.first().normalized;
+                result.push_str(line_text);
+                // Track lines saved (all duplicate lines in the group)
+                if group.count() > 1 {
+                    self.stats.lines_saved += group.count().saturating_sub(1);
+                }
+            } else {
+                // Standard mode: output all lines individually (with optional PII masking)
+                for (i, line) in group.lines.iter().enumerate() {
+                    if i > 0 {
+                        result.push('\n');
+                    }
+
+                    // Apply PII masking if enabled
+                    let line_output = if self.config.sanitize_pii {
+                        apply_pii_masking(&line.original, &line.tokens)
+                    } else {
+                        line.original.clone()
+                    };
+                    result.push_str(&line_output);
+                }
+            }
+            Ok(result)
+        }
+    }
+
+    pub fn print_stats<W: Write>(&self, writer: &mut W) -> Result<()> {
+        // Calculate metrics
+        let compression_ratio = if self.stats.total_lines > 0 {
+            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let output_lines = self.stats.output_lines;
+
+        // Output markdown report
+        writeln!(writer, "\n---")?;
+        writeln!(writer, "# lessence Compression Report")?;
+        writeln!(
+            writer,
+            "*Generated by lessence v{} on {}*",
+            env!("CARGO_PKG_VERSION"),
+            crate::report::timestamp().format("%Y-%m-%dT%H:%M:%SZ")
+        )?;
+        writeln!(writer)?;
+        writeln!(writer, "## Summary")?;
+        writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
+        writeln!(
+            writer,
+            "- **Compressed**: {output_lines} lines ({compression_ratio:.1}% reduction)"
+        )?;
+        writeln!(
+            writer,
+            "- **Patterns detected**: {} across {} categories",
+            self.stats.patterns_detected,
+            self.count_active_pattern_types()
+        )?;
+        writeln!(
+            writer,
+            "- **Collapsed groups**: {} ({} lines saved)",
+            self.stats.collapsed_groups, self.stats.lines_saved
+        )?;
+        writeln!(writer)?;
+
+        // Pattern distribution table
+        writeln!(writer, "## Pattern Distribution")?;
+        writeln!(writer, "| Pattern Type | Count | Description |")?;
+        writeln!(writer, "|--------------|-------|-------------|")?;
+
+        for (label, count, description) in self.stats.pattern_counters() {
+            if count > 0 {
+                writeln!(writer, "| {label} | {count} | {description} |")?;
+            }
+        }
+
+        writeln!(writer)?;
+
+        // Analysis guidance
+        writeln!(writer, "## Recommendations for Analysis")?;
+        if compression_ratio > 90.0 {
+            writeln!(
+                writer,
+                "- **High compression ratio** ({compression_ratio:.1}%) indicates many repetitive patterns"
+            )?;
+        } else if compression_ratio > 70.0 {
+            writeln!(
+                writer,
+                "- **Moderate compression ratio** ({compression_ratio:.1}%) indicates some repetitive patterns"
+            )?;
+        } else {
+            writeln!(
+                writer,
+                "- **Low compression ratio** ({compression_ratio:.1}%) indicates diverse log content"
+            )?;
+        }
+
+        writeln!(
+            writer,
+            "- **Search strategy**: Use compressed output to identify error types, then grep original logs for details"
+        )?;
+        writeln!(
+            writer,
+            "- **Variation indicators**: Pay attention to `[+N similar, varying: X, Y]` to understand what changes between similar errors"
+        )?;
+        writeln!(
+            writer,
+            "- **Focus areas**: Unique error messages that couldn't be compressed likely indicate distinct issues"
+        )?;
+
+        if self.stats.collapsed_groups > 50 {
+            writeln!(
+                writer,
+                "- **High pattern repetition**: {} collapsed groups suggest systematic issues worth investigating",
+                self.stats.collapsed_groups
+            )?;
+        }
+
+        writeln!(writer, "---")?;
+
+        Ok(())
+    }
+
+    /// Build the JSON stats structure (testable, no I/O).
+    fn build_stats_json(&self, elapsed: Duration) -> StatsJson {
+        let compression_ratio = if self.stats.total_lines > 0 {
+            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        StatsJson {
+            input_lines: self.stats.total_lines,
+            output_lines: self.stats.output_lines,
+            compression_ratio,
+            collapsed_groups: self.stats.collapsed_groups,
+            lines_saved: self.stats.lines_saved,
+            patterns_detected: self.stats.patterns_detected,
+            elapsed_ms: elapsed.as_millis() as u64,
+            pattern_hits: self.stats.pattern_hits(),
+        }
+    }
+
+    #[cfg_attr(test, mutants::skip)] // Writes to stderr, cannot verify in unit tests without refactoring
+    pub fn print_stats_json(&self, elapsed: Duration) -> Result<()> {
+        let stats_json = self.build_stats_json(elapsed);
+        let stderr = io::stderr();
+        let mut handle = stderr.lock();
+        serde_json::to_writer(&mut handle, &stats_json)?;
+        writeln!(handle)?;
+        Ok(())
+    }
+
+    fn count_active_pattern_types(&self) -> usize {
+        self.stats
+            .pattern_counters()
+            .iter()
+            .filter(|(_, count, _)| *count > 0)
+            .count()
+    }
+
+    /// Parallel batch processing: normalize in parallel, cluster sequentially
+    fn process_batch(&mut self) -> Result<()> {
+        let batch = std::mem::take(&mut self.batch_buffer);
+        let processed_lines = self.parallel_pattern_detection(&batch)?;
+
+        for processed_line in processed_lines {
+            self.sequential_clustering(processed_line)?;
+        }
+        Ok(())
+    }
+
+    /// Phase 1: Parallel pattern detection and normalization (the CPU-intensive work)
+    fn parallel_pattern_detection(&self, lines: &[String]) -> Result<Vec<LogLine>> {
+        use rayon::prelude::*;
+
+        // This is where the real CPU work happens - parallel regex pattern detection
+        let processed_lines: Vec<LogLine> = lines
+            .par_iter()
+            .map(|line| {
+                // CPU-intensive pattern detection - perfectly parallelizable
+                self.normalizer.normalize_line(line.clone())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(processed_lines)
+    }
+
+    /// Phase 2: Fast sequential clustering using pre-computed normalized lines
+    fn sequential_clustering(&mut self, normalized_line: LogLine) -> Result<()> {
+        // Fast clustering using pre-computed patterns and hashes
+        if !normalized_line.tokens.is_empty() {
+            self.stats.patterns_detected += 1;
+            self.count_pattern_types(&normalized_line.tokens);
+        }
+
+        // Fast similarity matching using pre-computed normalized text
+        let mut match_index = None;
+        for (i, group) in self.buffer.iter().enumerate() {
+            if self.normalizer.are_similar(&normalized_line, group.first()) {
+                match_index = Some(i);
+                break;
+            }
+        }
+
+        if let Some(index) = match_index {
+            // In parallel mode, position_counter is the end-of-batch position,
+            // not the per-line position. Line numbers in parallel mode are
+            // therefore approximate — accurate single-threaded, batch-granular
+            // parallel. Documented in the JSON schema.
+            self.buffer[index].add_line(normalized_line, self.position_counter);
+        } else {
+            self.buffer
+                .push(PatternGroup::new(normalized_line, self.position_counter));
+        }
+
+        Ok(())
+    }
+
+    /// Sequential processing for constitutional compliance (used internally)
+    /// Get current statistics (for preflight analysis)
+    pub fn get_stats(&self) -> &FoldingStats {
+        &self.stats
+    }
+}
+
+#[cfg(test)]
+mod tests;
