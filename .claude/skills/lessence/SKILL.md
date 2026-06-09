@@ -56,7 +56,7 @@ lessence --summary < app.log          # compact one-line-per-pattern overview (c
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
-lessence -q < app.log                 # suppress stats footer
+lessence -q < app.log                 # suppress stats footer (footer goes to stderr since 0.4.4 — stdout is always pipe-clean)
 ```
 
 ## Reading the Output
@@ -99,7 +99,7 @@ is a `"summary"` with aggregate statistics. Key fields per group:
 }
 ```
 
-- **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation.
+- **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation. Hostnames appear under their own `FQDN` key since 0.4.4 (older versions mislabeled them `IPV4`).
 - **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION).
 - **`capped: true`** — distinct_count is a lower bound (at least 64 and possibly more).
 - **`normalized`** — the template with `<TOKEN>` placeholders; this is what lessence groups by.

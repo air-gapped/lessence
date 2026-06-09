@@ -17,7 +17,7 @@ for a specific count, or drill into specific patterns with default mode.
 |------|---------|-------------|
 | `--format text\|markdown\|json` | `text` | Output format. `json` emits JSONL with per-group rollup metadata (best for agents — see SKILL.md). Markdown adds headers and code blocks for reports. |
 | `-q` / `--quiet` | off | Suppress statistics footer. Alias: `--no-stats`. |
-| `--stats-json` | off | Emit JSON statistics to stderr instead of human-readable footer. |
+| `--stats-json` | off | Emit JSON statistics to stderr instead of the human-readable footer (which also goes to stderr since 0.4.4 — stdout carries only log output). |
 | `--top N` | off | Show only the N most frequent patterns, sorted by count descending. |
 
 ## Pattern Control
@@ -25,7 +25,7 @@ for a specific count, or drill into specific patterns with default mode.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--essence` | off | Strip timestamps before normalization. Lines differing only by time merge. Useful for comparing log structure across time periods. |
-| `--threshold N` | 75 | Similarity percentage (0-100) required to group lines. Lower = more aggressive grouping. |
+| `--threshold N` | 75 | Similarity percentage (0-100) required to group lines — since 0.4.4, the share of whitespace tokens two normalized lines have in common (longest common subsequence, so an inserted token no longer breaks grouping). Lower = more aggressive grouping. |
 | `--min-collapse N` | 3 | Minimum lines in a group before folding. 3 is also the floor — the binary rejects lower values. |
 | `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. |
 
