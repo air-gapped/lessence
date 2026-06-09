@@ -133,6 +133,7 @@ pub struct FoldingStats {
     pub timestamps: usize,
     pub ips: usize,
     pub ports: usize,
+    pub fqdns: usize,
     pub hashes: usize,
     pub uuids: usize,
     pub pids: usize,
@@ -157,7 +158,7 @@ impl FoldingStats {
     /// Single source of truth for the Pattern Distribution table and the
     /// active-category count, so a new counter cannot be forgotten in one
     /// place but not the other.
-    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 20] {
+    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 21] {
         [
             (
                 "Timestamps",
@@ -166,6 +167,7 @@ impl FoldingStats {
             ),
             ("IP Addresses", self.ips, "IPv4, IPv6, network addresses"),
             ("Ports", self.ports, "Network port numbers"),
+            ("Hostnames", self.fqdns, "Fully-qualified domain names"),
             (
                 "Hashes",
                 self.hashes,
@@ -247,6 +249,7 @@ impl FoldingStats {
             timestamps: self.timestamps,
             ips: self.ips,
             ports: self.ports,
+            fqdns: self.fqdns,
             hashes: self.hashes,
             uuids: self.uuids,
             pids: self.pids,
@@ -285,6 +288,7 @@ struct PatternHits {
     timestamps: usize,
     ips: usize,
     ports: usize,
+    fqdns: usize,
     hashes: usize,
     uuids: usize,
     pids: usize,
@@ -373,6 +377,7 @@ fn token_type_name(token: &Token) -> &'static str {
         Token::Timestamp(_) => "TIMESTAMP",
         Token::IPv4(_) => "IPV4",
         Token::IPv6(_) => "IPV6",
+        Token::Fqdn(_) => "FQDN",
         Token::Port(_) => "PORT",
         Token::Hash(_, _) => "HASH",
         Token::Uuid(_) => "UUID",
@@ -485,6 +490,7 @@ fn is_sample_worthy(token: &Token) -> bool {
         Token::Uuid(_)
             | Token::IPv4(_)
             | Token::IPv6(_)
+            | Token::Fqdn(_)
             | Token::Path(_)
             | Token::Email(_)
             | Token::Hash(_, _)
@@ -509,6 +515,7 @@ fn token_value_string(token: &Token) -> String {
         Token::Timestamp(s)
         | Token::IPv4(s)
         | Token::IPv6(s)
+        | Token::Fqdn(s)
         | Token::Uuid(s)
         | Token::Path(s)
         | Token::Json(s)
@@ -1303,6 +1310,7 @@ impl PatternFolder {
             match token {
                 Token::Timestamp(_) => self.stats.timestamps += 1,
                 Token::IPv4(_) | Token::IPv6(_) => self.stats.ips += 1,
+                Token::Fqdn(_) => self.stats.fqdns += 1,
                 Token::Port(_) => self.stats.ports += 1,
                 Token::Hash(_, _) => self.stats.hashes += 1,
                 Token::Uuid(_) => self.stats.uuids += 1,

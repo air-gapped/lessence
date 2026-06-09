@@ -13,6 +13,7 @@ expression: normalized
     "brackets": 0,
     "durations": 0,
     "emails": 0,
+    "fqdns": 0,
     "hashes": 0,
     "http_status": 0,
     "ips": 0,

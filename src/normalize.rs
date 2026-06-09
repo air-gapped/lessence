@@ -374,6 +374,7 @@ impl Normalizer {
                 Token::Timestamp(v) => ("timestamp", v.clone()),
                 Token::IPv4(v) => ("IP", v.clone()),
                 Token::IPv6(v) => ("IP", v.clone()),
+                Token::Fqdn(v) => ("FQDN", v.clone()),
                 Token::Port(v) => ("port", v.to_string()),
                 Token::Hash(_, v) => ("hash", v.clone()),
                 Token::Uuid(v) => ("UUID", v.clone()),

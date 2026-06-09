@@ -22,6 +22,7 @@ pub enum Token {
     Timestamp(String),
     IPv4(String),
     IPv6(String),
+    Fqdn(String),
     Port(u16),
     Hash(HashType, String),
     Uuid(String),

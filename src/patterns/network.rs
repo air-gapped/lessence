@@ -200,19 +200,79 @@ impl NetworkDetector {
         }
 
         if normalize_fqdns {
-            // FQDN detection (experimental)
+            // FQDN detection. The token gate and the text replacement share
+            // is_likely_fqdn so a rejected match is left untouched.
             for cap in FQDN_REGEX.find_iter(&result) {
                 let fqdn_str = cap.as_str();
-                // Basic heuristic to avoid matching code patterns
-                if fqdn_str.contains('.') && !fqdn_str.starts_with('.') && !fqdn_str.ends_with('.')
-                {
-                    tokens.push(Token::IPv4(fqdn_str.to_string())); // Reuse IPv4 token type for now
+                if Self::is_likely_fqdn(fqdn_str) {
+                    tokens.push(Token::Fqdn(fqdn_str.to_string()));
                 }
             }
-            result = FQDN_REGEX.replace_all(&result, "<FQDN>").to_string();
+            result = FQDN_REGEX
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let m = caps.get(0).unwrap().as_str();
+                    if Self::is_likely_fqdn(m) {
+                        "<FQDN>".to_string()
+                    } else {
+                        m.to_string()
+                    }
+                })
+                .to_string();
         }
 
         (result, tokens)
+    }
+
+    /// Heuristic separating real domain names from dotted code identifiers
+    /// (hibernate.SQL, scope.go, module.function). Requires the final label
+    /// to be a known TLD. Deliberately no "lowercase multi-label" fallback:
+    /// Java package names are lowercase dotted and would all match.
+    fn is_likely_fqdn(s: &str) -> bool {
+        const COMMON_TLDS: &[&str] = &[
+            "com",
+            "net",
+            "org",
+            "io",
+            "dev",
+            "edu",
+            "gov",
+            "mil",
+            "int",
+            "info",
+            "biz",
+            "app",
+            "ai",
+            "cloud",
+            "tech",
+            "co",
+            "us",
+            "uk",
+            "de",
+            "fr",
+            "nl",
+            "se",
+            "no",
+            "fi",
+            "dk",
+            "eu",
+            "ca",
+            "au",
+            "jp",
+            "cn",
+            "in",
+            "br",
+            "arpa",
+            // Internal / cluster suffixes
+            "local",
+            "internal",
+            "localdomain",
+            "lan",
+            "corp",
+            "home",
+            "svc",
+        ];
+        s.rsplit_once('.')
+            .is_some_and(|(_, tld)| COMMON_TLDS.contains(&tld))
     }
 
     /// Lightweight pre-filter to validate IPv6 structural plausibility before regex execution
@@ -297,11 +357,11 @@ impl NetworkDetector {
         if normalize_ports && text.contains(':') {
             return true; // Potential port number
         }
-        if normalize_fqdns
-            && (text.contains('.')
-                && (text.contains("com") || text.contains("org") || text.contains("net")))
-        {
-            return true; // Potential FQDN
+        // Any dotted text is a potential FQDN — precision comes from
+        // is_likely_fqdn's TLD gate, not from this prefilter. (With
+        // normalize_ips on, dotted lines already pass the check above.)
+        if normalize_fqdns && text.contains('.') {
+            return true;
         }
         false
     }
@@ -808,12 +868,17 @@ mod tests {
     }
 
     #[test]
-    fn net_ind_fqdn_dot_but_no_tld_keyword() {
-        // normalize_fqdns=true, text has a dot but no "com"/"org"/"net" => should be false
-        // kills: `&& with ||` on line 302 (the inner &&)
-        assert!(!NetworkDetector::has_network_indicators(
+    fn net_ind_fqdn_any_dot_passes() {
+        // The fqdn prefilter arm is dot-only; precision lives in
+        // is_likely_fqdn's TLD gate, so "file.txt" passes the prefilter
+        // but produces no token or rewrite downstream.
+        assert!(NetworkDetector::has_network_indicators(
             "file.txt", false, false, true
         ));
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("open file.txt ok", false, false, true);
+        assert_eq!(result, "open file.txt ok");
+        assert!(tokens.is_empty());
     }
 
     #[test]
@@ -874,8 +939,34 @@ mod tests {
         assert!(
             tokens
                 .iter()
-                .any(|t| matches!(t, Token::IPv4(s) if s == "example.com")),
-            "valid FQDN should produce IPv4 token: {tokens:?}"
+                .any(|t| matches!(t, Token::Fqdn(s) if s == "example.com")),
+            "valid FQDN should produce Fqdn token: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn fqdn_rejects_dotted_code_identifiers() {
+        // hibernate.SQL / scope.go style identifiers must neither tokenize
+        // nor be rewritten in the text.
+        for line in ["loading hibernate.SQL config", "file scope.go ok"] {
+            let (result, tokens) = NetworkDetector::detect_and_replace(line, false, false, true);
+            assert_eq!(result, line, "code identifier must stay intact");
+            assert!(
+                !tokens.iter().any(|t| matches!(t, Token::Fqdn(_))),
+                "no FQDN token expected for {line}: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fqdn_accepts_internal_cluster_names() {
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("dial postgres.staging.svc ok", false, false, true);
+        assert!(result.contains("<FQDN>"), "got: {result}");
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::Fqdn(s) if s == "postgres.staging.svc")),
         );
     }
 
