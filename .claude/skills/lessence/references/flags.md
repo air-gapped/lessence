@@ -15,7 +15,7 @@ for a specific count, or drill into specific patterns with default mode.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format text\|markdown` | `text` | Output format. Markdown adds headers and code blocks for reports. |
+| `--format text\|markdown\|json` | `text` | Output format. `json` emits JSONL with per-group rollup metadata (best for agents — see SKILL.md). Markdown adds headers and code blocks for reports. |
 | `-q` / `--quiet` | off | Suppress statistics footer. Alias: `--no-stats`. |
 | `--stats-json` | off | Emit JSON statistics to stderr instead of human-readable footer. |
 | `--top N` | off | Show only the N most frequent patterns, sorted by count descending. |
@@ -26,7 +26,7 @@ for a specific count, or drill into specific patterns with default mode.
 |------|---------|-------------|
 | `--essence` | off | Strip timestamps before normalization. Lines differing only by time merge. Useful for comparing log structure across time periods. |
 | `--threshold N` | 75 | Similarity percentage (0-100) required to group lines. Lower = more aggressive grouping. |
-| `--min-collapse N` | 3 | Minimum lines in a group before folding. Set to 2 for maximum compression. |
+| `--min-collapse N` | 3 | Minimum lines in a group before folding. 3 is also the floor — the binary rejects lower values. |
 | `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. |
 
 ### Valid pattern names for `--disable-patterns`
@@ -51,6 +51,14 @@ Example: `--disable-patterns timestamp,uuid` to keep timestamps and UUIDs litera
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--fail-on-pattern REGEX` | none | Exit code 1 if any input line matches the regex. Exit code 2 if regex is invalid. |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success (also when output pipe closes early, e.g. `\| head`) |
+| 1 | `--fail-on-pattern` matched, or a named input file could not be opened (remaining files are still processed, like cat/grep) |
+| 2 | Invalid `--fail-on-pattern` regex |
 
 ## Performance
 

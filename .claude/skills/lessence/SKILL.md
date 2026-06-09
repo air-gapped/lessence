@@ -9,11 +9,13 @@ when_to_use: >-
   the error", "what's the pattern", "compress logs", "feed logs to LLM",
   "reduce context", or when looking at kubectl logs, docker logs, journalctl
   output, CI failures, crash loops, test failures, or anything not normal in
-  log output. Use for triage of any large log.
+  log output. Use for triage of any large log. Does NOT trigger for short
+  output (under ~50 lines) or when the search keyword is already known —
+  plain grep suffices there.
 license: MIT
 ---
 
-# lessence — Extract the Essence of Your Logs
+# lessence — Extract the Essence of Massive Logs
 
 lessence ("log essence") finds the essence of massive log output. Pipe
 thousands of lines through it and get back the distinct patterns with
@@ -73,7 +75,7 @@ INFO [auth] Login succeeded user="admin@corp.com"
 - **`13:07:09 → 14:52:33`** = time range of the group (first and last timestamp).
 - **`ipv4×4`** = 4 distinct IP addresses in this group. Low count = narrow problem; high count = widespread.
 - **`port×2 {5432, 6379}`** = only 2 distinct ports, both shown inline (complete set).
-- **`hash×1024+`** = the distinct-value cap was hit. The `+` means "at least 1024 and possibly many more."
+- **`hash×64+`** = the distinct-value cap (64) was hit. The `+` means "at least 64 and possibly many more."
 - **Few groups** = one dominant problem (focused debugging)
 - **Many groups** = diverse issues (investigate each group)
 - **Lines WITHOUT `[+N similar]`** = unique events — often the actual root cause
@@ -207,22 +209,10 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
 # Exit code 1 if pattern found, 0 if clean
 ```
 
-## Pitfall: --top N Can Hide the Signal
-
-`--top N` shows the N **most frequent** patterns. In noisy logs, the most
-frequent lines are often the harmless ones (warnings, health checks, info
-spam). The actual error may appear only once and get excluded.
-
-**Use `--top` for**: understanding the dominant behavior, finding the
-repeating problem in crash loops, capacity planning.
-
-**Don't use `--top` for**: finding a needle in a haystack. Use plain
-`lessence` or `lessence -q | grep error` instead.
-
 ## Common Mistakes
 
 - **"Compression too aggressive"** — high compression means few distinct patterns. Check `--stats-json` for exact counts.
-- **"Error didn't appear"** — `--top N` excludes rare lines. Run without `--top` or pipe through `grep`.
+- **"Error didn't appear"** — `--top N` shows the N **most frequent** patterns, which in noisy logs are often the harmless ones; a one-off error gets excluded. `--top` is for dominant behavior (crash loops, capacity); for needle-in-haystack use plain `lessence -q | grep -i error`.
 - **"`varying: IP` — different clients?"** — not necessarily. lessence groups by pattern, not by value. Varying IPs may be the same source.
 - **"--essence had no effect"** — only helps when timestamps are the sole differentiator between lines.
 - **"Short lines dominate --top"** — JSON fragments like `],` or `}` are high-frequency noise. Filter with `grep -v '^.\{0,10\}$'` first, or increase N.
@@ -233,3 +223,6 @@ repeating problem in crash loops, capacity planning.
   (`--sanitize-pii`, `--max-line-length`, `--max-lines`), pattern control
   (`--threshold`, `--min-collapse`, `--disable-patterns`), and CI integration
   (`--fail-on-pattern`). Consult when needing a flag beyond the core set above.
+- **`references/sources.md`** — Per-claim verification stamps against the repo's
+  binary and docs. Consult when a claim looks stale; re-verify after user-facing
+  `feat:`/`fix:` commits.

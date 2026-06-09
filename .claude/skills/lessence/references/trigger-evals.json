@@ -1,0 +1,15 @@
+[
+  {"query": "kubectl logs gives me 50,000 lines and I can't find the actual error", "should_trigger": true, "source": "description-paraphrase"},
+  {"query": "this CI build log is a wall of text, what's actually failing?", "should_trigger": true, "source": "when_to_use"},
+  {"query": "the api pod is crash looping — figure out what's wrong from its logs", "should_trigger": true, "source": "body-workflow"},
+  {"query": "I want to feed this huge log file to an LLM without blowing the context window", "should_trigger": true, "source": "when_to_use"},
+  {"query": "journalctl output from the last week is way too much to read, summarize what's going on", "should_trigger": true, "source": "when_to_use"},
+  {"query": "what distinct patterns show up in this 100k-line app.log?", "should_trigger": true, "source": "description-paraphrase"},
+  {"query": "compress these docker compose logs so I can see the signal in the noise", "should_trigger": true, "source": "description-paraphrase"},
+  {"query": "grep for ERROR in app.log and show me the matching lines", "should_trigger": false, "source": "known-keyword-decoy"},
+  {"query": "show me the last 20 lines of the server log", "should_trigger": false, "source": "short-output-decoy"},
+  {"query": "write a logging middleware for my express app", "should_trigger": false, "source": "adjacent-domain"},
+  {"query": "set up log rotation with logrotate for /var/log/app", "should_trigger": false, "source": "adjacent-domain"},
+  {"query": "add a debug log statement to this function so I can trace the value", "should_trigger": false, "source": "adjacent-domain"},
+  {"query": "my docker container won't start, I think the Dockerfile is wrong", "should_trigger": false, "source": "keyword-collision"}
+]
