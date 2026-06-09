@@ -33,6 +33,13 @@ static HEX_56_REGEX: LazyLock<Regex> =
 pub struct HashDetector;
 
 impl HashDetector {
+    /// A variable-length hex run only counts as a hash when it mixes
+    /// digits and letters — pure digits are numbers, pure letters are
+    /// usually ordinary words.
+    fn looks_like_hash(s: &str) -> bool {
+        s.bytes().any(|b| b.is_ascii_digit()) && s.bytes().any(|b| b.is_ascii_alphabetic())
+    }
+
     /// Quick check: does the text contain a run of 7+ hex characters?
     /// If not, no hash/commit SHA can exist — skip all 9 regex scans.
     fn has_hex_run(text: &str) -> bool {
@@ -116,15 +123,30 @@ impl HashDetector {
         }
         result = HEX_16_REGEX.replace_all(&result, "<HASH>").to_string();
 
-        // Git commit hashes (7-39 chars, after longer ones are processed)
+        // Git commit hashes (7-39 chars, after longer ones are processed).
+        // Require both a digit and a letter: pure digits are numbers
+        // (epoch timestamps, counters — left for the number detector) and
+        // pure letters are usually words that happen to be hex (defaced,
+        // beefed). The gate applies to token AND replacement.
         for cap in GIT_HASH_REGEX.find_iter(&result) {
             let hash_str = cap.as_str();
-            tokens.push(Token::Hash(
-                HashType::Generic(hash_str.len()),
-                hash_str.to_string(),
-            ));
+            if Self::looks_like_hash(hash_str) {
+                tokens.push(Token::Hash(
+                    HashType::Generic(hash_str.len()),
+                    hash_str.to_string(),
+                ));
+            }
         }
-        result = GIT_HASH_REGEX.replace_all(&result, "<HASH>").to_string();
+        result = GIT_HASH_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap().as_str();
+                if Self::looks_like_hash(m) {
+                    "<HASH>".to_string()
+                } else {
+                    m.to_string()
+                }
+            })
+            .to_string();
 
         (result, tokens)
     }
@@ -252,5 +274,23 @@ mod tests {
     #[test]
     fn hex_run_empty() {
         assert!(!HashDetector::has_hex_run(""));
+    }
+
+    #[test]
+    fn generic_hash_requires_digit_and_letter() {
+        // Pure digits (epoch timestamps, counters) and pure-alpha hex
+        // words must pass through untouched.
+        for line in ["epoch 1727676930 done", "word defaced here"] {
+            let (result, tokens) = HashDetector::detect_and_replace(line);
+            assert_eq!(result, line);
+            assert!(
+                tokens.is_empty(),
+                "no hash expected in {line:?}: {tokens:?}"
+            );
+        }
+        // A real short commit hash mixes both.
+        let (result, tokens) = HashDetector::detect_and_replace("commit a3f8b2c deployed");
+        assert_eq!(result, "commit <HASH> deployed");
+        assert_eq!(tokens.len(), 1);
     }
 }
