@@ -893,6 +893,100 @@ mod tests {
         );
     }
 
+    fn raw_line(s: String, hash: u64) -> LogLine {
+        LogLine {
+            original: s.clone(),
+            normalized: s,
+            tokens: vec![],
+            hash,
+        }
+    }
+
+    #[test]
+    fn test_similarity_score_byte_fallback_uneven_ratio() {
+        // Token overflow with a 3/4 positional byte match. Kills the
+        // `==` → `!=` mutant in the fallback loop (a 50/50 split is
+        // invariant under that inversion, this is not).
+        let mk = |tail: char| {
+            let mut s: String = std::iter::repeat_n("a ", 65).collect(); // 130 bytes
+            s.push_str(&"m".repeat(260)); // 260 matching bytes
+            s.push_str(&tail.to_string().repeat(130)); // 130 differing bytes
+            s
+        };
+        let normalizer = Normalizer::new(Config::default());
+        let score = normalizer.similarity_score(&raw_line(mk('X'), 0), &raw_line(mk('Y'), 1));
+        // 390 of 520 bytes match: 75.0
+        assert!(
+            (score - 75.0).abs() < f64::EPSILON,
+            "390/520 matching bytes should give 75.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_whitespace_only_uses_byte_fallback() {
+        // Zero tokens on both sides must take the byte fallback, not the
+        // empty-LCS path (which would score 0 or divide by zero).
+        let normalizer = Normalizer::new(Config::default());
+        let score =
+            normalizer.similarity_score(&raw_line("   ".into(), 0), &raw_line("    ".into(), 1));
+        // 3 of 4 bytes match positionally: 75.0
+        assert!(
+            (score - 75.0).abs() < f64::EPSILON,
+            "whitespace-only lines should byte-compare to 75.0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_one_side_whitespace_only() {
+        // One side tokenless, the other not: must take the byte fallback in
+        // BOTH argument orders (kills `n1 > 0`/`n2 > 0` → `>=` mutants,
+        // which would route into the LCS path and score 0).
+        let normalizer = Normalizer::new(Config::default());
+        let blank = || raw_line("    ".into(), 0);
+        let lead = || raw_line("a   ".into(), 1);
+        for (x, y) in [(blank(), lead()), (lead(), blank())] {
+            let score = normalizer.similarity_score(&x, &y);
+            // 3 of 4 bytes match positionally: 75.0
+            assert!(
+                (score - 75.0).abs() < f64::EPSILON,
+                "tokenless side should byte-compare to 75.0, got {score}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_similarity_score_token_reorder_partial() {
+        // Rotated token order: LCS("alpha beta gamma", "gamma alpha beta")
+        // is 2, not 3 — pins the DP recurrence (prev[j+1] vs prev[j]).
+        let normalizer = Normalizer::new(Config::default());
+        let score = normalizer.similarity_score(
+            &raw_line("alpha beta gamma".into(), 0),
+            &raw_line("gamma alpha beta".into(), 1),
+        );
+        assert!(
+            (score - 200.0 / 3.0).abs() < 1e-9,
+            "rotated tokens share LCS 2 of 3: 66.7, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_similarity_score_at_max_token_capacity() {
+        // Exactly 64 tokens exercises the full DP row width; an off-by-one
+        // in the row arrays panics here.
+        let mk = |last: &str| {
+            let mut s: String = std::iter::repeat_n("tok ", 63).collect();
+            s.push_str(last);
+            s
+        };
+        let normalizer = Normalizer::new(Config::default());
+        let score = normalizer.similarity_score(&raw_line(mk("aaa"), 0), &raw_line(mk("bbb"), 1));
+        // 63 of 64 tokens shared: 2*63/128 = 98.4375
+        assert!(
+            (score - 98.4375).abs() < 1e-9,
+            "63/64 shared tokens should give 98.4375, got {score}"
+        );
+    }
+
     #[test]
     fn test_are_similar_hash_shortcircuit() {
         let normalizer = Normalizer::new(Config::default());
