@@ -186,7 +186,7 @@ struct Cli {
     #[arg(long)]
     sanitize_pii: bool,
 
-    /// Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: no limit)
+    /// Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
     #[arg(long, value_parser = config::parse_size_suffix)]
     max_line_length: Option<usize>,
 
