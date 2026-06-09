@@ -235,9 +235,13 @@ fn test_pattern_compilation_succeeds() {
 fn test_memory_usage_stability() {
     let input = "2025-09-29T10:15:30Z Memory test message";
 
-    // Run many iterations to check for panics or crashes
-    for _ in 0..10000 {
-        let (_result, _tokens) = TimestampDetector::detect_and_replace(input);
+    // Repeated detection must stay correct AND identical on every
+    // iteration (catches state leaking between calls), not merely not
+    // panic.
+    for i in 0..10000 {
+        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        assert_eq!(result, "<TIMESTAMP> Memory test message", "iteration {i}");
+        assert_eq!(tokens.len(), 1, "iteration {i}");
     }
 }
 
@@ -250,12 +254,16 @@ fn test_concurrent_performance() {
 
     let mut handles = vec![];
 
-    // Spawn multiple threads — just verify no panics or deadlocks
+    // Concurrent detection must produce the correct result on every call
+    // in every thread — a wrong result under contention is a real bug,
+    // not just a panic.
     for _ in 0..4 {
         let input_clone = Arc::clone(&input);
         let handle = thread::spawn(move || {
             for _ in 0..250 {
-                let (_result, _tokens) = TimestampDetector::detect_and_replace(&input_clone);
+                let (result, tokens) = TimestampDetector::detect_and_replace(&input_clone);
+                assert_eq!(result, "<TIMESTAMP> Concurrent test message");
+                assert_eq!(tokens.len(), 1);
             }
         });
         handles.push(handle);
@@ -267,9 +275,11 @@ fn test_concurrent_performance() {
 }
 
 #[test]
-fn test_regex_cache_effectiveness() {
-    use std::time::Instant;
-
+fn test_repeated_detection_is_deterministic() {
+    // Replaces a wall-clock "cache effectiveness" check that was too noisy
+    // to fail meaningfully in CI. The property worth pinning is that the
+    // lazily-initialized pattern registry gives byte-identical results on
+    // every subsequent call for every format family.
     let test_inputs = vec![
         "2025-09-29T10:15:30Z ISO format",
         "E0929 13:07:09.181236 3116 K8S format",
@@ -278,25 +288,28 @@ fn test_regex_cache_effectiveness() {
         "timestamp=1727676930 Unix format",
     ];
 
-    // First run — may include lazy init cost
-    let start1 = Instant::now();
-    for input in &test_inputs {
-        let _ = TimestampDetector::detect_and_replace(input);
+    let first: Vec<_> = test_inputs
+        .iter()
+        .map(|i| TimestampDetector::detect_and_replace(i))
+        .collect();
+    // The first four formats must actually exercise the detector; the
+    // bare unix-epoch form is deliberately NOT detected at this level
+    // (too false-positive-prone — key-value handling covers it).
+    for ((result, tokens), input) in first.iter().zip(&test_inputs).take(4) {
+        assert!(
+            result.contains("<TIMESTAMP>"),
+            "expected detection for {input:?}, got {result:?}"
+        );
+        assert!(!tokens.is_empty());
     }
-    let first_run = start1.elapsed();
-
-    // Second run — should benefit from cached patterns
-    let start2 = Instant::now();
-    for input in &test_inputs {
-        let _ = TimestampDetector::detect_and_replace(input);
+    let (unix_result, unix_tokens) = &first[4];
+    assert_eq!(unix_result, test_inputs[4]);
+    assert!(unix_tokens.is_empty());
+    for round in 0..100 {
+        let again: Vec<_> = test_inputs
+            .iter()
+            .map(|i| TimestampDetector::detect_and_replace(i))
+            .collect();
+        assert_eq!(first, again, "results drifted on round {round}");
     }
-    let second_run = start2.elapsed();
-
-    // Second run should not be dramatically slower than first
-    assert!(
-        second_run <= first_run * 3,
-        "Pattern caching not effective: first={}μs, second={}μs",
-        first_run.as_micros(),
-        second_run.as_micros()
-    );
 }

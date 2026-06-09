@@ -37,14 +37,20 @@ fn test_malformed_timestamps() {
         "2025/09/29T10:15:30Z", // Wrong separators
     ];
 
-    for input in malformed_cases {
-        let (result, _tokens) = TimestampDetector::detect_and_replace(input);
-        // Should either reject completely or handle gracefully
-        // Don't crash or produce invalid output
-        assert!(
-            !result.is_empty(),
-            "Should not crash on malformed input: {input}"
-        );
+    // Shape-valid but semantically impossible dates ARE replaced: the
+    // detector is regex-shaped, not a calendar validator, and for folding
+    // purposes treating 2025-02-30 as a timestamp is correct behavior.
+    for input in &malformed_cases[..3] {
+        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        assert_eq!(result, "<TIMESTAMP>", "shape-valid input: {input}");
+        assert_eq!(tokens.len(), 1);
+    }
+    // Wrong separators don't match any format — input must pass through
+    // byte-identical with no tokens.
+    for input in &malformed_cases[3..] {
+        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        assert_eq!(&result, input, "wrong-separator input must be untouched");
+        assert!(tokens.is_empty());
     }
 }
 
@@ -101,10 +107,12 @@ fn test_timestamp_at_boundaries() {
         assert_eq!(tokens.len(), 1);
     }
 
-    // No word boundary separators — detection is implementation-dependent
+    // No word-boundary separators: the embedded timestamp is NOT detected
+    // and the input passes through unchanged.
     let no_sep = "Start2025-09-29T10:15:30ZEnd";
-    let (result, _) = TimestampDetector::detect_and_replace(no_sep);
-    assert!(!result.is_empty()); // Just verify no panic
+    let (result, tokens) = TimestampDetector::detect_and_replace(no_sep);
+    assert_eq!(result, no_sep);
+    assert!(tokens.is_empty());
 }
 
 #[test]
@@ -142,16 +150,12 @@ fn test_false_positive_prevention() {
     ];
 
     for input in false_positives {
-        let (_result, tokens) = TimestampDetector::detect_and_replace(input);
-
-        // Most of these should not be detected as timestamps
-        // Unix timestamps should have very low priority to avoid false positives
-        if !tokens.is_empty() {
-            // If detected, should be a very specific pattern, not generic numbers
-            println!("Detected in '{}': {} tokens", input, tokens.len());
-        }
-        // Don't assert no detection as some might be valid edge cases
-        // The key is that the system doesn't crash
+        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        assert_eq!(&result, input, "false positive rewritten: {input}");
+        assert!(
+            tokens.is_empty(),
+            "no timestamp token expected in {input:?}, got {tokens:?}"
+        );
     }
 }
 
@@ -159,8 +163,10 @@ fn test_false_positive_prevention() {
 fn test_binary_data_safety() {
     // Test with binary-like data that might contain timestamp-like patterns
     let binary_like = "ÿþ2025\x00\x01\x0229T10:15:30Zÿþ";
-    let (result, _tokens) = TimestampDetector::detect_and_replace(binary_like);
+    let (result, tokens) = TimestampDetector::detect_and_replace(binary_like);
 
-    // Should not crash, might or might not detect patterns
-    assert!(!result.is_empty(), "Should handle binary data gracefully");
+    // Control bytes break the timestamp shape: input passes through
+    // unchanged with no tokens (and no panic).
+    assert_eq!(result, binary_like);
+    assert!(tokens.is_empty());
 }

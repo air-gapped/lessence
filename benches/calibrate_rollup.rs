@@ -83,6 +83,7 @@ fn token_type_name(token: &Token) -> &'static str {
         Token::Timestamp(_) => "TIMESTAMP",
         Token::IPv4(_) => "IPV4",
         Token::IPv6(_) => "IPV6",
+        Token::Fqdn(_) => "FQDN",
         Token::Port(_) => "PORT",
         Token::Hash(_, _) => "HASH",
         Token::Uuid(_) => "UUID",
@@ -114,6 +115,7 @@ fn token_value_string(token: &Token) -> String {
         Token::Timestamp(s)
         | Token::IPv4(s)
         | Token::IPv6(s)
+        | Token::Fqdn(s)
         | Token::Uuid(s)
         | Token::Path(s)
         | Token::Json(s)
