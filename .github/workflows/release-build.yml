@@ -37,11 +37,34 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
+          # Full history: the ancestry guard below needs the main branch graph.
+          fetch-depth: 0
+
+      # crates.io publishes are immutable — including the README frozen at the
+      # tag. Only commits that went through the gated release-PR merge (and
+      # therefore passed the doc-contract tests and the release-gate check)
+      # may publish. A tag pushed from a side branch must never reach
+      # crates.io.
+      - name: Refuse to publish a tag that is not on main
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag commit $(git rev-parse HEAD) is not an ancestor of origin/main — it never passed the release merge gate. Refusing to publish to crates.io."
+            exit 1
+          fi
+          echo "tag commit is on main — ok"
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # master
         with:
           toolchain: stable
+
+      # Defense in depth: re-run the doc-contract suite at the exact tag being
+      # published, so shipped doc surfaces provably match the binary that
+      # crates.io will freeze forever.
+      - name: Doc contract at the tag
+        run: cargo test --release --test doc_contract
 
       - name: Authenticate with crates.io
         id: crates-io-auth

@@ -31,7 +31,7 @@ jobs:
             --grep='^(feat|fix|perf)(\(.*\))?!?:' --format='%h %s' -- src/)
           if [ -n "$unverified" ]; then
             echo "$unverified"
-            echo "::error file=.claude/skills/lessence/references/sources.md::Agent skill not re-verified since the behavior change(s) above. FIX: cargo build --release, re-verify each sources.md claim against the binary, update 'Last verified' dates AND set 'verified-at:' to the current main sha, commit to MAIN as 'docs: re-verify agent skill for vX.Y.Z'. The release PR refreshes automatically — do NOT edit the PR branch."
+            echo "::error file=.claude/skills/lessence/references/sources.md::Agent skill not re-verified since the behavior change(s) above. FIX: cargo build --release, re-verify each sources.md claim against the binary, update 'Last verified' dates AND set 'verified-at:' to the current main sha, commit to MAIN as 'docs: re-verify agent skill for vX.Y.Z', then re-run this check: gh run rerun ${GITHUB_RUN_ID} --failed (or 'Re-run jobs' in the UI) — the job checks out current main, so the rerun will pass. A docs-only commit does NOT refresh the release PR, so the check will NOT re-trigger on its own; do NOT edit the PR branch and do NOT use 'gh pr merge --admin'."
             exit 1
           fi
           echo "skill verified-at $sha covers all user-facing src/ commits — ok"

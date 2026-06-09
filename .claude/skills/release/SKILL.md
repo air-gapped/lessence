@@ -111,6 +111,16 @@ Doc/skill drift is **enforced, not checked by hand**:
 - The release PR cannot merge until `test (ubuntu-latest)` AND `release-gate`
   are green. `release-gate` fails if any feat/fix/perf commit touching src/
   postdates the skill's `verified-at:` sha in sources.md — follow its error
-  annotation verbatim (commit the re-verification to MAIN, never the PR branch).
+  annotation verbatim: commit the re-verification to MAIN (never the PR
+  branch), then **re-run the failed check** with
+  `gh run rerun <run-id> --failed` (or "Re-run jobs" in the UI). The job
+  checks out current main, so the rerun passes. A docs-only commit does NOT
+  refresh the release PR — release-please only force-pushes the PR branch
+  when the generated changelog/version changes — so the check will never
+  re-trigger on its own. Never use `gh pr merge --admin` to get past it.
+- Publishing is also guarded at the tag: `release-build.yml` refuses to
+  `cargo publish` unless the tag commit is an ancestor of main and the
+  doc-contract suite passes at that commit — a tag pushed from a side branch
+  cannot reach crates.io.
 - Only remaining eyeball item: release-notes Highlights cover every
   user-noticeable changelog entry.

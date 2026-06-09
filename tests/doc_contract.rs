@@ -16,6 +16,15 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+
+/// Serializes every gen-region read-modify-write. Three tests rewrite
+/// README.md under `LESSENCE_UPDATE_DOCS=1`, and libtest runs them on
+/// parallel threads — without this lock one test's full-file write clobbers
+/// another's region update (a lost-update race), leaving `make docs` output
+/// stale. The lock also covers the check path so a reader never sees a
+/// half-written file.
+static DOC_LOCK: Mutex<()> = Mutex::new(());
 
 fn repo_path(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
@@ -29,6 +38,12 @@ fn read(rel: &str) -> String {
 /// matches `want`. With `LESSENCE_UPDATE_DOCS` set, rewrite the region
 /// instead (and pass).
 fn assert_generated_region(rel_path: &str, name: &str, want: &str) {
+    // Hold the lock across read + compare/write — see DOC_LOCK. A panicking
+    // assert below poisons the mutex; later tests still need the lock, so
+    // recover the guard instead of cascading spurious poison panics.
+    let _guard = DOC_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let begin_marker = format!("<!-- gen:{name}:begin -->");
     let end_marker = format!("<!-- gen:{name}:end -->");
     let content = read(rel_path);
@@ -78,7 +93,7 @@ fn assert_generated_region(rel_path: &str, name: &str, want: &str) {
         current_trimmed == want_trimmed,
         "{rel_path} gen:{name} region is stale — docs no longer match the binary.\n\
          --- committed\n{current_trimmed}\n+++ generated\n{want_trimmed}\n\
-         FIX: run `make docs` (= LESSENCE_UPDATE_DOCS=1 cargo test --test doc_contract),\n\
+         FIX: run `make docs` (= LESSENCE_UPDATE_DOCS=1 cargo test --release --test doc_contract),\n\
          review the rewritten regions (a diff here can also mean the CODE regressed —\n\
          check which side is right), and commit them WITH your change."
     );
@@ -277,8 +292,15 @@ fn skill_flags_coverage() {
         }
     }
     // Flags of OTHER tools that legitimately appear in doc examples
-    // (cargo invocations etc.) — not lessence flags, not drift.
-    let foreign: HashSet<&str> = ["--release", "--since"].into_iter().collect();
+    // (cargo, kubectl, journalctl invocations etc.) — not lessence flags,
+    // not drift. Extend this list when the assertion below flags one.
+    let foreign: HashSet<&str> = [
+        "--release",  // cargo
+        "--since",    // journalctl
+        "--previous", // kubectl logs
+    ]
+    .into_iter()
+    .collect();
 
     let flags_md = read(".claude/skills/lessence/references/flags.md");
 
@@ -291,18 +313,44 @@ fn skill_flags_coverage() {
         );
     }
 
-    // (b) no stale flag names anywhere in the skill flags doc or the README
+    // (b) no stale flag names anywhere in the shipped doc surfaces: the
+    // README, the agent skill body (SKILL.md — the file agents actually
+    // load, and the #1 historical drift surface), and every reference doc.
+    let mut surfaces: Vec<(String, String)> = vec![
+        ("README.md".to_string(), read("README.md")),
+        (
+            ".claude/skills/lessence/SKILL.md".to_string(),
+            read(".claude/skills/lessence/SKILL.md"),
+        ),
+    ];
+    let refs_dir = repo_path(".claude/skills/lessence/references");
+    for entry in std::fs::read_dir(&refs_dir).expect("cannot list skill references dir") {
+        let path = entry.expect("cannot read dir entry").path();
+        if path.extension().is_some_and(|e| e == "md") {
+            let rel = format!(
+                ".claude/skills/lessence/references/{}",
+                path.file_name().unwrap().to_string_lossy()
+            );
+            // The improvement backlog is a proposals file — it legitimately
+            // names flags that do not (yet) exist, so it is not a shipped
+            // doc surface and is excluded from the stale-flag net.
+            if rel.ends_with("improvement-backlog.md") {
+                continue;
+            }
+            let text = read(&rel);
+            surfaces.push((rel, text));
+        }
+    }
     let flag_re = regex::Regex::new(r"--[a-z][a-z0-9-]*").unwrap();
-    for (rel, text) in [
-        (".claude/skills/lessence/references/flags.md", &flags_md),
-        ("README.md", &read("README.md")),
-    ] {
+    for (rel, text) in &surfaces {
         for m in flag_re.find_iter(text) {
             let found = m.as_str();
             assert!(
                 known.contains(found) || foreign.contains(found),
                 "{rel} mentions `{found}` which is not a flag the binary accepts — \
-                 stale or misspelled flag name"
+                 stale or misspelled lessence flag. If this is a flag of ANOTHER tool \
+                 shown in an example (cargo, kubectl, journalctl, ...), add it to the \
+                 `foreign` allowlist in tests/doc_contract.rs"
             );
         }
     }
