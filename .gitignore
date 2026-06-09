@@ -15,3 +15,6 @@ examples/
 *.rlib
 *.prof*
 proptest-regressions/
+
+# bv (beads viewer) local config and caches
+.bv/
