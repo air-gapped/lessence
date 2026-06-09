@@ -108,6 +108,10 @@ path = "tests/security.rs"
 name = "misc"
 path = "tests/misc.rs"
 
+[[test]]
+name = "doc_contract"
+path = "tests/doc_contract.rs"
+
 # Criterion benchmarks — perf gate for the structured-folding-output feature.
 # See docs/bench.md for how to record and compare baselines.
 # Files in examples/ are gitignored; benches skip gracefully when missing.

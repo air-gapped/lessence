@@ -443,7 +443,7 @@ const ROLLUP_K: usize = 7;
 /// trigger the `capped` flag (useful signal to the agent: "≥64 and
 /// possibly many more"). 64 is small enough to keep per-group memory
 /// bounded even at flush time.
-const ROLLUP_DISTINCT_CAP: usize = 64;
+pub const ROLLUP_DISTINCT_CAP: usize = 64;
 
 /// Text-mode inline-sample threshold: when `distinct_count <=` this
 /// value, the compact marker shows the complete distinct set; otherwise

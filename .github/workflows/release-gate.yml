@@ -1,0 +1,37 @@
+name: Release Gate
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    # Only release-please PRs exist on this repo, but guard anyway.
+    if: startsWith(github.head_ref, 'release-please--')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Agent skill verified since last behavior change?
+        run: |
+          set -euo pipefail
+          sha=$(grep -oE '^verified-at: [0-9a-f]{40}' \
+                .claude/skills/lessence/references/sources.md | awk '{print $2}')
+          if [ -z "${sha:-}" ]; then
+            echo "::error::sources.md has no 'verified-at: <sha>' line"; exit 1
+          fi
+          if ! git merge-base --is-ancestor "$sha" HEAD; then
+            echo "::error::verified-at sha $sha is not an ancestor of main"; exit 1
+          fi
+          unverified=$(git log "$sha"..HEAD --extended-regexp \
+            --grep='^(feat|fix|perf)(\(.*\))?!?:' --format='%h %s' -- src/)
+          if [ -n "$unverified" ]; then
+            echo "$unverified"
+            echo "::error file=.claude/skills/lessence/references/sources.md::Agent skill not re-verified since the behavior change(s) above. FIX: cargo build --release, re-verify each sources.md claim against the binary, update 'Last verified' dates AND set 'verified-at:' to the current main sha, commit to MAIN as 'docs: re-verify agent skill for vX.Y.Z'. The release PR refreshes automatically — do NOT edit the PR branch."
+            exit 1
+          fi
+          echo "skill verified-at $sha covers all user-facing src/ commits — ok"

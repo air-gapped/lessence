@@ -102,21 +102,15 @@ merge. NEVER move a published release's tag.
 
 ## Pre-release Verification
 
-Before merging a release PR, verify code AND documentation surfaces.
-**Order matters: crates.io packages the README at the tag** — a stale README
-caught after publishing is stuck on crates.io until the next release.
+Doc/skill drift is **enforced, not checked by hand**:
 
-```bash
-make ci              # fmt + clippy + doc + build + test + deny
-make release-check   # scripts/release-surface-check.sh — README numbers,
-                     # skill sources.md freshness, jq recipe shape, marker sanity
-```
-
-`release-check` is mechanical but not complete — also eyeball:
-
-- README headline example: pasted from a real run of THIS version?
-- README flag table vs `lessence --help` (semantics, not just spelling)
-- `.claude/skills/lessence/` claims + `sources.md` stamps cover every
-  user-facing change in the changelog
-- Release-notes Highlights cover every changelog entry that a user would
-  notice (style: memory `lessence-release-notes-style`)
+- `cargo test` includes the doc-contract suite (`tests/doc_contract.rs`) — README
+  gen: regions, flag coverage, rollup-cap sanity, link integrity. Regenerate
+  stale regions with `make docs`. Runs in `make ci` and the required
+  `test (ubuntu-latest)` check.
+- The release PR cannot merge until `test (ubuntu-latest)` AND `release-gate`
+  are green. `release-gate` fails if any feat/fix/perf commit touching src/
+  postdates the skill's `verified-at:` sha in sources.md — follow its error
+  annotation verbatim (commit the re-verification to MAIN, never the PR branch).
+- Only remaining eyeball item: release-notes Highlights cover every
+  user-noticeable changelog entry.

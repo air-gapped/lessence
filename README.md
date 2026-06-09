@@ -2,22 +2,29 @@
 
 Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually broken?
 
+<!-- gen:example:begin -->
 ```
-$ kubectl logs deployment/api | lessence
+$ lessence kubelet.log
 
-E0909 13:07:09 nestedpendingoperations.go:348] Operation for volume failed... : failed to fetch token... connection reset by peer
-[+3125 similar | E0909 13:07:09 → E0909 19:48:19 | ipv4×1 {127.0.0.1}, k8s_volume×1 {oidc-token}, path×34, uuid×16]
-W0909 13:07:12 transport.go:356] Unable to cancel request for *otelhttp.Transport
-[+1295 similar | W0909 13:07:12 → W0914 09:11:38 | number×2]
-E0909 13:07:12 controller.go:145] Failed to ensure lease exists...
-[+12 similar | duration×1]
+E0909 13:07:09.181236    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58 podName:9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc nodeName:}" failed. No retries permitted until 2025-09-09 13:09:11.181196845 +0000 UTC m=+225563.950173486 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-52r58" (UniqueName: "kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58") pod "pushprox-kube-proxy-client-9djm4" (UID: "9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/cattle-monitoring-system/serviceaccounts/pushprox-kube-proxy-client/token": read tcp 127.0.0.1:51706->127.0.0.1:6443: read: connection reset by peer
+[+116 similar | E0909 13:07:09.181236 → E0909 13:21:43.418369 | fqdn×1 {kubernetes.io}, ipv4×1 {127.0.0.1}, k8s_namespace×1 {<FQDN><PATH>}, k8s_volume×1 {oidc-token}, name×14, number×1, path×34, quoted_string×19, uuid×16]
+E0909 13:21:43.418369    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/b39ae9d7-1732-44cd-bdc5-9eded447db57-kube-api-access-tp9r4 podName:b39ae9d7-1732-44cd-bdc5-9eded447db57 nodeName:}" failed. No retries permitted until 2025-09-09 13:23:45.418347157 +0000 UTC m=+226438.187323798 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-tp9r4" (UniqueName: "kubernetes.io/projected/b39ae9d7-1732-44cd-bdc5-9eded447db57-kube-api-access-tp9r4") pod "traefik-jp8rf" (UID: "b39ae9d7-1732-44cd-bdc5-9eded447db57") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/traefik/serviceaccounts/traefik/token": net/http: TLS handshake timeout
+W0909 13:07:12.237366    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
+[+37 similar | W0909 13:07:12.237366 → W0909 13:21:42.989676 | number×1, path×1 {transport.go:356]}]
+W0909 13:21:42.989676    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
 ...
 
-Original: 70,548 lines → 357 lines (99.5% reduction)
+Original: 2,000 lines → 103 lines (94.8% reduction)
 ```
+<!-- gen:example:end -->
 
-Three distinct problems, not 70,000. And the enriched marker tells you
-exactly which 16 UUIDs and which volume were affected — information that
+On a full 70k-line production kubelet log this same run folds
+70,548 → 357 lines (99.5%, measured on v0.4.4) — the example above is the
+committed 2,000-line slice of that log, regenerated and verified on every
+CI run.
+
+Three distinct problems, not 70,000. And the enriched markers tell you
+exactly which UUIDs, volumes, and IPs were affected — information that
 used to require re-running the tool.
 
 ## For Coding Agents & LLMs
@@ -108,45 +115,53 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 
 ## Real-World Compression
 
-| Log Source | Lines In | Lines Out | Reduction |
-|-----------|--------:|---------:|----------:|
-| Kubernetes kubelet | 70,548 | 357 | 99.5% |
-| ArgoCD server | 60,849 | 8 | 99.9% |
-| PostgreSQL primary | 54,066 | 51 | 99.9% |
-| Cilium networking | 38,145 | 1,253 | 96.7% |
-| Rancher | 22,433 | 583 | 97.4% |
-| journalctl (7 days) | 655,103 | 3,132 | 99.5% |
+| Log Source | Lines In | Lines Out | Reduction | Measured on |
+|-----------|--------:|---------:|----------:|------------:|
+| Kubernetes kubelet | 70,548 | 357 | 99.5% | v0.4.4 |
+| ArgoCD server | 60,849 | 8 | 99.9% | pre-0.4 |
+| PostgreSQL primary | 54,066 | 51 | 99.9% | pre-0.4 |
+| Cilium networking | 38,145 | 1,253 | 96.7% | pre-0.4 |
+| Rancher | 22,433 | 583 | 97.4% | pre-0.4 |
+| journalctl (7 days) | 655,103 | 3,132 | 99.5% | pre-0.4 |
 
-The kubelet row is re-measured on v0.4.4; the other rows were measured on
-earlier versions — the v0.4.4 grouping engine typically folds further.
+Historical measurements on production corpora that are not distributable;
+the headline example above is the only CI-verified number.
 
 ## Flags
 
+<!-- gen:flags:begin -->
 ```
---fit (--human)             One screen overview — no scrolling, stays visible
---summary                  One-line-per-pattern frequency overview
---preflight                JSON analysis report (for automation/CI)
---essence                  Strip timestamps, see pure patterns
---threads N                Thread count (default: all cores)
---format text|markdown|json  Output format (json = JSONL for agents)
--q, --quiet                Hide statistics footer (alias: --no-stats)
---stats-json               Emit JSON statistics to stderr
---top N                    Show only N most frequent patterns by count
---fail-on-pattern REGEX    Exit 1 if input matches (for CI gating)
---completions SHELL        Generate shell completions (bash/zsh/fish)
---threshold 75             % of tokens lines must share to group (raise to 85 for stricter splitting)
---min-collapse 3           Min similar lines before folding (min: 3)
---disable-patterns X,Y     Turn off specific detectors
---sanitize-pii             Replace emails with <EMAIL>
---preserve-color           Keep ANSI escape codes
+--threshold <THRESHOLD>    Percent of tokens two lines must share to group (0-100). Raise (e.g. 85) for stricter, per-message splitting; lower for more folding [default: 75]
+--min-collapse <MIN_COLLAPSE>    Minimum lines before folding (min: 3) [default: 3]
+--disable-patterns <DISABLE_PATTERNS>    Disable specific pattern groups (comma-separated). Valid names: timestamp, hash, network, uuid, process, email, path, duration, json, kubernetes, http-status, brackets, key-value, quoted-string, name
+--quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
+--preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
+--summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
+--preflight    JSON analysis report to stdout (for automation/CI) [default: false]
+--format <FORMAT>    Output format: text (default), markdown, json (JSONL for agent consumption) [default: text]
+--essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
+--threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
+--sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
+--max-line-length <MAX_LINE_LENGTH>    Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
+--max-lines <MAX_LINES>    Maximum number of lines to process (stop after this count, default: no limit)
+--stats-json    Emit JSON statistics to stderr (replaces human-readable stats) [default: false]
+--top <TOP>    Show only the N most frequent patterns, sorted by count
+--fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
+--fail-on-pattern <FAIL_ON_PATTERN>    Exit 1 if any input line matches this regex (for CI gating)
+--completions <COMPLETIONS>    Generate shell completion script and exit
+FILE...    Input files (reads stdin if none given, use - for explicit stdin)
 ```
+<!-- gen:flags:end -->
 
 ### Pattern Types
 
-lessence recognizes 15 groups of variable content (matching the
-`--disable-patterns` names):
+<!-- gen:patterns:begin -->
+lessence recognizes 15 pattern groups (the valid `--disable-patterns` names):
 
-timestamp, email, path, json, uuid, network, hash, process, kubernetes, http-status, brackets, key-value, duration, name, quoted-string
+```
+timestamp, hash, network, uuid, email, path, duration, json, kubernetes, http-status, brackets, key-value, process, quoted-string, name
+```
+<!-- gen:patterns:end -->
 
 Disable any with `--disable-patterns timestamp,email`.
 
@@ -180,7 +195,7 @@ Then just mention logs, errors, or "what's not normal" and the skill triggers.
 
 ```bash
 cargo build --release
-cargo test               # 1,285 tests
+cargo test
 ```
 
 ## Name

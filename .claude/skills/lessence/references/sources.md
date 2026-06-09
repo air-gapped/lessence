@@ -5,6 +5,12 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
+verified-at: 9f1eba231e9bf5164759353a16a040c53ec378bc
+
+`verified-at` is the main commit this skill was last verified against. The
+release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
+touching `src/` postdates it.
+
 | Claim | Source | Last verified |
 |---|---|---|
 | Flag set, defaults, `--format text\|markdown\|json` | `lessence --help` (working tree = 0.4.4 code; binary still reported 0.4.3 pre-release) | 2026-06-09 |
