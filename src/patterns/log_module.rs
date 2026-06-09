@@ -79,32 +79,8 @@ impl LogWithModuleDetector {
         !Self::has_kubernetes_indicators(text)
     }
 
-    /// Detect if text contains Kubernetes patterns that should be handled by KubernetesDetector
-    #[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match the earlier "kube-" check
     fn has_kubernetes_indicators(text: &str) -> bool {
-        // Kubernetes namespaces and resources
-        text.contains("kubernetes.io/") ||
-        text.contains("namespace/") ||
-        text.contains("pod/") ||
-        text.contains("service/") ||
-        text.contains("configmap/") ||
-        text.contains("secret/") ||
-        text.contains("deployment/") ||
-        // Kubernetes volume patterns
-        text.contains("volumes/") ||
-        text.contains("projected-") ||
-        text.contains("volume-subpath") ||
-        text.contains("projected") ||
-        // Kubernetes API patterns
-        text.contains("apiserver") ||
-        text.contains("kube-") ||
-        // Kubernetes components that should be handled by KubernetesDetector
-        text.contains("kubelet") ||
-        text.contains("kube-proxy") ||
-        text.contains("kube-scheduler") ||
-        text.contains("kube-controller") ||
-        text.contains("etcd") ||
-        text.contains("coredns")
+        super::has_k8s_resource_indicators(text) || super::has_k8s_component_names(text)
     }
 
     fn apply_apache_pattern(text: &mut String, tokens: &mut Vec<Token>) {

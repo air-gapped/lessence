@@ -43,32 +43,8 @@ impl BracketContextDetector {
         !Self::has_kubernetes_indicators(text)
     }
 
-    /// Detect if text contains Kubernetes patterns that should be handled by KubernetesDetector
-    #[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match the earlier "kube-" check, making their || equivalent
     fn has_kubernetes_indicators(text: &str) -> bool {
-        // Kubernetes namespaces
-        text.contains("kubernetes.io/") ||
-        text.contains("namespace/") ||
-        text.contains("pod/") ||
-        text.contains("service/") ||
-        text.contains("configmap/") ||
-        text.contains("secret/") ||
-        text.contains("deployment/") ||
-        // Kubernetes volume patterns
-        text.contains("volumes/") ||
-        text.contains("projected-") ||
-        text.contains("volume-subpath") ||
-        text.contains("projected") ||
-        // Kubernetes API patterns
-        text.contains("apiserver") ||
-        text.contains("kube-") ||
-        // Common K8s log prefixes that use brackets
-        text.contains("kubelet") ||
-        text.contains("kube-proxy") ||
-        text.contains("kube-scheduler") ||
-        text.contains("kube-controller") ||
-        text.contains("etcd") ||
-        text.contains("coredns")
+        super::has_k8s_resource_indicators(text) || super::has_k8s_component_names(text)
     }
 
     #[cfg_attr(test, mutants::skip)] // The replacement loop (line 89-99) duplicates the token loop (line 81) — delete ! on empty check and >= boundary are equivalent

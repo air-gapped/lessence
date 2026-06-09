@@ -1196,16 +1196,28 @@ impl PatternFolder {
             None
         };
 
-        // Output: one line per pattern with representative original line
+        // Output: one line per pattern with representative original line.
+        // Like every other stdout path, a broken pipe (e.g. `| head`) is a
+        // clean exit, not an error.
+        let stdout = io::stdout();
+        let mut handle = stdout.lock();
+        let mut write_line = |s: String| -> Result<()> {
+            match writeln!(handle, "{s}") {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                    std::process::exit(0);
+                }
+                Err(e) => Err(e.into()),
+            }
+        };
         for (count, representative) in &display {
-            println!(
-                "{}",
-                Self::format_summary_line(*count, representative, max_width)
-            );
+            write_line(Self::format_summary_line(*count, representative, max_width))?;
         }
 
         if fit_truncated > 0 {
-            println!("... {fit_truncated} more patterns (remove --fit for full output)");
+            write_line(format!(
+                "... {fit_truncated} more patterns (remove --fit for full output)"
+            ))?;
         }
 
         // Coverage info on stderr

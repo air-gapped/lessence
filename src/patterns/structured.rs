@@ -70,32 +70,16 @@ impl StructuredMessageDetector {
         !Self::has_kubernetes_indicators(text)
     }
 
-    /// Detect if text contains Kubernetes patterns that should be handled by KubernetesDetector
     fn has_kubernetes_indicators(text: &str) -> bool {
-        // Kubernetes namespaces and resources
-        text.contains("kubernetes.io/") ||
-        text.contains("namespace/") ||
-        text.contains("pod/") ||
-        text.contains("service/") ||
-        text.contains("configmap/") ||
-        text.contains("secret/") ||
-        text.contains("deployment/") ||
-        // Kubernetes volume patterns
-        text.contains("volumes/") ||
-        text.contains("projected-") ||
-        text.contains("volume-subpath") ||
-        text.contains("projected") ||
-        // Kubernetes API patterns
-        text.contains("apiserver") ||
-        text.contains("kube-") ||
-        // Kubernetes components that should be handled by KubernetesDetector
+        super::has_k8s_resource_indicators(text) ||
+        // JSON / logfmt quoted component forms (the plain names are matched
+        // by the bracket and log-module detectors instead)
         text.contains(r#""component":"kubelet"#) ||
         text.contains(r#""component":"scheduler"#) ||
         text.contains(r#""component":"proxy"#) ||
         text.contains(r#""component":"controller"#) ||
         text.contains(r#""component":"etcd"#) ||
         text.contains(r#""component":"coredns"#) ||
-        // Logfmt style Kubernetes components
         text.contains("component=kubelet") ||
         text.contains("component=scheduler") ||
         text.contains("component=proxy") ||

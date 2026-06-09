@@ -287,10 +287,9 @@ fn main() -> Result<()> {
         compact: true, // Always compact format (human-readable by default)
         preflight: cli.preflight,
         summary: effective_summary,
-        // Constitutional CLI flags
         essence_mode: cli.essence,
         thread_count: cli.threads,
-        // Security & ReDoS Protection flags (Constitutional Principle X)
+        // Security & ReDoS protection flags
         max_line_length: cli.max_line_length.or(Some(1024 * 1024)), // 1MB default
         max_lines: cli.max_lines,
         sanitize_pii: cli.sanitize_pii, // Wire PII sanitization flag

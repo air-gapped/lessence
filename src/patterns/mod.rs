@@ -69,3 +69,36 @@ pub struct LogLine {
 }
 
 impl LogLine {}
+
+/// Shared Kubernetes-resource indicators (namespaces, volumes, API
+/// prefixes). Lines matching these belong to KubernetesDetector; the
+/// bracket, log-module and structured detectors all skip them.
+#[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match the earlier "kube-" check, making their || equivalent
+pub(crate) fn has_k8s_resource_indicators(text: &str) -> bool {
+    text.contains("kubernetes.io/")
+        || text.contains("namespace/")
+        || text.contains("pod/")
+        || text.contains("service/")
+        || text.contains("configmap/")
+        || text.contains("secret/")
+        || text.contains("deployment/")
+        || text.contains("volumes/")
+        || text.contains("projected-")
+        || text.contains("volume-subpath")
+        || text.contains("projected")
+        || text.contains("apiserver")
+        || text.contains("kube-")
+}
+
+/// Plain-text Kubernetes component names (kubelet, etcd, ...). Used by the
+/// bracket and log-module detectors; the structured detector matches the
+/// JSON/logfmt-quoted forms instead.
+#[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match has_k8s_resource_indicators' "kube-" check
+pub(crate) fn has_k8s_component_names(text: &str) -> bool {
+    text.contains("kubelet")
+        || text.contains("kube-proxy")
+        || text.contains("kube-scheduler")
+        || text.contains("kube-controller")
+        || text.contains("etcd")
+        || text.contains("coredns")
+}

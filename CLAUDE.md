@@ -38,7 +38,6 @@ src/
     timestamp/         # Unified timestamp detection (30+ formats, registry-based)
   essence/             # --essence mode: timestamp removal for pattern analysis
   output/              # Text and markdown formatters
-  constitutional.rs    # Compliance test helpers
   analyzer.rs          # Log analysis
   cli/                 # CLI argument definitions
 ```

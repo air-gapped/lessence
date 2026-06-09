@@ -12,6 +12,9 @@ pub struct AnalysisResult {
     pub sample_patterns: SamplePatterns,
 }
 
+/// Since the per-scenario compression simulation was removed (it was dead
+/// code), all four fields carry the same measured value. They are kept so
+/// the --preflight JSON schema stays stable for existing consumers.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CompressionEstimates {
     pub default: String,
