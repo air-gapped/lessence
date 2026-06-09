@@ -60,12 +60,16 @@ impl KeyValueDetector {
 
     #[cfg_attr(test, mutants::skip)] // apply_general_pattern matches the same KV inputs — redundant coverage
     fn apply_metrics_pattern(text: &mut String, tokens: &mut Vec<Token>) {
+        // Line-level decision hoisted out of the per-match closure: every
+        // match in a pass sees the same pre-pass string, so evaluating it
+        // once is exact (and turns a Θ(matches × line) scan into Θ(line)).
+        let in_metrics_context = Self::is_metrics_context(text);
         *text = METRICS_KV_REGEX
             .replace_all(text, |caps: &regex::Captures| {
                 let key = caps.get(1).unwrap().as_str();
                 let value = caps.get(2).unwrap().as_str();
 
-                if Self::is_metrics_context(text, caps.get(0).unwrap().start()) {
+                if in_metrics_context {
                     let value_type = Self::classify_value_type(value);
                     tokens.push(Token::KeyValuePair {
                         key: key.to_lowercase(),
@@ -80,12 +84,13 @@ impl KeyValueDetector {
     }
 
     fn apply_config_pattern(text: &mut String, tokens: &mut Vec<Token>) {
+        let in_config_context = Self::is_config_context(text);
         *text = CONFIG_KV_REGEX
             .replace_all(text, |caps: &regex::Captures| {
                 let key = caps.get(1).unwrap().as_str();
                 let value = caps.get(2).unwrap().as_str();
 
-                if Self::is_config_context(text, caps.get(0).unwrap().start()) {
+                if in_config_context {
                     let value_type = Self::classify_value_type(value);
                     tokens.push(Token::KeyValuePair {
                         key: key.to_lowercase(),
@@ -100,6 +105,7 @@ impl KeyValueDetector {
     }
 
     fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {
+        let in_logging_json = Self::is_logging_json(text);
         *text = JSON_KV_REGEX
             .replace_all(text, |caps: &regex::Captures| {
                 let key = caps.get(1).unwrap().as_str();
@@ -108,7 +114,7 @@ impl KeyValueDetector {
                     .or_else(|| caps.get(3))
                     .map_or("null", |m| m.as_str());
 
-                if Self::is_logging_json(text) {
+                if in_logging_json {
                     let value_type = Self::classify_value_type(value);
                     tokens.push(Token::KeyValuePair {
                         key: key.to_lowercase(),
@@ -123,12 +129,13 @@ impl KeyValueDetector {
     }
 
     fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>) {
+        let line_allows = Self::line_allows_key_value(text);
         *text = KEY_VALUE_REGEX
             .replace_all(text, |caps: &regex::Captures| {
                 let key = caps.get(1).unwrap().as_str();
                 let value = caps.get(2).unwrap().as_str();
 
-                if Self::is_valid_key_value_context(key, value, text) {
+                if line_allows && Self::is_valid_key_value_pair(key, value) {
                     let value_type = Self::classify_value_type(value);
                     tokens.push(Token::KeyValuePair {
                         key: key.to_lowercase(),
@@ -217,7 +224,7 @@ impl KeyValueDetector {
         "string".to_string()
     }
 
-    fn is_metrics_context(text: &str, _position: usize) -> bool {
+    fn is_metrics_context(text: &str) -> bool {
         let metrics_indicators = [
             "metrics",
             "stats",
@@ -242,7 +249,7 @@ impl KeyValueDetector {
             .any(|&indicator| lower_text.contains(indicator))
     }
 
-    fn is_config_context(text: &str, _position: usize) -> bool {
+    fn is_config_context(text: &str) -> bool {
         let config_indicators = [
             "config",
             "configuration",
@@ -281,13 +288,16 @@ impl KeyValueDetector {
             .any(|&indicator| text.contains(indicator))
     }
 
-    #[cfg_attr(test, mutants::skip)] // "if"/"for"/"while"/"switch" not in valid_keys — exclusion is redundant with the positive check
+    /// Thin composition kept for unit tests; production code hoists
+    /// `line_allows_key_value` out of the per-match closure.
+    #[cfg(test)]
     fn is_valid_key_value_context(key: &str, value: &str, text: &str) -> bool {
-        // Exclude programming constructs
-        if key == "if" || key == "for" || key == "while" || key == "switch" {
-            return false;
-        }
+        Self::line_allows_key_value(text) && Self::is_valid_key_value_pair(key, value)
+    }
 
+    /// Line-level exclusions (math expressions, SQL) — computed once per
+    /// pass, not per match.
+    fn line_allows_key_value(text: &str) -> bool {
         // Exclude mathematical expressions
         if text.contains(" + ")
             || text.contains(" - ")
@@ -298,11 +308,17 @@ impl KeyValueDetector {
         }
 
         // Exclude SQL queries
-        if text.to_uppercase().contains("SELECT ")
-            || text.to_uppercase().contains("INSERT ")
-            || text.to_uppercase().contains("UPDATE ")
-            || text.to_uppercase().contains("DELETE ")
-        {
+        let upper = text.to_uppercase();
+        !(upper.contains("SELECT ")
+            || upper.contains("INSERT ")
+            || upper.contains("UPDATE ")
+            || upper.contains("DELETE "))
+    }
+
+    #[cfg_attr(test, mutants::skip)] // "if"/"for"/"while"/"switch" not in valid_keys — exclusion is redundant with the positive check
+    fn is_valid_key_value_pair(key: &str, value: &str) -> bool {
+        // Exclude programming constructs
+        if key == "if" || key == "for" || key == "while" || key == "switch" {
             return false;
         }
 
@@ -917,8 +933,7 @@ mod tests {
     fn config_context_returns_false_for_non_config() {
         // Input without any config keywords should return false
         assert!(!KeyValueDetector::is_config_context(
-            "just a plain log line with no keywords",
-            0
+            "just a plain log line with no keywords"
         ));
     }
 
@@ -1029,12 +1044,12 @@ mod tests {
 
     #[test]
     fn metrics_ctx_positive() {
-        assert!(KeyValueDetector::is_metrics_context("cpu usage report", 0));
+        assert!(KeyValueDetector::is_metrics_context("cpu usage report"));
     }
 
     #[test]
     fn metrics_ctx_negative() {
-        assert!(!KeyValueDetector::is_metrics_context("hello world", 0));
+        assert!(!KeyValueDetector::is_metrics_context("hello world"));
     }
 
     // ---- is_logging_json: per-branch test ----
