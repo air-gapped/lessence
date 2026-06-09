@@ -136,15 +136,21 @@ impl Normalizer {
         }
 
         // LogWithModule - Detects [level] module patterns for Apache/nginx
-        if normalized.contains('[') {
+        // Gated by the same flag as BracketContext: --disable-patterns brackets
+        // must disable every bracket-shaped detector.
+        if self.config.normalize_brackets && normalized.contains('[') {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::log_module::LogWithModuleDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
 
-        // StructuredMessage - Detects JSON/logfmt structured logging
-        if normalized.contains('{') || normalized.contains('=') {
+        // StructuredMessage - Detects JSON/logfmt structured logging.
+        // The JSON half is gated by --disable-patterns json, the logfmt
+        // half by --disable-patterns key-value.
+        if (self.config.normalize_json && normalized.contains('{'))
+            || (self.config.normalize_key_value && normalized.contains('='))
+        {
             let (new_normalized, mut new_tokens) =
                 crate::patterns::structured::StructuredMessageDetector::detect_and_replace(
                     &normalized,
@@ -1019,6 +1025,54 @@ mod tests {
         Normalizer::new(config)
             .normalize_line(input.to_string())
             .unwrap()
+    }
+
+    #[test]
+    fn normalize_brackets_disabled_suppresses_log_module_tokens() {
+        let input = "2024-01-01 10:00:00 ERROR [hibernate_sql] Database connection failed";
+        let on = run(|_| {}, input);
+        let off = run(|c| c.normalize_brackets = false, input);
+        assert!(
+            on.tokens
+                .iter()
+                .any(|t| matches!(t, Token::LogWithModule { .. })),
+            "expected LogWithModule token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::LogWithModule { .. })),
+            "expected NO LogWithModule token with brackets OFF, got {:?}",
+            off.tokens
+        );
+    }
+
+    #[test]
+    fn normalize_json_disabled_suppresses_structured_json_tokens() {
+        let input = r#"{"level":"info","component":"api","msg":"Request received"}"#;
+        let on = run(|_| {}, input);
+        let off = run(
+            |c| {
+                c.normalize_json = false;
+                c.normalize_key_value = false;
+            },
+            input,
+        );
+        assert!(
+            on.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "expected StructuredMessage token with detector ON, got {:?}",
+            on.tokens
+        );
+        assert!(
+            !off.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "expected NO StructuredMessage token with json+key-value OFF, got {:?}",
+            off.tokens
+        );
     }
 
     #[test]
