@@ -7,7 +7,15 @@ use std::sync::LazyLock;
 static DECIMAL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d+\.\d+\b").unwrap());
 
 // Integer numbers (like 12345, 67890) - standalone integers that could be IDs, counts, etc.
-// More specific than decimal but broad enough to catch numeric identifiers
+// More specific than decimal but broad enough to catch numeric identifiers.
+//
+// DELIBERATELY aggressive (audit bead lessence-elx, 2026-06-09): folding
+// lines that differ only in a numeric field is lessence's core value
+// proposition — the README compression numbers depend on it. Lines folded
+// this way lose no information: rollup variation annotations surface the
+// distinct values (e.g. "number×2 {137, 143}") in both text and JSON
+// output. If stricter behavior is ever needed, add an opt-in context-anchor
+// mode rather than tightening this default.
 static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3,}\b").unwrap()); // 3+ digits to avoid matching small numbers like "3 retries"
 
 // Duration with units (1.234s, 523ms, 2m30s, 1h15m, 15m27.417653609s)
