@@ -80,7 +80,7 @@ impl LogWithModuleDetector {
     }
 
     /// Detect if text contains Kubernetes patterns that should be handled by KubernetesDetector
-    #[mutants::skip] // kube-proxy/scheduler/controller always match the earlier "kube-" check
+    #[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match the earlier "kube-" check
     fn has_kubernetes_indicators(text: &str) -> bool {
         // Kubernetes namespaces and resources
         text.contains("kubernetes.io/") ||
@@ -145,7 +145,7 @@ impl LogWithModuleDetector {
             .to_string();
     }
 
-    #[mutants::skip] // Equivalent mutant: the pre-filter requires bracket/uppercase indicators that pure syslog inputs (facility.level) never have
+    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter requires bracket/uppercase indicators that pure syslog inputs (facility.level) never have
     fn apply_syslog_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         *text = SYSLOG_FACILITY_REGEX
             .replace_all(text, |caps: &regex::Captures| {
@@ -907,7 +907,7 @@ mod tests {
         );
     }
 
-    // Note: apply_syslog_pattern is unreachable behind the pre-filter (marked #[mutants::skip])
+    // Note: apply_syslog_pattern is unreachable behind the pre-filter (marked #[cfg_attr(test, mutants::skip)])
 
     // ---- Mutant-killing: apply_framework_pattern (replace with ()) ----
 

@@ -104,7 +104,7 @@ impl StructuredMessageDetector {
         text.contains("component=coredns")
     }
 
-    #[mutants::skip] // Equivalent mutant: the pre-filter (has_structured_indicators) excludes all inputs that would match CONTAINER_STRUCTURED_REGEX, so this is dead code in practice
+    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter (has_structured_indicators) excludes all inputs that would match CONTAINER_STRUCTURED_REGEX, so this is dead code in practice
     fn apply_container_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         *text = CONTAINER_STRUCTURED_REGEX
             .replace_all(text, |caps: &regex::Captures| {
@@ -143,7 +143,7 @@ impl StructuredMessageDetector {
             .to_string();
     }
 
-    #[mutants::skip] // Equivalent mutant: JSON alt pattern (component first, level second) is rarely matched after the primary JSON pattern already consumed the input
+    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: JSON alt pattern (component first, level second) is rarely matched after the primary JSON pattern already consumed the input
     fn apply_json_alt_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         *text = JSON_STRUCTURED_ALT_REGEX
             .replace_all(text, |caps: &regex::Captures| {
@@ -282,7 +282,7 @@ impl StructuredMessageDetector {
             .any(|&infra| component.contains(infra))
     }
 
-    #[mutants::skip] // The four is_*_component checks are all subsets of the generic validation (3-50 chars, alphanumeric)
+    #[cfg_attr(test, mutants::skip)] // The four is_*_component checks are all subsets of the generic validation (3-50 chars, alphanumeric)
     fn is_valid_structured_log(component: &str, level: &str) -> bool {
         // Validate log level
         let valid_levels = [

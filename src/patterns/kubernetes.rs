@@ -118,7 +118,7 @@ impl KubernetesDetector {
     }
 
     /// Normalize volume names
-    #[mutants::skip] // capture.len() > 1 is always true: the regexes always have a capture group
+    #[cfg_attr(test, mutants::skip)] // capture.len() > 1 is always true: the regexes always have a capture group
     fn normalize_volume_names(text: String) -> (String, Vec<Token>) {
         let mut result = text;
         let mut tokens = Vec::new();
