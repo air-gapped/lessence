@@ -6,7 +6,10 @@ use std::sync::LazyLock;
 static PID_BRACKET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[pid=(\d+)\]|\[(\d+)\]").unwrap());
 static PID_EQUALS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpid=(\d+)\b").unwrap());
-static PID_PAREN_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\((\d+)\)").unwrap());
+// Requires a process name attached to the parens — sshd(1234), nginx(42) —
+// so free-standing counts like "retry attempt (3)" are left alone.
+static PID_PAREN_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([a-zA-Z][a-zA-Z0-9_.-]*)\((\d+)\)").unwrap());
 
 // Thread ID patterns
 static THREAD_ID_REGEX: LazyLock<Regex> =
@@ -96,9 +99,11 @@ impl ProcessDetector {
             .replace_all(&result, "id=<PID>")
             .to_string();
 
-        // Handle PIDs in parentheses (but be careful not to match ports or other numbers)
+        // Handle process(1234)-style PIDs. The token push and the text
+        // replacement share the is_likely_pid gate, so a rejected match is
+        // left untouched instead of being rewritten anyway.
         for cap in PID_PAREN_REGEX.captures_iter(&result) {
-            let pid_str = cap.get(1).unwrap().as_str();
+            let pid_str = cap.get(2).unwrap().as_str();
             if let Ok(pid) = pid_str.parse::<u32>()
                 && Self::is_likely_pid(pid)
                 && !tokens
@@ -108,7 +113,14 @@ impl ProcessDetector {
                 tokens.push(Token::Pid(pid));
             }
         }
-        result = PID_PAREN_REGEX.replace_all(&result, "(<PID>)").to_string();
+        result = PID_PAREN_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                match caps[2].parse::<u32>() {
+                    Ok(pid) if Self::is_likely_pid(pid) => format!("{}(<PID>)", &caps[1]),
+                    _ => caps[0].to_string(),
+                }
+            })
+            .to_string();
 
         (result, tokens)
     }
@@ -239,5 +251,31 @@ mod tests {
             pid_count, 1,
             "PID 12345 should appear exactly once (paren dedup), got {pid_count}"
         );
+    }
+
+    #[test]
+    fn paren_pid_requires_attached_process_name() {
+        let text = "sshd(8423) accepted connection";
+        let (result, tokens) = ProcessDetector::detect_and_replace(text);
+        assert_eq!(result, "sshd(<PID>) accepted connection");
+        assert!(tokens.iter().any(|t| matches!(t, Token::Pid(8423))));
+    }
+
+    #[test]
+    fn paren_numbers_in_prose_left_alone() {
+        // Free-standing parenthesized numbers are counts, not PIDs.
+        let text = "retry attempt (3) failed, exiting with code (137) after (1024) bytes";
+        let (result, tokens) = ProcessDetector::detect_and_replace(text);
+        assert_eq!(result, text);
+        assert!(tokens.is_empty(), "no PID tokens expected, got {tokens:?}");
+    }
+
+    #[test]
+    fn paren_pid_out_of_range_left_alone() {
+        // 0 and > 2^22 fail is_likely_pid — text must stay untouched too.
+        let text = "worker(0) and worker(9999999) idle";
+        let (result, tokens) = ProcessDetector::detect_and_replace(text);
+        assert_eq!(result, text);
+        assert!(tokens.is_empty(), "no PID tokens expected, got {tokens:?}");
     }
 }
