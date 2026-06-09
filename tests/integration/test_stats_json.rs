@@ -90,6 +90,60 @@ fn test_stats_json_suppresses_human_readable_stats() {
 }
 
 #[test]
+fn test_human_stats_footer_goes_to_stderr_not_stdout() {
+    let mut child = lessence_bin()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        for _ in 0..5 {
+            writeln!(stdin, "ERROR something failed").ok();
+        }
+    }
+    let output = child.wait_with_output().expect("Failed to read output");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // stdout must carry only log output so pipelines stay clean
+    assert!(
+        !stdout.contains("lessence Compression Report"),
+        "Stats footer must not pollute stdout, got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("lessence Compression Report"),
+        "Stats footer should appear on stderr, got:\n{stderr}"
+    );
+}
+
+#[test]
+fn test_quiet_suppresses_stats_footer_entirely() {
+    let mut child = lessence_bin()
+        .args(["--quiet"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        writeln!(stdin, "INFO hello world").ok();
+    }
+    let output = child.wait_with_output().expect("Failed to read output");
+    assert!(output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.is_empty(),
+        "--quiet should produce empty stderr, got:\n{stderr}"
+    );
+}
+
+#[test]
 fn test_stats_json_contains_all_required_fields() {
     let mut child = lessence_bin()
         .args(["--stats-json", "--no-stats"])

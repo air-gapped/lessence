@@ -20,6 +20,7 @@ fn test_email_statistics_shown_in_report() {
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
@@ -34,23 +35,23 @@ fn test_email_statistics_shown_in_report() {
 
     assert!(output.status.success(), "lessence execution failed");
 
-    let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
+    let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
     // Verify Pattern Distribution includes Email Addresses row
     assert!(
-        output_str.contains("Email Addresses"),
+        stderr_str.contains("Email Addresses"),
         "Pattern Distribution should include 'Email Addresses' row"
     );
 
     // Verify email count is correct (3 emails in input)
     assert!(
-        output_str.contains("Email Addresses | 3 |") || output_str.contains("Email Addresses | 3|"),
-        "Email count should be 3, got: {output_str}"
+        stderr_str.contains("Email Addresses | 3 |") || stderr_str.contains("Email Addresses | 3|"),
+        "Email count should be 3, got: {stderr_str}"
     );
 
     // Verify email description is correct
     assert!(
-        output_str.contains("RFC 5322 email addresses, user accounts"),
+        stderr_str.contains("RFC 5322 email addresses, user accounts"),
         "Email description should be 'RFC 5322 email addresses, user accounts'"
     );
 
@@ -71,6 +72,7 @@ fn test_email_statistics_hidden_when_zero() {
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
@@ -85,11 +87,11 @@ fn test_email_statistics_hidden_when_zero() {
 
     assert!(output.status.success(), "lessence execution failed");
 
-    let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
+    let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
     // Verify Pattern Distribution does NOT include Email Addresses row
     assert!(
-        !output_str.contains("Email Addresses"),
+        !stderr_str.contains("Email Addresses"),
         "Pattern Distribution should NOT include 'Email Addresses' row when count is 0"
     );
 
@@ -113,6 +115,7 @@ fn test_email_statistics_in_essence_mode() {
         .args(["--essence"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
@@ -128,6 +131,7 @@ fn test_email_statistics_in_essence_mode() {
     assert!(output.status.success(), "lessence execution failed");
 
     let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
+    let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
     // Verify essence mode output contains <EMAIL> tokens
     assert!(
@@ -137,13 +141,13 @@ fn test_email_statistics_in_essence_mode() {
 
     // Verify Pattern Distribution includes Email Addresses row
     assert!(
-        output_str.contains("Email Addresses"),
+        stderr_str.contains("Email Addresses"),
         "Pattern Distribution should include 'Email Addresses' row in essence mode"
     );
 
     // Verify email count is correct (4 emails in input)
     assert!(
-        output_str.contains("Email Addresses | 4 |") || output_str.contains("Email Addresses | 4|"),
+        stderr_str.contains("Email Addresses | 4 |") || stderr_str.contains("Email Addresses | 4|"),
         "Email count should be 4 in essence mode"
     );
 
@@ -164,6 +168,7 @@ fn test_email_not_grouped_with_percentages() {
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .and_then(|mut child| {
             use std::io::Write;
@@ -178,22 +183,22 @@ fn test_email_not_grouped_with_percentages() {
 
     assert!(output.status.success(), "lessence execution failed");
 
-    let output_str = String::from_utf8(output.stdout).expect("Invalid UTF-8 output");
+    let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
     // Verify both Email Addresses and Numbers/Percentages appear as separate categories
     assert!(
-        output_str.contains("Email Addresses"),
+        stderr_str.contains("Email Addresses"),
         "Pattern Distribution should include 'Email Addresses' category"
     );
 
     assert!(
-        output_str.contains("Numbers/Percentages") || output_str.contains("Numbers"),
+        stderr_str.contains("Numbers/Percentages") || stderr_str.contains("Numbers"),
         "Pattern Distribution should include 'Numbers/Percentages' category"
     );
 
     // Verify they have different counts (not grouped together)
     // Email count should be 2, percentage count should be 2 (separate)
-    let email_line = output_str
+    let email_line = stderr_str
         .lines()
         .find(|line| line.contains("Email Addresses"))
         .expect("Should find Email Addresses line");

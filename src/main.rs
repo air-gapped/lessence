@@ -511,7 +511,7 @@ fn main() -> Result<()> {
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         } else if config.stats {
-            folder.print_stats(&mut io::stdout())?;
+            folder.print_stats(&mut io::stderr())?;
         }
         if pattern_matched.get() {
             std::process::exit(1);
@@ -623,7 +623,7 @@ fn main() -> Result<()> {
     if config.stats_json {
         folder.print_stats_json(start_time.elapsed())?;
     } else if config.stats {
-        folder.print_stats(&mut io::stdout())?;
+        folder.print_stats(&mut io::stderr())?;
     }
 
     if pattern_matched.get() {
