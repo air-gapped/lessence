@@ -50,6 +50,24 @@ gh release list --limit 1
 grep '^version' Cargo.toml
 ```
 
+### Is the release PR up to date with main?
+
+The PR is a *projection* of main: every push reruns `release.yml`, which
+rewrites the PR's version and changelog from the conventional commits since
+the last tag. It is current iff the latest `release.yml` run succeeded on
+main's HEAD:
+
+```bash
+[ "$(gh run list --workflow release.yml --limit 1 --json headSha,conclusion \
+      -q 'select(.[0].conclusion == "success") | .[0].headSha')" \
+  = "$(git rev-parse origin/main)" ] \
+  && echo "release PR is current" || echo "NOT current — run pending/failed, or stale-PR bug (see Troubleshooting)"
+```
+
+Never edit the PR or Cargo.toml version by hand — push a commit and let it
+regenerate. `docs:`/`chore:`/`test:` pushes still rerun the workflow (keeping
+the PR's base fresh) but add nothing to the changelog.
+
 ## Configuration
 
 - **PR management**: `.github/workflows/release.yml` — runs on push to main, only manages the release PR
