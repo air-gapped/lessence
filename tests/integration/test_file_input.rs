@@ -72,32 +72,6 @@ fn test_no_args_reads_stdin() {
 }
 
 #[test]
-fn test_nonexistent_file_warns_and_continues() {
-    let output = lessence_bin()
-        .arg("tests/fixtures/nginx_sample.log")
-        .arg("nonexistent_file.log")
-        .output()
-        .expect("Failed to run");
-
-    assert!(
-        output.status.success(),
-        "Should succeed with at least one valid file"
-    );
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("nonexistent_file.log"),
-        "Should warn about missing file on stderr. Got: {stderr}"
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        !stdout.is_empty(),
-        "Should still produce output from valid file"
-    );
-}
-
-#[test]
 fn test_all_files_invalid_exits_nonzero() {
     let output = lessence_bin()
         .arg("nonexistent1.log")
@@ -131,4 +105,42 @@ fn test_dash_reads_stdin() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stdin line"), "Dash should read from stdin");
+}
+
+#[test]
+fn test_missing_file_alone_exits_nonzero() {
+    let output = lessence_bin()
+        .arg("tests/fixtures/does_not_exist.log")
+        .output()
+        .expect("Failed to run");
+    assert!(
+        !output.status.success(),
+        "Missing file should exit non-zero"
+    );
+}
+
+#[test]
+fn test_missing_file_with_valid_file_exits_nonzero_but_processes_valid() {
+    let output = lessence_bin()
+        .args([
+            "tests/fixtures/nginx_sample.log",
+            "tests/fixtures/does_not_exist.log",
+        ])
+        .output()
+        .expect("Failed to run");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "A missing file must yield exit code 1 even when other files succeed"
+    );
+    assert!(
+        !output.stdout.is_empty(),
+        "The valid file should still be processed"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does_not_exist.log"),
+        "Error message should name the missing file, got:\n{stderr}"
+    );
 }

@@ -219,22 +219,30 @@ struct Cli {
     files: Vec<PathBuf>,
 }
 
-fn open_inputs(files: &[PathBuf]) -> Vec<Box<dyn BufRead>> {
+/// Opens the given input files, falling back to stdin when none are given.
+/// Returns the successfully opened readers plus whether any file failed to
+/// open — like cat/grep, the remaining files are still processed but the
+/// process must exit non-zero.
+fn open_inputs(files: &[PathBuf]) -> (Vec<Box<dyn BufRead>>, bool) {
     if files.is_empty() {
-        return vec![Box::new(BufReader::new(io::stdin().lock()))];
+        return (vec![Box::new(BufReader::new(io::stdin().lock()))], false);
     }
     let mut readers: Vec<Box<dyn BufRead>> = Vec::new();
+    let mut any_failed = false;
     for path in files {
         if path.as_os_str() == "-" {
             readers.push(Box::new(BufReader::new(io::stdin().lock())));
         } else {
             match File::open(path) {
                 Ok(f) => readers.push(Box::new(BufReader::new(f))),
-                Err(e) => eprintln!("lessence: {}: {}", path.display(), e),
+                Err(e) => {
+                    eprintln!("lessence: {}: {}", path.display(), e);
+                    any_failed = true;
+                }
             }
         }
     }
-    readers
+    (readers, any_failed)
 }
 
 fn main() -> Result<()> {
@@ -317,7 +325,7 @@ fn main() -> Result<()> {
 
     // Handle preflight mode: process logs but only output JSON analysis
     if config.preflight {
-        let readers = open_inputs(&cli.files);
+        let (readers, input_failed) = open_inputs(&cli.files);
         if readers.is_empty() {
             eprintln!("lessence: no valid input");
             std::process::exit(1);
@@ -361,7 +369,7 @@ fn main() -> Result<()> {
         let analysis = LogAnalyzer::from_folder_stats(&folder, &config)?;
         let json_output = serde_json::to_string_pretty(&analysis)?;
         println!("{json_output}");
-        if pattern_matched.get() {
+        if pattern_matched.get() || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -371,7 +379,7 @@ fn main() -> Result<()> {
 
     // Handle summary mode: use normal parallel pipeline, then output as summary
     if config.summary {
-        let readers = open_inputs(&cli.files);
+        let (readers, input_failed) = open_inputs(&cli.files);
         if readers.is_empty() {
             eprintln!("lessence: no valid input");
             std::process::exit(1);
@@ -407,13 +415,13 @@ fn main() -> Result<()> {
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         }
-        if pattern_matched.get() {
+        if pattern_matched.get() || input_failed {
             std::process::exit(1);
         }
         return Ok(());
     }
 
-    let readers = open_inputs(&cli.files);
+    let (readers, input_failed) = open_inputs(&cli.files);
     if readers.is_empty() {
         eprintln!("lessence: no valid input");
         std::process::exit(1);
@@ -513,7 +521,7 @@ fn main() -> Result<()> {
         } else if config.stats {
             folder.print_stats(&mut io::stderr())?;
         }
-        if pattern_matched.get() {
+        if pattern_matched.get() || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -599,7 +607,7 @@ fn main() -> Result<()> {
             }
             _ => unreachable!("Should only reach here for markdown"),
         }
-        if pattern_matched.get() {
+        if pattern_matched.get() || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -614,7 +622,7 @@ fn main() -> Result<()> {
                 "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
             );
         }
-        if pattern_matched.get() {
+        if pattern_matched.get() || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -626,7 +634,7 @@ fn main() -> Result<()> {
         folder.print_stats(&mut io::stderr())?;
     }
 
-    if pattern_matched.get() {
+    if pattern_matched.get() || input_failed {
         std::process::exit(1);
     }
 
