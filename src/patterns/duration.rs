@@ -105,10 +105,15 @@ impl DurationDetector {
                 }
             }
         }
-        // Replace only the status code part, keeping the context word
+        // Replace only the status code part, keeping the context word.
+        // Slice via match positions, not length arithmetic — positions are
+        // always char boundaries and stay correct if the regex ever grows
+        // a suffix after the capture group.
         result = HTTP_STATUS_REGEX
             .replace_all(&result, |caps: &Captures| {
-                let context = &caps[0][..caps[0].len() - caps[1].len()]; // Everything before the status code
+                let full = caps.get(0).unwrap();
+                let code = caps.get(1).unwrap();
+                let context = &full.as_str()[..code.start() - full.start()];
                 format!("{context}<HTTP_STATUS>")
             })
             .to_string();
@@ -299,5 +304,15 @@ mod tests {
             assert_eq!(result, expected, "Failed for input: {input}");
             assert!(!tokens.is_empty(), "No tokens detected for: {input}");
         }
+    }
+
+    #[test]
+    fn test_http_status_context_with_multibyte_text() {
+        // Multi-byte UTF-8 around the status code must not break the
+        // context slice in the replacement closure.
+        let (result, tokens) =
+            DurationDetector::detect_and_replace("запрос к api.host returned 404 — повтор");
+        assert_eq!(result, "запрос к api.host returned <HTTP_STATUS> — повтор");
+        assert!(tokens.iter().any(|t| matches!(t, Token::HttpStatus(404))));
     }
 }
