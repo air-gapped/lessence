@@ -84,6 +84,22 @@ the PR's base fresh) but add nothing to the changelog.
 - **Failed binary build**: check the matrix job for the failing target in Actions
 - **Crate publish failed**: uses OIDC via `crates-io-auth-action`, not a token secret — check the action version and crates.io trusted publisher config
 
+## Straggler Commits After the Release PR Merged
+
+While the release is still a **draft**, the tag is movable — no binaries
+exist, crates.io is untouched. To pull post-merge commits (typically docs
+that should ship with the release) into it:
+
+```bash
+git tag -f vX.Y.Z $(git rev-parse origin/main)
+git push origin vX.Y.Z --force
+gh release edit vX.Y.Z --draft --target $(git rev-parse origin/main)
+```
+
+Only safe for changelog-hidden commit types (docs/chore/test) — a fix/feat
+straggler belongs in the next release, since the changelog was generated at
+merge. NEVER move a published release's tag.
+
 ## Pre-release Verification
 
 Before merging a release PR, verify:
