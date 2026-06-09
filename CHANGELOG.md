@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.4.4](https://github.com/air-gapped/lessence/compare/v0.4.3...v0.4.4) (2026-06-09)
+
+
+### Bug Fixes
+
+* --disable-patterns brackets/json/key-value now disables all matching detectors ([0b87792](https://github.com/air-gapped/lessence/commit/0b877925a3babcdb29b8b38b40529f0720d977ef))
+* --stats-json and JSON summary report accurate per-category pattern counts ([23aea53](https://github.com/air-gapped/lessence/commit/23aea5369b02377f04ebaaa0a50c7e64cfae04ea))
+* dotted code identifiers like hibernate.SQL are no longer detected as hostnames ([13e530a](https://github.com/air-gapped/lessence/commit/13e530ad5c2b6fba6a46c82eedc866d27c57a28c))
+* epoch timestamps and hex-looking words are no longer detected as hashes ([a585a63](https://github.com/air-gapped/lessence/commit/a585a638363e7cf083b9efeb89860a22185dc449))
+* exit with code 1 when an input file cannot be opened ([b10701f](https://github.com/air-gapped/lessence/commit/b10701fc94a4c19996786988504e1d75296e0aa3))
+* log lines containing the word "request" are no longer rewritten as request IDs ([1446f48](https://github.com/air-gapped/lessence/commit/1446f48562e029d2491c18e26f5979d798449a58))
+* parenthesized counts like "(3)" are no longer rewritten as PIDs ([a67adf6](https://github.com/air-gapped/lessence/commit/a67adf6536cea5d70ae49e96d461fb880e7b0846))
+* similarity grouping now tolerates inserted tokens instead of splitting groups ([349493a](https://github.com/air-gapped/lessence/commit/349493a9fafdfde3121c77e84fb5549be1fc7a58))
+* statistics footer now goes to stderr, keeping stdout clean for pipelines ([7893fcd](https://github.com/air-gapped/lessence/commit/7893fcdba96126bc8d8aac2caa5b5962f783479c))
+
+
+### Performance
+
+* flush remaining groups in O(n) instead of O(n^2) ([2fcb135](https://github.com/air-gapped/lessence/commit/2fcb1350b4c16d83cdbd05c9f68f0271ecd627fd))
+* long key=value lines no longer stall the key-value detector ([1485e11](https://github.com/air-gapped/lessence/commit/1485e11f0d8103aa92ef98262a521b4a5d29d18a))
+
 ## [0.4.3](https://github.com/air-gapped/lessence/compare/v0.4.2...v0.4.3) (2026-05-31)
 
 
