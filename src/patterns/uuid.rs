@@ -12,9 +12,12 @@ static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static UUID_NO_HYPHENS_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]{32}\b").unwrap());
 
-// Request ID patterns
+// Request ID patterns. The prose word "request" must never match on its own:
+// require an explicit `id` suffix, a `=`/`:` separator, or the `req-`/`req_`
+// prefix idiom before capturing a value.
 static REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:req|request)[-_]?(?:id)?[=:]?\s*([a-zA-Z0-9-_]+)\b").unwrap()
+    Regex::new(r"\b(?:(?:req|request)[-_]?id[=:]?\s*|(?:req|request)[=:]\s*|req[-_])([a-zA-Z0-9][a-zA-Z0-9-_]*)\b")
+        .unwrap()
 });
 
 // Trace ID patterns
@@ -56,7 +59,13 @@ impl UuidDetector {
             }
         }
         result = REQUEST_ID_REGEX
-            .replace_all(&result, "request_id=<UUID>")
+            .replace_all(&result, |caps: &regex::Captures| {
+                if Self::is_likely_id(&caps[1]) {
+                    "request_id=<UUID>".to_string()
+                } else {
+                    caps[0].to_string()
+                }
+            })
             .to_string();
 
         // Trace IDs
@@ -151,11 +160,36 @@ mod tests {
     fn test_standard_uuid_detection() {
         let text = "Processing request 550e8400-e29b-41d4-a716-446655440000";
         let (result, tokens) = UuidDetector::detect_and_replace(text);
-        // UUID is replaced first, then REQUEST_ID_REGEX matches "req" from "request"
-        // and captures the remaining "uest" as a request ID, replacing "request" with "request_id=<UUID>"
-        assert_eq!(result, "Processing request_id=<UUID> <UUID>");
-        assert_eq!(tokens.len(), 2);
+        // The prose word "request" stays intact; only the UUID is replaced.
+        assert_eq!(result, "Processing request <UUID>");
+        assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::Uuid(_)));
+    }
+
+    #[test]
+    fn test_prose_request_not_mangled() {
+        let text = "Processing request user1 with priority 101";
+        let (result, tokens) = UuidDetector::detect_and_replace(text);
+        assert_eq!(result, text);
+        assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn test_request_id_with_separator_detected() {
+        let (result, tokens) = UuidDetector::detect_and_replace("request_id=abc123 done");
+        assert_eq!(result, "request_id=<UUID> done");
+        assert_eq!(tokens.len(), 1);
+
+        let (result, _) = UuidDetector::detect_and_replace("request: abc123 done");
+        assert_eq!(result, "request_id=<UUID> done");
+    }
+
+    #[test]
+    fn test_request_short_value_left_alone() {
+        // Captured value fails is_likely_id (< 4 chars) — line stays intact.
+        let (result, tokens) = UuidDetector::detect_and_replace("req-ab1 started");
+        assert_eq!(result, "req-ab1 started");
+        assert_eq!(tokens.len(), 0);
     }
 
     #[test]
