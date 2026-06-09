@@ -1,7 +1,7 @@
 # lessence Makefile
 # Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
-.PHONY: ci fmt clippy doc build test deny check install setup clean help \
+.PHONY: ci fmt clippy doc build test deny check release-check install setup clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs
 
 #---------------------------------------------------------------------------
@@ -43,6 +43,10 @@ deny:
 ## check: Fast pre-push validation (skip build + tests)
 check: fmt clippy deny
 	@echo "✓ Quick checks passed"
+
+## release-check: Verify docs surfaces (README, agent skill) match the binary — run before merging a release PR
+release-check: build
+	./scripts/release-surface-check.sh
 
 ## test-unit: Run unit tests only (fast)
 test-unit:

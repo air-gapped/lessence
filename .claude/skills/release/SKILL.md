@@ -102,11 +102,21 @@ merge. NEVER move a published release's tag.
 
 ## Pre-release Verification
 
-Before merging a release PR, verify:
+Before merging a release PR, verify code AND documentation surfaces.
+**Order matters: crates.io packages the README at the tag** — a stale README
+caught after publishing is stuck on crates.io until the next release.
 
 ```bash
-cargo build --release
-cargo test
-cargo clippy
-./target/release/lessence --version
+make ci              # fmt + clippy + doc + build + test + deny
+make release-check   # scripts/release-surface-check.sh — README numbers,
+                     # skill sources.md freshness, jq recipe shape, marker sanity
 ```
+
+`release-check` is mechanical but not complete — also eyeball:
+
+- README headline example: pasted from a real run of THIS version?
+- README flag table vs `lessence --help` (semantics, not just spelling)
+- `.claude/skills/lessence/` claims + `sources.md` stamps cover every
+  user-facing change in the changelog
+- Release-notes Highlights cover every changelog entry that a user would
+  notice (style: memory `lessence-release-notes-style`)
