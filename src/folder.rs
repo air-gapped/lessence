@@ -1228,9 +1228,10 @@ impl PatternFolder {
         // Sort groups by position to maintain chronological order
         self.buffer.sort_by_key(|group| group.position);
 
-        // Flush all remaining groups in chronological order
-        while !self.buffer.is_empty() {
-            let group = self.buffer.remove(0);
+        // Flush all remaining groups in chronological order. take() empties
+        // the buffer in O(1); the old remove(0) loop shifted the whole
+        // vector on every iteration (O(n²) in buffered groups).
+        for group in std::mem::take(&mut self.buffer) {
             let formatted = self.format_group_dispatch(&group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
