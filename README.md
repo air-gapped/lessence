@@ -5,20 +5,20 @@ Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually br
 ```
 $ kubectl logs deployment/api | lessence
 
-E0909 13:07:09 nestedpendingoperations.go:348] Operation for volume failed...
-[+1273 similar | E0909 13:07:09 → E0909 13:45:17 | uuid×14, path×3 {/var/lib/pods/a, /var/lib/pods/b, /var/lib/pods/c}, hash×1273]
-W0909 13:07:12 transport.go:356] Unable to cancel request...
+E0909 13:07:09 nestedpendingoperations.go:348] Operation for volume failed... : failed to fetch token... connection reset by peer
+[+3125 similar | E0909 13:07:09 → E0909 19:48:19 | ipv4×1 {127.0.0.1}, k8s_volume×1 {oidc-token}, path×34, uuid×16]
+W0909 13:07:12 transport.go:356] Unable to cancel request for *otelhttp.Transport
 [+1295 similar | W0909 13:07:12 → W0914 09:11:38 | number×2]
 E0909 13:07:12 controller.go:145] Failed to ensure lease exists...
 [+12 similar | duration×1]
 ...
 
-Original: 70,548 lines → 1,129 lines (98.4% reduction)
+Original: 70,548 lines → 357 lines (99.5% reduction)
 ```
 
 Three distinct problems, not 70,000. And the enriched marker tells you
-exactly which 14 UUIDs were affected and which 3 pod directories —
-information that used to require re-running the tool.
+exactly which 16 UUIDs and which volume were affected — information that
+used to require re-running the tool.
 
 ## For Coding Agents & LLMs
 
@@ -110,12 +110,15 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 
 | Log Source | Lines In | Lines Out | Reduction |
 |-----------|--------:|---------:|----------:|
-| Kubernetes kubelet | 70,548 | 1,129 | 98.4% |
+| Kubernetes kubelet | 70,548 | 357 | 99.5% |
 | ArgoCD server | 60,849 | 8 | 99.9% |
 | PostgreSQL primary | 54,066 | 51 | 99.9% |
 | Cilium networking | 38,145 | 1,253 | 96.7% |
 | Rancher | 22,433 | 583 | 97.4% |
 | journalctl (7 days) | 655,103 | 3,132 | 99.5% |
+
+The kubelet row is re-measured on v0.4.4; the other rows were measured on
+earlier versions — the v0.4.4 grouping engine typically folds further.
 
 ## Flags
 
@@ -140,9 +143,10 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 
 ### Pattern Types
 
-lessence recognizes 16 types of variable content:
+lessence recognizes 15 groups of variable content (matching the
+`--disable-patterns` names):
 
-timestamp, email, path, json, uuid, network, hash, process, kubernetes, http-status, brackets, key-value, duration, name, quoted-string, decimal
+timestamp, email, path, json, uuid, network, hash, process, kubernetes, http-status, brackets, key-value, duration, name, quoted-string
 
 Disable any with `--disable-patterns timestamp,email`.
 
@@ -176,7 +180,7 @@ Then just mention logs, errors, or "what's not normal" and the skill triggers.
 
 ```bash
 cargo build --release
-cargo test               # 328 tests
+cargo test               # 1,285 tests
 ```
 
 ## Name
