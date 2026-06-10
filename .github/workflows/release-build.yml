@@ -89,8 +89,11 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+          # Native Intel runner (standard tier, free for public repos) so the
+          # x86_64 binary is built AND executed on its real architecture —
+          # macos-latest is arm64 and Rosetta is being sunset after macOS 26.
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-pc-windows-msvc
@@ -121,6 +124,52 @@ jobs:
       - name: Install musl cross-compile toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      # ---- Smoke tests (ripgrep-style): build the exact release target first,
+      # execute it, and only then let the upload action rebuild from the warm
+      # cache and attach the asset. A binary that does not start or does not
+      # fold never reaches the release page. Only `matrix.target` (a static
+      # config value) is interpolated into run: commands.
+      - name: Build for smoke test
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # aarch64 is cross-compiled; the upload action uses cross (docker) for
+      # it, so build with the same tool the action will reuse.
+      - name: Build for smoke test (cross)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          type -P cross >/dev/null || cargo install cross --locked
+          cross build --release --target ${{ matrix.target }}
+
+      # The fixture asserts both halves of the contract: repeated lines fold
+      # (the "similar" marker) and the unique line survives (zero data loss).
+      - name: Smoke test
+        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.target }}/release/lessence"
+          [[ "${{ matrix.target }}" == *windows* ]] && BIN="$BIN.exe"
+          "$BIN" --version
+          "$BIN" --completions bash > /dev/null
+          out=$(printf 'ERROR connect timeout host=10.0.0.1\nERROR connect timeout host=10.0.0.2\nERROR connect timeout host=10.0.0.3\nERROR connect timeout host=10.0.0.4\nINFO unique startup line\n' | "$BIN" -q)
+          grep -F "similar" <<<"$out"
+          grep -F "INFO unique startup line" <<<"$out"
+
+      # Cross-compiled target: execute under qemu inside the same cross-rs
+      # image that built it (ripgrep's release pipeline does the same).
+      - name: Smoke test (qemu, aarch64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          set -euo pipefail
+          BIN=/target/aarch64-unknown-linux-gnu/release/lessence
+          IMG=ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
+          docker run --rm -v "$PWD/target:/target:Z" "$IMG" qemu-aarch64 "$BIN" --version
+          out=$(printf 'ERROR connect timeout host=10.0.0.1\nERROR connect timeout host=10.0.0.2\nERROR connect timeout host=10.0.0.3\nERROR connect timeout host=10.0.0.4\nINFO unique startup line\n' | docker run --rm -i -v "$PWD/target:/target:Z" "$IMG" qemu-aarch64 "$BIN" -q)
+          grep -F "similar" <<<"$out"
+          grep -F "INFO unique startup line" <<<"$out"
 
       - name: Build and upload
         uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
