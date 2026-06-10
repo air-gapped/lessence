@@ -77,6 +77,14 @@ Valid pattern names (15): `timestamp`, `hash`, `network`, `uuid`, `email`, `path
 - **Security** — all regex patterns resist ReDoS. Input validation enforced. PII sanitization available. Security overhead < 5%.
 - **CLI pipeline tool** — stdin/stdout, non-destructive, Unix composable.
 - **Test-first** — if it's not tested, it's not done.
+- **Performance is release-gated by real corpora** — any change touching the
+  similarity code in `src/normalize.rs` or the clustering in `src/folder/`
+  MUST be benchmarked on the six `examples/` corpora (smallest first,
+  `taskset -c 0-13`, 3 runs, foreground) against the previous release binary
+  (`~/.cargo/bin/lessence`) before it is committed, and the fold output must
+  be byte-identical (or every diff explained). Synthetic benchmarks do not
+  count — the 0.4.4 regression showed "15%" synthetic and 2–4× real. Any
+  regression, however small, is presented to the owner; never self-approved.
 
 ## Commits
 
