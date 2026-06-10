@@ -11,12 +11,90 @@ use crate::patterns::HashType;
 
 /// Build a LogLine with the given tokens and a normalized template.
 fn make_line(normalized: &str, tokens: Vec<Token>) -> LogLine {
-    LogLine {
-        original: normalized.to_string(),
-        normalized: normalized.to_string(),
-        tokens,
-        hash: 0,
+    LogLine::new(normalized.to_string(), normalized.to_string(), tokens, 0)
+}
+
+/// The group hash-index must stay consistent across buffer evictions
+/// (`buffer.remove` shifts every later index). 1,100 mutually dissimilar
+/// lines overflow the 1,000-group buffer and force ~100 evictions; a
+/// repeated line whose group is still buffered must then fold into that
+/// group via the index, not land in a wrong group or found a duplicate.
+#[test]
+fn group_index_survives_eviction() {
+    let config = Config {
+        thread_count: Some(1),
+        ..Config::default()
+    };
+    let mut folder = PatternFolder::new(config);
+
+    // Deterministic 6-letter words: single-token lines that never group
+    // with each other (zero shared tokens → score 0).
+    let word = |i: usize| {
+        let mut s = String::new();
+        let mut x = i;
+        for _ in 0..6 {
+            s.push(char::from(b'a' + (x % 26) as u8));
+            x /= 26;
+        }
+        s
+    };
+
+    let mut output = String::new();
+    for i in 0..1_100 {
+        if let Some(flushed) = folder.process_line(&word(i)).unwrap() {
+            output.push_str(&flushed);
+            output.push('\n');
+        }
     }
+    // Introspect before the repeats: the map entry for word(1050) must
+    // exist and point at the group whose representative is word(1050).
+    let probe = folder.normalizer.normalize_line(word(1_050)).unwrap();
+    let idx = folder
+        .group_index
+        .get(&probe.hash)
+        .copied()
+        .unwrap_or_else(|| panic!("map entry for {} missing before repeats", word(1_050)));
+    assert_eq!(
+        folder.buffer[idx].first().normalized,
+        word(1_050),
+        "map entry for {} points at the wrong group",
+        word(1_050)
+    );
+
+    for _ in 0..5 {
+        if let Some(flushed) = folder.process_line(&word(1_050)).unwrap() {
+            output.push_str(&flushed);
+            output.push('\n');
+        }
+    }
+    for line in folder.finish().unwrap() {
+        output.push_str(&line);
+        output.push('\n');
+    }
+
+    // One folded group renders as first occurrence, fold marker, last
+    // occurrence — exactly two bare target lines. A stale index would
+    // yield three or more (a stranded single plus a separate folded
+    // group), or a markerless single if the repeats joined a wrong group.
+    let target = word(1_050);
+    let lines: Vec<&str> = output.lines().collect();
+    let occurrences: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.contains(&target))
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        occurrences.len(),
+        2,
+        "expected first+last of one folded group for {target}, got {} lines",
+        occurrences.len()
+    );
+    assert!(
+        lines[occurrences[0] + 1].contains("similar"),
+        "fold marker must follow the first {target} occurrence, got: {}",
+        lines[occurrences[0] + 1]
+    );
 }
 
 /// Build a PatternGroup with N lines, each having the given tokens.

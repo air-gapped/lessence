@@ -108,6 +108,16 @@ pub struct PatternFolder {
     config: Config,
     normalizer: Normalizer,
     buffer: Vec<PatternGroup>,
+    /// Representative-hash → buffer index. Lines that are exact-hash
+    /// repeats of a group's representative (the overwhelmingly common case
+    /// in fold-heavy logs) resolve in O(1) instead of scanning the buffer.
+    /// Safe because a line whose hash equals group G's representative
+    /// compares identically to how that representative compared when G was
+    /// created — it already failed similarity against every group ahead of
+    /// G, so the linear scan would land on G too. At most one buffered
+    /// group can hold any representative hash (a hash-equal line always
+    /// joins, never founds).
+    group_index: ahash::AHashMap<u64, usize>,
     stats: FoldingStats,
     position_counter: usize,
     batch_buffer: Vec<String>,
@@ -834,6 +844,7 @@ impl PatternFolder {
             config,
             normalizer,
             buffer: Vec::new(),
+            group_index: ahash::AHashMap::new(),
             stats: FoldingStats::default(),
             position_counter: 0,
             batch_buffer: Vec::new(),
@@ -993,21 +1004,7 @@ impl PatternFolder {
         }
 
         // Try to find a matching group in the buffer
-        let mut match_index = None;
-        for (i, group) in self.buffer.iter().enumerate() {
-            if self.normalizer.are_similar(&normalized_line, group.first()) {
-                match_index = Some(i);
-                break;
-            }
-        }
-
-        if let Some(index) = match_index {
-            self.buffer[index].add_line(normalized_line, self.position_counter);
-        } else {
-            // Create a new group at current position
-            self.buffer
-                .push(PatternGroup::new(normalized_line, self.position_counter));
-        }
+        self.cluster_line(normalized_line);
 
         // Smart flushing: flush groups that are old enough to be safe
         if self.should_flush_buffer() {
@@ -1015,6 +1012,31 @@ impl PatternFolder {
         }
 
         Ok(None)
+    }
+
+    /// Attach a normalized line to its group: O(1) exact-hash lookup via
+    /// `group_index` first, then the linear similarity scan, then a new
+    /// group. The hash shortcut picks the same group the scan would (see
+    /// the `group_index` field docs).
+    fn cluster_line(&mut self, normalized_line: LogLine) {
+        let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
+            Some(idx)
+        } else {
+            self.buffer
+                .iter()
+                .position(|group| self.normalizer.are_similar(&normalized_line, group.first()))
+        };
+
+        if let Some(index) = match_index {
+            self.buffer[index].add_line(normalized_line, self.position_counter);
+        } else {
+            // Create a new group at current position
+            let rep_hash = normalized_line.hash;
+            self.buffer
+                .push(PatternGroup::new(normalized_line, self.position_counter));
+            let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
+            debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
+        }
     }
 
     fn flush_oldest_safe_group(&mut self) -> Result<Option<String>> {
@@ -1046,6 +1068,14 @@ impl PatternFolder {
 
         if let Some(index) = oldest_index {
             let group = self.buffer.remove(index);
+            // Keep the hash index in sync: drop the evicted group's entry
+            // and shift every index past the removal point down by one.
+            self.group_index.remove(&group.first().hash);
+            for v in self.group_index.values_mut() {
+                if *v > index {
+                    *v -= 1;
+                }
+            }
             let formatted = self.format_group_dispatch(&group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
@@ -1244,7 +1274,9 @@ impl PatternFolder {
 
         let mut output = Vec::new();
 
-        // Sort groups by position to maintain chronological order
+        // Sort groups by position to maintain chronological order. The
+        // buffer is emptied below, so the hash index goes with it.
+        self.group_index.clear();
         self.buffer.sort_by_key(|group| group.position);
 
         // Flush all remaining groups in chronological order. take() empties
@@ -1268,7 +1300,9 @@ impl PatternFolder {
             self.process_batch()?;
         }
 
-        // Collect all groups with their counts
+        // Collect all groups with their counts (drains the buffer, so the
+        // hash index goes with it)
+        self.group_index.clear();
         let mut groups_with_counts: Vec<(usize, PatternGroup)> =
             self.buffer.drain(..).map(|g| (g.count(), g)).collect();
 
@@ -1632,25 +1666,12 @@ impl PatternFolder {
             self.count_pattern_types(&normalized_line.tokens);
         }
 
-        // Fast similarity matching using pre-computed normalized text
-        let mut match_index = None;
-        for (i, group) in self.buffer.iter().enumerate() {
-            if self.normalizer.are_similar(&normalized_line, group.first()) {
-                match_index = Some(i);
-                break;
-            }
-        }
-
-        if let Some(index) = match_index {
-            // In parallel mode, position_counter is the end-of-batch position,
-            // not the per-line position. Line numbers in parallel mode are
-            // therefore approximate — accurate single-threaded, batch-granular
-            // parallel. Documented in the JSON schema.
-            self.buffer[index].add_line(normalized_line, self.position_counter);
-        } else {
-            self.buffer
-                .push(PatternGroup::new(normalized_line, self.position_counter));
-        }
+        // Fast similarity matching using pre-computed normalized text.
+        // In parallel mode, position_counter is the end-of-batch position,
+        // not the per-line position. Line numbers in parallel mode are
+        // therefore approximate — accurate single-threaded, batch-granular
+        // parallel. Documented in the JSON schema.
+        self.cluster_line(normalized_line);
 
         Ok(())
     }

@@ -15,9 +15,43 @@ exclude_re = [
     "network.rs:207",
     # QuotedStringDetector has its own `if !text.contains('\"')` fast path,
     # so the normalizer's `|| contains('\'')` branch never produces tokens.
-    "normalize.rs:173",
+    "normalize.rs:182",
     # PathDetector (step 3) already replaces &Event{} before JSON (step 4).
     # The normalize_json guard is unreachable — path detector consumes all
     # inputs that JsonDetector would match.
     "normalize.rs:59",
+
+    # --- 0.4.5 similarity-cache equivalents ---
+    # tok_eq: && → || diverges only on an ahash collision between unequal
+    # tokens (equal bytes with unequal hashes is impossible).
+    'replace && with \|\| in Normalizer::tok_eq',
+    # from_normalized: the s.len() > u32::MAX guard needs a > 4 GiB string
+    # to distinguish >, >=, == — unconstructible in a test.
+    'replace > with .* in SimTokens::from_normalized',
+    # flush_oldest_safe_group: the map entry equal to the removed index is
+    # deleted on the line above, so > vs >= over the remaining values is
+    # indistinguishable.
+    "folder/mod.rs:1075:23",
+    # token_lcs prefix/suffix trims and the early-exit bound are exact
+    # optimizations: disabling a trim (< → == / >) or loosening the bound
+    # (- → + / /) can never change the returned LCS or decision, only speed.
+    "normalize.rs:296:17: replace < with ==",
+    "normalize.rs:296:17: replace < with >",
+    "normalize.rs:307:17: replace < with ==",
+    "normalize.rs:307:17: replace < with >",
+    'normalize.rs:330:42: replace - with \+',
+    'normalize.rs:330:46: replace - with \+',
+    "normalize.rs:330:46: replace - with /",
+    # are_similar multiset bound: these mutations push the bound above any
+    # admissible threshold (<= 100) so the reject never fires — decisions
+    # unchanged, only the DP shortcut is lost.
+    'normalize.rs:380:21: replace \* with \+',
+    'normalize.rs:380:66: replace / with \*',
+    'normalize.rs:380:75: replace \* with \+',
+    # are_similar needed-LCS seed: ceil((T*total)/200) is only a starting
+    # point — these mutations can only undershoot it (product >= sum on the
+    # admissible domain), and the step-up loop below walks `need` to the
+    # same authoritative value either way.
+    'normalize.rs:392:40: replace \* with \+',
+    'normalize.rs:392:40: replace \* with /',
 ]

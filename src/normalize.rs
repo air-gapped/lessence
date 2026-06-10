@@ -4,10 +4,11 @@ use std::hash::{Hash, Hasher};
 
 use crate::config::Config;
 use crate::patterns::{
-    LogLine, Token, duration::DurationDetector, email::EmailPatternDetector, hash::HashDetector,
-    json::JsonDetector, kubernetes::KubernetesDetector, names::NameDetector,
-    network::NetworkDetector, path::PathDetector, process::ProcessDetector,
-    quoted::QuotedStringDetector, timestamp::TimestampDetector, uuid::UuidDetector,
+    LogLine, MAX_SIMILARITY_TOKENS, SimTok, SimTokens, Token, duration::DurationDetector,
+    email::EmailPatternDetector, hash::HashDetector, json::JsonDetector,
+    kubernetes::KubernetesDetector, names::NameDetector, network::NetworkDetector,
+    path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector,
+    timestamp::TimestampDetector, uuid::UuidDetector,
 };
 
 pub struct Normalizer {
@@ -188,12 +189,7 @@ impl Normalizer {
         // Generate hash for fast comparison
         let hash = self.calculate_hash(&normalized);
 
-        Ok(LogLine {
-            original,
-            normalized,
-            tokens,
-            hash,
-        })
+        Ok(LogLine::new(original, normalized, tokens, hash))
     }
 
     fn calculate_hash(&self, normalized: &str) -> u64 {
@@ -201,12 +197,6 @@ impl Normalizer {
         normalized.hash(&mut hasher);
         hasher.finish()
     }
-
-    /// Maximum whitespace tokens per line that the LCS comparison handles;
-    /// longer lines fall back to the positional byte overlap. 64 covers
-    /// virtually all real log lines while bounding the DP at 64×64 token
-    /// comparisons on the stack with zero allocation.
-    const MAX_SIMILARITY_TOKENS: usize = 64;
 
     #[allow(clippy::cast_precision_loss)] // usize lengths → f64 for ratio calc
     pub fn similarity_score(&self, line1: &LogLine, line2: &LogLine) -> f64 {
@@ -235,29 +225,15 @@ impl Normalizer {
 
         // Token-level LCS: tolerant of an inserted or removed token, which a
         // positional comparison is not (one early insertion used to cascade
-        // into a near-zero score for otherwise identical lines).
-        let mut t1 = [""; Self::MAX_SIMILARITY_TOKENS];
-        let mut t2 = [""; Self::MAX_SIMILARITY_TOKENS];
-        if let (Some(n1), Some(n2)) = (
-            Self::collect_tokens(s1, &mut t1),
-            Self::collect_tokens(s2, &mut t2),
-        ) && n1 > 0
-            && n2 > 0
+        // into a near-zero score for otherwise identical lines). Tokens are
+        // cached on the LogLine on first use — no re-tokenization here.
+        if let (SimTokens::Tokens { toks: a, .. }, SimTokens::Tokens { toks: b, .. }) =
+            (line1.sim(), line2.sim())
+            && !a.is_empty()
+            && !b.is_empty()
         {
-            let a = &t1[..n1];
-            let b = &t2[..n2];
-            // Positional fast path: when every aligned token matches, the
-            // LCS is exactly min(n1, n2) — skip the DP. This covers the
-            // common case of same-shape lines compared against a group
-            // representative.
-            let min_n = n1.min(n2);
-            let aligned = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
-            let lcs = if aligned == min_n {
-                min_n
-            } else {
-                Self::token_lcs(a, b)
-            };
-            return (2.0 * lcs as f64 / (n1 + n2) as f64) * 100.0;
+            let lcs = Self::token_lcs(s1, a, s2, b, None);
+            return (2.0 * lcs as f64 / (a.len() + b.len()) as f64) * 100.0;
         }
 
         // Fallback for token-overflow or whitespace-only lines: positional
@@ -273,50 +249,157 @@ impl Normalizer {
         (f64::from(matches) / max_len as f64) * 100.0
     }
 
-    /// Fills `out` with the whitespace tokens of `s`. Returns the token
-    /// count, or None if the line has more tokens than fit.
-    fn collect_tokens<'a>(
-        s: &'a str,
-        out: &mut [&'a str; Self::MAX_SIMILARITY_TOKENS],
-    ) -> Option<usize> {
-        let mut n = 0;
-        for tok in s.split_whitespace() {
-            if n == Self::MAX_SIMILARITY_TOKENS {
-                return None;
-            }
-            out[n] = tok;
-            n += 1;
-        }
-        Some(n)
+    /// Token equality via cached per-token hashes: hash inequality proves the
+    /// tokens differ; on hash equality the bytes are compared to rule out
+    /// collisions, so the result is exactly string equality.
+    #[inline]
+    fn tok_eq(s1: &str, t1: SimTok, s2: &str, t2: SimTok) -> bool {
+        t1.hash == t2.hash
+            && s1[t1.start as usize..t1.end as usize] == s2[t2.start as usize..t2.end as usize]
     }
 
-    /// Longest common subsequence length over token slices (rolling-row DP,
-    /// stack-only). Both inputs are at most MAX_SIMILARITY_TOKENS long.
-    fn token_lcs(a: &[&str], b: &[&str]) -> usize {
-        let mut prev = [0u16; Self::MAX_SIMILARITY_TOKENS + 1];
-        let mut curr = [0u16; Self::MAX_SIMILARITY_TOKENS + 1];
-        for ta in a {
-            for (j, tb) in b.iter().enumerate() {
-                curr[j + 1] = if ta == tb {
+    /// Size of the multiset intersection of two ascending-sorted hash
+    /// slices (standard two-pointer merge).
+    fn multiset_intersection(a: &[u64], b: &[u64]) -> usize {
+        let (mut i, mut j, mut common) = (0, 0, 0);
+        while i < a.len() && j < b.len() {
+            match a[i].cmp(&b[j]) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    common += 1;
+                    i += 1;
+                    j += 1;
+                }
+            }
+        }
+        common
+    }
+
+    /// Longest common subsequence length over cached token slices.
+    ///
+    /// Exact reductions before the DP: the common prefix and common suffix
+    /// are stripped (both are always part of an LCS), which collapses the
+    /// usual log-line case — same shape, a few differing middle tokens — to
+    /// a tiny DP or none at all. The DP itself is the rolling-row stack-only
+    /// version bounded by MAX_SIMILARITY_TOKENS.
+    ///
+    /// With `needed = Some(n)` the DP aborts once `n` is provably
+    /// unreachable and returns an upper bound that is `< n` — callers using
+    /// `needed` may only test the result against `n`, not use it as a score.
+    fn token_lcs(s1: &str, a: &[SimTok], s2: &str, b: &[SimTok], needed: Option<usize>) -> usize {
+        let min_n = a.len().min(b.len());
+
+        // Common prefix (covers the aligned fast path: identical-shape lines
+        // resolve here without any DP).
+        let mut p = 0;
+        while p < min_n && Self::tok_eq(s1, a[p], s2, b[p]) {
+            p += 1;
+        }
+        if p == min_n {
+            return min_n;
+        }
+
+        // Common suffix of the remainders (bounded so it cannot overlap the
+        // prefix in the shorter sequence).
+        let max_s = min_n - p;
+        let mut s = 0;
+        while s < max_s && Self::tok_eq(s1, a[a.len() - 1 - s], s2, b[b.len() - 1 - s]) {
+            s += 1;
+        }
+
+        let am = &a[p..a.len() - s];
+        let bm = &b[p..b.len() - s];
+        let dp_cap = am.len().min(bm.len());
+
+        let mut prev = [0u16; MAX_SIMILARITY_TOKENS + 1];
+        let mut curr = [0u16; MAX_SIMILARITY_TOKENS + 1];
+        for (i, ta) in am.iter().enumerate() {
+            let mut row_max = 0u16;
+            for (j, tb) in bm.iter().enumerate() {
+                curr[j + 1] = if Self::tok_eq(s1, *ta, s2, *tb) {
                     prev[j] + 1
                 } else {
                     prev[j + 1].max(curr[j])
                 };
+                row_max = row_max.max(curr[j + 1]);
             }
-            prev[..=b.len()].copy_from_slice(&curr[..=b.len()]);
+            if let Some(need) = needed {
+                // Each further row can raise the LCS by at most 1, and the
+                // middle LCS can never exceed the shorter middle.
+                let rows_left = am.len() - i - 1;
+                let upper = p + s + (usize::from(row_max) + rows_left).min(dp_cap);
+                if upper < need {
+                    return upper;
+                }
+            }
+            prev[..=bm.len()].copy_from_slice(&curr[..=bm.len()]);
         }
-        usize::from(prev[b.len()])
+        p + s + usize::from(prev[bm.len()])
     }
 
+    #[allow(clippy::cast_precision_loss)] // usize lengths → f64 for ratio calc
     pub fn are_similar(&self, line1: &LogLine, line2: &LogLine) -> bool {
         // Quick hash comparison first
         if line1.hash == line2.hash {
             return true;
         }
 
-        // If hashes don't match, check similarity score
-        let score = self.similarity_score(line1, line2);
-        score >= f64::from(self.config.threshold)
+        let threshold = f64::from(self.config.threshold);
+
+        // Threshold-aware token path: identical decisions to
+        // `similarity_score(..) >= threshold`, but with exact O(1) bounds
+        // that skip or truncate the DP for most non-matching pairs.
+        if let (
+            SimTokens::Tokens {
+                toks: a,
+                sorted_hashes: ha,
+            },
+            SimTokens::Tokens {
+                toks: b,
+                sorted_hashes: hb,
+            },
+        ) = (line1.sim(), line2.sim())
+            && !a.is_empty()
+            && !b.is_empty()
+        {
+            let s1 = &line1.normalized;
+            let s2 = &line2.normalized;
+            let min_len = s1.len().min(s2.len());
+            let max_len = s1.len().max(s2.len());
+            let length_ratio = min_len as f64 / max_len as f64;
+            if length_ratio < 0.7 {
+                return length_ratio * 100.0 >= threshold;
+            }
+
+            let total = (a.len() + b.len()) as f64;
+            // The LCS can never exceed the multiset intersection of the two
+            // token bags, computable as an O(n) merge over the sorted hash
+            // views. Collisions only overcount, so rejecting on this bound
+            // is exact. (It also subsumes the min(n1, n2) bound.)
+            if (2.0 * Self::multiset_intersection(ha, hb) as f64 / total) * 100.0 < threshold {
+                return false;
+            }
+
+            // Smallest LCS that satisfies the threshold. The ceil formula is
+            // exact in real arithmetic (threshold and total are small
+            // integers), but similarity_score's float expression can round a
+            // boundary score *below* an integer threshold — e.g. 7 of 10
+            // shared tokens computes as 69.999…, not 70 — so step up until
+            // the float expression itself agrees. Fires at most once: one
+            // extra token moves the true score by 200/total, far beyond any
+            // float error.
+            let mut need = ((threshold * total) / 200.0).ceil() as usize;
+            while (2.0 * need as f64 / total) * 100.0 < threshold {
+                need += 1;
+            }
+
+            return Self::token_lcs(s1, a, s2, b, Some(need)) >= need;
+        }
+
+        // Whitespace-only or token-overflow lines: fall back to the full
+        // score (byte-positional path).
+        self.similarity_score(line1, line2) >= threshold
     }
 
     pub fn format_collapsed_line(&self, first: &LogLine, last: &LogLine, count: usize) -> String {
@@ -742,12 +825,7 @@ mod tests {
     #[test]
     fn test_similarity_score_empty_strings() {
         let normalizer = Normalizer::new(Config::default());
-        let empty = LogLine {
-            original: String::new(),
-            normalized: String::new(),
-            tokens: vec![],
-            hash: 0,
-        };
+        let empty = LogLine::new(String::new(), String::new(), vec![], 0);
         let score = normalizer.similarity_score(&empty, &empty);
         assert!(
             (score - 100.0).abs() < f64::EPSILON,
@@ -820,18 +898,8 @@ mod tests {
         // With one empty and one non-empty, max_len > 0, min_len = 0
         // length_ratio = 0/5 = 0.0 < 0.7 → returns 0.0
         let normalizer = Normalizer::new(Config::default());
-        let empty = LogLine {
-            original: String::new(),
-            normalized: String::new(),
-            tokens: vec![],
-            hash: 0,
-        };
-        let nonempty = LogLine {
-            original: "hello".into(),
-            normalized: "hello".into(),
-            tokens: vec![],
-            hash: 1,
-        };
+        let empty = LogLine::new(String::new(), String::new(), vec![], 0);
+        let nonempty = LogLine::new("hello".into(), "hello".into(), vec![], 1);
         let score = normalizer.similarity_score(&empty, &nonempty);
         assert!(
             score < 1.0,
@@ -844,18 +912,8 @@ mod tests {
         // Kills mutant: min_len ↔ max_len swap in length_ratio calculation
         // len1=3, len2=10: ratio should be 3/10=0.3, NOT 10/3=3.33
         let normalizer = Normalizer::new(Config::default());
-        let short = LogLine {
-            original: "abc".into(),
-            normalized: "abc".into(),
-            tokens: vec![],
-            hash: 0,
-        };
-        let long = LogLine {
-            original: "abcdefghij".into(),
-            normalized: "abcdefghij".into(),
-            tokens: vec![],
-            hash: 1,
-        };
+        let short = LogLine::new("abc".into(), "abc".into(), vec![], 0);
+        let long = LogLine::new("abcdefghij".into(), "abcdefghij".into(), vec![], 1);
         let score = normalizer.similarity_score(&short, &long);
         // ratio = 3/10 = 0.3 < 0.7 → returns 0.3 * 100 = 30.0
         assert!(
@@ -874,18 +932,8 @@ mod tests {
             s.push_str(&c.to_string().repeat(130));
             s
         };
-        let a = LogLine {
-            original: half_match('X'),
-            normalized: half_match('X'),
-            tokens: vec![],
-            hash: 0,
-        };
-        let b = LogLine {
-            original: half_match('Y'),
-            normalized: half_match('Y'),
-            tokens: vec![],
-            hash: 1,
-        };
+        let a = LogLine::new(half_match('X'), half_match('X'), vec![], 0);
+        let b = LogLine::new(half_match('Y'), half_match('Y'), vec![], 1);
         let score = normalizer.similarity_score(&a, &b);
         // First 130 of 260 bytes match positionally: 50.0
         assert!(
@@ -895,12 +943,7 @@ mod tests {
     }
 
     fn raw_line(s: String, hash: u64) -> LogLine {
-        LogLine {
-            original: s.clone(),
-            normalized: s,
-            tokens: vec![],
-            hash,
-        }
+        LogLine::new(s.clone(), s, vec![], hash)
     }
 
     #[test]
@@ -991,18 +1034,19 @@ mod tests {
     #[test]
     fn test_are_similar_hash_shortcircuit() {
         let normalizer = Normalizer::new(Config::default());
-        let a = LogLine {
-            original: "completely different".into(),
-            normalized: "completely different".into(),
-            tokens: vec![],
-            hash: 42,
-        };
-        let b = LogLine {
-            original: "not similar at all really".into(),
-            normalized: "not similar at all really".into(),
-            tokens: vec![],
-            hash: 42, // same hash = shortcircuit to true
-        };
+        let a = LogLine::new(
+            "completely different".into(),
+            "completely different".into(),
+            vec![],
+            42,
+        );
+        // same hash = shortcircuit to true
+        let b = LogLine::new(
+            "not similar at all really".into(),
+            "not similar at all really".into(),
+            vec![],
+            42,
+        );
         assert!(
             normalizer.are_similar(&a, &b),
             "same hash should shortcircuit to similar"
@@ -1457,18 +1501,8 @@ mod tests {
         // The char comparison for "xyz" vs "abcdefghij" (0 matching bytes) → 0.0
         // So: division returns 30.0, multiplication returns 0.0
         let normalizer = Normalizer::new(Config::default());
-        let short = LogLine {
-            original: "xyz".into(),
-            normalized: "xyz".into(),
-            tokens: vec![],
-            hash: 0,
-        };
-        let long = LogLine {
-            original: "abcdefghij".into(),
-            normalized: "abcdefghij".into(),
-            tokens: vec![],
-            hash: 1,
-        };
+        let short = LogLine::new("xyz".into(), "xyz".into(), vec![], 0);
+        let long = LogLine::new("abcdefghij".into(), "abcdefghij".into(), vec![], 1);
         let score = normalizer.similarity_score(&short, &long);
         // With /: ratio = 3/10 = 0.3 < 0.7 → returns 30.0
         // With *: ratio = 30.0 > 0.7 → char comparison (0 matching) → 0.0
@@ -1476,5 +1510,290 @@ mod tests {
             score > 20.0,
             "3/10 ratio should give 30.0, got {score} (if 0.0, division was mutated to *)"
         );
+    }
+
+    // --- token cache / cheap-reject machinery (new in 0.4.5) ---
+
+    #[test]
+    fn test_multiset_intersection_counts_multiplicity() {
+        // Duplicates count once per matched pair, not once per value.
+        assert_eq!(
+            Normalizer::multiset_intersection(&[1, 2, 2, 3], &[2, 2, 4]),
+            2
+        );
+    }
+
+    #[test]
+    fn test_multiset_intersection_disjoint_and_identical() {
+        assert_eq!(Normalizer::multiset_intersection(&[1, 3, 5], &[2, 4, 6]), 0);
+        assert_eq!(Normalizer::multiset_intersection(&[7, 8, 9], &[7, 8, 9]), 3);
+        assert_eq!(Normalizer::multiset_intersection(&[], &[1]), 0);
+    }
+
+    #[test]
+    fn test_multiset_intersection_advance_arms() {
+        // Kills swapped Less/Greater advances: the smaller side must be the
+        // one skipped or the late match is lost.
+        assert_eq!(Normalizer::multiset_intersection(&[1, 2, 3, 4], &[4]), 1);
+        assert_eq!(Normalizer::multiset_intersection(&[4], &[1, 2, 3, 4]), 1);
+    }
+
+    #[test]
+    fn test_multiset_intersection_asymmetric_duplicates() {
+        // On a match BOTH pointers must advance, or the single 5 on the
+        // other side gets counted against every duplicate.
+        assert_eq!(Normalizer::multiset_intersection(&[5, 5], &[5, 9]), 1);
+        assert_eq!(Normalizer::multiset_intersection(&[5, 9], &[5, 5]), 1);
+    }
+
+    #[test]
+    fn test_are_similar_float_boundary_58_of_100() {
+        // The single (threshold, token-total) combination in the whole
+        // domain where the float score rounds BELOW an exactly-met integer
+        // threshold: LCS 29 of 100 total tokens, threshold 58 —
+        // (2.0*29/100)*100.0 evaluates to 57.999…, so similarity_score says
+        // "not similar" and are_similar's needed-LCS step-up loop must agree
+        // (kills mutants that weaken or delete that loop).
+        // Letters only, so no pattern detector rewrites the tokens.
+        let words = |prefix: char, from: usize, to: usize| -> Vec<String> {
+            (from..to)
+                .map(|i| {
+                    let hi = char::from(b'a' + (i / 26) as u8);
+                    let lo = char::from(b'a' + (i % 26) as u8);
+                    format!("{prefix}{hi}{lo}")
+                })
+                .collect()
+        };
+        // 30 shared tokens with two adjacent ones swapped in b: the token
+        // MULTISETS share 30, so the intersection bound passes (60 ≥ 58)
+        // and the step-up loop is actually reached — while the LCS is 29.
+        let mut a_toks = words('s', 0, 30);
+        a_toks.extend(words('x', 30, 50));
+        let mut b_toks = words('s', 0, 30);
+        b_toks.swap(28, 29);
+        b_toks.extend(words('y', 30, 50));
+
+        let config = Config {
+            threshold: 58,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let a = normalizer.normalize_line(a_toks.join(" ")).unwrap();
+        let b = normalizer.normalize_line(b_toks.join(" ")).unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        assert!(
+            score < 58.0 && score > 57.99,
+            "setup: float score must round just below 58, got {score}"
+        );
+        assert!(
+            !normalizer.are_similar(&a, &b),
+            "are_similar must agree with the score path at the float boundary"
+        );
+
+        // Positive twin: same shape WITHOUT the swap → LCS 30, score 60 ≥
+        // 58 → similar. The needed-LCS loop still runs (need 29 → 30), so a
+        // corrupted loop body that inflates or wraps `need` flips this one.
+        let mut c_toks = words('s', 0, 30);
+        c_toks.extend(words('z', 30, 50));
+        let c = normalizer.normalize_line(c_toks.join(" ")).unwrap();
+        assert!(
+            normalizer.are_similar(&a, &c),
+            "LCS 30 of 100 at threshold 58 must be similar"
+        );
+    }
+
+    #[test]
+    fn test_are_similar_whitespace_fallback_agrees() {
+        // Whitespace-only lines have no similarity tokens, so are_similar
+        // must fall back to the byte-positional score path — in both
+        // argument orders, with the comparison direction matching
+        // similarity_score >= threshold ("   " vs "  x" scores 66.7).
+        let config = Config {
+            threshold: 50,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let blank = raw_line("   ".to_string(), 1);
+        let almost = raw_line("  x".to_string(), 2);
+        assert!(normalizer.are_similar(&blank, &almost));
+        assert!(normalizer.are_similar(&almost, &blank));
+
+        let config = Config {
+            threshold: 80,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        assert!(!normalizer.are_similar(&blank, &almost));
+    }
+
+    #[test]
+    fn test_similarity_score_max_token_dp_bounds() {
+        // Two 64-token lines (exactly MAX_SIMILARITY_TOKENS, not overflow)
+        // with zero shared tokens force the full-width DP: the rolling rows
+        // must be sized MAX+1 or the final-column access panics.
+        let mk = |prefix: char| -> String {
+            (0..64)
+                .map(|i| {
+                    let hi = char::from(b'a' + (i / 26) as u8);
+                    let lo = char::from(b'a' + (i % 26) as u8);
+                    format!("{prefix}{hi}{lo}")
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer.normalize_line(mk('p')).unwrap();
+        let b = normalizer.normalize_line(mk('q')).unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        assert!(
+            score.abs() < f64::EPSILON,
+            "disjoint 64-token lines must score 0, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_token_lcs_suffix_window_stays_in_bounds() {
+        // Shorter line is entirely prefix+suffix of the longer one: the
+        // suffix scan must stop at min_n - p or it walks past the start of
+        // the shorter token list (index underflow). Trailing spaces keep
+        // the byte lengths within the 0.7 length-ratio gate without adding
+        // tokens.
+        let normalizer = Normalizer::new(Config::default());
+        let a = raw_line("ccc ccc ccc         ".to_string(), 1);
+        let b = raw_line("ccc ccc xxx ccc ccc ccc".to_string(), 2);
+        let score = normalizer.similarity_score(&a, &b);
+        // LCS = 3 of 3+6 tokens: 2*3/9 = 66.67
+        assert!(
+            (score - 200.0 / 3.0).abs() < 1e-9,
+            "expected 66.67, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_are_similar_agrees_with_score_exhaustively() {
+        // Ground truth: are_similar(a, b) ⇔ similarity_score(a, b) >= T.
+        // Sweep a structured family of synthetic lines (varying token
+        // counts, shared prefixes/suffixes/middles, shuffles, duplicates)
+        // against several thresholds. Any mutant that changes a decision in
+        // the threshold-aware fast path (length-ratio branch, multiset
+        // bound, needed-LCS computation, DP early-exit) must disagree with
+        // the score path on some pair in this family.
+        let vocab = [
+            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+            "lambda", "mu",
+        ];
+        let mut lines: Vec<String> = Vec::new();
+        for n in 1..=12usize {
+            // Plain prefix of the vocabulary, length n.
+            lines.push(vocab[..n].join(" "));
+            // Same length but the middle token replaced.
+            let mut mid = vocab[..n].to_vec();
+            mid[n / 2] = "XXXXX";
+            lines.push(mid.join(" "));
+            // Same length, reversed (same multiset, low LCS).
+            let mut rev = vocab[..n].to_vec();
+            rev.reverse();
+            lines.push(rev.join(" "));
+            // Disjoint tokens of the same count.
+            lines.push(vec!["zzz"; n].join(" "));
+        }
+
+        for threshold in [1u8, 50, 70, 75, 80, 99, 100] {
+            let config = Config {
+                threshold,
+                ..Config::default()
+            };
+            let normalizer = Normalizer::new(config);
+            let parsed: Vec<LogLine> = lines
+                .iter()
+                .map(|l| normalizer.normalize_line(l.clone()).unwrap())
+                .collect();
+            for x in &parsed {
+                for y in &parsed {
+                    let expected = x.hash == y.hash
+                        || normalizer.similarity_score(x, y) >= f64::from(threshold);
+                    assert_eq!(
+                        normalizer.are_similar(x, y),
+                        expected,
+                        "disagreement at threshold {threshold}: {:?} vs {:?}",
+                        x.normalized,
+                        y.normalized
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_similarity_score_middle_token_diff_keeps_suffix() {
+        // Common prefix AND suffix around one differing middle token: the
+        // suffix trim must contribute to the LCS. 7 of 8 tokens shared:
+        // 2*7/16 = 87.5.
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer
+            .normalize_line("alpha beta gamma delta epsilon zeta eta theta".to_string())
+            .unwrap();
+        let b = normalizer
+            .normalize_line("alpha beta gamma XXXXX epsilon zeta eta theta".to_string())
+            .unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        assert!(
+            (score - 87.5).abs() < f64::EPSILON,
+            "Expected 87.5, got {score}"
+        );
+    }
+
+    #[test]
+    fn test_are_similar_exactly_at_threshold() {
+        // LCS 8 of 10 tokens each → score exactly 80. The threshold-aware
+        // fast path in are_similar must agree with similarity_score on the
+        // boundary in both directions (kills off-by-one mutants in the
+        // needed-LCS computation and the multiset reject).
+        let a_text = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let b_text = "alpha beta gamma delta epsilon zeta eta theta AAAAA BBBBB";
+
+        let config = Config {
+            threshold: 80,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let a = normalizer.normalize_line(a_text.to_string()).unwrap();
+        let b = normalizer.normalize_line(b_text.to_string()).unwrap();
+        let score = normalizer.similarity_score(&a, &b);
+        assert!(
+            (score - 80.0).abs() < f64::EPSILON,
+            "setup: expected score 80, got {score}"
+        );
+        assert!(
+            normalizer.are_similar(&a, &b),
+            "score == threshold must be similar"
+        );
+
+        let config = Config {
+            threshold: 81,
+            ..Config::default()
+        };
+        let normalizer = Normalizer::new(config);
+        let a = normalizer.normalize_line(a_text.to_string()).unwrap();
+        let b = normalizer.normalize_line(b_text.to_string()).unwrap();
+        assert!(
+            !normalizer.are_similar(&a, &b),
+            "score below threshold must not be similar"
+        );
+    }
+
+    #[test]
+    fn test_are_similar_agrees_with_score_on_disjoint_tokens() {
+        // Same-length lines with zero shared tokens: the multiset bound
+        // rejects without a DP, and that decision must match the score path.
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer
+            .normalize_line("alpha beta gamma delta".to_string())
+            .unwrap();
+        let b = normalizer
+            .normalize_line("omega psi chi phi ups".to_string())
+            .unwrap();
+        assert!(!normalizer.are_similar(&a, &b));
+        assert!(normalizer.similarity_score(&a, &b) < f64::from(Config::default().threshold));
     }
 }

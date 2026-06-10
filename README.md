@@ -117,15 +117,15 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 
 | Log Source | Lines In | Lines Out | Reduction | Measured on |
 |-----------|--------:|---------:|----------:|------------:|
-| Kubernetes kubelet | 70,548 | 357 | 99.5% | v0.4.4 |
-| ArgoCD server | 60,849 | 8 | 99.9% | pre-0.4 |
-| PostgreSQL primary | 54,066 | 51 | 99.9% | pre-0.4 |
-| Cilium networking | 38,145 | 1,253 | 96.7% | pre-0.4 |
-| Rancher | 22,433 | 583 | 97.4% | pre-0.4 |
-| journalctl (7 days) | 655,103 | 3,132 | 99.5% | pre-0.4 |
+| Kubernetes kubelet | 70,548 | 357 | 99.5% | v0.4.5 |
+| ArgoCD server | 60,849 | 8 | 99.9% | v0.4.5 |
+| PostgreSQL primary | 54,066 | 92 | 99.8% | v0.4.5 |
+| Cilium networking | 38,145 | 376 | 99.0% | v0.4.5 |
+| Rancher | 22,433 | 243 | 98.9% | v0.4.5 |
+| journalctl (7 days) | 655,103 | 1,870 | 99.7% | v0.4.5 |
 
-Historical measurements on production corpora that are not distributable;
-the headline example above is the only CI-verified number.
+Measurements on production corpora that are not distributable; the
+headline example above is the only CI-verified number.
 
 ## Flags
 
