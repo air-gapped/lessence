@@ -3,37 +3,55 @@ name: lessence
 description: >-
   lessence ("log essence") compresses repetitive log lines into patterns while
   preserving every unique line. Finds the essence of massive logs — the signal
-  without the noise.
+  without the noise. Use it instead of tail/head/grep sampling when diagnosing
+  any large log: tail -50 is bounded but blind to the rest of the file;
+  lessence declares anything it omits.
 when_to_use: >-
-  Triggers on "checking logs", "wall of logs", "too much output", "can't find
-  the error", "what's the pattern", "compress logs", "feed logs to LLM",
-  "reduce context", or when looking at kubectl logs, docker logs, journalctl
-  output, CI failures, crash-looping pods, test failures, or anything not
-  normal in log output. When a pod is crash-looping or a build failed, pipe
-  its logs through lessence FIRST — before reading them raw. Use for triage
-  of any large log. Does NOT trigger for short output (under ~50 lines) or
-  when the search keyword is already known — plain grep suffices there.
+  Triggers on "checking logs", "wall of logs", "wall of text", "build log",
+  "too much output", "can't find the error", "what's actually failing",
+  "find the root cause", "the error happened earlier", "what's
+  the pattern", "compress logs", "feed logs to LLM", "reduce context", or
+  when looking at kubectl logs, docker logs, journalctl output, CI failures,
+  crash-looping pods, test failures, or anything not normal in log output.
+  When tempted to tail -N, head -N, or sample a log over ~200 lines to keep
+  output small: lessence -q is usually smaller than tail -200 and contains
+  every unique line, and its output already reports line counts (stats
+  footer) and per-pattern time ranges — no wc/head/tail recon pass needed. Pipe logs through lessence
+  FIRST — before reading them raw. Does NOT trigger for short output (under
+  ~50 lines), live following (tail -f), or when the task is ONLY a
+  known-keyword search — plain grep suffices there; if the question is even
+  partly exploratory ("anything else weird?"), use lessence.
 license: MIT
 ---
 
 # lessence — Extract the Essence of Massive Logs
 
-lessence ("log essence") finds the essence of massive log output. Pipe
-thousands of lines through it and get back the distinct patterns with
-counts — the signal without the noise. It normalizes variable parts
-(timestamps, IPs, UUIDs, hashes, PIDs), groups similar lines, and folds
-duplicates into a representative line + count.
+`tail -50` on a 40,000-line log shows 50 lines and silently hides the
+rest — and the root cause is rarely in the last N lines. lessence
+normalizes variable parts (timestamps, IPs, UUIDs, hashes, PIDs), groups
+similar lines, and folds duplicates into a representative line + count,
+so every distinct pattern stays visible. When it does bound output
+(`--summary`, `--top N`) it says how many patterns were omitted. Prefer
+the view that declares its blind spots over the one that hides them.
 
-## The Decision: lessence vs grep
+No recon pass needed first: the stats footer reports line counts and
+each folded group carries its time range, so `wc -l` / `head -3` /
+`tail -3` scoping before running lessence is redundant — start with
+lessence directly.
+
+## The Decision: lessence vs grep vs tail
 
 Use the right tool for the job:
 
 | Situation | Tool | Why |
 |-----------|------|-----|
-| Error keyword is known ("error", "panic") | `grep -i error` | Faster, simpler |
+| Question is ONLY a known keyword ("show panics") | `grep -i panic` | Faster, simpler |
+| Keyword known but question partly exploratory ("...and anything else weird?") | `lessence -q`, then grep the folded output | Keywords answer half; patterns reveal the rest |
 | Unknown what to search for | `lessence` | Reveals patterns that weren't anticipated |
 | Need to understand the shape of failures | `lessence` | Shows frequency distribution across error types |
-| Huge output but one known needle | `grep` | Don't compress when filtering suffices |
+| Only the latest events matter (problem is live right now) | `tail -N` | Recency is the filter — legitimate tail |
+| Failure location in the file unknown | `lessence -q` | Root cause is rarely in the last N lines |
+| Tempted to tail/head/sample "to save context" | `lessence -q` | Usually fewer lines than `tail -200`, zero blind spots |
 | Huge output, unknown number of problems | `lessence` then `grep` on compressed output | Compress first, then drill in |
 | Comparing two log periods | `lessence --essence` + `diff` | Strips timestamps for structural comparison |
 
@@ -227,5 +245,8 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
 - **`references/sources.md`** — Per-claim verification stamps against the repo's
   binary and docs. Consult when a claim looks stale; re-verify after user-facing
   `feat:`/`fix:` commits.
-- **`references/trigger-evals.json`** — Persistent trigger eval set (7 should-fire,
-  6 should-not). Used by skill-improver trigger mode; extend rather than replace.
+- **`references/trigger-evals.json`** — Persistent trigger eval set (10 should-fire,
+  8 should-not). Used by skill-improver trigger mode; extend rather than replace.
+- **`references/choice-evals/`** — Behavioral eval harness: does the model pick
+  lessence over tail/grep on a real large-log diagnosis? See its README to
+  re-run after skill or binary changes.

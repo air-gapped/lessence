@@ -25,3 +25,4 @@ touching `src/` postdates it.
 | `--max-line-length` default 1MB (`main.rs` `.or(Some(1024*1024))`; help text corrected 2026-06-09) | code + live run | 2026-06-09 |
 | `--threshold` token-LCS semantics, stronger folding (kubelet corpus 941 -> 380 lines) | src/normalize.rs similarity_score + live run (shipped in 0.4.4) | 2026-06-09 |
 | `variation` FQDN key for hostnames (was IPV4) | src/folder/mod.rs token_type_name + live run (shipped in 0.4.4) | 2026-06-09 |
+| Stats footer reports line counts (`input_lines`/`output_lines`); time ranges are per folded group, not in the footer | live run (`--stats-json` keys) against installed 0.4.3 binary | 2026-06-10 |

@@ -1,0 +1,26 @@
+[
+  {
+    "id": "kubelet-notready",
+    "fixture": "examples/kubelet.log",
+    "dest": "kubelet.log",
+    "prompt": "Our k8s node went NotReady earlier today and I dumped the kubelet log before rebooting. It's in kubelet.log in this directory (about 70,000 lines). Figure out what went wrong with the node."
+  },
+  {
+    "id": "argocd-crashloop",
+    "fixture": "examples/argocd_controller_production.log",
+    "dest": "app.log",
+    "prompt": "The argocd application controller keeps restarting every few minutes. Full log dump is in app.log here (about 27,000 lines). Diagnose the cause of the restarts."
+  },
+  {
+    "id": "ssh-intrusion",
+    "fixture": "examples/openssh_brute_force.log",
+    "dest": "auth.log",
+    "prompt": "This auth.log (about 38,000 lines) is from a server that was under an SSH brute-force attack. Did anyone actually get in? Tell me what I should be worried about."
+  },
+  {
+    "id": "db-vague",
+    "fixture": "examples/harbor_postgres_primary.log",
+    "dest": "postgres.log",
+    "prompt": "Postgres has been slow since last night and I don't know why. postgres.log in this directory has about 54,000 lines. What's going on in there?"
+  }
+]
