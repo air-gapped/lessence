@@ -21,7 +21,7 @@ jobs:
           toolchain: stable
 
       - name: Install tools
-        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2
         with:
           tool: cargo-machete
 
