@@ -3,6 +3,8 @@
 *.db-journal
 *.db-shm
 *.db-wal
+# fsqlite multi-process namespace sidecars (-fsqlite-ns-gate / -fsqlite-ns-use)
+*.db-fsqlite-*
 
 # Lock files
 *.lock
@@ -38,3 +40,4 @@ redirect
 
 # bv (beads viewer) lock file
 .bv.lock
+.write.lock
