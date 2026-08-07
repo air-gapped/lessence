@@ -225,3 +225,37 @@ fn json_output_includes_expected_group_count_for_microservices_fixture() {
          every input line must appear in exactly one group"
     );
 }
+
+#[test]
+fn json_top_n_remains_valid_jsonl_with_terminal_summary() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--format",
+            "json",
+            "--top",
+            "3",
+            "--threads",
+            "1",
+            "tests/fixtures/microservices.log",
+        ])
+        .output()
+        .expect("failed to run lessence");
+    assert!(
+        output.status.success(),
+        "lessence exited non-zero: stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let raw = String::from_utf8(output.stdout).expect("lessence stdout was not UTF-8");
+    let records = parse_jsonl(&raw);
+    assert_eq!(
+        records.iter().filter(|r| r["type"] == "group").count(),
+        3,
+        "--top 3 should emit exactly three group records"
+    );
+    assert_eq!(
+        records.last().expect("JSONL stream was empty")["type"],
+        "summary",
+        "top-N JSONL must end with a summary record"
+    );
+}

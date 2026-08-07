@@ -324,6 +324,7 @@ fn main() -> Result<()> {
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
         let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
+        let json_output = matches!(config.output_format.as_str(), "json" | "jsonl");
 
         // Apply --fit budget
         let (groups_to_show, fit_truncated) = if let Some(budget) = fit_budget {
@@ -339,7 +340,12 @@ fn main() -> Result<()> {
         };
 
         for (count, formatted) in groups_to_show {
-            match writeln!(stdout, "[{count}x] {formatted}") {
+            let result = if json_output {
+                writeln!(stdout, "{formatted}")
+            } else {
+                writeln!(stdout, "[{count}x] {formatted}")
+            };
+            match result {
                 Ok(_) => {}
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     std::process::exit(0);
@@ -348,17 +354,28 @@ fn main() -> Result<()> {
             }
         }
         if fit_truncated > 0 {
-            let _ = writeln!(
-                stdout,
-                "... {fit_truncated} more patterns (remove --fit for full output)"
-            );
+            if json_output {
+                eprintln!("lessence: {fit_truncated} more patterns omitted by --fit");
+            } else {
+                let _ = writeln!(
+                    stdout,
+                    "... {fit_truncated} more patterns (remove --fit for full output)"
+                );
+            }
         }
         let shown = groups_to_show.len();
         eprintln!(
             "(showing top {shown} of {total_groups} patterns, covering {coverage_pct}% of input lines)"
         );
 
-        if config.stats_json {
+        if json_output {
+            folder.print_summary_json(&mut stdout, start_time.elapsed())?;
+            if config.stats_json {
+                eprintln!(
+                    "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
+                );
+            }
+        } else if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         } else if config.stats {
             folder.print_stats(&mut io::stderr())?;
