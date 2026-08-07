@@ -178,6 +178,10 @@ Parallel by default — uses all CPU cores for normalization.
 A `SKILL.md` is included at `.claude/skills/lessence/` that teaches AI coding agents when and how to use lessence — triage workflows, flag reference, common pitfalls. The `SKILL.md` format is supported by [Claude Code](https://claude.ai/code), [OpenCode](https://opencode.ai), and other agents that scan `.claude/skills/`.
 
 **If you cloned the repo**, the skill is already active in this project directory.
+The canonical skill lives in `.claude/skills/lessence`; the
+`.agents/skills/lessence` symlink exposes the same files to Codex and Pi.
+OpenCode recognizes both locations. On Windows, Git must be configured to
+check out repository symlinks as symlinks.
 
 **To install globally** (available in all projects):
 
