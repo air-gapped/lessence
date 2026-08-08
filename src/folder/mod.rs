@@ -70,21 +70,36 @@ struct PatternGroup {
     /// Input line number of the most recently added line in this group.
     /// Updated on every add_line().
     last_line_no: usize,
+    /// Source IDs for the representative lines. `SourceId::STDIN` means the
+    /// input had no filename (stdin). IDs resolve through `PatternFolder`.
+    first_source_id: SourceId,
+    last_source_id: SourceId,
 }
 
 impl PatternGroup {
     fn new(line: LogLine, position: usize) -> Self {
+        Self::new_at(line, position, LineLocation::new(SourceId::STDIN, position))
+    }
+
+    fn new_at(line: LogLine, position: usize, location: LineLocation) -> Self {
         Self {
             lines: vec![line],
             position,
-            first_line_no: position,
-            last_line_no: position,
+            first_line_no: location.line_no,
+            last_line_no: location.line_no,
+            first_source_id: location.source_id,
+            last_source_id: location.source_id,
         }
     }
 
     fn add_line(&mut self, line: LogLine, line_no: usize) {
+        self.add_line_at(line, LineLocation::new(SourceId::STDIN, line_no));
+    }
+
+    fn add_line_at(&mut self, line: LogLine, location: LineLocation) {
         self.lines.push(line);
-        self.last_line_no = line_no;
+        self.last_line_no = location.line_no;
+        self.last_source_id = location.source_id;
     }
 
     fn should_collapse(&self, min_collapse: usize) -> bool {
@@ -101,6 +116,27 @@ impl PatternGroup {
 
     fn count(&self) -> usize {
         self.lines.len()
+    }
+}
+
+/// Compact handle for an input source. The sentinel value represents stdin,
+/// whose original filename is unknowable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceId(u32);
+
+impl SourceId {
+    const STDIN: Self = Self(u32::MAX);
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LineLocation {
+    source_id: SourceId,
+    line_no: usize,
+}
+
+impl LineLocation {
+    fn new(source_id: SourceId, line_no: usize) -> Self {
+        Self { source_id, line_no }
     }
 }
 
@@ -121,6 +157,12 @@ pub struct PatternFolder {
     stats: FoldingStats,
     position_counter: usize,
     batch_buffer: Vec<String>,
+    /// Exact locations parallel to `batch_buffer`, populated only by the
+    /// JSON CLI path. Text-mode ingestion never allocates or writes here.
+    batch_locations: Vec<LineLocation>,
+    /// Source names are interned once per explicit input file. Groups retain
+    /// compact IDs rather than cloning a path for every line.
+    sources: Vec<String>,
     /// Monotonic counter for JSON group record `id` fields. Incremented
     /// exactly once per flushed group in JSON mode. Stays at 0 in text /
     /// markdown modes. Stable within a run.
@@ -329,11 +371,12 @@ struct PatternHits {
 // for it but does not emit it.
 // -------------------------------------------------------------------------
 
-/// A reference to a line of the original input. `line_no` is the 1-indexed
-/// input position of the line. In parallel mode it is approximate
-/// (batch-granular); in single-threaded mode it is exact.
+/// A reference to a line of the original input. `line_no` is the exact
+/// 1-indexed position within `source`, or within stdin when `source` is null.
 #[derive(Serialize)]
 struct LineRef {
+    /// Explicit input filename, or null when the line came from stdin.
+    source: Option<String>,
     line: String,
     line_no: usize,
 }
@@ -848,8 +891,26 @@ impl PatternFolder {
             stats: FoldingStats::default(),
             position_counter: 0,
             batch_buffer: Vec::new(),
+            batch_locations: Vec::new(),
+            sources: Vec::new(),
             next_json_id: 0,
             rollup_computer: RollupComputer::with_defaults(),
+        }
+    }
+
+    /// Register one explicit input filename and return a compact handle that
+    /// can be attached to every line from that reader without cloning it.
+    pub fn register_source(&mut self, source: String) -> SourceId {
+        let id = u32::try_from(self.sources.len()).expect("too many input files");
+        self.sources.push(source);
+        SourceId(id)
+    }
+
+    fn source_name(&self, source_id: SourceId) -> Option<String> {
+        if source_id == SourceId::STDIN {
+            None
+        } else {
+            self.sources.get(source_id.0 as usize).cloned()
         }
     }
 
@@ -935,10 +996,12 @@ impl PatternFolder {
             token_types: token_types.into_iter().collect(),
             normalized: group.first().normalized.clone(),
             first: LineRef {
+                source: self.source_name(group.first_source_id),
                 line: group.first().original.clone(),
                 line_no: group.first_line_no,
             },
             last: LineRef {
+                source: self.source_name(group.last_source_id),
                 line: group.last().original.clone(),
                 line_no: group.last_line_no,
             },
@@ -1014,11 +1077,55 @@ impl PatternFolder {
         Ok(None)
     }
 
+    /// Process a line with its exact source location. This is used by the
+    /// JSON CLI path; text-mode callers keep using `process_line` and pay no
+    /// provenance-tracking cost.
+    pub fn process_line_at(
+        &mut self,
+        line: &str,
+        source_id: Option<SourceId>,
+        line_no: usize,
+    ) -> Result<Option<String>> {
+        self.stats.total_lines += 1;
+        self.position_counter += 1;
+        let location = LineLocation::new(source_id.unwrap_or(SourceId::STDIN), line_no);
+
+        if self.config.thread_count != Some(1) {
+            self.batch_buffer.push(line.to_string());
+            self.batch_locations.push(location);
+
+            if self.batch_buffer.len() >= 10_000 {
+                self.process_batch()?;
+            }
+
+            return Ok(None);
+        }
+
+        let normalized_line = self.normalizer.normalize_line(line.to_string())?;
+
+        if !normalized_line.tokens.is_empty() {
+            self.stats.patterns_detected += 1;
+            self.count_pattern_types(&normalized_line.tokens);
+        }
+
+        self.cluster_line_at(normalized_line, Some(location));
+
+        if self.should_flush_buffer() {
+            return self.flush_oldest_safe_group();
+        }
+
+        Ok(None)
+    }
+
     /// Attach a normalized line to its group: O(1) exact-hash lookup via
     /// `group_index` first, then the linear similarity scan, then a new
     /// group. The hash shortcut picks the same group the scan would (see
     /// the `group_index` field docs).
     fn cluster_line(&mut self, normalized_line: LogLine) {
+        self.cluster_line_at(normalized_line, None);
+    }
+
+    fn cluster_line_at(&mut self, normalized_line: LogLine, location: Option<LineLocation>) {
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
@@ -1028,12 +1135,20 @@ impl PatternFolder {
         };
 
         if let Some(index) = match_index {
-            self.buffer[index].add_line(normalized_line, self.position_counter);
+            if let Some(location) = location {
+                self.buffer[index].add_line_at(normalized_line, location);
+            } else {
+                self.buffer[index].add_line(normalized_line, self.position_counter);
+            }
         } else {
             // Create a new group at current position
             let rep_hash = normalized_line.hash;
-            self.buffer
-                .push(PatternGroup::new(normalized_line, self.position_counter));
+            let group = if let Some(location) = location {
+                PatternGroup::new_at(normalized_line, self.position_counter, location)
+            } else {
+                PatternGroup::new(normalized_line, self.position_counter)
+            };
+            self.buffer.push(group);
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
         }
@@ -1634,10 +1749,12 @@ impl PatternFolder {
     /// Parallel batch processing: normalize in parallel, cluster sequentially
     fn process_batch(&mut self) -> Result<()> {
         let batch = std::mem::take(&mut self.batch_buffer);
+        let locations = std::mem::take(&mut self.batch_locations);
+        debug_assert!(locations.is_empty() || locations.len() == batch.len());
         let processed_lines = self.parallel_pattern_detection(&batch)?;
 
-        for processed_line in processed_lines {
-            self.sequential_clustering(processed_line)?;
+        for (index, processed_line) in processed_lines.into_iter().enumerate() {
+            self.sequential_clustering_at(processed_line, locations.get(index).copied())?;
         }
         Ok(())
     }
@@ -1659,19 +1776,27 @@ impl PatternFolder {
     }
 
     /// Phase 2: Fast sequential clustering using pre-computed normalized lines
+    #[cfg(test)]
     fn sequential_clustering(&mut self, normalized_line: LogLine) -> Result<()> {
+        self.sequential_clustering_at(normalized_line, None)
+    }
+
+    fn sequential_clustering_at(
+        &mut self,
+        normalized_line: LogLine,
+        location: Option<LineLocation>,
+    ) -> Result<()> {
         // Fast clustering using pre-computed patterns and hashes
         if !normalized_line.tokens.is_empty() {
             self.stats.patterns_detected += 1;
             self.count_pattern_types(&normalized_line.tokens);
         }
 
-        // Fast similarity matching using pre-computed normalized text.
-        // In parallel mode, position_counter is the end-of-batch position,
-        // not the per-line position. Line numbers in parallel mode are
-        // therefore approximate — accurate single-threaded, batch-granular
-        // parallel. Documented in the JSON schema.
-        self.cluster_line(normalized_line);
+        // Fast similarity matching using pre-computed normalized text. The
+        // grouping position remains batch-granular to preserve clustering and
+        // flush behavior; `location` independently carries the exact source
+        // position used by JSON output.
+        self.cluster_line_at(normalized_line, location);
 
         Ok(())
     }

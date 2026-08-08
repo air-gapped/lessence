@@ -63,21 +63,39 @@ fn markdown_code_fence(content: &str) -> String {
 }
 
 /// Opens the given input files, falling back to stdin when none are given.
+struct InputReader {
+    /// The explicit filename as supplied by the user, or None for stdin.
+    source: Option<String>,
+    reader: Box<dyn BufRead>,
+}
+
 /// Returns the successfully opened readers plus whether any file failed to
 /// open — like cat/grep, the remaining files are still processed but the
 /// process must exit non-zero.
-fn open_inputs(files: &[PathBuf]) -> (Vec<Box<dyn BufRead>>, bool) {
+fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, bool) {
     if files.is_empty() {
-        return (vec![Box::new(BufReader::new(io::stdin().lock()))], false);
+        return (
+            vec![InputReader {
+                source: None,
+                reader: Box::new(BufReader::new(io::stdin().lock())),
+            }],
+            false,
+        );
     }
-    let mut readers: Vec<Box<dyn BufRead>> = Vec::new();
+    let mut readers = Vec::new();
     let mut any_failed = false;
     for path in files {
         if path.as_os_str() == "-" {
-            readers.push(Box::new(BufReader::new(io::stdin().lock())));
+            readers.push(InputReader {
+                source: None,
+                reader: Box::new(BufReader::new(io::stdin().lock())),
+            });
         } else {
             match File::open(path) {
-                Ok(f) => readers.push(Box::new(BufReader::new(f))),
+                Ok(f) => readers.push(InputReader {
+                    source: Some(path.to_string_lossy().into_owned()),
+                    reader: Box::new(BufReader::new(f)),
+                }),
                 Err(e) => {
                     eprintln!("lessence: {}: {}", path.display(), e);
                     any_failed = true;
@@ -163,6 +181,7 @@ fn main() -> Result<()> {
 
     // For Markdown format, we need to process all logs first, then format
     let use_structured_output = matches!(config.output_format.as_str(), "markdown");
+    let use_json_output = matches!(config.output_format.as_str(), "json" | "jsonl");
     let use_top_n = config.top_n.is_some();
 
     // Handle preflight mode: process logs but only output JSON analysis
@@ -176,7 +195,7 @@ fn main() -> Result<()> {
         // Process all lines but don't output log content
         for (lines_processed, line) in readers
             .into_iter()
-            .flat_map(std::io::BufRead::lines)
+            .flat_map(|input| input.reader.lines())
             .enumerate()
         {
             let line = line?;
@@ -228,7 +247,7 @@ fn main() -> Result<()> {
         }
         for (lines_processed, line) in readers
             .into_iter()
-            .flat_map(std::io::BufRead::lines)
+            .flat_map(|input| input.reader.lines())
             .enumerate()
         {
             let mut line = line?;
@@ -270,52 +289,64 @@ fn main() -> Result<()> {
     }
     let mut stdout = io::stdout();
     let mut collected_outputs = Vec::new();
-    for (lines_processed, line) in readers
-        .into_iter()
-        .flat_map(std::io::BufRead::lines)
-        .enumerate()
-    {
-        let mut line = line?;
+    let mut lines_processed = 0usize;
+    'inputs: for input in readers {
+        let source_id = if use_json_output {
+            input.source.map(|source| folder.register_source(source))
+        } else {
+            None
+        };
 
-        // Security: Check line count limit
-        if let Some(max_lines) = config.max_lines
-            && lines_processed >= max_lines
-        {
-            eprintln!("Line limit of {max_lines} reached, stopping processing");
-            break;
-        }
+        for (source_line_index, line) in input.reader.lines().enumerate() {
+            let mut line = line?;
 
-        // Security: Check line length limit (Constitutional Principle X)
-        if let Some(max_length) = config.max_line_length
-            && line.len() > max_length
-        {
-            continue;
-        }
+            // Security: Check line count limit
+            if let Some(max_lines) = config.max_lines
+                && lines_processed >= max_lines
+            {
+                eprintln!("Line limit of {max_lines} reached, stopping processing");
+                break 'inputs;
+            }
+            lines_processed += 1;
 
-        // Check fail-on-pattern against raw line (before normalization)
-        if let Some(ref re) = fail_regex
-            && re.is_match(&line)
-        {
-            pattern_matched.set(true);
-        }
+            // Security: Check line length limit (Constitutional Principle X)
+            if let Some(max_length) = config.max_line_length
+                && line.len() > max_length
+            {
+                continue;
+            }
 
-        // Strip ANSI color codes by default (unless --preserve-color)
-        if !config.preserve_color {
-            line = strip_ansi_codes(&line);
-        }
+            // Check fail-on-pattern against raw line (before normalization)
+            if let Some(ref re) = fail_regex
+                && re.is_match(&line)
+            {
+                pattern_matched.set(true);
+            }
 
-        if let Some(output) = folder.process_line(&line)? {
-            if use_top_n {
-                // In top-N mode, discard incremental output — we'll use finish_top_n()
-            } else if use_structured_output {
-                collected_outputs.push(output);
+            // Strip ANSI color codes by default (unless --preserve-color)
+            if !config.preserve_color {
+                line = strip_ansi_codes(&line);
+            }
+
+            let output = if use_json_output {
+                folder.process_line_at(&line, source_id, source_line_index + 1)?
             } else {
-                match writeln!(stdout, "{output}") {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                        std::process::exit(0);
+                folder.process_line(&line)?
+            };
+
+            if let Some(output) = output {
+                if use_top_n {
+                    // In top-N mode, discard incremental output — we'll use finish_top_n()
+                } else if use_structured_output {
+                    collected_outputs.push(output);
+                } else {
+                    match writeln!(stdout, "{output}") {
+                        Ok(_) => {}
+                        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                            std::process::exit(0);
+                        }
+                        Err(e) => return Err(e.into()),
                     }
-                    Err(e) => return Err(e.into()),
                 }
             }
         }
@@ -324,7 +355,7 @@ fn main() -> Result<()> {
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
         let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
-        let json_output = matches!(config.output_format.as_str(), "json" | "jsonl");
+        let json_output = use_json_output;
 
         // Apply --fit budget
         let (groups_to_show, fit_truncated) = if let Some(budget) = fit_budget {
@@ -474,7 +505,7 @@ fn main() -> Result<()> {
 
     // JSON mode: emit the terminal summary record, then skip the
     // human/--stats-json paths (the summary record supersedes them).
-    if matches!(config.output_format.as_str(), "json" | "jsonl") {
+    if use_json_output {
         folder.print_summary_json(&mut io::stdout(), start_time.elapsed())?;
         if config.stats_json {
             eprintln!(

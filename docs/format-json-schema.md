@@ -44,10 +44,12 @@ Two record types, discriminated by the `type` field:
   ],
   "normalized": "E<TIMESTAMP> nestedpendingoperations.go:<NUMBER>] Operation for volume <UUID> failed, err: <QUOTED_STRING>",
   "first": {
+    "source": "kubelet.log",
     "line": "E0909 13:07:09 ...",
     "line_no": 412
   },
   "last": {
+    "source": "kubelet.log",
     "line": "E0909 13:45:17 ...",
     "line_no": 9874
   },
@@ -89,10 +91,12 @@ Two record types, discriminated by the `type` field:
 | `count` | integer | Number of input lines that joined this group. For a group of 1, this is 1 (no folding). |
 | `token_types` | array of strings | Sorted list of token type discriminant names that appeared in the group's first or last line. UPPERCASE convention. Deterministic across runs. |
 | `normalized` | string | The first line's normalized form (variable parts replaced with `<TOKEN>` placeholders). This is the "template" that agents group lines by. |
+| `first.source` | string \| null | Explicit input filename exactly as supplied to lessence, or null for stdin. |
 | `first.line` | string | The first input line that created this group, as-is. PII-masked if `--sanitize-pii` is set. |
-| `first.line_no` | integer | 1-indexed input line number. In single-threaded mode this is exact; in parallel mode it is approximate (batch-granular — the last line number of the batch the line belonged to). |
+| `first.line_no` | integer | Exact 1-indexed line number within `first.source`, or within stdin when `source` is null. |
+| `last.source` | string \| null | Source of the group's last representative, with the same semantics as `first.source`. A group can span input files. |
 | `last.line` | string | The most recent line added to this group (before it flushed). Same semantics as `first.line`. |
-| `last.line_no` | integer | Same semantics as `first.line_no`. |
+| `last.line_no` | integer | Exact 1-indexed line number within `last.source`, or within stdin when `source` is null. |
 | `time_range.first_seen` | string \| null | Raw string of the first `Token::Timestamp` in the group's first line, or null if no timestamp was detected. Not parsed. |
 | `time_range.last_seen` | string \| null | Same, for the group's last line. |
 | `variation` | object | Per-token-type rollup metadata. See below. |
@@ -254,10 +258,6 @@ lessence --format json prod.log \
 
 ## Known limitations
 
-- **`line_no` in parallel mode is approximate.** Accurate line
-  numbering requires threading per-line indices through the rayon
-  batch path, which the Phase 2 design deferred. Use `--threads 1`
-  if exact line numbers matter.
 - **`time_range` is not chronologically ordered.** It's based on
   first-line/last-line input positions, not parsed timestamp
   comparison. For most logs this matches chronology; for merged

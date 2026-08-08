@@ -41,7 +41,9 @@ kubectl logs pod/api | lessence --preflight | claude -p "analyze this log report
 For programmatic consumption, `--format json` emits a JSONL stream —
 one JSON object per folded group plus a terminating summary record.
 Each group record carries per-token-type rollup metadata: distinct
-counts, deterministic samples, a capped flag, and a raw time range.
+counts, deterministic samples, a capped flag, a raw time range, and exact
+per-file locations for its first and last representatives. Stdin records use
+`source: null` because no original filename is known.
 Agents can answer "which pods?", "how many distinct UUIDs?", "when did
 this start?" from a single invocation without re-reading the log.
 

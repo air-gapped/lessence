@@ -3,8 +3,10 @@
 //! Phase 2 scope: schema shape validation, no rollup fields yet. Phase 3
 //! will add `variation` field coverage in a separate test file.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 use std::str;
+use tempfile::NamedTempFile;
 
 /// Run lessence on a fixture and return stdout as a string.
 fn run_lessence_json(fixture: &str) -> String {
@@ -29,6 +31,53 @@ fn parse_jsonl(raw: &str) -> Vec<serde_json::Value> {
                 .unwrap_or_else(|e| panic!("invalid JSON line: {l}\nerror: {e}"))
         })
         .collect()
+}
+
+fn provenance_fixture(start: usize) -> NamedTempFile {
+    let mut file = NamedTempFile::new().expect("failed to create provenance fixture");
+    for offset in 0..3 {
+        writeln!(
+            file,
+            "2026-08-08T10:00:0{offset}Z ERROR request failed id={}",
+            start + offset
+        )
+        .expect("failed to write provenance fixture");
+    }
+    file.flush().expect("failed to flush provenance fixture");
+    file
+}
+
+fn run_provenance_files(threads: Option<&str>) -> Vec<serde_json::Value> {
+    let first = provenance_fixture(100);
+    let second = provenance_fixture(200);
+    let mut command = Command::new(env!("CARGO_BIN_EXE_lessence"));
+    command.args(["--format", "json"]);
+    if let Some(threads) = threads {
+        command.args(["--threads", threads]);
+    }
+    let output = command
+        .arg(first.path())
+        .arg(second.path())
+        .output()
+        .expect("failed to run lessence");
+    assert!(output.status.success());
+
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let group = records
+        .iter()
+        .find(|record| record["type"] == "group" && record["count"] == 6)
+        .expect("expected one group spanning both files");
+    assert_eq!(
+        group["first"]["source"].as_str(),
+        Some(first.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(group["first"]["line_no"], 1);
+    assert_eq!(
+        group["last"]["source"].as_str(),
+        Some(second.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(group["last"]["line_no"], 3);
+    records
 }
 
 #[test]
@@ -102,9 +151,17 @@ fn json_group_record_has_required_fields() {
         assert!(rec.get("last").is_some(), "missing last: {rec}");
         assert!(rec.get("time_range").is_some(), "missing time_range: {rec}");
 
-        // first / last must have line and line_no
+        // first / last must have source, line, and line_no
         for side in ["first", "last"] {
             let line_ref = &rec[side];
+            assert!(
+                line_ref.get("source").is_some(),
+                "{side}.source must be present: {rec}"
+            );
+            assert!(
+                line_ref["source"].is_string() || line_ref["source"].is_null(),
+                "{side}.source must be a string or null: {rec}"
+            );
             assert!(
                 line_ref["line"].is_string(),
                 "{side}.line must be string: {rec}"
@@ -258,4 +315,91 @@ fn json_top_n_remains_valid_jsonl_with_terminal_summary() {
         "summary",
         "top-N JSONL must end with a summary record"
     );
+}
+
+#[test]
+fn json_locations_are_exact_for_multiple_files_in_single_and_parallel_modes() {
+    let single = run_provenance_files(Some("1"));
+    let parallel = run_provenance_files(None);
+
+    let location_shape = |records: &[serde_json::Value]| {
+        let group = records
+            .iter()
+            .find(|record| record["type"] == "group" && record["count"] == 6)
+            .unwrap();
+        (
+            group["first"]["line_no"].clone(),
+            group["last"]["line_no"].clone(),
+        )
+    };
+    assert_eq!(location_shape(&single), location_shape(&parallel));
+}
+
+#[test]
+fn json_stdin_location_has_no_invented_source() {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--format", "json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to run lessence");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            b"2026-08-08T10:00:00Z ERROR request failed id=1\n\
+              2026-08-08T10:00:01Z ERROR request failed id=2\n\
+              2026-08-08T10:00:02Z ERROR request failed id=3\n",
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let group = records
+        .iter()
+        .find(|record| record["type"] == "group")
+        .unwrap();
+
+    assert!(group["first"]["source"].is_null());
+    assert_eq!(group["first"]["line_no"], 1);
+    assert!(group["last"]["source"].is_null());
+    assert_eq!(group["last"]["line_no"], 3);
+}
+
+#[test]
+fn json_mixed_file_and_stdin_preserves_each_source() {
+    let file = provenance_fixture(100);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--format", "json"])
+        .arg(file.path())
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to run lessence");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(
+            b"2026-08-08T11:00:00Z ERROR request failed id=200\n\
+              2026-08-08T11:00:01Z ERROR request failed id=201\n",
+        )
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let group = records
+        .iter()
+        .find(|record| record["type"] == "group" && record["count"] == 5)
+        .expect("expected one group spanning file and stdin");
+
+    assert_eq!(
+        group["first"]["source"].as_str(),
+        Some(file.path().to_string_lossy().as_ref())
+    );
+    assert_eq!(group["first"]["line_no"], 1);
+    assert!(group["last"]["source"].is_null());
+    assert_eq!(group["last"]["line_no"], 2);
 }
