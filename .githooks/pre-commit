@@ -22,6 +22,48 @@ pass() {
     echo "${GREEN}OK:${NC} $1"
 }
 
+# Flush beads before inspecting staged content. The SQLite database is local
+# and gitignored; issues.jsonl is the public export and must be sanitized after
+# every flush because source_repo_path may contain an absolute checkout path.
+if command -v br >/dev/null 2>&1 && [ -d .beads ]; then
+    if ! br sync --flush-only >/dev/null 2>&1; then
+        fail "failed to flush br changes to JSONL (run 'br sync --flush-only' manually)"
+    fi
+
+    BEADS_JSONL=.beads/issues.jsonl
+    if [ -f .blocklist ] && [ -f "$BEADS_JSONL" ]; then
+        sanitized=0
+        while IFS= read -r pattern || [ -n "$pattern" ]; do
+            case "$pattern" in
+                ""|\#*) continue ;;
+            esac
+            if grep -qF "$pattern" "$BEADS_JSONL" 2>/dev/null; then
+                if ! REDACT_PAT="$pattern" perl -pi \
+                        -e 's{\Q$ENV{REDACT_PAT}\E}{[REDACTED]}g' "$BEADS_JSONL"; then
+                    fail "redaction of '$pattern' failed"
+                fi
+                if grep -qF "$pattern" "$BEADS_JSONL" 2>/dev/null; then
+                    fail "redaction of '$pattern' was incomplete"
+                fi
+                sanitized=1
+            fi
+        done < .blocklist
+        if [ "$sanitized" = "1" ]; then
+            # Redaction intentionally changes the exported JSONL after br
+            # certified its hash. Import the sanitized form so the next hook
+            # run does not fail the stale-JSONL guard or restore private data.
+            if ! br sync --import-only --force >/dev/null 2>&1; then
+                fail "failed to certify sanitized beads JSONL"
+            fi
+            pass "beads PII sanitized"
+        fi
+    fi
+
+    if ! git add "$BEADS_JSONL"; then
+        fail "failed to stage sanitized beads JSONL"
+    fi
+fi
+
 # Large file check (1MB limit)
 MAX_SIZE=1048576
 for file in $(git diff --cached --name-only --diff-filter=ACM); do
@@ -37,6 +79,8 @@ pass "no large files"
 # Blocklist check (private domains, hostnames, etc.)
 if [ -f ".blocklist" ]; then
     for file in $(git diff --cached --name-only --diff-filter=ACM); do
+        # A blocklist necessarily contains its own patterns.
+        [ "$file" = ".blocklist" ] && continue
         if [ -f "$file" ]; then
             while IFS= read -r pattern || [ -n "$pattern" ]; do
                 case "$pattern" in
