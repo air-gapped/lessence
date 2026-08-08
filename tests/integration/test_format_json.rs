@@ -315,6 +315,151 @@ fn json_top_n_remains_valid_jsonl_with_terminal_summary() {
         "summary",
         "top-N JSONL must end with a summary record"
     );
+    let completeness = &records.last().unwrap()["completeness"];
+    assert!(!completeness["complete"].as_bool().unwrap());
+    assert!(!completeness["groups"]["complete"].as_bool().unwrap());
+    assert_eq!(completeness["groups"]["emitted"], 3);
+    assert_eq!(completeness["groups"]["omitted_by_top"]["kind"], "exact");
+    assert!(
+        completeness["groups"]["omitted_by_top"]["value"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+}
+
+#[test]
+fn json_reports_max_lines_as_an_unknown_unprocessed_remainder() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--format",
+            "json",
+            "--max-lines",
+            "2",
+            "tests/fixtures/microservices.log",
+        ])
+        .output()
+        .unwrap();
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let input = &records.last().unwrap()["completeness"]["input"];
+    assert!(!input["complete"].as_bool().unwrap());
+    assert_eq!(input["processed_lines"], 2);
+    assert!(input["unprocessed_after_max_lines"]["value"].is_null());
+    assert_eq!(input["unprocessed_after_max_lines"]["kind"], "unknown");
+}
+
+#[test]
+fn json_reports_overlong_lines_with_an_exact_count() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--format",
+            "json",
+            "--max-line-length",
+            "10",
+            "tests/fixtures/microservices.log",
+        ])
+        .output()
+        .unwrap();
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let input = &records.last().unwrap()["completeness"]["input"];
+    assert!(!input["complete"].as_bool().unwrap());
+    assert_eq!(input["skipped_overlong_lines"]["kind"], "exact");
+    assert!(input["skipped_overlong_lines"]["value"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn json_reports_failed_sources_and_keeps_stdout_valid_jsonl() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--format",
+            "json",
+            "tests/fixtures/microservices.log",
+            "/definitely/not/a/lessence/input.log",
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let input = &records.last().unwrap()["completeness"]["input"];
+    assert!(!input["complete"].as_bool().unwrap());
+    assert_eq!(input["failed_sources"]["kind"], "lower_bound");
+    assert_eq!(input["failed_sources"]["value"], 1);
+}
+
+#[test]
+fn json_summary_cap_stays_jsonl_and_reports_exact_omissions() {
+    let mut file = NamedTempFile::new().unwrap();
+    for byte in b'A'..=b'Z' {
+        writeln!(
+            file,
+            "{}",
+            String::from_utf8(vec![byte; byte as usize]).unwrap()
+        )
+        .unwrap();
+    }
+    for byte in b'a'..=b'z' {
+        writeln!(
+            file,
+            "{}",
+            String::from_utf8(vec![byte; byte as usize]).unwrap()
+        )
+        .unwrap();
+    }
+    file.flush().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--format", "json", "--summary", "--threshold", "100"])
+        .arg(file.path())
+        .output()
+        .unwrap();
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    assert_eq!(records.iter().filter(|r| r["type"] == "group").count(), 30);
+    let groups = &records.last().unwrap()["completeness"]["groups"];
+    assert_eq!(groups["omitted_by_summary_cap"]["value"], 22);
+    assert_eq!(groups["omitted_by_summary_cap"]["kind"], "exact");
+}
+
+#[test]
+fn json_fit_without_a_tty_stays_valid_jsonl() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--format",
+            "json",
+            "--fit",
+            "tests/fixtures/microservices.log",
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    assert_eq!(records.last().unwrap()["type"], "summary");
+    assert!(
+        records.last().unwrap()["completeness"]["groups"]["omitted_by_fit"]
+            .get("kind")
+            .is_some()
+    );
+}
+
+#[test]
+fn json_variation_caps_are_explicit_lower_bounds() {
+    let mut file = NamedTempFile::new().unwrap();
+    for i in 0..70 {
+        writeln!(file, "ERROR request 00000000-0000-4000-8000-{i:012}").unwrap();
+    }
+    file.flush().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--format", "json", "--threads", "1"])
+        .arg(file.path())
+        .output()
+        .unwrap();
+    let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
+    let uuid = records.iter().find(|r| r["type"] == "group").unwrap()["variation"]["UUID"].clone();
+    assert!(uuid["capped"].as_bool().unwrap());
+    assert_eq!(uuid["distinct_count_kind"], "lower_bound");
+    assert!(!uuid["samples_complete"].as_bool().unwrap());
+    assert_eq!(uuid["omitted_sample_values"]["kind"], "lower_bound");
+    let variation = &records.last().unwrap()["completeness"]["variation_values"];
+    assert!(!variation["complete"].as_bool().unwrap());
+    assert!(variation["capped_entries"].as_u64().unwrap() > 0);
 }
 
 #[test]

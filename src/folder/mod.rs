@@ -167,6 +167,19 @@ pub struct PatternFolder {
     /// exactly once per flushed group in JSON mode. Stays at 0 in text /
     /// markdown modes. Stable within a run.
     next_json_id: usize,
+    json_input_complete: bool,
+    json_max_lines_reached: bool,
+    json_failed_sources: bool,
+    json_skipped_overlong_lines: usize,
+    json_groups_emitted: usize,
+    json_groups_total: Option<usize>,
+    json_omitted_by_top: usize,
+    json_omitted_by_summary_cap: usize,
+    json_omitted_by_fit: usize,
+    json_capped_entries: usize,
+    json_uncomputed_variation_groups: usize,
+    json_sampled_entries: usize,
+    json_omitted_values_lower_bound: usize,
     /// Rollup computer — runs on every group at flush time regardless of
     /// output format, so the perf gate applies uniformly to text and
     /// JSON modes. Parameters (K, distinct_cap) are calibrated against
@@ -420,6 +433,78 @@ struct SummaryRecord {
     record_type: &'static str, // always "summary"
     #[serde(flatten)]
     stats: StatsJson,
+    completeness: Completeness,
+}
+
+#[derive(Serialize, Default)]
+struct Completeness {
+    complete: bool,
+    input: InputCompleteness,
+    groups: GroupCompleteness,
+    variation_values: VariationCompleteness,
+}
+
+#[derive(Serialize, Default)]
+struct InputCompleteness {
+    complete: bool,
+    processed_lines: usize,
+    skipped_overlong_lines: Count,
+    unprocessed_after_max_lines: Count,
+    failed_sources: Count,
+}
+
+#[derive(Serialize, Default)]
+struct GroupCompleteness {
+    complete: bool,
+    emitted: usize,
+    total: Count,
+    omitted_by_top: Count,
+    omitted_by_summary_cap: Count,
+    omitted_by_fit: Count,
+}
+
+#[derive(Serialize, Default)]
+struct VariationCompleteness {
+    complete: bool,
+    capped_entries: usize,
+    sampled_entries: usize,
+    uncomputed_groups: usize,
+    omitted_values: Count,
+}
+
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+struct Count {
+    value: Option<usize>,
+    kind: &'static str,
+}
+
+impl Default for Count {
+    fn default() -> Self {
+        Self::exact(0)
+    }
+}
+
+impl Count {
+    const fn exact(value: usize) -> Self {
+        Self {
+            value: Some(value),
+            kind: "exact",
+        }
+    }
+
+    const fn lower_bound(value: usize) -> Self {
+        Self {
+            value: Some(value),
+            kind: "lower_bound",
+        }
+    }
+
+    const fn unknown() -> Self {
+        Self {
+            value: None,
+            kind: "unknown",
+        }
+    }
 }
 
 /// Discriminant name for a Token, used in `GroupRecord.token_types` and
@@ -512,10 +597,39 @@ const ROLLUP_TEXT_SAMPLE_THRESHOLD: usize = 3;
 /// One entry in the variation map: count, samples (possibly truncated),
 /// and `capped` flag indicating whether the cap was hit.
 #[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(into = "JsonVariationEntry")]
 struct VariationEntry {
     pub distinct_count: usize,
     pub samples: Vec<String>,
     pub capped: bool,
+}
+
+#[derive(Serialize)]
+struct JsonVariationEntry {
+    distinct_count: usize,
+    distinct_count_kind: &'static str,
+    samples: Vec<String>,
+    capped: bool,
+    samples_complete: bool,
+    omitted_sample_values: Count,
+}
+
+impl From<VariationEntry> for JsonVariationEntry {
+    fn from(entry: VariationEntry) -> Self {
+        let omitted = entry.distinct_count.saturating_sub(entry.samples.len());
+        Self {
+            distinct_count: entry.distinct_count,
+            distinct_count_kind: if entry.capped { "lower_bound" } else { "exact" },
+            samples_complete: !entry.capped && omitted == 0,
+            omitted_sample_values: if entry.capped {
+                Count::lower_bound(omitted)
+            } else {
+                Count::exact(omitted)
+            },
+            samples: entry.samples,
+            capped: entry.capped,
+        }
+    }
 }
 
 /// Full rollup for a single group — a sorted map from token type name to
@@ -894,8 +1008,56 @@ impl PatternFolder {
             batch_locations: Vec::new(),
             sources: Vec::new(),
             next_json_id: 0,
+            json_input_complete: true,
+            json_max_lines_reached: false,
+            json_failed_sources: false,
+            json_skipped_overlong_lines: 0,
+            json_groups_emitted: 0,
+            json_groups_total: None,
+            json_omitted_by_top: 0,
+            json_omitted_by_summary_cap: 0,
+            json_omitted_by_fit: 0,
+            json_capped_entries: 0,
+            json_uncomputed_variation_groups: 0,
+            json_sampled_entries: 0,
+            json_omitted_values_lower_bound: 0,
             rollup_computer: RollupComputer::with_defaults(),
         }
+    }
+
+    pub fn note_overlong_line_skipped(&mut self) {
+        self.json_skipped_overlong_lines += 1;
+    }
+
+    pub fn note_max_lines_reached(&mut self) {
+        self.json_input_complete = false;
+        self.json_max_lines_reached = true;
+    }
+
+    pub fn note_input_source_failed(&mut self) {
+        self.json_input_complete = false;
+        self.json_failed_sources = true;
+    }
+
+    pub fn note_json_groups_emitted(&mut self, count: usize) {
+        self.json_groups_emitted += count;
+    }
+
+    pub fn json_groups_formatted(&self) -> usize {
+        self.next_json_id
+    }
+
+    pub fn note_json_group_limits(
+        &mut self,
+        total: usize,
+        top: usize,
+        summary_cap: usize,
+        fit: usize,
+    ) {
+        self.json_groups_total = Some(total);
+        self.json_omitted_by_top += top;
+        self.json_omitted_by_summary_cap += summary_cap;
+        self.json_omitted_by_fit += fit;
     }
 
     /// Register one explicit input filename and return a compact handle that
@@ -939,6 +1101,9 @@ impl PatternFolder {
         let rollup = if group.count() >= self.config.min_collapse {
             self.rollup_computer.compute(group)
         } else {
+            if self.is_json_output() {
+                self.json_uncomputed_variation_groups += 1;
+            }
             BTreeMap::new()
         };
         if self.is_json_output() {
@@ -963,6 +1128,17 @@ impl PatternFolder {
     ) -> Result<String> {
         let id = self.next_json_id;
         self.next_json_id += 1;
+
+        for entry in variation.values() {
+            let omitted = entry.distinct_count.saturating_sub(entry.samples.len());
+            if entry.capped {
+                self.json_capped_entries += 1;
+            }
+            if entry.capped || omitted > 0 {
+                self.json_sampled_entries += 1;
+            }
+            self.json_omitted_values_lower_bound += omitted;
+        }
 
         // Keep `collapsed_groups` and `lines_saved` coherent with
         // --stats-json output in JSON mode: a group with >= min_collapse
@@ -1036,6 +1212,57 @@ impl PatternFolder {
                 patterns_detected: self.stats.patterns_detected,
                 elapsed_ms: elapsed.as_millis() as u64,
                 pattern_hits: self.stats.pattern_hits(),
+            },
+            completeness: {
+                let group_total = self.json_groups_total.unwrap_or(self.json_groups_emitted);
+                let groups_complete = self.json_omitted_by_top == 0
+                    && self.json_omitted_by_summary_cap == 0
+                    && self.json_omitted_by_fit == 0;
+                let variation_complete = self.json_capped_entries == 0
+                    && self.json_uncomputed_variation_groups == 0
+                    && self.json_omitted_values_lower_bound == 0;
+                Completeness {
+                    complete: self.json_input_complete
+                        && self.json_skipped_overlong_lines == 0
+                        && groups_complete
+                        && variation_complete,
+                    input: InputCompleteness {
+                        complete: self.json_input_complete && self.json_skipped_overlong_lines == 0,
+                        processed_lines: self.stats.total_lines,
+                        skipped_overlong_lines: Count::exact(self.json_skipped_overlong_lines),
+                        unprocessed_after_max_lines: if self.json_max_lines_reached {
+                            Count::unknown()
+                        } else {
+                            Count::exact(0)
+                        },
+                        failed_sources: if self.json_failed_sources {
+                            Count::lower_bound(1)
+                        } else {
+                            Count::exact(0)
+                        },
+                    },
+                    groups: GroupCompleteness {
+                        complete: groups_complete,
+                        emitted: self.json_groups_emitted,
+                        total: Count::exact(group_total),
+                        omitted_by_top: Count::exact(self.json_omitted_by_top),
+                        omitted_by_summary_cap: Count::exact(self.json_omitted_by_summary_cap),
+                        omitted_by_fit: Count::exact(self.json_omitted_by_fit),
+                    },
+                    variation_values: VariationCompleteness {
+                        complete: variation_complete,
+                        capped_entries: self.json_capped_entries,
+                        sampled_entries: self.json_sampled_entries,
+                        uncomputed_groups: self.json_uncomputed_variation_groups,
+                        omitted_values: if self.json_uncomputed_variation_groups > 0 {
+                            Count::unknown()
+                        } else if self.json_capped_entries > 0 {
+                            Count::lower_bound(self.json_omitted_values_lower_bound)
+                        } else {
+                            Count::exact(self.json_omitted_values_lower_bound)
+                        },
+                    },
+                }
             },
         };
         serde_json::to_writer(&mut *writer, &record)?;

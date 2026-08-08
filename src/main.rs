@@ -119,8 +119,13 @@ fn main() -> Result<()> {
     // Validate output format before creating config
     cli.format.parse::<output::OutputFormat>()?;
 
-    // --fit implies --summary when no explicit mode is set
-    let effective_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
+    let requested_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
+    let json_summary = requested_summary && matches!(cli.format.as_str(), "json" | "jsonl");
+    let json_summary_default_cap = json_summary && cli.top.is_none();
+    // JSON summary uses the regular JSONL group schema with the summary-mode
+    // default cap. This keeps every flag combination machine-parseable.
+    let effective_summary = requested_summary && !json_summary;
+    let effective_top = cli.top.or(json_summary.then_some(30));
 
     let config = Config {
         threshold: cli.threshold,
@@ -154,7 +159,7 @@ fn main() -> Result<()> {
         max_line_length: cli.max_line_length.or(Some(1024 * 1024)), // 1MB default
         max_lines: cli.max_lines,
         sanitize_pii: cli.sanitize_pii, // Wire PII sanitization flag
-        top_n: cli.top,
+        top_n: effective_top,
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),
     };
@@ -287,6 +292,9 @@ fn main() -> Result<()> {
         eprintln!("lessence: no valid input");
         std::process::exit(1);
     }
+    if input_failed && use_json_output {
+        folder.note_input_source_failed();
+    }
     let mut stdout = io::stdout();
     let mut collected_outputs = Vec::new();
     let mut lines_processed = 0usize;
@@ -305,6 +313,9 @@ fn main() -> Result<()> {
                 && lines_processed >= max_lines
             {
                 eprintln!("Line limit of {max_lines} reached, stopping processing");
+                if use_json_output {
+                    folder.note_max_lines_reached();
+                }
                 break 'inputs;
             }
             lines_processed += 1;
@@ -313,6 +324,9 @@ fn main() -> Result<()> {
             if let Some(max_length) = config.max_line_length
                 && line.len() > max_length
             {
+                if use_json_output {
+                    folder.note_overlong_line_skipped();
+                }
                 continue;
             }
 
@@ -341,7 +355,11 @@ fn main() -> Result<()> {
                     collected_outputs.push(output);
                 } else {
                     match writeln!(stdout, "{output}") {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            if use_json_output {
+                                folder.note_json_groups_emitted(1);
+                            }
+                        }
                         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                             std::process::exit(0);
                         }
@@ -354,6 +372,7 @@ fn main() -> Result<()> {
 
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
+        let previously_omitted_groups = folder.json_groups_formatted();
         let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
         let json_output = use_json_output;
 
@@ -395,6 +414,17 @@ fn main() -> Result<()> {
             }
         }
         let shown = groups_to_show.len();
+        if json_output {
+            let all_groups = total_groups + previously_omitted_groups;
+            let omitted_before_fit = all_groups.saturating_sub(top_groups.len());
+            let (top_omitted, summary_omitted) = if json_summary_default_cap {
+                (0, omitted_before_fit)
+            } else {
+                (omitted_before_fit, 0)
+            };
+            folder.note_json_groups_emitted(shown);
+            folder.note_json_group_limits(all_groups, top_omitted, summary_omitted, fit_truncated);
+        }
         eprintln!(
             "(showing top {shown} of {total_groups} patterns, covering {coverage_pct}% of input lines)"
         );
@@ -423,7 +453,11 @@ fn main() -> Result<()> {
             collected_outputs.push(output);
         } else {
             match writeln!(stdout, "{output}") {
-                Ok(_) => {}
+                Ok(_) => {
+                    if use_json_output {
+                        folder.note_json_groups_emitted(1);
+                    }
+                }
                 Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                     std::process::exit(0);
                 }

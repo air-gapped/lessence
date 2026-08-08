@@ -44,6 +44,10 @@ Each group record carries per-token-type rollup metadata: distinct
 counts, deterministic samples, a capped flag, a raw time range, and exact
 per-file locations for its first and last representatives. Stdin records use
 `source: null` because no original filename is known.
+The terminal summary includes a `completeness` contract with exact,
+lower-bound, or unknown counts for input skipped by safety limits, groups
+omitted by `--top`/`--summary`/`--fit`, and variation values hidden by sampling
+or rollup caps.
 Agents can answer "which pods?", "how many distinct UUIDs?", "when did
 this start?" from a single invocation without re-reading the log.
 

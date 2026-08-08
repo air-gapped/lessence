@@ -107,13 +107,16 @@ Each key is a token type name (UPPERCASE, matching `token_types`).
 Types are sorted alphabetically (BTreeMap iteration order) for
 deterministic diffs across runs.
 
-Each value has three fields:
+Each value records both the bounded data and how to interpret its counts:
 
 | Field | Type | Description |
 |---|---|---|
 | `distinct_count` | integer | Number of distinct values seen for this token type across the group's lines. When `capped: true`, this is a lower bound (`≥ ROLLUP_DISTINCT_CAP`). |
+| `distinct_count_kind` | `"exact"` \| `"lower_bound"` | Explicit interpretation of `distinct_count`. |
 | `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically. Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. |
 | `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation and further distinct values were dropped. `false` means `distinct_count` is exact. |
+| `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
+| `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |
 
 ### Sample-worthy vs count-only token types
 
@@ -164,6 +167,31 @@ Exactly one, at the end of the stream.
     "structured": 7,
     "kubernetes": 312,
     "emails": 0
+  },
+  "completeness": {
+    "complete": false,
+    "input": {
+      "complete": true,
+      "processed_lines": 73421,
+      "skipped_overlong_lines": {"value": 0, "kind": "exact"},
+      "unprocessed_after_max_lines": {"value": 0, "kind": "exact"},
+      "failed_sources": {"value": 0, "kind": "exact"}
+    },
+    "groups": {
+      "complete": true,
+      "emitted": 2841,
+      "total": {"value": 2841, "kind": "exact"},
+      "omitted_by_top": {"value": 0, "kind": "exact"},
+      "omitted_by_summary_cap": {"value": 0, "kind": "exact"},
+      "omitted_by_fit": {"value": 0, "kind": "exact"}
+    },
+    "variation_values": {
+      "complete": false,
+      "capped_entries": 3,
+      "sampled_entries": 87,
+      "uncomputed_groups": 12,
+      "omitted_values": {"value": null, "kind": "unknown"}
+    }
   }
 }
 ```
@@ -173,7 +201,7 @@ Exactly one, at the end of the stream.
 | Field | Type | Description |
 |---|---|---|
 | `type` | string | Always `"summary"`. |
-| `input_lines` | integer | Total lines read from the input(s). |
+| `input_lines` | integer | Lines accepted for folding. Consult `completeness.input` for skipped or unread input. |
 | `output_lines` | integer | Total lines in the formatted output (sum of lines per flushed group record — one line per group in JSON mode). |
 | `compression_ratio` | number | `(lines_saved / input_lines) * 100`. Zero if no compression. |
 | `collapsed_groups` | integer | Number of groups with `count >= min_collapse`. |
@@ -181,6 +209,25 @@ Exactly one, at the end of the stream.
 | `patterns_detected` | integer | Total number of lines where at least one pattern token was detected. |
 | `elapsed_ms` | integer | Wall-clock milliseconds from start of processing. **This is the only intentionally non-deterministic field.** Diff tools should exclude it when comparing runs. |
 | `pattern_hits` | object | Per-category token-hit counts, one key per token type (nothing is lumped — ports, json, quoted_strings, names, brackets, key_values, log_modules and structured each have their own counter since v0.5). Keys are lowercase category names shared with `--stats-json`. |
+| `completeness` | object | Document-level contract for omitted input, groups, and variation values. `complete` is true only when all three sections are complete. |
+
+### Completeness and count kinds
+
+Every omission count is an object with `value` and `kind`:
+
+1. `exact`: `value` is the complete count.
+2. `lower_bound`: at least `value` items were omitted; more may exist.
+3. `unknown`: the remainder cannot be counted without consuming data that the selected limit intentionally stopped reading, so `value` is null.
+
+`input` reports exact overlong-line skips, an unknown remainder after
+`--max-lines`, and failed input sources. `groups` reports exact omissions from
+`--top`, the 30-pattern JSON `--summary` cap, and `--fit`. `variation_values`
+aggregates bounded samples and rollup caps; groups below `--min-collapse` have
+no computed rollup and therefore make the omitted-value count unknown.
+
+`--summary --format json` remains JSONL: it emits at most 30 ordinary group
+records followed by this summary record. Omit `--summary` when every group
+must be emitted.
 
 ## Determinism
 

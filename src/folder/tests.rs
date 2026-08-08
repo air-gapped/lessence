@@ -1587,6 +1587,21 @@ fn print_summary_json_ends_with_newline() {
 }
 
 #[test]
+fn print_summary_json_reports_fit_omissions_exactly() {
+    let mut f = make_folder();
+    f.note_json_groups_emitted(2);
+    f.note_json_group_limits(5, 0, 0, 3);
+    let mut buf = Vec::new();
+    f.print_summary_json(&mut buf, std::time::Duration::ZERO)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+    let groups = &value["completeness"]["groups"];
+    assert!(!groups["complete"].as_bool().unwrap());
+    assert_eq!(groups["omitted_by_fit"]["value"], 3);
+    assert_eq!(groups["omitted_by_fit"]["kind"], "exact");
+}
+
+#[test]
 fn format_group_dispatch_text_mode() {
     let mut f = make_folder();
     let group = make_group("hello", vec![vec![]]);
