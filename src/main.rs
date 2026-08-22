@@ -99,6 +99,17 @@ fn main() -> Result<()> {
     // Validate output format before creating config
     cli.format.parse::<output::OutputFormat>()?;
 
+    // --format markdown renders only the default fold output. These
+    // combinations used to fall back to plain text silently; agents
+    // prefer a loud error over silently-wrong output.
+    if cli.format == "markdown" && (cli.top.is_some() || cli.summary || cli.fit || cli.preflight) {
+        eprintln!(
+            "lessence: --format markdown supports only the default fold output; \
+             drop --top/--summary/--fit/--preflight or use --format text or json"
+        );
+        std::process::exit(2);
+    }
+
     let requested_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
     let json_summary = requested_summary && matches!(cli.format.as_str(), "json" | "jsonl");
     let json_summary_default_cap = json_summary && cli.top.is_none();

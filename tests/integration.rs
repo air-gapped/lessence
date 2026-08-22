@@ -19,6 +19,7 @@ mod integration {
     mod test_format_json;
     mod test_format_json_rollups;
     mod test_help_text;
+    mod test_markdown_combos;
     mod test_microservices_compression;
     mod test_nginx_compression;
     mod test_normalization_integration;
