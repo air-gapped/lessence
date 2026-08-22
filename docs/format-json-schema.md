@@ -113,7 +113,7 @@ Each value records both the bounded data and how to interpret its counts:
 |---|---|---|
 | `distinct_count` | integer | Number of distinct values seen for this token type across the group's lines. When `capped: true`, this is a lower bound (`≥ ROLLUP_DISTINCT_CAP`). |
 | `distinct_count_kind` | `"exact"` \| `"lower_bound"` | Explicit interpretation of `distinct_count`. |
-| `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically. Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. |
+| `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically. Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>` and email values embedded in other types' samples are masked as well. |
 | `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation and further distinct values were dropped. `false` means `distinct_count` is exact. |
 | `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
 | `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |

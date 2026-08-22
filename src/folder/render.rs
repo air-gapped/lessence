@@ -31,7 +31,7 @@ impl PatternFolder {
     /// remains present (as an empty `{}`) so the schema shape is
     /// unchanged; only the compute cost is skipped.
     pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
-        let rollup = if group.count() >= self.config.min_collapse {
+        let mut rollup = if group.count() >= self.config.min_collapse {
             self.rollup_computer.compute(group)
         } else {
             if self.is_json_output() {
@@ -39,6 +39,12 @@ impl PatternFolder {
             }
             BTreeMap::new()
         };
+        // PII masking applies to rollup samples in every mode: the text
+        // compact marker and the JSON `variation` field both surface raw
+        // sample values, so both must mask.
+        if self.config.sanitize_pii && !self.config.essence_mode {
+            mask_rollup_emails(&mut rollup);
+        }
         if self.is_json_output() {
             self.format_group_json(group, rollup)
         } else {
@@ -106,12 +112,12 @@ impl PatternFolder {
             normalized: group.first().normalized.clone(),
             first: LineRef {
                 source: self.source_name(group.first_source_id),
-                line: group.first().original.clone(),
+                line: self.maybe_mask_pii(&group.first().original, &group.first().tokens),
                 line_no: group.first_line_no,
             },
             last: LineRef {
                 source: self.source_name(group.last_source_id),
-                line: group.last().original.clone(),
+                line: self.maybe_mask_pii(&group.last().original, &group.last().tokens),
                 line_no: group.last_line_no,
             },
             time_range: TimeRange {
@@ -606,6 +612,44 @@ impl PatternFolder {
             }
         }
         Ok(())
+    }
+
+    /// Apply PII masking to a line when the run asks for it. Same
+    /// condition as the text renderer: essence mode already shows
+    /// tokenised text, so masking applies only outside it.
+    fn maybe_mask_pii(&self, line: &str, tokens: &[Token]) -> String {
+        if self.config.sanitize_pii && !self.config.essence_mode {
+            apply_pii_masking(line, tokens)
+        } else {
+            line.to_string()
+        }
+    }
+}
+
+/// Mask email addresses inside rollup samples. The EMAIL entry's own
+/// samples collapse to the mask token; occurrences of those email values
+/// embedded in other entries' samples (quoted strings, structured
+/// messages) are replaced as well. Uses only exact values the rollup
+/// itself observed -- no additional pattern matching.
+fn mask_rollup_emails(rollup: &mut GroupRollup) {
+    let emails: Vec<String> = rollup
+        .get("EMAIL")
+        .map(|entry| entry.samples.clone())
+        .unwrap_or_default();
+    for (name, entry) in rollup.iter_mut() {
+        if *name == "EMAIL" {
+            if !entry.samples.is_empty() {
+                entry.samples = vec!["<EMAIL>".to_string()];
+            }
+        } else {
+            for sample in &mut entry.samples {
+                for email in &emails {
+                    if sample.contains(email.as_str()) {
+                        *sample = sample.replace(email.as_str(), "<EMAIL>");
+                    }
+                }
+            }
+        }
     }
 }
 

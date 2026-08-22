@@ -1272,7 +1272,13 @@ impl PatternFolder {
         for group in &self.buffer {
             let key = group.first().normalized.clone();
             let count = group.count();
-            let representative = group.first().original.clone();
+            // The summary shows original lines, so --sanitize-pii masks
+            // the representative here, before any renderer sees it.
+            let representative = if self.config.sanitize_pii {
+                apply_pii_masking(&group.first().original, &group.first().tokens)
+            } else {
+                group.first().original.clone()
+            };
             merged
                 .entry(key)
                 .and_modify(|(c, _)| *c += count)

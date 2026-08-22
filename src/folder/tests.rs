@@ -3898,3 +3898,71 @@ fn get_stats_reflects_processing() {
         "should detect patterns after processing"
     );
 }
+
+// ---------------------------------------------------------------
+// Masking: --sanitize-pii must mask in every output mode, not just
+// the text fold path.
+// ---------------------------------------------------------------
+
+#[test]
+fn json_records_mask_pii_when_enabled() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        sanitize_pii: true,
+        output_format: "json".to_string(),
+        ..Config::default()
+    });
+    for who in ["alice", "bob", "carol", "dave"] {
+        let _ = f
+            .process_line(&format!("user {who}@example.com login failed"))
+            .unwrap();
+    }
+    let out = f.finish().unwrap().join("\n");
+    assert!(
+        !out.contains("example.com"),
+        "raw email leaked into JSON output: {out}"
+    );
+    assert!(out.contains("<EMAIL>"));
+}
+#[test]
+fn text_marker_masks_email_samples_when_enabled() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        sanitize_pii: true,
+        ..Config::default()
+    });
+    // Six lines, three distinct emails: distinct_count is within the
+    // text sample threshold, so the compact marker would surface the
+    // raw values inline without masking.
+    for who in ["alice", "bob", "eve", "alice", "bob", "eve"] {
+        let _ = f
+            .process_line(&format!("user {who}@example.com login failed"))
+            .unwrap();
+    }
+    let out = f.finish().unwrap().join("\n");
+    assert!(
+        !out.contains("example.com"),
+        "raw email in text output: {out}"
+    );
+}
+#[test]
+fn summary_masks_pii_when_enabled() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        sanitize_pii: true,
+        ..Config::default()
+    });
+    for who in ["alice", "bob", "carol"] {
+        let _ = f
+            .process_line(&format!("user {who}@example.com login failed"))
+            .unwrap();
+    }
+    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    assert!(!display.is_empty());
+    for (_, representative) in &display {
+        assert!(
+            !representative.contains("example.com"),
+            "raw email in summary line: {representative}"
+        );
+    }
+}
