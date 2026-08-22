@@ -24,6 +24,7 @@ mod integration {
     mod test_nginx_compression;
     mod test_normalization_integration;
     mod test_performance;
+    mod test_preflight;
     mod test_stats_json;
     mod test_thread_safety;
     mod test_top_n;

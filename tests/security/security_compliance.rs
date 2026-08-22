@@ -45,24 +45,44 @@ fn test_redos_protection_ipv6() {
     });
 }
 
+/// Run text through the real ingestion path and collect the delivered lines.
+fn ingest_lines(config: &Config, text: String) -> (Vec<String>, lessence::ingest::IngestReport) {
+    use lessence::ingest::{Event, Ingestor, InputReader};
+    let ingestor = Ingestor::from_config(config).expect("valid config");
+    let readers = vec![InputReader {
+        source: None,
+        reader: Box::new(std::io::Cursor::new(text.into_bytes())),
+    }];
+    let mut delivered = Vec::new();
+    let report = ingestor
+        .run(readers, |event| {
+            if let Event::Line { text, .. } = event {
+                delivered.push(text.to_string());
+            }
+            Ok(())
+        })
+        .expect("ingestion succeeds");
+    (delivered, report)
+}
+
 #[test]
 fn test_input_line_length_limit() {
     let huge_line = "A".repeat(10 * 1024 * 1024); // 10MB
-    let normal_line = "User admin@example.com logged in";
+    let normal_line = "User admin logged in";
 
     let config_with_limit = Config {
         max_line_length: Some(1024 * 1024), // 1MB
         ..Default::default()
     };
 
-    assert!(
-        !lessence::should_process_line(&huge_line, &config_with_limit),
-        "Should reject line exceeding max_line_length"
+    let (delivered, report) =
+        ingest_lines(&config_with_limit, format!("{huge_line}\n{normal_line}\n"));
+    assert_eq!(
+        delivered,
+        vec![normal_line.to_string()],
+        "Should reject the line exceeding max_line_length and accept the normal one"
     );
-    assert!(
-        lessence::should_process_line(normal_line, &config_with_limit),
-        "Should accept normal-length line"
-    );
+    assert_eq!(report.overlong_lines_skipped, 1);
 }
 
 #[test]
@@ -72,14 +92,13 @@ fn test_input_line_count_limit() {
         ..Default::default()
     };
 
-    assert!(
-        lessence::should_process_line_count(50, &config_with_limit),
-        "Should process line within limit"
-    );
-    assert!(
-        !lessence::should_process_line_count(150, &config_with_limit),
-        "Should reject line exceeding max_lines"
-    );
+    let mut text = String::new();
+    for i in 0..150 {
+        text.push_str(&format!("line {i}\n"));
+    }
+    let (delivered, report) = ingest_lines(&config_with_limit, text);
+    assert_eq!(delivered.len(), 100, "Should stop at max_lines");
+    assert!(report.max_lines_reached, "Cutoff must be reported");
 }
 
 #[test]

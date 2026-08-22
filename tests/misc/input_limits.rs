@@ -1,4 +1,24 @@
 use lessence::config::Config;
+use lessence::ingest::{Event, IngestReport, Ingestor, InputReader};
+
+/// Run text through the real ingestion path and collect the delivered lines.
+fn ingest_lines(config: &Config, text: String) -> (Vec<String>, IngestReport) {
+    let ingestor = Ingestor::from_config(config).expect("valid config");
+    let readers = vec![InputReader {
+        source: None,
+        reader: Box::new(std::io::Cursor::new(text.into_bytes())),
+    }];
+    let mut delivered = Vec::new();
+    let report = ingestor
+        .run(readers, |event| {
+            if let Event::Line { text, .. } = event {
+                delivered.push(text.to_string());
+            }
+            Ok(())
+        })
+        .expect("ingestion succeeds");
+    (delivered, report)
+}
 
 #[test]
 fn test_line_length_limit_enforcement() {
@@ -8,16 +28,16 @@ fn test_line_length_limit_enforcement() {
     };
 
     let huge_line = "A".repeat(2 * 1024 * 1024); // 2MB
-    let normal_line = "User admin@example.com logged in";
+    let normal_line = "User admin logged in";
 
-    let huge_result = lessence::should_process_line(&huge_line, &config);
-    let normal_result = lessence::should_process_line(normal_line, &config);
+    let (delivered, report) = ingest_lines(&config, format!("{huge_line}\n{normal_line}\n"));
 
-    assert!(
-        !huge_result,
-        "Line exceeding max_line_length should be skipped"
+    assert_eq!(
+        delivered,
+        vec![normal_line.to_string()],
+        "Line exceeding max_line_length should be skipped, normal line delivered"
     );
-    assert!(normal_result, "Normal line should be processed");
+    assert_eq!(report.overlong_lines_skipped, 1);
 }
 
 #[test]
@@ -27,18 +47,18 @@ fn test_line_count_limit_enforcement() {
         ..Default::default()
     };
 
-    let mut lines_processed = 0;
-
+    let mut text = String::new();
     for i in 0..150 {
-        if lessence::should_process_line_count(i, &config) {
-            lines_processed += 1;
-        }
+        text.push_str(&format!("line {i}\n"));
     }
+    let (delivered, report) = ingest_lines(&config, text);
 
     assert_eq!(
-        lines_processed, 100,
-        "Should process exactly max_lines (100), processed {lines_processed}"
+        delivered.len(),
+        100,
+        "Should process exactly max_lines (100)"
     );
+    assert!(report.max_lines_reached, "Cutoff must be reported");
 }
 
 #[test]
@@ -88,61 +108,11 @@ fn test_no_limit_allows_all_lines() {
 
     let huge_line = "A".repeat(10 * 1024 * 1024); // 10MB
 
-    assert!(
-        lessence::should_process_line(&huge_line, &config),
+    let (delivered, report) = ingest_lines(&config, format!("{huge_line}\n"));
+    assert_eq!(
+        delivered,
+        vec![huge_line],
         "Without max_line_length, all lines should be processed"
     );
-}
-
-#[test]
-fn test_input_limit_performance_is_o1() {
-    use std::time::Instant;
-
-    let config = Config {
-        max_line_length: Some(1024 * 1024),
-        ..Default::default()
-    };
-
-    let line_1kb = "A".repeat(1024);
-    let line_1mb = "A".repeat(1024 * 1024);
-    let line_10mb = "A".repeat(10 * 1024 * 1024);
-
-    let iterations = 10000;
-
-    // Warmup: settle allocations and caches before measuring
-    for _ in 0..1000 {
-        lessence::should_process_line(&line_1kb, &config);
-        lessence::should_process_line(&line_1mb, &config);
-        lessence::should_process_line(&line_10mb, &config);
-    }
-
-    let start = Instant::now();
-    for _ in 0..iterations {
-        lessence::should_process_line(&line_1kb, &config);
-    }
-    let time_1kb = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iterations {
-        lessence::should_process_line(&line_1mb, &config);
-    }
-    let time_1mb = start.elapsed();
-
-    let start = Instant::now();
-    for _ in 0..iterations {
-        lessence::should_process_line(&line_10mb, &config);
-    }
-    let time_10mb = start.elapsed();
-
-    let ratio_1mb_to_1kb = time_1mb.as_nanos() as f64 / time_1kb.as_nanos().max(1) as f64;
-    let ratio_10mb_to_1mb = time_10mb.as_nanos() as f64 / time_1mb.as_nanos().max(1) as f64;
-
-    assert!(
-        ratio_1mb_to_1kb < 5.0,
-        "Length check should be O(1), 1MB took {ratio_1mb_to_1kb}x longer than 1KB"
-    );
-    assert!(
-        ratio_10mb_to_1mb < 5.0,
-        "Length check should be O(1), 10MB took {ratio_10mb_to_1mb}x longer than 1MB"
-    );
+    assert_eq!(report.overlong_lines_skipped, 0);
 }

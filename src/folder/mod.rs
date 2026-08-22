@@ -1030,8 +1030,8 @@ impl PatternFolder {
         }
     }
 
-    pub fn note_overlong_line_skipped(&mut self) {
-        self.json_skipped_overlong_lines += 1;
+    pub fn note_overlong_lines_skipped(&mut self, count: usize) {
+        self.json_skipped_overlong_lines += count;
     }
 
     pub fn note_max_lines_reached(&mut self) {

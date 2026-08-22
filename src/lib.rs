@@ -4,6 +4,7 @@ pub mod analyzer;
 pub mod cli;
 pub mod config;
 pub mod folder;
+pub mod ingest;
 pub mod normalize;
 pub mod output;
 pub mod patterns;
@@ -12,22 +13,6 @@ pub mod report;
 pub use analyzer::LogAnalyzer;
 pub use config::Config;
 pub use folder::{PatternFolder, apply_pii_masking};
-
-pub fn should_process_line(line: &str, config: &Config) -> bool {
-    if let Some(max_length) = config.max_line_length {
-        line.len() <= max_length
-    } else {
-        true
-    }
-}
-
-pub fn should_process_line_count(current_line_number: usize, config: &Config) -> bool {
-    if let Some(max_lines) = config.max_lines {
-        current_line_number < max_lines
-    } else {
-        true
-    }
-}
 
 pub fn sanitize_email(email: &str) -> String {
     let at_count = email.matches('@').count();
@@ -73,67 +58,6 @@ pub fn process_line(line: &str, config: &Config) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- should_process_line ----
-
-    #[test]
-    fn process_line_no_limit() {
-        let config = Config::default();
-        assert!(should_process_line("any length line", &config));
-    }
-
-    #[test]
-    fn process_line_within_limit() {
-        let config = Config {
-            max_line_length: Some(100),
-            ..Config::default()
-        };
-        assert!(should_process_line("short", &config));
-    }
-
-    #[test]
-    fn process_line_at_limit() {
-        let config = Config {
-            max_line_length: Some(5),
-            ..Config::default()
-        };
-        assert!(should_process_line("12345", &config));
-    }
-
-    #[test]
-    fn process_line_over_limit() {
-        let config = Config {
-            max_line_length: Some(5),
-            ..Config::default()
-        };
-        assert!(!should_process_line("123456", &config));
-    }
-
-    // ---- should_process_line_count ----
-
-    #[test]
-    fn line_count_no_limit() {
-        let config = Config::default();
-        assert!(should_process_line_count(999_999, &config));
-    }
-
-    #[test]
-    fn line_count_within_limit() {
-        let config = Config {
-            max_lines: Some(100),
-            ..Config::default()
-        };
-        assert!(should_process_line_count(50, &config));
-    }
-
-    #[test]
-    fn line_count_at_limit() {
-        let config = Config {
-            max_lines: Some(100),
-            ..Config::default()
-        };
-        assert!(!should_process_line_count(100, &config));
-    }
 
     // ---- sanitize_email ----
 

@@ -1,8 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, IsTerminal, Write};
-use std::path::PathBuf;
+use std::io::{self, IsTerminal, Write};
 use std::time::Instant;
 
 // Override the global allocator with mimalloc on musl-target builds. musl's
@@ -21,6 +19,7 @@ mod analyzer;
 mod cli;
 mod config;
 mod folder;
+mod ingest;
 mod normalize;
 mod output;
 mod patterns;
@@ -30,61 +29,7 @@ use analyzer::LogAnalyzer;
 use cli::Cli;
 use config::Config;
 use folder::PatternFolder;
-
-/// Strip terminal escape sequences and bare control characters from text.
-///
-/// Delegates to the single shared sanitizer in [`analyzer::strip_terminal_escapes`]
-/// so the binary and the analyzer module can never drift apart. This removes
-/// CSI, OSC (BEL- or ST-terminated, e.g. window-title and OSC 8 hyperlinks),
-/// DCS/APC/PM/SOS, lone ESC, and bare C0 controls (CR/BS/VT/FF) that would
-/// otherwise reach the operator's terminal verbatim.
-fn strip_ansi_codes(text: &str) -> String {
-    analyzer::strip_terminal_escapes(text)
-}
-
-/// Opens the given input files, falling back to stdin when none are given.
-struct InputReader {
-    /// The explicit filename as supplied by the user, or None for stdin.
-    source: Option<String>,
-    reader: Box<dyn BufRead>,
-}
-
-/// Returns the successfully opened readers plus whether any file failed to
-/// open — like cat/grep, the remaining files are still processed but the
-/// process must exit non-zero.
-fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, bool) {
-    if files.is_empty() {
-        return (
-            vec![InputReader {
-                source: None,
-                reader: Box::new(BufReader::new(io::stdin().lock())),
-            }],
-            false,
-        );
-    }
-    let mut readers = Vec::new();
-    let mut any_failed = false;
-    for path in files {
-        if path.as_os_str() == "-" {
-            readers.push(InputReader {
-                source: None,
-                reader: Box::new(BufReader::new(io::stdin().lock())),
-            });
-        } else {
-            match File::open(path) {
-                Ok(f) => readers.push(InputReader {
-                    source: Some(path.to_string_lossy().into_owned()),
-                    reader: Box::new(BufReader::new(f)),
-                }),
-                Err(e) => {
-                    eprintln!("lessence: {}: {}", path.display(), e);
-                    any_failed = true;
-                }
-            }
-        }
-    }
-    (readers, any_failed)
-}
+use ingest::{Event, Ingestor};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -164,59 +109,37 @@ fn main() -> Result<()> {
         None
     };
 
-    // Compile fail-on-pattern regex early (exit 2 on invalid)
-    let fail_regex = config.fail_pattern.as_ref().map(|pat| {
-        regex::Regex::new(pat).unwrap_or_else(|e| {
-            eprintln!("lessence: invalid regex '{pat}': {e}");
+    // The shared ingestion contract: limits, fail-on-pattern (exit 2 on an
+    // invalid regex), escape stripping. All three modes below read through it.
+    let ingestor = match Ingestor::from_config(&config) {
+        Ok(ingestor) => ingestor,
+        Err(e) => {
+            eprintln!("lessence: {e}");
             std::process::exit(2);
-        })
-    });
-    let pattern_matched = std::cell::Cell::new(false);
+        }
+    };
 
     let start_time = Instant::now();
 
     let use_json_output = matches!(config.output_format.as_str(), "json" | "jsonl");
     let use_top_n = config.top_n.is_some();
 
+    let (readers, input_failed) = ingest::open_inputs(&cli.files);
+    if readers.is_empty() {
+        eprintln!("lessence: no valid input");
+        std::process::exit(1);
+    }
+
     // Handle preflight mode: process logs but only output JSON analysis
     if config.preflight {
-        let (readers, input_failed) = open_inputs(&cli.files);
-        if readers.is_empty() {
-            eprintln!("lessence: no valid input");
-            std::process::exit(1);
-        }
         let mut folder = PatternFolder::new(config.clone());
         // Process all lines but don't output log content
-        for (lines_processed, line) in readers
-            .into_iter()
-            .flat_map(|input| input.reader.lines())
-            .enumerate()
-        {
-            let line = line?;
-
-            // Security: Check line count limit
-            if let Some(max_lines) = config.max_lines
-                && lines_processed >= max_lines
-            {
-                break;
+        let ingest_report = ingestor.run(readers, |event| {
+            if let Event::Line { text, .. } = event {
+                folder.process_line(text)?;
             }
-
-            // Security: Check line length limit
-            if let Some(max_length) = config.max_line_length
-                && line.len() > max_length
-            {
-                continue;
-            }
-
-            // Check fail-on-pattern against raw line
-            if let Some(ref re) = fail_regex
-                && re.is_match(&line)
-            {
-                pattern_matched.set(true);
-            }
-
-            folder.process_line(&line)?;
-        }
+            Ok(())
+        })?;
         // Flush remaining batch buffer (parallel mode collects lines in batches)
         let _ = folder.finish()?;
 
@@ -224,7 +147,7 @@ fn main() -> Result<()> {
         let analysis = LogAnalyzer::from_folder_stats(&folder, &config)?;
         let json_output = serde_json::to_string_pretty(&analysis)?;
         println!("{json_output}");
-        if pattern_matched.get() || input_failed {
+        if ingest_report.fail_pattern_matched || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -234,127 +157,74 @@ fn main() -> Result<()> {
 
     // Handle summary mode: use normal parallel pipeline, then output as summary
     if config.summary {
-        let (readers, input_failed) = open_inputs(&cli.files);
-        if readers.is_empty() {
-            eprintln!("lessence: no valid input");
-            std::process::exit(1);
-        }
-        for (lines_processed, line) in readers
-            .into_iter()
-            .flat_map(|input| input.reader.lines())
-            .enumerate()
-        {
-            let mut line = line?;
-            if let Some(max_lines) = config.max_lines
-                && lines_processed >= max_lines
-            {
-                break;
+        let ingest_report = ingestor.run(readers, |event| {
+            if let Event::Line { text, .. } = event {
+                folder.process_line(text)?;
             }
-            if let Some(max_length) = config.max_line_length
-                && line.len() > max_length
-            {
-                continue;
-            }
-            if let Some(ref re) = fail_regex
-                && re.is_match(&line)
-            {
-                pattern_matched.set(true);
-            }
-            if !config.preserve_color {
-                line = strip_ansi_codes(&line);
-            }
-            folder.process_line(&line)?;
-        }
+            Ok(())
+        })?;
         // Flush and output as summary (one line per group, sorted by count)
         folder.finish_summary(config.top_n, fit_budget)?;
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         }
-        if pattern_matched.get() || input_failed {
+        if ingest_report.fail_pattern_matched || input_failed {
             std::process::exit(1);
         }
         return Ok(());
     }
 
-    let (readers, input_failed) = open_inputs(&cli.files);
-    if readers.is_empty() {
-        eprintln!("lessence: no valid input");
-        std::process::exit(1);
-    }
     if input_failed && use_json_output {
         folder.note_input_source_failed();
     }
     let mut stdout = io::stdout();
-    let mut lines_processed = 0usize;
-    'inputs: for input in readers {
-        let source_id = if use_json_output {
-            input.source.map(|source| folder.register_source(source))
-        } else {
-            None
-        };
-
-        for (source_line_index, line) in input.reader.lines().enumerate() {
-            let mut line = line?;
-
-            // Security: Check line count limit
-            if let Some(max_lines) = config.max_lines
-                && lines_processed >= max_lines
-            {
-                eprintln!("Line limit of {max_lines} reached, stopping processing");
-                if use_json_output {
-                    folder.note_max_lines_reached();
-                }
-                break 'inputs;
-            }
-            lines_processed += 1;
-
-            // Security: Check line length limit (Constitutional Principle X)
-            if let Some(max_length) = config.max_line_length
-                && line.len() > max_length
-            {
-                if use_json_output {
-                    folder.note_overlong_line_skipped();
-                }
-                continue;
-            }
-
-            // Check fail-on-pattern against raw line (before normalization)
-            if let Some(ref re) = fail_regex
-                && re.is_match(&line)
-            {
-                pattern_matched.set(true);
-            }
-
-            // Strip ANSI color codes by default (unless --preserve-color)
-            if !config.preserve_color {
-                line = strip_ansi_codes(&line);
-            }
-
-            let output = if use_json_output {
-                folder.process_line_at(&line, source_id, source_line_index + 1)?
-            } else {
-                folder.process_line(&line)?
-            };
-
-            if let Some(output) = output {
-                if use_top_n {
-                    // In top-N mode, discard incremental output — we'll use finish_top_n()
+    // Provenance handle for the input currently yielding lines; only the
+    // JSON path pays the source-registration cost.
+    let mut current_source_id = None;
+    let ingest_report = ingestor.run(readers, |event| {
+        match event {
+            Event::BeginInput { source } => {
+                current_source_id = if use_json_output {
+                    source.map(|source| folder.register_source(source.to_string()))
                 } else {
-                    match writeln!(stdout, "{output}") {
-                        Ok(_) => {
-                            if use_json_output {
-                                folder.note_json_groups_emitted(1);
+                    None
+                };
+            }
+            Event::Line { text, line_number } => {
+                let output = if use_json_output {
+                    folder.process_line_at(text, current_source_id, line_number)?
+                } else {
+                    folder.process_line(text)?
+                };
+
+                if let Some(output) = output {
+                    if use_top_n {
+                        // In top-N mode, discard incremental output — we'll use finish_top_n()
+                    } else {
+                        match writeln!(stdout, "{output}") {
+                            Ok(_) => {
+                                if use_json_output {
+                                    folder.note_json_groups_emitted(1);
+                                }
                             }
+                            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+                                std::process::exit(0);
+                            }
+                            Err(e) => return Err(e.into()),
                         }
-                        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                            std::process::exit(0);
-                        }
-                        Err(e) => return Err(e.into()),
                     }
                 }
             }
         }
+        Ok(())
+    })?;
+    if use_json_output {
+        folder.note_overlong_lines_skipped(ingest_report.overlong_lines_skipped);
+        if ingest_report.max_lines_reached {
+            folder.note_max_lines_reached();
+        }
     }
+    let pattern_matched = ingest_report.fail_pattern_matched;
 
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
@@ -427,7 +297,7 @@ fn main() -> Result<()> {
         } else if config.stats {
             folder.print_stats(&mut io::stderr())?;
         }
-        if pattern_matched.get() || input_failed {
+        if pattern_matched || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -452,7 +322,7 @@ fn main() -> Result<()> {
     // Markdown: emit one assembled document from the buffered entries
     if config.output_format.as_str() == "markdown" {
         folder.emit_markdown(&mut io::stdout())?;
-        if pattern_matched.get() || input_failed {
+        if pattern_matched || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -467,7 +337,7 @@ fn main() -> Result<()> {
                 "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
             );
         }
-        if pattern_matched.get() || input_failed {
+        if pattern_matched || input_failed {
             std::process::exit(1);
         }
         return Ok(());
@@ -479,7 +349,7 @@ fn main() -> Result<()> {
         folder.print_stats(&mut io::stderr())?;
     }
 
-    if pattern_matched.get() || input_failed {
+    if pattern_matched || input_failed {
         std::process::exit(1);
     }
 
