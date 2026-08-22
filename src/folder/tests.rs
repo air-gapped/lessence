@@ -1435,7 +1435,24 @@ fn format_group_json_at_min_collapse_updates_stats() {
     assert_eq!(group.count(), 3); // exactly min_collapse
     let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
     assert_eq!(f.stats.collapsed_groups, 1);
-    assert_eq!(f.stats.lines_saved, 2); // count - 1 = 3 - 1 = 2
+    // One definition across every mode: a collapsed group preserves 3
+    // lines (first + marker + last), so a group at exactly min_collapse
+    // saves 0. Same arithmetic as the text renderer.
+    assert_eq!(f.stats.lines_saved, 0);
+
+    let bigger = make_group(
+        "warn <IP>",
+        vec![
+            vec![Token::IPv4("10.0.0.1".into())],
+            vec![Token::IPv4("10.0.0.2".into())],
+            vec![Token::IPv4("10.0.0.3".into())],
+            vec![Token::IPv4("10.0.0.4".into())],
+            vec![Token::IPv4("10.0.0.5".into())],
+        ],
+    );
+    let _ = f.format_group_json(&bigger, BTreeMap::new()).unwrap();
+    assert_eq!(f.stats.collapsed_groups, 2);
+    assert_eq!(f.stats.lines_saved, 2); // 5 - 3, matching text mode
 }
 
 #[test]
@@ -3965,4 +3982,95 @@ fn summary_masks_pii_when_enabled() {
             "raw email in summary line: {representative}"
         );
     }
+}
+
+// ---------------------------------------------------------------
+// Cross-mode consistency: one fold-metric definition shared by the
+// text footer, --stats-json, the JSONL summary record, and markdown.
+// ---------------------------------------------------------------
+
+#[test]
+fn fold_metrics_agree_between_text_and_json_modes() {
+    let run = |format: &str| {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            output_format: format.to_string(),
+            ..Config::default()
+        });
+        for i in 0..20 {
+            let _ = f
+                .process_line(&format!("error connecting to 10.0.0.{i} timeout"))
+                .unwrap();
+        }
+        let _ = f.finish().unwrap();
+        let s = f.build_stats_json(Duration::from_millis(1));
+        // bit-exact ratio comparison: both modes must run the same
+        // computation, not merely land close
+        (
+            s.lines_saved,
+            s.collapsed_groups,
+            s.compression_ratio.to_bits(),
+        )
+    };
+    assert_eq!(run("text"), run("json"));
+}
+#[test]
+fn summary_record_and_stats_json_report_identical_metrics() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        output_format: "json".to_string(),
+        ..Config::default()
+    });
+    for i in 0..20 {
+        let _ = f
+            .process_line(&format!("error connecting to 10.0.0.{i} timeout"))
+            .unwrap();
+    }
+    let _ = f.finish().unwrap();
+    let mut buf = Vec::new();
+    f.print_summary_json(&mut buf, Duration::from_millis(5))
+        .unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+    let stats = f.build_stats_json(Duration::from_millis(5));
+    assert_eq!(
+        record["lines_saved"].as_u64().unwrap() as usize,
+        stats.lines_saved
+    );
+    assert_eq!(
+        record["collapsed_groups"].as_u64().unwrap() as usize,
+        stats.collapsed_groups
+    );
+    assert_eq!(
+        record["compression_ratio"].as_f64().unwrap().to_bits(),
+        stats.compression_ratio.to_bits()
+    );
+}
+#[test]
+fn markdown_document_masks_pii_and_shares_fold_metrics() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        sanitize_pii: true,
+        output_format: "markdown".to_string(),
+        ..Config::default()
+    });
+    for who in ["alice", "bob", "eve", "mallory"] {
+        let _ = f
+            .process_line(&format!("user {who}@example.com login failed"))
+            .unwrap();
+    }
+    let flushed = f.finish().unwrap();
+    assert!(
+        flushed.is_empty(),
+        "markdown mode buffers entries for the document"
+    );
+    let mut buf = Vec::new();
+    f.emit_markdown(&mut buf).unwrap();
+    let doc = String::from_utf8(buf).unwrap();
+    assert!(!doc.contains("example.com"), "raw email in markdown: {doc}");
+    let stats = f.get_stats();
+    let expected = (stats.lines_saved as f64 / stats.total_lines as f64) * 100.0;
+    assert!(
+        doc.contains(&format!("Compression ratio**: {expected:.1}%")),
+        "markdown ratio must use the shared fold metric: {doc}"
+    );
 }

@@ -205,7 +205,7 @@ Exactly one, at the end of the stream.
 | `output_lines` | integer | Total lines in the formatted output (sum of lines per flushed group record — one line per group in JSON mode). |
 | `compression_ratio` | number | `(lines_saved / input_lines) * 100`. Zero if no compression. |
 | `collapsed_groups` | integer | Number of groups with `count >= min_collapse`. |
-| `lines_saved` | integer | Total lines that were folded away, relative to what the active format emits: text mode emits first + marker + last per collapsed group (count − 3 saved), JSON mode emits one record per group (count − 1 saved). |
+| `lines_saved` | integer | Total lines folded away by grouping. One definition across every output mode: each collapsed group preserves 3 lines (first + marker + last), so it saves `count - 3`. Agrees with the text-mode footer and `--stats-json` for the same input; derive any other measure from per-record `count`. |
 | `patterns_detected` | integer | Total number of lines where at least one pattern token was detected. |
 | `elapsed_ms` | integer | Wall-clock milliseconds from start of processing. **This is the only intentionally non-deterministic field.** Diff tools should exclude it when comparing runs. |
 | `pattern_hits` | object | Per-category token-hit counts, one key per token type (nothing is lumped — ports, json, quoted_strings, names, brackets, key_values, log_modules and structured each have their own counter since v0.5). Keys are lowercase category names shared with `--stats-json`. |

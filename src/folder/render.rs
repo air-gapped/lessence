@@ -4,7 +4,15 @@
 //! metadata" surface: the text fold output, the JSONL group and summary
 //! records, the --summary lines, the markdown document, and both stats
 //! reports. The folding engine in `mod.rs` produces groups as data; the
-//! methods here are the only place that data becomes output.
+//! methods here are the only place that data becomes output. Invariants
+//! held here, in one place:
+//!
+//! 1. PII masking (--sanitize-pii) is applied by the renderer, so every
+//!    mode masks -- not just text.
+//! 2. `lines_saved` / `compression_ratio` have a single definition (the
+//!    text-fold arithmetic: a collapsed group preserves 3 lines), shared
+//!    by the text footer, --stats-json, the JSONL summary record, and
+//!    the markdown report.
 
 use super::{
     BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup,
@@ -79,18 +87,15 @@ impl PatternFolder {
             self.json_omitted_values_lower_bound += omitted;
         }
 
-        // Keep `collapsed_groups` and `lines_saved` coherent with
-        // --stats-json output in JSON mode: a group with >= min_collapse
-        // lines counts as "collapsed" even though JSON mode always emits
-        // one record per group regardless of size. Without this, summary
-        // statistics would differ between text-mode and JSON-mode runs
-        // of the same input.
+        // `collapsed_groups` and `lines_saved` share one definition with
+        // every other output mode: a collapsed group preserves 3 lines
+        // (first + marker + last), exactly as the text renderer counts.
+        // Agents cross-check the JSONL summary record against --stats-json
+        // and the text footer, so the numbers must agree; the per-record
+        // `count` field is the ground truth for any other arithmetic.
         if group.count() >= self.config.min_collapse && !self.config.essence_mode {
             self.stats.collapsed_groups += 1;
-            // All lines except the one emitted as the representative
-            // are accounted for as "saved". Matches text-mode lines_saved
-            // semantics as closely as the JSON schema permits.
-            self.stats.lines_saved += group.count().saturating_sub(1);
+            self.stats.lines_saved += group.count().saturating_sub(3);
         }
 
         // Collect unique token type names from first and last lines.
@@ -570,8 +575,10 @@ impl PatternFolder {
     pub fn emit_markdown<W: Write>(&self, writer: &mut W) -> Result<()> {
         let original_lines = self.stats.total_lines;
         let compressed_lines = self.stats.output_lines;
+        // Same definition as every other mode: lines saved by folding
+        // over total input lines.
         let compression_ratio = if original_lines > 0 {
-            100.0 * original_lines.saturating_sub(compressed_lines) as f64 / original_lines as f64
+            (self.stats.lines_saved as f64 / original_lines as f64) * 100.0
         } else {
             0.0
         };
