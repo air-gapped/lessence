@@ -14,6 +14,19 @@ use super::{
 static QUOTED_STRING_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
 
+// autoresearch: the per-quoted-string cascade below is a pure function of the
+// quoted text, so its result can be memoized. Real corpora repeat a small set
+// of quoted field names/values millions of times (source 146: ~600k cascade
+// calls over a few hundred distinct strings). Thread-local keeps it lock-free
+// under rayon; the size/length caps bound memory on adversarial input.
+const QUOTED_CACHE_MAX_ENTRIES: usize = 8192;
+const QUOTED_CACHE_MAX_KEY_LEN: usize = 256;
+
+thread_local! {
+    static QUOTED_CACHE: std::cell::RefCell<std::collections::HashMap<String, (String, bool)>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 pub struct QuotedStringDetector;
 
 impl QuotedStringDetector {
@@ -31,77 +44,105 @@ impl QuotedStringDetector {
             .replace_all(&result, |caps: &regex::Captures| {
                 let quoted_string = caps.get(0).unwrap().as_str();
 
-                // Normalize patterns WITHIN the quoted content before deciding
-                let quoted_content = &quoted_string[1..quoted_string.len() - 1]; // Remove quotes
-                let mut normalized_content = quoted_content.to_string();
-
-                // Apply EXACT same pattern detection order as main pipeline
-                // This ensures consistency and prevents order-dependent bugs
-
-                // 1. TIMESTAMPS (highest priority - most specific format)
-                let (new_normalized, _) =
-                    UnifiedTimestampDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // 2. PATHS (including full URLs - must run early to preserve URL structure)
-                let (new_normalized, _) = PathDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // 3. UUIDs (MUST run BEFORE hashes to prevent UUID fragmentation!)
-                let (new_normalized, _) = UuidDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // 4. NETWORK patterns (IPs, ports, FQDNs)
-                let (new_normalized, _) =
-                    NetworkDetector::detect_and_replace(&normalized_content, true, true, true);
-                normalized_content = new_normalized;
-
-                // 5. HASHES (must run AFTER UUIDs)
-                let (new_normalized, _) = HashDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // 6. PROCESS IDs
-                let (new_normalized, _) = ProcessDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // 7. DURATIONS & measurements (including integers)
-                let (new_normalized, _) = DurationDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // 8. NAMES (hyphenated component names - generic patterns last)
-                let (new_normalized, _) = NameDetector::detect_and_replace(&normalized_content);
-                normalized_content = new_normalized;
-
-                // Check for escaped JSON FIRST (highest priority)
-                if quoted_content.contains('\\')
-                    && (quoted_content.contains(':')
-                        || quoted_content.contains('{')
-                        || quoted_content.contains('['))
-                {
-                    // This is escaped JSON or structured data - normalize it
-                    tokens.push(Token::QuotedString(quoted_string.to_string()));
-                    "<ESCAPED_JSON>".to_string()
-                } else if normalized_content != quoted_content {
-                    // Normalization changed the content, it contains variable patterns
-                    // Store the original quoted string but replace with normalized version
-                    tokens.push(Token::QuotedString(quoted_string.to_string()));
-                    format!("\"{normalized_content}\"") // Keep it quoted with normalized content
-                } else {
-                    // No patterns found inside, treat as potential variable name
-                    // This covers cases like "volume-name", "pod-uuid" etc.
-                    if quoted_string.len() > 25 {
-                        // Only very long strings are likely variable names
-                        tokens.push(Token::QuotedString(quoted_string.to_string()));
-                        "<QUOTED_STRING>".to_string()
-                    } else {
-                        // Keep shorter quoted strings unchanged (may contain patterns we couldn't detect)
-                        quoted_string.to_string()
+                let cacheable = quoted_string.len() <= QUOTED_CACHE_MAX_KEY_LEN;
+                if cacheable {
+                    let hit = QUOTED_CACHE.with(|c| c.borrow().get(quoted_string).cloned());
+                    if let Some((replacement, had_token)) = hit {
+                        if had_token {
+                            tokens.push(Token::QuotedString(quoted_string.to_string()));
+                        }
+                        return replacement;
                     }
                 }
+
+                let (replacement, had_token) = Self::normalize_quoted(quoted_string);
+                if had_token {
+                    tokens.push(Token::QuotedString(quoted_string.to_string()));
+                }
+                if cacheable {
+                    QUOTED_CACHE.with(|c| {
+                        let mut cache = c.borrow_mut();
+                        if cache.len() < QUOTED_CACHE_MAX_ENTRIES {
+                            cache.insert(
+                                quoted_string.to_string(),
+                                (replacement.clone(), had_token),
+                            );
+                        }
+                    });
+                }
+                replacement
             })
             .to_string();
 
         (result, tokens)
+    }
+
+    /// The full normalization cascade for one quoted string (quotes included).
+    /// Returns the replacement text and whether a QuotedString token is emitted.
+    fn normalize_quoted(quoted_string: &str) -> (String, bool) {
+        // Normalize patterns WITHIN the quoted content before deciding
+        let quoted_content = &quoted_string[1..quoted_string.len() - 1]; // Remove quotes
+        let mut normalized_content = quoted_content.to_string();
+
+        // Apply EXACT same pattern detection order as main pipeline
+        // This ensures consistency and prevents order-dependent bugs
+
+        // 1. TIMESTAMPS (highest priority - most specific format)
+        let (new_normalized, _) = UnifiedTimestampDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // 2. PATHS (including full URLs - must run early to preserve URL structure)
+        let (new_normalized, _) = PathDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // 3. UUIDs (MUST run BEFORE hashes to prevent UUID fragmentation!)
+        let (new_normalized, _) = UuidDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // 4. NETWORK patterns (IPs, ports, FQDNs)
+        let (new_normalized, _) =
+            NetworkDetector::detect_and_replace(&normalized_content, true, true, true);
+        normalized_content = new_normalized;
+
+        // 5. HASHES (must run AFTER UUIDs)
+        let (new_normalized, _) = HashDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // 6. PROCESS IDs
+        let (new_normalized, _) = ProcessDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // 7. DURATIONS & measurements (including integers)
+        let (new_normalized, _) = DurationDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // 8. NAMES (hyphenated component names - generic patterns last)
+        let (new_normalized, _) = NameDetector::detect_and_replace(&normalized_content);
+        normalized_content = new_normalized;
+
+        // Check for escaped JSON FIRST (highest priority)
+        if quoted_content.contains('\\')
+            && (quoted_content.contains(':')
+                || quoted_content.contains('{')
+                || quoted_content.contains('['))
+        {
+            // This is escaped JSON or structured data - normalize it
+            ("<ESCAPED_JSON>".to_string(), true)
+        } else if normalized_content != quoted_content {
+            // Normalization changed the content, it contains variable patterns
+            // Store the original quoted string but replace with normalized version
+            (format!("\"{normalized_content}\""), true) // Keep it quoted with normalized content
+        } else {
+            // No patterns found inside, treat as potential variable name
+            // This covers cases like "volume-name", "pod-uuid" etc.
+            if quoted_string.len() > 25 {
+                // Only very long strings are likely variable names
+                ("<QUOTED_STRING>".to_string(), true)
+            } else {
+                // Keep shorter quoted strings unchanged (may contain patterns we couldn't detect)
+                (quoted_string.to_string(), false)
+            }
+        }
     }
 }
 
