@@ -183,7 +183,7 @@ fn top_n_retains_all_groups_past_flush_threshold() {
     for i in 0..1_100 {
         folder.process_line(&eviction_word(i)).unwrap();
     }
-    let (output, total_groups, _) = folder.finish_top_n(5).unwrap();
+    let (output, total_groups, _, _) = folder.finish_top_n(5, None, false).unwrap();
     assert_eq!(total_groups, 1_100, "denominator must count every group");
     assert_eq!(output.len(), 5);
 }
@@ -1672,8 +1672,9 @@ fn print_summary_json_ends_with_newline() {
 #[test]
 fn print_summary_json_reports_fit_omissions_exactly() {
     let mut f = make_folder();
-    f.note_json_groups_emitted(2);
-    f.note_json_group_limits(5, 0, 0, 3);
+    f.json_groups_emitted = 2;
+    f.json_groups_total = Some(5);
+    f.json_omitted_by_fit = 3;
     let mut buf = Vec::new();
     f.print_summary_json(&mut buf, std::time::Duration::ZERO)
         .unwrap();
@@ -1682,6 +1683,79 @@ fn print_summary_json_reports_fit_omissions_exactly() {
     assert!(!groups["complete"].as_bool().unwrap());
     assert_eq!(groups["omitted_by_fit"]["value"], 3);
     assert_eq!(groups["omitted_by_fit"]["kind"], "exact");
+}
+
+#[test]
+fn finish_top_n_derives_json_group_completeness() {
+    // Four distinct patterns, top 3 requested, fit budget of 2: the fit
+    // slice keeps budget-1 = 1 entry and truncates the other 2 of the top
+    // 3; the fourth group was omitted by the explicit --top cap.
+    let mut f = make_folder_json();
+    for i in 0..4 {
+        for _ in 0..(4 - i) {
+            f.process_line(&format!("pattern-{i} event")).unwrap();
+        }
+    }
+    let (shown, total, _coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
+    assert_eq!(total, 4);
+    assert_eq!(shown.len(), 1);
+    assert_eq!(fit_truncated, 2);
+
+    let mut buf = Vec::new();
+    f.print_summary_json(&mut buf, std::time::Duration::ZERO)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+    let groups = &value["completeness"]["groups"];
+    assert_eq!(groups["emitted"], 1);
+    assert_eq!(groups["total"]["value"], 4);
+    assert_eq!(groups["omitted_by_top"]["value"], 1);
+    assert_eq!(groups["omitted_by_summary_cap"]["value"], 0);
+    assert_eq!(groups["omitted_by_fit"]["value"], 2);
+    assert!(!groups["complete"].as_bool().unwrap());
+}
+
+#[test]
+fn finish_top_n_summary_cap_classifies_omissions() {
+    // Same shape but the cap came from summary-mode's default: omissions
+    // land in omitted_by_summary_cap, not omitted_by_top.
+    let mut f = make_folder_json();
+    for i in 0..3 {
+        for _ in 0..(3 - i) {
+            f.process_line(&format!("pattern-{i} event")).unwrap();
+        }
+    }
+    let (shown, total, _coverage, fit_truncated) = f.finish_top_n(1, None, true).unwrap();
+    assert_eq!((shown.len(), total, fit_truncated), (1, 3, 0));
+
+    let mut buf = Vec::new();
+    f.print_summary_json(&mut buf, std::time::Duration::ZERO)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+    let groups = &value["completeness"]["groups"];
+    assert_eq!(groups["omitted_by_summary_cap"]["value"], 2);
+    assert_eq!(groups["omitted_by_top"]["value"], 0);
+}
+
+#[test]
+fn absorb_ingest_report_sets_input_completeness() {
+    let mut f = make_folder_json();
+    let report = crate::ingest::IngestReport {
+        fail_pattern_matched: false,
+        overlong_lines_skipped: 2,
+        max_lines_reached: true,
+    };
+    f.absorb_ingest_report(&report, true);
+
+    let mut buf = Vec::new();
+    f.print_summary_json(&mut buf, std::time::Duration::ZERO)
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+    let input = &value["completeness"]["input"];
+    assert!(!input["complete"].as_bool().unwrap());
+    assert_eq!(input["skipped_overlong_lines"]["value"], 2);
+    assert_eq!(input["unprocessed_after_max_lines"]["kind"], "unknown");
+    assert_eq!(input["failed_sources"]["kind"], "lower_bound");
+    assert_eq!(input["failed_sources"]["value"], 1);
 }
 
 #[test]
@@ -2252,7 +2326,7 @@ fn finish_top_n_returns_sorted_by_count() {
     f.process_line("unique log entry with no pattern match")
         .unwrap();
 
-    let (top, total_groups, _coverage) = f.finish_top_n(2).unwrap();
+    let (top, total_groups, _coverage, _) = f.finish_top_n(2, None, false).unwrap();
     assert_eq!(top.len(), 2, "should return top 2");
     assert!(
         top[0].0 >= top[1].0,
@@ -2270,7 +2344,7 @@ fn finish_top_n_returns_correct_total_groups() {
     f.process_line("line B with 10.0.0.2").unwrap();
     f.process_line("line C with something else entirely different")
         .unwrap();
-    let (_top, total_groups, _coverage) = f.finish_top_n(10).unwrap();
+    let (_top, total_groups, _coverage, _) = f.finish_top_n(10, None, false).unwrap();
     assert!(total_groups >= 1, "should have at least 1 group");
 }
 
@@ -2278,7 +2352,7 @@ fn finish_top_n_returns_correct_total_groups() {
 fn finish_top_n_n_exceeds_groups() {
     let mut f = make_folder();
     f.process_line("only one line 10.0.0.1").unwrap();
-    let (top, _total, _coverage) = f.finish_top_n(100).unwrap();
+    let (top, _total, _coverage, _) = f.finish_top_n(100, None, false).unwrap();
     // Should return all groups (1 or more), not crash
     assert!(!top.is_empty());
 }
@@ -2290,7 +2364,7 @@ fn finish_top_n_coverage_percentage() {
     for _ in 0..10 {
         f.process_line("2024-01-01 ERROR same 10.0.0.1").unwrap();
     }
-    let (_top, _total, coverage) = f.finish_top_n(10).unwrap();
+    let (_top, _total, coverage, _) = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 100, "single group covering all lines = 100%");
 }
 
@@ -2930,7 +3004,7 @@ fn prepare_summary_fit_budget_10_of_50() {
 fn finish_top_n_zero_input_lines() {
     let mut f = make_folder();
     f.stats.total_lines = 0;
-    let (_, _, coverage) = f.finish_top_n(10).unwrap();
+    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 0);
 }
 
@@ -3141,7 +3215,7 @@ fn finish_top_n_flushes_batch_buffer() {
     // Put lines in batch_buffer (simulating unprocessed batch)
     f.batch_buffer.push("error one".to_string());
     f.batch_buffer.push("error two".to_string());
-    let (output, total, _) = f.finish_top_n(10).unwrap();
+    let (output, total, _, _) = f.finish_top_n(10, None, false).unwrap();
     // Should have flushed and processed the batch
     assert!(f.batch_buffer.is_empty(), "batch should be flushed");
     assert!(total > 0 || output.is_empty()); // processed something
@@ -3159,7 +3233,7 @@ fn finish_top_n_updates_output_lines() {
         ));
     }
     let before = f.stats.output_lines;
-    let _ = f.finish_top_n(10).unwrap();
+    let _ = f.finish_top_n(10, None, false).unwrap();
     assert!(
         f.stats.output_lines > before,
         "should increment output_lines"
@@ -3177,7 +3251,7 @@ fn finish_top_n_coverage_50_percent() {
         group.add_line(make_line("error", vec![]), i + 1);
     }
     f.buffer.push(group);
-    let (_, _, coverage) = f.finish_top_n(10).unwrap();
+    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 50, "50/100 lines = 50% coverage");
 }
 
@@ -3923,7 +3997,7 @@ fn finish_top_n_zero_total_lines_zero_coverage() {
     // because total_input_lines is 0
     f.buffer
         .push(PatternGroup::new(make_line("error", vec![]), 1));
-    let (_, _, coverage) = f.finish_top_n(10).unwrap();
+    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(
         coverage, 0,
         "zero total_input_lines should produce 0% coverage"
@@ -3939,7 +4013,7 @@ fn finish_top_n_nonzero_total_lines_nonzero_coverage() {
         group.add_line(make_line("error", vec![]), i + 1);
     }
     f.buffer.push(group);
-    let (_, _, coverage) = f.finish_top_n(10).unwrap();
+    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 100, "10/10 lines should be 100% coverage");
 }
 

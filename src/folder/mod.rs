@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use crate::config::Config;
+use crate::ingest::IngestReport;
 use crate::normalize::Normalizer;
 use crate::patterns::{LogLine, Token};
 
@@ -1104,39 +1105,22 @@ impl PatternFolder {
         }
     }
 
-    pub fn note_overlong_lines_skipped(&mut self, count: usize) {
-        self.json_skipped_overlong_lines += count;
-    }
-
-    pub fn note_max_lines_reached(&mut self) {
-        self.json_input_complete = false;
-        self.json_max_lines_reached = true;
-    }
-
-    pub fn note_input_source_failed(&mut self) {
-        self.json_input_complete = false;
-        self.json_failed_sources = true;
-    }
-
-    pub fn note_json_groups_emitted(&mut self, count: usize) {
-        self.json_groups_emitted += count;
-    }
-
-    pub fn json_groups_formatted(&self) -> usize {
-        self.next_json_id
-    }
-
-    pub fn note_json_group_limits(
-        &mut self,
-        total: usize,
-        top: usize,
-        summary_cap: usize,
-        fit: usize,
-    ) {
-        self.json_groups_total = Some(total);
-        self.json_omitted_by_top += top;
-        self.json_omitted_by_summary_cap += summary_cap;
-        self.json_omitted_by_fit += fit;
+    /// Absorb the ingestion outcome for the completeness section of the
+    /// JSONL summary record. One call after `Ingestor::run`, replacing the
+    /// order-sensitive per-fact callbacks main used to invoke; the group
+    /// and variation completeness fields are derived internally by the
+    /// fold/finish paths. The fields set here are only read when the JSON
+    /// summary record is rendered.
+    pub fn absorb_ingest_report(&mut self, report: &IngestReport, any_source_failed: bool) {
+        self.json_skipped_overlong_lines += report.overlong_lines_skipped;
+        if report.max_lines_reached {
+            self.json_input_complete = false;
+            self.json_max_lines_reached = true;
+        }
+        if any_source_failed {
+            self.json_input_complete = false;
+            self.json_failed_sources = true;
+        }
     }
 
     /// Register one explicit input filename and return a compact handle that
@@ -1166,12 +1150,39 @@ impl PatternFolder {
     }
 
     pub fn process_line(&mut self, line: &str) -> Result<Option<String>> {
+        self.process_line_impl(line, None)
+    }
+
+    /// Process a line with its exact source location. This is used by the
+    /// JSON CLI path; text-mode callers keep using `process_line` and pay no
+    /// provenance-tracking cost.
+    pub fn process_line_at(
+        &mut self,
+        line: &str,
+        source_id: Option<SourceId>,
+        line_no: usize,
+    ) -> Result<Option<String>> {
+        let location = LineLocation::new(source_id.unwrap_or(SourceId::STDIN), line_no);
+        self.process_line_impl(line, Some(location))
+    }
+
+    /// Shared body of `process_line` / `process_line_at`. `location` is the
+    /// exact source position carried through to JSON output; `None` skips
+    /// all provenance tracking (text-mode cost stays unchanged).
+    fn process_line_impl(
+        &mut self,
+        line: &str,
+        location: Option<LineLocation>,
+    ) -> Result<Option<String>> {
         self.stats.total_lines += 1;
         self.position_counter += 1;
 
         // Parallel processing: batch lines for parallel pattern detection
         if self.config.thread_count != Some(1) {
             self.batch_buffer.push(line.to_string());
+            if let Some(location) = location {
+                self.batch_locations.push(location);
+            }
 
             if self.batch_buffer.len() >= 10_000 {
                 self.process_batch()?;
@@ -1189,49 +1200,9 @@ impl PatternFolder {
         }
 
         // Try to find a matching group in the buffer
-        self.cluster_line(normalized_line);
+        self.cluster_line_at(normalized_line, location);
 
         // Smart flushing: flush groups that are old enough to be safe
-        if self.should_flush_buffer() {
-            return self.flush_oldest_safe_group();
-        }
-
-        Ok(None)
-    }
-
-    /// Process a line with its exact source location. This is used by the
-    /// JSON CLI path; text-mode callers keep using `process_line` and pay no
-    /// provenance-tracking cost.
-    pub fn process_line_at(
-        &mut self,
-        line: &str,
-        source_id: Option<SourceId>,
-        line_no: usize,
-    ) -> Result<Option<String>> {
-        self.stats.total_lines += 1;
-        self.position_counter += 1;
-        let location = LineLocation::new(source_id.unwrap_or(SourceId::STDIN), line_no);
-
-        if self.config.thread_count != Some(1) {
-            self.batch_buffer.push(line.to_string());
-            self.batch_locations.push(location);
-
-            if self.batch_buffer.len() >= 10_000 {
-                self.process_batch()?;
-            }
-
-            return Ok(None);
-        }
-
-        let normalized_line = self.normalizer.normalize_line(line.to_string())?;
-
-        if !normalized_line.tokens.is_empty() {
-            self.stats.patterns_detected += 1;
-            self.count_pattern_types(&normalized_line.tokens);
-        }
-
-        self.cluster_line_at(normalized_line, Some(location));
-
         if self.should_flush_buffer() {
             return self.flush_oldest_safe_group();
         }
@@ -1243,10 +1214,6 @@ impl PatternFolder {
     /// `group_index` first, then the linear similarity scan, then a new
     /// group. The hash shortcut picks the same group the scan would (see
     /// the `group_index` field docs).
-    fn cluster_line(&mut self, normalized_line: LogLine) {
-        self.cluster_line_at(normalized_line, None);
-    }
-
     fn cluster_line_at(&mut self, normalized_line: LogLine, location: Option<LineLocation>) {
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
@@ -1321,6 +1288,12 @@ impl PatternFolder {
                 // streamed evictions are buffered for it, not emitted.
                 self.markdown_entries.push(formatted);
                 return Ok(None);
+            }
+            // Every streamed eviction the caller receives in JSON mode is
+            // one emitted group record (the caller writes it or dies before
+            // the summary record that would report the count).
+            if self.is_json_output() {
+                self.json_groups_emitted += 1;
             }
             return Ok(Some(formatted));
         }
@@ -1434,17 +1407,38 @@ impl PatternFolder {
                 output.push(formatted);
             }
         }
+        // Same contract as the streamed path: everything returned in JSON
+        // mode is one group record each.
+        if self.is_json_output() {
+            self.json_groups_emitted += output.len();
+        }
 
         Ok(output)
     }
 
-    /// Finish processing and return the top N groups by frequency.
-    /// Returns (count, formatted_output) pairs sorted by count descending,
-    /// plus (total_groups, total_lines_covered_by_shown).
-    pub fn finish_top_n(&mut self, n: usize) -> Result<(Vec<(usize, String)>, usize, usize)> {
+    /// Finish processing and return the top N groups by frequency, already
+    /// cut down to the `--fit` budget. Returns the (count, formatted_output)
+    /// pairs to show sorted by count descending, the total group count, the
+    /// percentage of input lines the top N cover, and how many of the top N
+    /// the fit budget dropped.
+    ///
+    /// `cap_is_summary` classifies the omitted groups for the JSON
+    /// completeness record: true when the cap came from summary-mode's
+    /// default (--summary --format json without an explicit --top), false
+    /// for an explicit --top N.
+    pub fn finish_top_n(
+        &mut self,
+        n: usize,
+        fit_budget: Option<usize>,
+        cap_is_summary: bool,
+    ) -> Result<(Vec<(usize, String)>, usize, usize, usize)> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
+
+        // Groups already streamed out as JSON records before this ranking
+        // pass count toward the total the summary record reports.
+        let previously_formatted = self.next_json_id;
 
         // Collect all groups with their counts (drains the buffer, so the
         // hash index goes with it)
@@ -1477,7 +1471,33 @@ impl PatternFolder {
             output.push((count, formatted));
         }
 
-        // Store total_input_lines for coverage calc
+        // Apply the --fit budget: keep budget-1 entries and report the rest
+        // as truncated (the caller renders the "... N more" marker line).
+        let fit_truncated = match fit_budget {
+            Some(budget) if output.len() > budget => {
+                let show = budget.saturating_sub(1);
+                let truncated = output.len() - show;
+                output.truncate(show);
+                truncated
+            }
+            _ => 0,
+        };
+
+        // Derive the group-completeness facts for the JSON summary record
+        // from what this ranking pass actually did.
+        if self.is_json_output() {
+            let all_groups = total_groups + previously_formatted;
+            let omitted_before_fit = all_groups.saturating_sub(output.len() + fit_truncated);
+            self.json_groups_emitted += output.len();
+            self.json_groups_total = Some(all_groups);
+            if cap_is_summary {
+                self.json_omitted_by_summary_cap += omitted_before_fit;
+            } else {
+                self.json_omitted_by_top += omitted_before_fit;
+            }
+            self.json_omitted_by_fit += fit_truncated;
+        }
+
         Ok((
             output,
             total_groups,
@@ -1486,6 +1506,7 @@ impl PatternFolder {
             } else {
                 0
             },
+            fit_truncated,
         ))
     }
 

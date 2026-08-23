@@ -161,9 +161,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    if input_failed && use_json_output {
-        folder.note_input_source_failed();
-    }
     let mut stdout = io::stdout();
     // Provenance handle for the input currently yielding lines; only the
     // JSON path pays the source-registration cost.
@@ -189,11 +186,7 @@ fn main() -> Result<()> {
                         // In top-N mode, discard incremental output — we'll use finish_top_n()
                     } else {
                         match writeln!(stdout, "{output}") {
-                            Ok(_) => {
-                                if use_json_output {
-                                    folder.note_json_groups_emitted(1);
-                                }
-                            }
+                            Ok(_) => {}
                             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                                 std::process::exit(0);
                             }
@@ -205,34 +198,16 @@ fn main() -> Result<()> {
         }
         Ok(())
     })?;
-    if use_json_output {
-        folder.note_overlong_lines_skipped(ingest_report.overlong_lines_skipped);
-        if ingest_report.max_lines_reached {
-            folder.note_max_lines_reached();
-        }
-    }
+    folder.absorb_ingest_report(&ingest_report, input_failed);
     let pattern_matched = ingest_report.fail_pattern_matched;
 
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
-        let previously_omitted_groups = folder.json_groups_formatted();
-        let (top_groups, total_groups, coverage_pct) = folder.finish_top_n(n)?;
+        let (groups_to_show, total_groups, coverage_pct, fit_truncated) =
+            folder.finish_top_n(n, fit_budget, json_summary_default_cap)?;
         let json_output = use_json_output;
 
-        // Apply --fit budget
-        let (groups_to_show, fit_truncated) = if let Some(budget) = fit_budget {
-            if top_groups.len() > budget {
-                let show = budget.saturating_sub(1);
-                let remaining = top_groups.len() - show;
-                (&top_groups[..show], remaining)
-            } else {
-                (&top_groups[..], 0)
-            }
-        } else {
-            (&top_groups[..], 0)
-        };
-
-        for (count, formatted) in groups_to_show {
+        for (count, formatted) in &groups_to_show {
             let result = if json_output {
                 writeln!(stdout, "{formatted}")
             } else {
@@ -257,17 +232,6 @@ fn main() -> Result<()> {
             }
         }
         let shown = groups_to_show.len();
-        if json_output {
-            let all_groups = total_groups + previously_omitted_groups;
-            let omitted_before_fit = all_groups.saturating_sub(top_groups.len());
-            let (top_omitted, summary_omitted) = if json_summary_default_cap {
-                (0, omitted_before_fit)
-            } else {
-                (omitted_before_fit, 0)
-            };
-            folder.note_json_groups_emitted(shown);
-            folder.note_json_group_limits(all_groups, top_omitted, summary_omitted, fit_truncated);
-        }
         eprintln!(
             "(showing top {shown} of {total_groups} patterns, covering {coverage_pct}% of input lines)"
         );
@@ -294,11 +258,7 @@ fn main() -> Result<()> {
     // the folder instead and emits one assembled document below)
     for output in folder.finish()? {
         match writeln!(stdout, "{output}") {
-            Ok(_) => {
-                if use_json_output {
-                    folder.note_json_groups_emitted(1);
-                }
-            }
+            Ok(_) => {}
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
                 std::process::exit(0);
             }
