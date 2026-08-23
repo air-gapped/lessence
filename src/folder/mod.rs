@@ -143,6 +143,10 @@ impl LineLocation {
 pub struct PatternFolder {
     config: Config,
     normalizer: Normalizer,
+    /// Sized rayon pool honoring `--threads N` for N >= 2. `None` for
+    /// single-threaded mode (`Some(1)`, no parallelism at all) and for
+    /// auto-detect (`thread_count: None`, rayon's global default pool).
+    thread_pool: Option<rayon::ThreadPool>,
     buffer: Vec<PatternGroup>,
     /// Representative-hash → buffer index. Lines that are exact-hash
     /// repeats of a group's representative (the overwhelmingly common case
@@ -1000,10 +1004,24 @@ impl RollupComputer {
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let normalizer = Normalizer::new(config.clone());
+        let thread_pool = match config.thread_count {
+            Some(n) if n > 1 => match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
+                Ok(pool) => Some(pool),
+                Err(e) => {
+                    eprintln!(
+                        "lessence: could not create a {n}-thread pool ({e}); \
+                         falling back to the default thread pool"
+                    );
+                    None
+                }
+            },
+            _ => None,
+        };
 
         Self {
             config,
             normalizer,
+            thread_pool,
             buffer: Vec::new(),
             group_index: ahash::AHashMap::new(),
             stats: FoldingStats::default(),
@@ -1480,13 +1498,21 @@ impl PatternFolder {
         use rayon::prelude::*;
 
         // This is where the real CPU work happens - parallel regex pattern detection
-        let processed_lines: Vec<LogLine> = lines
-            .par_iter()
-            .map(|line| {
-                // CPU-intensive pattern detection - perfectly parallelizable
-                self.normalizer.normalize_line(line.clone())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let detect = || {
+            lines
+                .par_iter()
+                .map(|line| {
+                    // CPU-intensive pattern detection - perfectly parallelizable
+                    self.normalizer.normalize_line(line.clone())
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        // --threads N sizes a dedicated pool; otherwise rayon's global
+        // default pool (auto-detected CPU count) does the work.
+        let processed_lines: Vec<LogLine> = match &self.thread_pool {
+            Some(pool) => pool.install(detect)?,
+            None => detect()?,
+        };
 
         Ok(processed_lines)
     }

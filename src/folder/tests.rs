@@ -4074,3 +4074,79 @@ fn markdown_document_masks_pii_and_shares_fold_metrics() {
         "markdown ratio must use the shared fold metric: {doc}"
     );
 }
+
+// ---------------------------------------------------------------
+// --threads N thread-pool sizing (r98.11)
+// ---------------------------------------------------------------
+
+#[test]
+fn new_sizes_thread_pool_from_explicit_thread_count() {
+    let f = PatternFolder::new(Config {
+        thread_count: Some(3),
+        ..Config::default()
+    });
+    let pool = f
+        .thread_pool
+        .as_ref()
+        .expect("thread_count=Some(3) must build a dedicated pool");
+    assert_eq!(
+        pool.current_num_threads(),
+        3,
+        "--threads 3 must size the pool to exactly 3 threads"
+    );
+}
+
+#[test]
+fn new_builds_no_pool_for_single_threaded_mode() {
+    let f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        ..Config::default()
+    });
+    assert!(
+        f.thread_pool.is_none(),
+        "Some(1) is the sequential path and must not build a pool"
+    );
+}
+
+#[test]
+fn new_builds_no_pool_for_auto_detect_mode() {
+    let f = PatternFolder::new(Config {
+        thread_count: None,
+        ..Config::default()
+    });
+    assert!(
+        f.thread_pool.is_none(),
+        "None means rayon's global default pool, not a dedicated one"
+    );
+}
+
+#[test]
+fn sized_pool_produces_same_output_as_default_pool() {
+    let lines = [
+        "2024-01-01 10:00:00 ERROR connection refused from 10.0.0.1",
+        "2024-01-01 10:00:01 ERROR connection refused from 10.0.0.2",
+        "2024-01-01 10:00:02 ERROR connection refused from 10.0.0.3",
+        "2024-01-01 10:00:03 ERROR connection refused from 10.0.0.4",
+        "2024-01-01 10:00:04 INFO server started on port 8080",
+    ];
+    let run = |thread_count: Option<usize>| -> Vec<String> {
+        let mut f = PatternFolder::new(Config {
+            thread_count,
+            min_collapse: 3,
+            ..Config::default()
+        });
+        let mut out = Vec::new();
+        for line in &lines {
+            if let Some(o) = f.process_line(line).unwrap() {
+                out.push(o);
+            }
+        }
+        out.extend(f.finish().unwrap());
+        out
+    };
+    assert_eq!(
+        run(Some(2)),
+        run(None),
+        "a sized pool must fold identically to the default pool"
+    );
+}
