@@ -1005,16 +1005,28 @@ impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let normalizer = Normalizer::new(config.clone());
         let thread_pool = match config.thread_count {
-            Some(n) if n > 1 => match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
-                Ok(pool) => Some(pool),
-                Err(e) => {
+            Some(requested) if requested > 1 => {
+                // A raw N-thread pool for arbitrary N is a footgun: --threads
+                // 999999 would spawn ~1M OS threads and take the machine down.
+                // More threads than cores never helps this CPU-bound pipeline.
+                let cores = std::thread::available_parallelism().map_or(8, usize::from);
+                let n = requested.min(cores);
+                if n < requested {
                     eprintln!(
-                        "lessence: could not create a {n}-thread pool ({e}); \
-                         falling back to the default thread pool"
+                        "lessence: capping --threads {requested} at {n} (available parallelism)"
                     );
-                    None
                 }
-            },
+                match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
+                    Ok(pool) => Some(pool),
+                    Err(e) => {
+                        eprintln!(
+                            "lessence: could not create a {n}-thread pool ({e}); \
+                             falling back to the default thread pool"
+                        );
+                        None
+                    }
+                }
+            }
             _ => None,
         };
 

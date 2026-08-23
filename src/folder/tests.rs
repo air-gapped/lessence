@@ -4155,10 +4155,31 @@ fn new_sizes_thread_pool_from_explicit_thread_count() {
         .thread_pool
         .as_ref()
         .expect("thread_count=Some(3) must build a dedicated pool");
+    let cores = std::thread::available_parallelism().map_or(8, usize::from);
     assert_eq!(
         pool.current_num_threads(),
-        3,
-        "--threads 3 must size the pool to exactly 3 threads"
+        3.min(cores),
+        "--threads 3 must size the pool to exactly 3 threads (capped at available parallelism)"
+    );
+}
+
+/// --threads with an absurd value must clamp to available parallelism, not
+/// spawn N raw OS threads (--threads 999999 once took the dev machine down).
+#[test]
+fn new_caps_thread_pool_at_available_parallelism() {
+    let f = PatternFolder::new(Config {
+        thread_count: Some(999_999),
+        ..Config::default()
+    });
+    let pool = f
+        .thread_pool
+        .as_ref()
+        .expect("huge thread_count must still build a (capped) pool");
+    let cores = std::thread::available_parallelism().map_or(8, usize::from);
+    assert_eq!(
+        pool.current_num_threads(),
+        cores,
+        "--threads 999999 must clamp to available parallelism"
     );
 }
 
