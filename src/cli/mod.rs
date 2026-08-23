@@ -93,11 +93,11 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
 #[command(author, version, about, long_about = None)]
 pub struct Cli {
     /// Percent of tokens two lines must share to group (0-100). Raise (e.g. 85) for stricter, per-message splitting; lower for more folding
-    #[arg(long, default_value_t = 75, value_parser = clap::value_parser!(u8).range(0..=100))]
+    #[arg(long, default_value_t = crate::config::DEFAULT_THRESHOLD, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub threshold: u8,
 
     /// Minimum lines before folding (min: 3)
-    #[arg(long, default_value_t = 3, value_parser = validate_min_collapse)]
+    #[arg(long, default_value_t = crate::config::DEFAULT_MIN_COLLAPSE, value_parser = validate_min_collapse)]
     pub min_collapse: usize,
 
     /// Disable specific pattern groups (comma-separated). The valid-name
@@ -122,7 +122,7 @@ pub struct Cli {
     pub preflight: bool,
 
     /// Output format: text (default), markdown, json (JSONL for agent consumption)
-    #[arg(long, default_value = "text")]
+    #[arg(long, default_value = crate::config::DEFAULT_OUTPUT_FORMAT)]
     pub format: String,
 
     /// Enable essence mode (timestamp removal/tokenization for temporal independence)

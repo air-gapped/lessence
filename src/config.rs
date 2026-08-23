@@ -1,3 +1,14 @@
+/// Default similarity threshold in percent. Single origin for the clap
+/// default on `--threshold` and `Config::default()` — they diverged once
+/// (75 vs 85) and the CLI value is the documented behavior.
+pub const DEFAULT_THRESHOLD: u8 = 75;
+/// Default minimum group size before folding (`--min-collapse`).
+pub const DEFAULT_MIN_COLLAPSE: usize = 3;
+/// Default cap on line length in bytes (`--max-line-length`, 1 MiB).
+pub const DEFAULT_MAX_LINE_LENGTH: usize = 1024 * 1024;
+/// Default output format (`--format`).
+pub const DEFAULT_OUTPUT_FORMAT: &str = "text";
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub threshold: u8,
@@ -41,8 +52,8 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            threshold: 85,
-            min_collapse: 3,
+            threshold: DEFAULT_THRESHOLD,
+            min_collapse: DEFAULT_MIN_COLLAPSE,
             normalize_timestamps: true,
             normalize_hashes: true,
             normalize_ports: true,
@@ -60,7 +71,7 @@ impl Default for Config {
             normalize_key_value: true,
             normalize_quoted: true,
             normalize_names: true,
-            output_format: "text".to_string(),
+            output_format: DEFAULT_OUTPUT_FORMAT.to_string(),
             stats: true,
             preserve_color: false,
             compact: true,
@@ -71,12 +82,12 @@ impl Default for Config {
             thread_count: None,  // Auto-detect threads by default (1=single-threaded)
 
             // Security defaults (Constitutional Principle X)
-            max_line_length: Some(1024 * 1024), // 1MB default line length limit
-            max_lines: None,                    // No line count limit by default
-            sanitize_pii: false,                // Disabled by default (backward compatibility)
-            top_n: None,                        // No top-N filtering by default
-            stats_json: false,                  // No JSON stats by default
-            fail_pattern: None,                 // No fail pattern by default
+            max_line_length: Some(DEFAULT_MAX_LINE_LENGTH), // 1MB default line length limit
+            max_lines: None,                                // No line count limit by default
+            sanitize_pii: false, // Disabled by default (backward compatibility)
+            top_n: None,         // No top-N filtering by default
+            stats_json: false,   // No JSON stats by default
+            fail_pattern: None,  // No fail pattern by default
         }
     }
 }
@@ -303,7 +314,8 @@ mod tests {
     #[test]
     fn default_config_values() {
         let c = Config::default();
-        assert_eq!(c.threshold, 85);
+        // 75 is the documented CLI default; Config::default() must match it
+        assert_eq!(c.threshold, 75);
         assert_eq!(c.min_collapse, 3);
         assert!(c.normalize_timestamps);
         assert!(c.normalize_hashes);

@@ -76,7 +76,9 @@ fn main() -> Result<()> {
         essence_mode: cli.essence,
         thread_count: cli.threads,
         // Security & ReDoS protection flags
-        max_line_length: cli.max_line_length.or(Some(1024 * 1024)), // 1MB default
+        max_line_length: cli
+            .max_line_length
+            .or(Some(config::DEFAULT_MAX_LINE_LENGTH)),
         max_lines: cli.max_lines,
         sanitize_pii: cli.sanitize_pii, // Wire PII sanitization flag
         top_n: effective_top,
