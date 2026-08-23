@@ -5,7 +5,7 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
-verified-at: c7efaea633bced3fb2ebdad2b0677f3556b96ace
+verified-at: 21e1359c88156764161ac8db09f847788ddedb61
 
 `verified-at` is the main commit this skill was last verified against. The
 release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
@@ -13,16 +13,16 @@ touching `src/` postdates it.
 
 | Claim | Source | Last verified |
 |---|---|---|
-| Flag set, defaults, `--format text\|markdown\|json` | `lessence --help` (working tree = 0.4.4 code; binary still reported 0.4.3 pre-release) | 2026-06-09 |
-| `--summary` default cap of 30 patterns | `src/folder/mod.rs` `DEFAULT_SUMMARY_CAP` | 2026-06-09 |
-| JSONL group/summary record fields, `variation` rollup, `samples` ≤7, `capped` at 64, determinism modulo `elapsed_ms` | `docs/format-json-schema.md` + live run | 2026-06-09 |
-| `--fail-on-pattern` exit 1 on match, exit 2 on invalid regex | `lessence --help` + `src/main.rs` | 2026-06-09 |
-| Missing input file → exit 1 (other files still processed) | live run (fixed 2026-06-09) | 2026-06-09 |
-| Stats footer goes to stderr; stdout carries only log output | live run (fixed 2026-06-09) | 2026-06-09 |
-| Valid `--disable-patterns` names (15) | `lessence --help` | 2026-06-09 |
-| All five Agent Triage Pipeline jq recipes (field names `variation.IPV4`, `K8S_POD.samples`, `time_range.first_seen`, `capped`, summary fields) | live run against `examples/kubelet.log` | 2026-06-09 |
-| `--min-collapse` floor of 3 (binary rejects 2) | live run | 2026-06-09 |
-| `--max-line-length` default 1MB (`main.rs` `.or(Some(1024*1024))`; help text corrected 2026-06-09) | code + live run | 2026-06-09 |
-| `--threshold` token-LCS semantics, stronger folding (kubelet corpus 941 -> 380 lines) | src/normalize.rs similarity_score + live run (shipped in 0.4.4) | 2026-06-09 |
-| `variation` FQDN key for hostnames (was IPV4) | src/folder/mod.rs token_type_name + live run (shipped in 0.4.4) | 2026-06-09 |
-| Stats footer reports line counts (`input_lines`/`output_lines`); time ranges are per folded group, not in the footer | live run (`--stats-json` keys) against installed 0.4.3 binary | 2026-06-10 |
+| Flag set, defaults, `--format text\|markdown\|json` | `lessence --help` (0.4.5 build at verified-at) | 2026-08-23 |
+| `--summary` default cap of 30 patterns | `src/folder/mod.rs` `DEFAULT_SUMMARY_CAP` | 2026-08-23 |
+| JSONL group/summary record fields, `variation` rollup, `samples` ≤7, `capped` at 64, determinism modulo `elapsed_ms` | `docs/format-json-schema.md` + live run | 2026-08-23 |
+| `--fail-on-pattern` exit 1 on match, exit 2 on invalid regex | `lessence --help` + `src/main.rs` | 2026-08-23 |
+| Missing input file → exit 1 (other files still processed) | live run (fixed 2026-06-09) | 2026-08-23 |
+| Stats footer goes to stderr; stdout carries only log output | live run (fixed 2026-06-09) | 2026-08-23 |
+| Valid `--disable-patterns` names (15) | `lessence --help` | 2026-08-23 |
+| All five Agent Triage Pipeline jq recipes (field names `variation.IPV4`, `K8S_POD.samples`, `time_range.first_seen`, `capped`, summary fields) | live run against `examples/kubelet.log` | 2026-08-23 |
+| `--min-collapse` floor of 3 (binary rejects 2) | live run | 2026-08-23 |
+| `--max-line-length` default 1MB (`main.rs` `.or(Some(1024*1024))`; help text corrected 2026-06-09) | code + live run | 2026-08-23 |
+| `--threshold` token-LCS semantics, stronger folding (kubelet corpus folds to 357 lines at default threshold) | src/normalize.rs similarity_score + live run (shipped in 0.4.4) | 2026-08-23 |
+| `variation` FQDN key for hostnames (was IPV4) | src/folder/mod.rs token_type_name + live run (shipped in 0.4.4) | 2026-08-23 |
+| Stats footer reports line counts (`input_lines`/`output_lines`); time ranges are per folded group, not in the footer | live run (`--stats-json` keys) | 2026-08-23 |
