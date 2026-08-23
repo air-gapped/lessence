@@ -4,12 +4,202 @@ use std::hash::{Hash, Hasher};
 
 use crate::config::Config;
 use crate::patterns::{
-    LogLine, MAX_SIMILARITY_TOKENS, SimTok, SimTokens, Token, duration::DurationDetector,
-    email::EmailPatternDetector, hash::HashDetector, json::JsonDetector,
-    kubernetes::KubernetesDetector, names::NameDetector, network::NetworkDetector,
+    LogLine, MAX_SIMILARITY_TOKENS, SimTok, SimTokens, Token,
+    bracket_context::BracketContextDetector, duration::DurationDetector,
+    email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector,
+    json::JsonDetector, key_value::KeyValueDetector, kubernetes::KubernetesDetector,
+    log_module::LogWithModuleDetector, names::NameDetector, network::NetworkDetector,
     path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector,
-    timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
+    structured::StructuredMessageDetector, timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
+
+/// One entry in the detector ordering table. The table is the single place
+/// that says which detectors run, in which order, under which gates —
+/// `normalize_line` just walks it.
+struct DetectorEntry {
+    /// User-facing pattern-group name (matches `config::PATTERN_REGISTRY`).
+    #[allow(dead_code)] // documentation + future diagnostics
+    name: &'static str,
+    /// Config gate: is this detector enabled for the run?
+    enabled: fn(&Config) -> bool,
+    /// Cheap byte-level gate on the partially-normalized line; the
+    /// detector is skipped when it returns false. Mirrors the detector's
+    /// own fast pre-filter where one exists, so the deference check below
+    /// never runs on lines the detector would reject anyway.
+    prefilter: Option<fn(&Config, &str) -> bool>,
+    /// The kubernetes deference rule, expressed once per entry: when set
+    /// and the predicate matches, the line's kubernetes-shaped content
+    /// belongs to KubernetesDetector and this detector is skipped.
+    defers_to_kubernetes: Option<fn(&str) -> bool>,
+    /// The detection pass itself.
+    run: fn(&Normalizer, &str) -> (String, Vec<Token>),
+}
+
+/// Detection order — earlier entries consume text first, so order encodes
+/// priority: most specific formats first (timestamps, emails, paths),
+/// generic catch-alls last (names, quoted strings). Comments carry the
+/// pairwise ordering constraints that must survive any reordering.
+static DETECTOR_ORDER: &[DetectorEntry] = &[
+    // TIMESTAMPS: most specific formats, highest priority.
+    DetectorEntry {
+        name: "timestamp",
+        enabled: |c| c.normalize_timestamps,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| UnifiedTimestampDetector::detect_and_replace(s),
+    },
+    // EMAIL: before paths so emails inside URLs are handled correctly.
+    DetectorEntry {
+        name: "email",
+        enabled: |c| c.normalize_emails,
+        prefilter: Some(|_, s| s.contains('@')),
+        defers_to_kubernetes: None,
+        run: |n, s| n.email_detector.detect_and_replace(s),
+    },
+    // PATHS: before network patterns so URLs are consumed as whole units.
+    DetectorEntry {
+        name: "path",
+        enabled: |c| c.normalize_paths,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| PathDetector::detect_and_replace(s),
+    },
+    // JSON: structured data, Event objects, K8s objects.
+    DetectorEntry {
+        name: "json",
+        enabled: |c| c.normalize_json,
+        prefilter: Some(|_, s| s.contains('{')),
+        defers_to_kubernetes: None,
+        run: |_, s| JsonDetector::detect_and_replace(s),
+    },
+    // UUIDs: before hashes, whose hex pattern would fragment a UUID.
+    DetectorEntry {
+        name: "uuid",
+        enabled: |c| c.normalize_uuids,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| UuidDetector::detect_and_replace(s),
+    },
+    // NETWORK: IPs, ports, FQDNs; after paths to avoid breaking URLs.
+    DetectorEntry {
+        name: "network",
+        enabled: |c| c.normalize_ips || c.normalize_ports || c.normalize_fqdns,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |n, s| {
+            NetworkDetector::detect_and_replace(
+                s,
+                n.config.normalize_ips,
+                n.config.normalize_ports,
+                n.config.normalize_fqdns,
+            )
+        },
+    },
+    // HASHES: after UUIDs (see above).
+    DetectorEntry {
+        name: "hash",
+        enabled: |c| c.normalize_hashes,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| HashDetector::detect_and_replace(s),
+    },
+    // PROCESS IDs: [pid=123], (12345).
+    DetectorEntry {
+        name: "process",
+        enabled: |c| c.normalize_pids,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| ProcessDetector::detect_and_replace(s),
+    },
+    // KUBERNETES: before the generic bracket/module/structured detectors,
+    // which additionally defer to it on kubernetes-shaped lines (their
+    // `defers_to_kubernetes` predicates below).
+    DetectorEntry {
+        name: "kubernetes",
+        enabled: |c| c.normalize_kubernetes,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| KubernetesDetector::detect_and_replace(s),
+    },
+    // HTTP STATUS: groups status codes into classes (200-299 -> 2xx).
+    DetectorEntry {
+        name: "http-status",
+        enabled: |c| c.normalize_http_status,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| HttpStatusDetector::detect_and_replace(s),
+    },
+    // BRACKET CONTEXT: [error] [mod_jk] style tags.
+    DetectorEntry {
+        name: "brackets",
+        enabled: |c| c.normalize_brackets,
+        prefilter: Some(|_, s| {
+            s.contains('[') && BracketContextDetector::has_bracket_indicators(s)
+        }),
+        defers_to_kubernetes: Some(crate::patterns::has_kubernetes_indicators),
+        run: |_, s| BracketContextDetector::detect_and_replace(s),
+    },
+    // KEY-VALUE: config=value pairs.
+    DetectorEntry {
+        name: "key-value",
+        enabled: |c| c.normalize_key_value,
+        prefilter: Some(|_, s| s.contains('=')),
+        defers_to_kubernetes: None,
+        run: |_, s| KeyValueDetector::detect_and_replace(s),
+    },
+    // LOG MODULE: [level] module patterns (Apache/nginx). Gated by the
+    // same flag as BracketContext: --disable-patterns brackets must
+    // disable every bracket-shaped detector.
+    DetectorEntry {
+        name: "log-module",
+        enabled: |c| c.normalize_brackets,
+        prefilter: Some(|_, s| {
+            s.contains('[') && LogWithModuleDetector::has_log_module_indicators(s)
+        }),
+        defers_to_kubernetes: Some(crate::patterns::has_kubernetes_indicators),
+        run: |_, s| LogWithModuleDetector::detect_and_replace(s),
+    },
+    // STRUCTURED MESSAGES: JSON/logfmt structured logging. The JSON half
+    // is gated by --disable-patterns json, the logfmt half by
+    // --disable-patterns key-value.
+    DetectorEntry {
+        name: "structured",
+        enabled: |c| c.normalize_json || c.normalize_key_value,
+        prefilter: Some(|c, s| {
+            ((c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('=')))
+                && StructuredMessageDetector::has_structured_indicators(s)
+        }),
+        defers_to_kubernetes: Some(crate::patterns::has_kubernetes_structured_indicators),
+        run: |_, s| StructuredMessageDetector::detect_and_replace(s),
+    },
+    // DURATIONS & MEASUREMENTS: broad (decimals, sizes, percentages);
+    // late, after every more specific pattern above.
+    DetectorEntry {
+        name: "duration",
+        enabled: |c| c.normalize_durations,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| DurationDetector::detect_and_replace(s),
+    },
+    // NAMES: generic hyphenated component names with variable suffixes;
+    // after the specific patterns to catch what remains.
+    DetectorEntry {
+        name: "name",
+        enabled: |c| c.normalize_names,
+        prefilter: None,
+        defers_to_kubernetes: None,
+        run: |_, s| NameDetector::detect_and_replace(s),
+    },
+    // QUOTED STRINGS: last, so it cannot consume content the detectors
+    // above tokenize (paths in quotes in particular).
+    DetectorEntry {
+        name: "quoted-string",
+        enabled: |c| c.normalize_quoted,
+        prefilter: Some(|_, s| s.contains('"') || s.contains('\'')),
+        defers_to_kubernetes: None,
+        run: |_, s| QuotedStringDetector::detect_and_replace(s),
+    },
+];
 
 pub struct Normalizer {
     config: Config,
@@ -29,159 +219,23 @@ impl Normalizer {
         let mut normalized = original.clone();
         let mut tokens = Vec::with_capacity(8);
 
-        // Apply normalizations in optimized order (most specific to least specific)
-        // This prevents conflicts and maximizes pattern detection accuracy
-
-        // 1. TIMESTAMPS (highest priority - most specific format)
-        if self.config.normalize_timestamps {
-            let (new_normalized, mut new_tokens) =
-                UnifiedTimestampDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 2. EMAIL ADDRESSES (before paths to ensure emails in URLs are handled correctly)
-        if self.config.normalize_emails && normalized.contains('@') {
-            let (new_normalized, mut new_tokens) =
-                self.email_detector.detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 3. PATHS (URLs, file paths, CLI flags - must run early to preserve URL structure)
-        // Must run BEFORE network patterns to handle URLs as complete units
-        if self.config.normalize_paths {
-            let (new_normalized, mut new_tokens) = PathDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 4. JSON (structured data, Event objects, K8s objects)
-        if self.config.normalize_json && normalized.contains('{') {
-            let (new_normalized, mut new_tokens) = JsonDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 5. UUIDs (MUST run BEFORE hashes to prevent UUID fragmentation!)
-        // UUIDs contain hex segments that could be mistaken for hashes
-        if self.config.normalize_uuids {
-            let (new_normalized, mut new_tokens) = UuidDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 6. NETWORK PATTERNS (IP addresses, ports, FQDNs - very specific formats)
-        // Must run AFTER paths to avoid breaking URLs
-        if self.config.normalize_ips || self.config.normalize_ports || self.config.normalize_fqdns {
-            let (new_normalized, mut new_tokens) = NetworkDetector::detect_and_replace(
-                &normalized,
-                self.config.normalize_ips,
-                self.config.normalize_ports,
-                self.config.normalize_fqdns,
-            );
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 7. HASHES (specific length and hex pattern)
-        // Must run AFTER UUIDs to avoid detecting UUID segments as hashes
-        if self.config.normalize_hashes {
-            let (new_normalized, mut new_tokens) = HashDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 8. PROCESS IDs (specific patterns like [pid=123], (12345))
-        if self.config.normalize_pids {
-            let (new_normalized, mut new_tokens) = ProcessDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 9. KUBERNETES PATTERNS (namespaces, volumes, plugins, pod names)
-        // PROTECTED DOMAIN: Must run before generic patterns to prevent pattern theft
-        if self.config.normalize_kubernetes {
-            let (new_normalized, mut new_tokens) =
-                KubernetesDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // NEW PATTERNS FROM 001-READ-THE-CURRENT (Now correctly placed AFTER Kubernetes)
-
-        // HttpStatusClass - Groups HTTP status codes (200-299 → 2xx, etc.)
-        if self.config.normalize_http_status {
-            let (new_normalized, mut new_tokens) =
-                crate::patterns::http_status::HttpStatusDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // BracketContext - Detects [error] [mod_jk] style patterns
-        if self.config.normalize_brackets && normalized.contains('[') {
-            let (new_normalized, mut new_tokens) =
-                crate::patterns::bracket_context::BracketContextDetector::detect_and_replace(
-                    &normalized,
-                );
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // KeyValuePair - Detects config=value, metrics patterns
-        if self.config.normalize_key_value && normalized.contains('=') {
-            let (new_normalized, mut new_tokens) =
-                crate::patterns::key_value::KeyValueDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // LogWithModule - Detects [level] module patterns for Apache/nginx
-        // Gated by the same flag as BracketContext: --disable-patterns brackets
-        // must disable every bracket-shaped detector.
-        if self.config.normalize_brackets && normalized.contains('[') {
-            let (new_normalized, mut new_tokens) =
-                crate::patterns::log_module::LogWithModuleDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // StructuredMessage - Detects JSON/logfmt structured logging.
-        // The JSON half is gated by --disable-patterns json, the logfmt
-        // half by --disable-patterns key-value.
-        if (self.config.normalize_json && normalized.contains('{'))
-            || (self.config.normalize_key_value && normalized.contains('='))
-        {
-            let (new_normalized, mut new_tokens) =
-                crate::patterns::structured::StructuredMessageDetector::detect_and_replace(
-                    &normalized,
-                );
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 10. DURATIONS & MEASUREMENTS (broad category including decimals, sizes, percentages, HTTP codes)
-        // Runs LATE to avoid conflicts with more specific patterns above
-        if self.config.normalize_durations {
-            let (new_normalized, mut new_tokens) =
-                DurationDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 11. NAMES (generic hyphenated component names with variable suffixes)
-        // Runs after specific patterns to catch remaining variable names
-        if self.config.normalize_names {
-            let (new_normalized, mut new_tokens) = NameDetector::detect_and_replace(&normalized);
-            normalized = new_normalized;
-            tokens.append(&mut new_tokens);
-        }
-
-        // 12. QUOTED STRINGS (generic quoted variables - high priority for mount operations)
-        // Must run after paths to catch normalized quoted paths properly
-        if self.config.normalize_quoted && (normalized.contains('"') || normalized.contains('\'')) {
-            let (new_normalized, mut new_tokens) =
-                QuotedStringDetector::detect_and_replace(&normalized);
+        // Walk the detector ordering table; each enabled detector replaces
+        // matched content with tokens in the partially-normalized line.
+        for entry in DETECTOR_ORDER {
+            if !(entry.enabled)(&self.config) {
+                continue;
+            }
+            if let Some(prefilter) = entry.prefilter
+                && !prefilter(&self.config, &normalized)
+            {
+                continue;
+            }
+            if let Some(defers) = entry.defers_to_kubernetes
+                && defers(&normalized)
+            {
+                continue;
+            }
+            let (new_normalized, mut new_tokens) = (entry.run)(self, &normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }
@@ -533,6 +587,81 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- detector ordering table: kubernetes deference ----
+    // The table's `defers_to_kubernetes` predicates skip the bracket,
+    // log-module, and structured detectors on kubernetes-shaped lines so
+    // KubernetesDetector owns them. These used to be guards inside each
+    // detector; the behavior now only exists at this level.
+
+    #[test]
+    fn table_brackets_defer_to_kubernetes() {
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer
+            .normalize_line("[error] kubelet started".to_string())
+            .unwrap();
+        assert!(
+            !line
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::BracketContext(_))),
+            "bracket detector must skip k8s lines, got: {}",
+            line.normalized
+        );
+    }
+
+    #[test]
+    fn table_log_module_defers_to_kubernetes() {
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer
+            .normalize_line("[error] kubelet failed".to_string())
+            .unwrap();
+        assert!(
+            !line
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::LogWithModule { .. })),
+            "log-module detector must skip k8s lines, got: {}",
+            line.normalized
+        );
+    }
+
+    #[test]
+    fn table_structured_defers_to_kubernetes() {
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer
+            .normalize_line(
+                r#"{"level":"info","ts":"2024-01-01T10:00:00.000Z","component":"kubelet","msg":"Starting container"}"#
+                    .to_string(),
+            )
+            .unwrap();
+        assert!(
+            !line
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "structured detector must skip k8s lines, got: {}",
+            line.normalized
+        );
+    }
+
+    #[test]
+    fn table_structured_matches_non_k8s() {
+        // Control: the same shape with a non-k8s component IS structured.
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer
+            .normalize_line(
+                r#"{"level":"info","component":"payment-api","msg":"Request handled"}"#.to_string(),
+            )
+            .unwrap();
+        assert!(
+            line.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "non-k8s structured line must still match, got: {}",
+            line.normalized
+        );
+    }
 
     #[test]
     fn test_timestamp_normalization() {

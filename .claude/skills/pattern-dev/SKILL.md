@@ -14,7 +14,10 @@ description: >-
 Order matters — earlier patterns consume text first, preventing later patterns
 from matching the same content. Timestamps before Network preserves URLs.
 Quoted strings last to avoid consuming tokens detected by earlier patterns.
-Actual order in `normalize.rs`:
+The order is declared in one place: the `DETECTOR_ORDER` table in
+`normalize.rs` (one `DetectorEntry` per detector with `enabled` config gate,
+`prefilter` cheap byte check, optional `defers_to_kubernetes` predicate, and
+the `run` hook). `normalize_line` just walks the table:
 
 1. **Timestamps** — 30+ formats via unified registry (`patterns/timestamp/`)
 2. **Email** — RFC 5322 (`patterns/email.rs`)
@@ -40,9 +43,10 @@ Actual order in `normalize.rs`:
 
 1. `Normalizer::normalize_line(original) -> Result<LogLine>` is the entry point
 2. Each detector has `DetectorName::detect_and_replace(&normalized) -> (String, Vec<Token>)`
-3. Detectors are called in the order above, each replacing matched content with tokens (`<IP>`, `<TIMESTAMP>`, `<UUID>`, etc.)
-4. The normalized line + tokens are returned as a `LogLine`
-5. A hash of the normalized text is computed for fast similarity comparison
+3. `normalize_line` walks `DETECTOR_ORDER`, each entry replacing matched content with tokens (`<IP>`, `<TIMESTAMP>`, `<UUID>`, etc.)
+4. The kubernetes deference rule is expressed per-entry in the table: the bracket, log-module, and structured entries carry a `defers_to_kubernetes` predicate (`patterns::has_kubernetes_indicators` / `has_kubernetes_structured_indicators`) that skips them on kubernetes-shaped lines — the detectors themselves no longer check this
+5. The normalized line + tokens are returned as a `LogLine`
+6. A hash of the normalized text is computed for fast similarity comparison
 
 Token variants are defined in `patterns/mod.rs` as the `Token` enum.
 
@@ -56,9 +60,9 @@ The timestamp system uses a unified registry (`patterns/timestamp/registry.rs`):
 - **LazyLock** for thread-safe static initialization
 
 Key files:
-- `patterns/timestamp/mod.rs` — public API re-exports + `TimestampDetector` legacy shim that `normalize.rs` calls into
+- `patterns/timestamp/mod.rs` — public API re-exports (the `TimestampDetector` legacy shim was removed; call `UnifiedTimestampDetector` directly)
 - `patterns/timestamp/registry.rs` — pattern definitions and merging
-- `patterns/timestamp/detector.rs` — `UnifiedTimestampDetector` (the actual engine behind the shim)
+- `patterns/timestamp/detector.rs` — `UnifiedTimestampDetector` (the engine)
 - `patterns/timestamp/formats.rs` — format enum and metadata
 - `patterns/timestamp/priority.rs` — `PatternPriority` + `FormatFamily` (implements the overlap-resolution logic)
 
@@ -68,7 +72,7 @@ Key files:
 2. Implement `pub fn detect_and_replace(line: &str) -> (String, Vec<Token>)`
 3. Add the token variant to `Token` enum in `patterns/mod.rs`
 4. Add `pub mod your_pattern;` to `patterns/mod.rs`
-5. Wire into `normalize.rs` at the correct position in detection order
+5. Add a `DetectorEntry` to `DETECTOR_ORDER` in `normalize.rs` at the correct position (set `enabled`, a `prefilter` if a cheap byte check exists, and `defers_to_kubernetes` if the pattern must yield to KubernetesDetector)
 6. Add to `--disable-patterns` handling in `main.rs` (the `disable_patterns` → `config.normalize_*` mapping)
 7. Add stats counter to `FoldingStats` in `folder.rs`
 8. Write unit tests with realistic log samples
