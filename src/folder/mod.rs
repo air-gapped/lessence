@@ -1435,6 +1435,14 @@ impl PatternFolder {
 
     /// Determine if buffer should be flushed based on memory management
     fn should_flush_buffer(&self) -> bool {
+        // Ranked modes (--summary, --fit, --top) rank the complete group set
+        // after the run and never consume streamed evictions — evicting here
+        // would silently drop groups from both the ranking and the coverage
+        // denominator. Hold every group, exactly as the parallel pipeline
+        // does for all modes.
+        if self.config.summary || self.config.top_n.is_some() {
+            return false;
+        }
         // Constitutional flush threshold: Use dynamic memory management instead of arbitrary limits
         // This maintains pattern detection quality while following "complete files in memory" principle
         const CONSTITUTIONAL_FLUSH_THRESHOLD: usize = 1000;

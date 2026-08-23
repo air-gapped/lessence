@@ -154,6 +154,72 @@ fn pii_masking_non_email_tokens_ignored() {
     assert_eq!(result, "10.0.0.1 <EMAIL>");
 }
 
+/// Ranked modes must hold every group: with eviction active, patterns past
+/// the 1,000-group flush threshold vanished from both the ranking and the
+/// coverage denominator ("1000 of 1000 patterns" on 1,100-pattern input).
+#[test]
+fn summary_retains_all_groups_past_flush_threshold() {
+    let mut folder = PatternFolder::new(Config {
+        thread_count: Some(1),
+        summary: true,
+        ..Config::default()
+    });
+    for i in 0..1_100 {
+        let out = folder.process_line(&eviction_word(i)).unwrap();
+        assert!(out.is_none(), "ranked mode must not stream evictions");
+    }
+    let (display, total_patterns, _, _) = folder.prepare_summary(Some(0), None).unwrap();
+    assert_eq!(total_patterns, 1_100, "every group must survive to ranking");
+    assert_eq!(display.len(), 1_100);
+}
+
+#[test]
+fn top_n_retains_all_groups_past_flush_threshold() {
+    let mut folder = PatternFolder::new(Config {
+        thread_count: Some(1),
+        top_n: Some(5),
+        ..Config::default()
+    });
+    for i in 0..1_100 {
+        folder.process_line(&eviction_word(i)).unwrap();
+    }
+    let (output, total_groups, _) = folder.finish_top_n(5).unwrap();
+    assert_eq!(total_groups, 1_100, "denominator must count every group");
+    assert_eq!(output.len(), 5);
+}
+
+/// The inverse guard: streaming fold mode must keep evicting past the
+/// threshold, or unbounded inputs would grow the buffer without limit.
+#[test]
+fn fold_mode_still_evicts_past_flush_threshold() {
+    let mut folder = PatternFolder::new(Config {
+        thread_count: Some(1),
+        ..Config::default()
+    });
+    let mut evicted = 0;
+    for i in 0..1_200 {
+        if folder.process_line(&eviction_word(i)).unwrap().is_some() {
+            evicted += 1;
+        }
+    }
+    assert!(
+        evicted > 0,
+        "fold mode must stream evictions past the threshold"
+    );
+}
+
+/// Deterministic 6-letter words: single-token lines that never group with
+/// each other (zero shared tokens → similarity score 0).
+fn eviction_word(i: usize) -> String {
+    let mut s = String::new();
+    let mut x = i;
+    for _ in 0..6 {
+        s.push(char::from(b'a' + (x % 26) as u8));
+        x /= 26;
+    }
+    s
+}
+
 #[test]
 fn pii_masking_empty_email_does_not_loop() {
     // Defensive: empty email string would cause infinite loop without guard
