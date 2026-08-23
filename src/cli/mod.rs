@@ -1,29 +1,35 @@
-//! CLI argument definitions — single source of truth for flags, validators,
-//! and the pattern-name list. The doc-contract tests (`tests/doc_contract.rs`)
-//! derive the README's generated sections from [`command()`], so any flag
-//! change here is enforced against the shipped docs.
+//! CLI argument definitions — single source of truth for flags and
+//! validators. The pattern-name list derives from
+//! [`crate::config::PATTERN_REGISTRY`]. The doc-contract tests
+//! (`tests/doc_contract.rs`) derive the README's generated sections from
+//! [`command()`], so any flag change here is enforced against the shipped
+//! docs.
 
 use clap::{CommandFactory, Parser};
 use std::path::PathBuf;
 
-/// Valid names for `--disable-patterns` — the user-facing pattern groups.
-pub const VALID_PATTERNS: &[&str] = &[
-    "timestamp",
-    "hash",
-    "network",
-    "uuid",
-    "email",
-    "path",
-    "duration",
-    "json",
-    "kubernetes",
-    "http-status",
-    "brackets",
-    "key-value",
-    "process",
-    "quoted-string",
-    "name",
-];
+use crate::config::PATTERN_REGISTRY;
+
+/// Valid names for `--disable-patterns`, derived at compile time from
+/// [`PATTERN_REGISTRY`] — the single source of truth for the user-facing
+/// pattern groups and the detector gates they control.
+const VALID_PATTERNS_ARRAY: [&str; PATTERN_REGISTRY.len()] = {
+    let mut names = [""; PATTERN_REGISTRY.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = PATTERN_REGISTRY[i].name;
+        i += 1;
+    }
+    names
+};
+pub const VALID_PATTERNS: &[&str] = &VALID_PATTERNS_ARRAY;
+
+fn disable_patterns_help() -> String {
+    format!(
+        "Disable specific pattern groups (comma-separated). Valid names: {}",
+        VALID_PATTERNS.join(", ")
+    )
+}
 
 fn validate_min_collapse(s: &str) -> Result<usize, String> {
     let value = s
@@ -94,10 +100,9 @@ pub struct Cli {
     #[arg(long, default_value_t = 3, value_parser = validate_min_collapse)]
     pub min_collapse: usize,
 
-    /// Disable specific pattern groups (comma-separated). Valid names: timestamp, hash,
-    /// network, uuid, process, email, path, duration, json, kubernetes, http-status,
-    /// brackets, key-value, quoted-string, name.
-    #[arg(long, value_delimiter = ',', value_parser = validate_pattern_names)]
+    /// Disable specific pattern groups (comma-separated). The valid-name
+    /// list in the actual help text derives from [`PATTERN_REGISTRY`].
+    #[arg(long, value_delimiter = ',', value_parser = validate_pattern_names, help = disable_patterns_help())]
     pub disable_patterns: Vec<String>,
 
     /// Disable statistics output (enabled by default)

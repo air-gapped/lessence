@@ -63,30 +63,14 @@ fn main() -> Result<()> {
     let effective_summary = requested_summary && !json_summary;
     let effective_top = cli.top.or(json_summary.then_some(30));
 
-    let config = Config {
+    // Detector gates start at their defaults (all enabled); each
+    // --disable-patterns name expands through config::PATTERN_REGISTRY.
+    let mut config = Config {
         threshold: cli.threshold,
         min_collapse: cli.min_collapse,
-        normalize_timestamps: !cli.disable_patterns.contains(&"timestamp".to_string()),
-        normalize_hashes: !cli.disable_patterns.contains(&"hash".to_string()),
-        normalize_ports: !cli.disable_patterns.contains(&"network".to_string()),
-        normalize_ips: !cli.disable_patterns.contains(&"network".to_string()),
-        normalize_fqdns: !cli.disable_patterns.contains(&"network".to_string()),
-        normalize_uuids: !cli.disable_patterns.contains(&"uuid".to_string()),
-        normalize_pids: !cli.disable_patterns.contains(&"process".to_string()),
-        normalize_emails: !cli.disable_patterns.contains(&"email".to_string()),
-        normalize_paths: !cli.disable_patterns.contains(&"path".to_string()),
-        normalize_json: !cli.disable_patterns.contains(&"json".to_string()),
-        normalize_durations: !cli.disable_patterns.contains(&"duration".to_string()),
-        normalize_kubernetes: !cli.disable_patterns.contains(&"kubernetes".to_string()),
-        normalize_http_status: !cli.disable_patterns.contains(&"http-status".to_string()),
-        normalize_brackets: !cli.disable_patterns.contains(&"brackets".to_string()),
-        normalize_key_value: !cli.disable_patterns.contains(&"key-value".to_string()),
-        normalize_quoted: !cli.disable_patterns.contains(&"quoted-string".to_string()),
-        normalize_names: !cli.disable_patterns.contains(&"name".to_string()),
         output_format: cli.format,
         stats: !cli.no_stats, // Default true unless explicitly disabled
         preserve_color: cli.preserve_color,
-        compact: true, // Always compact format (human-readable by default)
         preflight: cli.preflight,
         summary: effective_summary,
         essence_mode: cli.essence,
@@ -98,7 +82,13 @@ fn main() -> Result<()> {
         top_n: effective_top,
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),
+        ..Config::default()
     };
+    for name in &cli.disable_patterns {
+        // clap's value_parser has already validated every name
+        config.set_pattern_enabled(name, false);
+    }
+    let config = config;
 
     // --fit: compute line budget from terminal height (None when piped)
     let fit_budget: Option<usize> = if cli.fit && std::io::stdout().is_terminal() {

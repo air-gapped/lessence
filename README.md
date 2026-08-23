@@ -139,7 +139,7 @@ headline example above is the only CI-verified number.
 ```
 --threshold <THRESHOLD>    Percent of tokens two lines must share to group (0-100). Raise (e.g. 85) for stricter, per-message splitting; lower for more folding [default: 75]
 --min-collapse <MIN_COLLAPSE>    Minimum lines before folding (min: 3) [default: 3]
---disable-patterns <DISABLE_PATTERNS>    Disable specific pattern groups (comma-separated). Valid names: timestamp, hash, network, uuid, process, email, path, duration, json, kubernetes, http-status, brackets, key-value, quoted-string, name
+--disable-patterns <DISABLE_PATTERNS>    Disable specific pattern groups (comma-separated). Valid names: timestamp, hash, network, uuid, email, path, duration, json, kubernetes, http-status, brackets, key-value, process, quoted-string, name
 --quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
 --summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]

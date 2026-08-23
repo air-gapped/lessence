@@ -81,6 +81,100 @@ impl Default for Config {
     }
 }
 
+/// One user-facing pattern group: the `--disable-patterns` name and the
+/// detector gates it expands to. [`PATTERN_REGISTRY`] is the single source
+/// of truth for these names — the CLI name list and help text
+/// (`src/cli/mod.rs`) and the flag-to-`Config` mapping (`src/main.rs`)
+/// both derive from it.
+pub struct PatternEntry {
+    /// User-facing name accepted by `--disable-patterns`.
+    pub name: &'static str,
+    set_enabled: fn(&mut Config, bool),
+}
+
+/// Every user-facing pattern group, in documentation order.
+pub const PATTERN_REGISTRY: &[PatternEntry] = &[
+    PatternEntry {
+        name: "timestamp",
+        set_enabled: |c, on| c.normalize_timestamps = on,
+    },
+    PatternEntry {
+        name: "hash",
+        set_enabled: |c, on| c.normalize_hashes = on,
+    },
+    PatternEntry {
+        name: "network",
+        set_enabled: |c, on| {
+            c.normalize_ports = on;
+            c.normalize_ips = on;
+            c.normalize_fqdns = on;
+        },
+    },
+    PatternEntry {
+        name: "uuid",
+        set_enabled: |c, on| c.normalize_uuids = on,
+    },
+    PatternEntry {
+        name: "email",
+        set_enabled: |c, on| c.normalize_emails = on,
+    },
+    PatternEntry {
+        name: "path",
+        set_enabled: |c, on| c.normalize_paths = on,
+    },
+    PatternEntry {
+        name: "duration",
+        set_enabled: |c, on| c.normalize_durations = on,
+    },
+    PatternEntry {
+        name: "json",
+        set_enabled: |c, on| c.normalize_json = on,
+    },
+    PatternEntry {
+        name: "kubernetes",
+        set_enabled: |c, on| c.normalize_kubernetes = on,
+    },
+    PatternEntry {
+        name: "http-status",
+        set_enabled: |c, on| c.normalize_http_status = on,
+    },
+    PatternEntry {
+        name: "brackets",
+        set_enabled: |c, on| c.normalize_brackets = on,
+    },
+    PatternEntry {
+        name: "key-value",
+        set_enabled: |c, on| c.normalize_key_value = on,
+    },
+    PatternEntry {
+        name: "process",
+        set_enabled: |c, on| c.normalize_pids = on,
+    },
+    PatternEntry {
+        name: "quoted-string",
+        set_enabled: |c, on| c.normalize_quoted = on,
+    },
+    PatternEntry {
+        name: "name",
+        set_enabled: |c, on| c.normalize_names = on,
+    },
+];
+
+impl Config {
+    /// Enable or disable one user-facing pattern group by name, expanding
+    /// it to its detector gates via [`PATTERN_REGISTRY`]. Returns `false`
+    /// when the name is not a registered pattern group.
+    pub fn set_pattern_enabled(&mut self, name: &str, enabled: bool) -> bool {
+        match PATTERN_REGISTRY.iter().find(|entry| entry.name == name) {
+            Some(entry) => {
+                (entry.set_enabled)(self, enabled);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
     let input = input.trim();
 
@@ -241,5 +335,123 @@ mod tests {
         assert!(c.top_n.is_none());
         assert!(!c.stats_json);
         assert!(c.fail_pattern.is_none());
+    }
+
+    // ---- pattern registry ----
+
+    /// Names of the detector gates that are OFF after disabling `name`,
+    /// relative to the all-enabled default.
+    fn disabled_gates(name: &str) -> Vec<&'static str> {
+        let mut config = Config::default();
+        assert!(
+            config.set_pattern_enabled(name, false),
+            "registry must know pattern name {name}"
+        );
+        let gates = [
+            ("normalize_timestamps", config.normalize_timestamps),
+            ("normalize_hashes", config.normalize_hashes),
+            ("normalize_ports", config.normalize_ports),
+            ("normalize_ips", config.normalize_ips),
+            ("normalize_fqdns", config.normalize_fqdns),
+            ("normalize_uuids", config.normalize_uuids),
+            ("normalize_pids", config.normalize_pids),
+            ("normalize_emails", config.normalize_emails),
+            ("normalize_paths", config.normalize_paths),
+            ("normalize_json", config.normalize_json),
+            ("normalize_durations", config.normalize_durations),
+            ("normalize_kubernetes", config.normalize_kubernetes),
+            ("normalize_http_status", config.normalize_http_status),
+            ("normalize_brackets", config.normalize_brackets),
+            ("normalize_key_value", config.normalize_key_value),
+            ("normalize_quoted", config.normalize_quoted),
+            ("normalize_names", config.normalize_names),
+        ];
+        gates
+            .into_iter()
+            .filter(|(_, enabled)| !enabled)
+            .map(|(field, _)| field)
+            .collect()
+    }
+
+    #[test]
+    fn registry_names_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for entry in PATTERN_REGISTRY {
+            assert!(
+                seen.insert(entry.name),
+                "duplicate registry name {}",
+                entry.name
+            );
+        }
+    }
+
+    #[test]
+    fn set_pattern_enabled_rejects_unknown_name() {
+        let mut config = Config::default();
+        assert!(!config.set_pattern_enabled("no-such-pattern", false));
+        // and an unknown name must leave the config untouched
+        assert_eq!(
+            format!("{config:?}"),
+            format!("{:?}", Config::default()),
+            "unknown name must not modify the config"
+        );
+    }
+
+    #[test]
+    fn registry_expands_each_name_to_exactly_its_gates() {
+        let want: &[(&str, &[&str])] = &[
+            ("timestamp", &["normalize_timestamps"]),
+            ("hash", &["normalize_hashes"]),
+            (
+                "network",
+                &["normalize_ports", "normalize_ips", "normalize_fqdns"],
+            ),
+            ("uuid", &["normalize_uuids"]),
+            ("email", &["normalize_emails"]),
+            ("path", &["normalize_paths"]),
+            ("duration", &["normalize_durations"]),
+            ("json", &["normalize_json"]),
+            ("kubernetes", &["normalize_kubernetes"]),
+            ("http-status", &["normalize_http_status"]),
+            ("brackets", &["normalize_brackets"]),
+            ("key-value", &["normalize_key_value"]),
+            ("process", &["normalize_pids"]),
+            ("quoted-string", &["normalize_quoted"]),
+            ("name", &["normalize_names"]),
+        ];
+        assert_eq!(
+            want.len(),
+            PATTERN_REGISTRY.len(),
+            "expectation table must cover every registry entry"
+        );
+        for (name, gates) in want {
+            let mut got = disabled_gates(name);
+            let mut expected: Vec<&str> = gates.to_vec();
+            got.sort_unstable();
+            expected.sort_unstable();
+            assert_eq!(got, expected, "detector gates disabled by {name}");
+        }
+    }
+
+    #[test]
+    fn set_pattern_enabled_true_restores_the_default() {
+        let baseline = format!("{:?}", Config::default());
+        for entry in PATTERN_REGISTRY {
+            let mut config = Config::default();
+            config.set_pattern_enabled(entry.name, false);
+            assert_ne!(
+                format!("{config:?}"),
+                baseline,
+                "disabling {} must change the config",
+                entry.name
+            );
+            config.set_pattern_enabled(entry.name, true);
+            assert_eq!(
+                format!("{config:?}"),
+                baseline,
+                "re-enabling {} must restore the default",
+                entry.name
+            );
+        }
     }
 }
