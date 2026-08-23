@@ -38,18 +38,18 @@ impl StructuredMessageDetector {
             return (text.to_string(), Vec::new());
         }
 
-        let mut result = text.to_string();
+        // SPIKE q01: token-only extraction — the text is kept verbatim, so no
+        // replace_all string rebuilding is needed (autoresearch iteration 1).
         let mut tokens = Vec::new();
 
         // Apply structured message detection in order of specificity
         // NOTE: K8s pattern disabled - handled by KubernetesDetector to prevent theft
-        // Self::apply_k8s_pattern(&mut result, &mut tokens);
-        Self::apply_container_pattern(&mut result, &mut tokens);
-        Self::apply_json_pattern(&mut result, &mut tokens);
-        Self::apply_json_alt_pattern(&mut result, &mut tokens);
-        Self::apply_logfmt_pattern(&mut result, &mut tokens);
+        Self::apply_container_pattern(text, &mut tokens);
+        Self::apply_json_pattern(text, &mut tokens);
+        Self::apply_json_alt_pattern(text, &mut tokens);
+        Self::apply_logfmt_pattern(text, &mut tokens);
 
-        (result, tokens)
+        (text.to_string(), tokens)
     }
 
     // Kubernetes deference is NOT checked here: the detector ordering table
@@ -73,81 +73,61 @@ impl StructuredMessageDetector {
     }
 
     #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter (has_structured_indicators) excludes all inputs that would match CONTAINER_STRUCTURED_REGEX, so this is dead code in practice
-    fn apply_container_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = CONTAINER_STRUCTURED_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let level = caps.get(1).unwrap().as_str();
-                let component = caps.get(2).unwrap().as_str();
+    fn apply_container_pattern(text: &str, tokens: &mut Vec<Token>) {
+        for caps in CONTAINER_STRUCTURED_REGEX.captures_iter(text) {
+            let level = caps.get(1).unwrap().as_str();
+            let component = caps.get(2).unwrap().as_str();
 
-                if Self::is_application_component(component) {
-                    tokens.push(Token::StructuredMessage {
-                        component: component.to_lowercase(),
-                        level: level.to_lowercase(),
-                    });
-                    r#"{"log": "<STRUCTURED_MESSAGE>"}"#.to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+            if Self::is_application_component(component) {
+                tokens.push(Token::StructuredMessage {
+                    component: component.to_lowercase(),
+                    level: level.to_lowercase(),
+                });
+            }
+        }
     }
 
-    fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = JSON_STRUCTURED_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let level = caps.get(1).unwrap().as_str();
-                let component = caps.get(2).unwrap().as_str();
+    fn apply_json_pattern(text: &str, tokens: &mut Vec<Token>) {
+        for caps in JSON_STRUCTURED_REGEX.captures_iter(text) {
+            let level = caps.get(1).unwrap().as_str();
+            let component = caps.get(2).unwrap().as_str();
 
-                if Self::is_valid_structured_log(component, level) {
-                    tokens.push(Token::StructuredMessage {
-                        component: component.to_lowercase(),
-                        level: level.to_lowercase(),
-                    });
-                    "<STRUCTURED_MESSAGE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+            if Self::is_valid_structured_log(component, level) {
+                tokens.push(Token::StructuredMessage {
+                    component: component.to_lowercase(),
+                    level: level.to_lowercase(),
+                });
+            }
+        }
     }
 
     #[cfg_attr(test, mutants::skip)] // Equivalent mutant: JSON alt pattern (component first, level second) is rarely matched after the primary JSON pattern already consumed the input
-    fn apply_json_alt_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = JSON_STRUCTURED_ALT_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let component = caps.get(1).unwrap().as_str();
-                let level = caps.get(2).unwrap().as_str();
+    fn apply_json_alt_pattern(text: &str, tokens: &mut Vec<Token>) {
+        for caps in JSON_STRUCTURED_ALT_REGEX.captures_iter(text) {
+            let component = caps.get(1).unwrap().as_str();
+            let level = caps.get(2).unwrap().as_str();
 
-                if Self::is_valid_structured_log(component, level) {
-                    tokens.push(Token::StructuredMessage {
-                        component: component.to_lowercase(),
-                        level: level.to_lowercase(),
-                    });
-                    "<STRUCTURED_MESSAGE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+            if Self::is_valid_structured_log(component, level) {
+                tokens.push(Token::StructuredMessage {
+                    component: component.to_lowercase(),
+                    level: level.to_lowercase(),
+                });
+            }
+        }
     }
 
-    fn apply_logfmt_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = LOGFMT_STRUCTURED_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let level = caps.get(1).unwrap().as_str();
-                let component = caps.get(2).unwrap().as_str();
+    fn apply_logfmt_pattern(text: &str, tokens: &mut Vec<Token>) {
+        for caps in LOGFMT_STRUCTURED_REGEX.captures_iter(text) {
+            let level = caps.get(1).unwrap().as_str();
+            let component = caps.get(2).unwrap().as_str();
 
-                if Self::is_valid_structured_log(component, level) {
-                    tokens.push(Token::StructuredMessage {
-                        component: component.to_lowercase(),
-                        level: level.to_lowercase(),
-                    });
-                    "<STRUCTURED_MESSAGE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+            if Self::is_valid_structured_log(component, level) {
+                tokens.push(Token::StructuredMessage {
+                    component: component.to_lowercase(),
+                    level: level.to_lowercase(),
+                });
+            }
+        }
     }
 
     fn is_application_component(component: &str) -> bool {
@@ -303,7 +283,7 @@ mod tests {
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(microservice_line);
 
         if !tokens.is_empty() {
-            assert!(result.contains("<STRUCTURED_MESSAGE>"));
+            assert_eq!(result, microservice_line, "text must be preserved verbatim");
             if let Token::StructuredMessage { component, level } = &tokens[0] {
                 assert_eq!(component, "payment-api");
                 assert_eq!(level, "error");
@@ -317,12 +297,12 @@ mod tests {
             "time=2024-01-01T10:00:00Z level=info component=api-gateway msg=\"Request received\"";
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(logfmt_line);
 
-        if !tokens.is_empty() {
-            assert!(result.contains("<STRUCTURED_MESSAGE>"));
-            if let Token::StructuredMessage { component, level } = &tokens[0] {
-                assert_eq!(component, "api-gateway");
-                assert_eq!(level, "info");
-            }
+        assert_eq!(result, logfmt_line, "text must be preserved verbatim");
+        if !tokens.is_empty()
+            && let Token::StructuredMessage { component, level } = &tokens[0]
+        {
+            assert_eq!(component, "api-gateway");
+            assert_eq!(level, "info");
         }
     }
 
@@ -332,7 +312,7 @@ mod tests {
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(container_line);
 
         if !tokens.is_empty() {
-            assert!(result.contains("<STRUCTURED_MESSAGE>"));
+            assert_eq!(result, container_line, "text must be preserved verbatim");
             if let Token::StructuredMessage { component, level } = &tokens[0] {
                 assert_eq!(component, "application");
                 assert_eq!(level, "info");
@@ -483,7 +463,7 @@ mod tests {
             .count();
 
         if structured_count > 0 {
-            assert!(result.contains("<STRUCTURED_MESSAGE>"));
+            assert_eq!(result, multi_line, "text must be preserved verbatim");
         }
     }
 
@@ -1039,17 +1019,16 @@ mod tests {
         }
     }
 
-    // ---- Mutant-killing: apply_* patterns must modify text ----
+    // ---- Mutant-killing: apply_* patterns must emit tokens (text is kept) ----
 
     #[test]
-    fn apply_json_pattern_modifies_text() {
+    fn apply_json_pattern_emits_token_preserves_text() {
         // JSON structured log: level first, then component (not a k8s component)
         // Kills mutant: apply_json_pattern replaced with ()
         let input = r#"{"level":"error","component":"payment-api","msg":"fail"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
-        assert_ne!(result, input, "JSON pattern should modify text");
+        assert_eq!(result, input, "text must be preserved verbatim");
         assert!(!tokens.is_empty(), "JSON pattern should produce tokens");
-        assert!(result.contains("<STRUCTURED_MESSAGE>"));
     }
 
     #[test]
@@ -1064,14 +1043,13 @@ mod tests {
     }
 
     #[test]
-    fn apply_logfmt_pattern_modifies_text() {
+    fn apply_logfmt_pattern_emits_token_preserves_text() {
         // Logfmt structured log with a valid component
         // Kills mutant: apply_logfmt_pattern replaced with ()
         let input = "level=info component=api-gateway msg=\"Request received\"";
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
-        assert_ne!(result, input, "logfmt pattern should modify text");
+        assert_eq!(result, input, "text must be preserved verbatim");
         assert!(!tokens.is_empty(), "logfmt pattern should produce tokens");
-        assert!(result.contains("<STRUCTURED_MESSAGE>"));
     }
 
     #[test]
@@ -1079,7 +1057,7 @@ mod tests {
         // Verify the JSON path produces the right component and level
         let input = r#"{"level":"warn","service":"billing-api","msg":"retry"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
-        assert!(result.contains("<STRUCTURED_MESSAGE>"));
+        assert_eq!(result, input, "text must be preserved verbatim");
         assert!(!tokens.is_empty());
         if let Token::StructuredMessage { component, level } = &tokens[0] {
             assert_eq!(component, "billing-api");
@@ -1094,7 +1072,7 @@ mod tests {
         // Verify logfmt produces the right component and level
         let input = "level=error component=my-registry msg=\"connection lost\"";
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
-        assert!(result.contains("<STRUCTURED_MESSAGE>"));
+        assert_eq!(result, input, "text must be preserved verbatim");
         assert!(!tokens.is_empty());
         if let Token::StructuredMessage { component, level } = &tokens[0] {
             assert_eq!(component, "my-registry");

@@ -56,7 +56,8 @@ Use the right tool for the job:
 | Comparing two log periods | `lessence --essence` + `diff` | Strips timestamps for structural comparison |
 
 **Not for**: small output (<50 lines), binary data, exact counting (`grep -c`).
-For structured JSON logs, preprocess with `jq` first (see JSON workflow below).
+Structured JSON logs fold natively — distinct `msg`/field values each keep their
+own group. Use the jq workflow below only to project specific fields.
 
 ## Core Commands
 
@@ -192,7 +193,7 @@ lessence -q < build.log | grep -i "error"
 
 ### JSON logs (jq then lessence)
 ```bash
-# When INPUT is structured JSON, extract key fields first:
+# Optional: to summarize only specific fields of structured JSON, project them first:
 kubectl logs deploy/app | jq -r '[.level, .method, .status, .path] | @tsv' \
   | lessence --summary --top 10 -q
 

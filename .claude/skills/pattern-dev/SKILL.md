@@ -32,7 +32,7 @@ the `run` hook). `normalize_line` just walks the table:
 11. **Bracket Context** — `[error]`-style tags (`patterns/bracket_context.rs`)
 12. **Key-Value** — `key=value` pairs (`patterns/key_value.rs`)
 13. **Log Module** — level + module patterns (`patterns/log_module.rs`)
-14. **Structured Messages** — component + level (`patterns/structured.rs`)
+14. **Structured Messages** — component + level token for stats only; the line text is preserved verbatim so distinct messages fold into distinct groups (`patterns/structured.rs`)
 15. **Durations** — time and size values (`patterns/duration.rs`)
 16. **Names** — variable names (`patterns/names.rs`) — always enabled
 17. **Quoted Strings** — last to avoid consuming other tokens (`patterns/quoted.rs`)

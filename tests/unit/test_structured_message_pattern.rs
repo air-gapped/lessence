@@ -212,9 +212,9 @@ mod tests {
                 });
 
                 if has_structured {
-                    assert!(
-                        result.contains("<STRUCTURED_MESSAGE>"),
-                        "Should normalize structured message in: {log_line}"
+                    assert_eq!(
+                        result, log_line,
+                        "Structured message text must be preserved in: {log_line}"
                     );
                 }
             }
@@ -347,9 +347,9 @@ mod tests {
                 .count();
 
             if structured_count > 1 {
-                assert!(
-                    result.matches("<STRUCTURED_MESSAGE>").count() == structured_count,
-                    "Should replace all structured messages in line"
+                assert_eq!(
+                    result, log_line,
+                    "Text with multiple structured messages must be preserved"
                 );
             }
         }
