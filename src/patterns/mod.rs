@@ -60,6 +60,183 @@ pub enum HashType {
     Generic(usize), // Length for generic hex strings
 }
 
+/// Which `FoldingStats` counter a token kind counts into. Several kinds
+/// share a bucket (IPv4+IPv6, Pid+ThreadID, HttpStatus+HttpStatusClass,
+/// the four kubernetes kinds); the mapping is a per-kind fact here, and
+/// `FoldingStats::bump` in the folder is its one consumer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum StatsBucket {
+    Timestamps,
+    Ips,
+    Ports,
+    Fqdns,
+    Hashes,
+    Uuids,
+    Pids,
+    Durations,
+    HttpStatus,
+    Sizes,
+    Percentages,
+    Paths,
+    Json,
+    QuotedStrings,
+    Names,
+    Brackets,
+    KeyValues,
+    LogModules,
+    Structured,
+    Kubernetes,
+    Emails,
+}
+
+/// Per-token-kind facts. One taxonomy owns them all; the consumers in the
+/// folder and renderer are projections of this table:
+///
+/// 1. `machine_name` — discriminant name for JSON output
+///    (`GroupRecord.token_types`, the `variation` map keys). Stable across
+///    runs because it is `&'static str`.
+/// 2. `display_label` — the text compact marker's "varying: X" label.
+/// 3. `stats_bucket` — which `FoldingStats` counter the kind counts into.
+/// 4. `sample_worthy` — rollup sampling policy: identity types (UUID, IP,
+///    Path, Email, Hash, kubernetes objects, HTTP status, quoted strings,
+///    names, bracket context, JSON) surface sample values an agent can use
+///    to identify the entities involved; measurement types (Timestamp,
+///    Port, Pid, ThreadID, Duration, Size, Number, KeyValuePair,
+///    LogWithModule, StructuredMessage) are count-only — distinct counts
+///    are useful, specific values are noise.
+/// 5. `variation_compares_values` — whether the compact-marker variation
+///    check compares token values: LogWithModule and StructuredMessage
+///    vary by presence, not by value, so their values are excluded from
+///    that comparison (but still feed the rollup distinct counts).
+pub(crate) struct KindFacts {
+    pub machine_name: &'static str,
+    pub display_label: &'static str,
+    pub stats_bucket: StatsBucket,
+    pub sample_worthy: bool,
+    pub variation_compares_values: bool,
+}
+
+impl Token {
+    /// THE single exhaustive match over token variants. Adding a variant
+    /// forces a new `KindFacts` row here (every field required), so no
+    /// projection can silently miss the new kind.
+    pub(crate) fn facts(&self) -> KindFacts {
+        const fn facts(
+            machine_name: &'static str,
+            display_label: &'static str,
+            stats_bucket: StatsBucket,
+            sample_worthy: bool,
+        ) -> KindFacts {
+            KindFacts {
+                machine_name,
+                display_label,
+                stats_bucket,
+                sample_worthy,
+                variation_compares_values: true,
+            }
+        }
+        match self {
+            Token::Timestamp(_) => facts("TIMESTAMP", "timestamp", StatsBucket::Timestamps, false),
+            Token::IPv4(_) => facts("IPV4", "IP", StatsBucket::Ips, true),
+            Token::IPv6(_) => facts("IPV6", "IP", StatsBucket::Ips, true),
+            Token::Fqdn(_) => facts("FQDN", "FQDN", StatsBucket::Fqdns, true),
+            Token::Port(_) => facts("PORT", "port", StatsBucket::Ports, false),
+            Token::Hash(_, _) => facts("HASH", "hash", StatsBucket::Hashes, true),
+            Token::Uuid(_) => facts("UUID", "UUID", StatsBucket::Uuids, true),
+            Token::Pid(_) => facts("PID", "PID", StatsBucket::Pids, false),
+            Token::ThreadID(_) => facts("THREAD_ID", "thread", StatsBucket::Pids, false),
+            Token::Path(_) => facts("PATH", "path", StatsBucket::Paths, true),
+            Token::Json(_) => facts("JSON", "json", StatsBucket::Json, true),
+            Token::Duration(_) => facts("DURATION", "duration", StatsBucket::Durations, false),
+            Token::Size(_) => facts("SIZE", "size", StatsBucket::Sizes, false),
+            Token::Number(_) => facts("NUMBER", "number", StatsBucket::Percentages, false),
+            Token::HttpStatus(_) => {
+                facts("HTTP_STATUS", "http_status", StatsBucket::HttpStatus, true)
+            }
+            Token::QuotedString(_) => facts(
+                "QUOTED_STRING",
+                "quoted_string",
+                StatsBucket::QuotedStrings,
+                true,
+            ),
+            Token::Name(_) => facts("NAME", "name", StatsBucket::Names, true),
+            Token::KubernetesNamespace(_) => {
+                facts("K8S_NAMESPACE", "namespace", StatsBucket::Kubernetes, true)
+            }
+            Token::VolumeName(_) => facts("K8S_VOLUME", "volume", StatsBucket::Kubernetes, true),
+            Token::PluginType(_) => facts("K8S_PLUGIN", "plugin", StatsBucket::Kubernetes, true),
+            Token::PodName(_) => facts("K8S_POD", "pod", StatsBucket::Kubernetes, true),
+            Token::HttpStatusClass(_) => facts(
+                "HTTP_STATUS_CLASS",
+                "http_status_class",
+                StatsBucket::HttpStatus,
+                true,
+            ),
+            Token::BracketContext(_) => facts(
+                "BRACKET_CONTEXT",
+                "bracket_context",
+                StatsBucket::Brackets,
+                true,
+            ),
+            Token::KeyValuePair { .. } => {
+                facts("KEY_VALUE", "key_value_pair", StatsBucket::KeyValues, false)
+            }
+            Token::LogWithModule { .. } => KindFacts {
+                machine_name: "LOG_WITH_MODULE",
+                display_label: "log_with_module",
+                stats_bucket: StatsBucket::LogModules,
+                sample_worthy: false,
+                variation_compares_values: false,
+            },
+            Token::StructuredMessage { .. } => KindFacts {
+                machine_name: "STRUCTURED_MESSAGE",
+                display_label: "structured_message",
+                stats_bucket: StatsBucket::Structured,
+                sample_worthy: false,
+                variation_compares_values: false,
+            },
+            Token::Email(_) => facts("EMAIL", "email", StatsBucket::Emails, true),
+        }
+    }
+
+    /// Value stringification — the one payload-touching projection, kept
+    /// beside `facts()` so a new variant updates both under one roof. Used
+    /// for rollup samples (sample-worthy kinds), rollup distinct-count
+    /// hashing (count-only kinds), and the compact-marker variation check
+    /// (kinds with `variation_compares_values`).
+    pub(crate) fn value_string(&self) -> String {
+        match self {
+            Token::Timestamp(s)
+            | Token::IPv4(s)
+            | Token::IPv6(s)
+            | Token::Fqdn(s)
+            | Token::Uuid(s)
+            | Token::Path(s)
+            | Token::Json(s)
+            | Token::Duration(s)
+            | Token::Size(s)
+            | Token::Number(s)
+            | Token::QuotedString(s)
+            | Token::Name(s)
+            | Token::KubernetesNamespace(s)
+            | Token::VolumeName(s)
+            | Token::PluginType(s)
+            | Token::PodName(s)
+            | Token::ThreadID(s)
+            | Token::HttpStatusClass(s)
+            | Token::Email(s) => s.clone(),
+            Token::Hash(_, s) => s.clone(),
+            Token::BracketContext(parts) => parts.join(","),
+            Token::Port(p) => p.to_string(),
+            Token::HttpStatus(s) => s.to_string(),
+            Token::Pid(p) => p.to_string(),
+            Token::KeyValuePair { key, value_type } => format!("{key}={value_type}"),
+            Token::LogWithModule { level, module } => format!("{level}:{module}"),
+            Token::StructuredMessage { component, level } => format!("{component}:{level}"),
+        }
+    }
+}
+
 /// Maximum whitespace tokens per line that the LCS similarity comparison
 /// handles; longer lines fall back to the positional byte overlap. 64 covers
 /// virtually all real log lines while bounding the DP at 64×64 token

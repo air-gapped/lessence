@@ -16,8 +16,8 @@
 
 use super::{
     BTreeMap, Completeness, CompressionEstimates, Count, Duration, GroupCompleteness, GroupRecord,
-    GroupRollup, InputCompleteness, LineRef, PatternDistribution, PatternFolder, PatternGroup,
-    PreflightReport, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, SamplePatterns, StatsJson,
+    GroupRollup, InputCompleteness, LineRef, LogLine, PatternDistribution, PatternFolder,
+    PatternGroup, PreflightReport, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, SamplePatterns, StatsJson,
     SummaryRecord, TimeRange, Token, VariationCompleteness, Write, apply_pii_masking,
     first_timestamp_in, io, render_compact_marker, token_type_name,
 };
@@ -168,7 +168,7 @@ impl PatternFolder {
                     self.config.essence_mode,
                 )
             } else {
-                self.normalizer.format_collapsed_line(
+                self.format_collapsed_line(
                     group.first(),
                     group.last(),
                     group.count() - 2, // Don't count first and last in collapse count
@@ -682,6 +682,109 @@ impl PatternFolder {
             }
         }
         Ok(())
+    }
+
+    /// Legacy collapsed-line marker for groups whose rollup was skipped
+    /// (small groups; see `format_group_dispatch`). Rendering concern,
+    /// moved here from the normalizer.
+    pub(super) fn format_collapsed_line(
+        &self,
+        first: &LogLine,
+        last: &LogLine,
+        count: usize,
+    ) -> String {
+        if self.config.compact {
+            // Compact format: [+N similar, varying: TYPE]
+            let variation_types = self.summarize_variation_types(&first.tokens, &last.tokens);
+            if variation_types.is_empty() {
+                format!("[+{count} similar]")
+            } else {
+                format!(
+                    "[+{} similar, varying: {}]",
+                    count,
+                    variation_types.join(", ")
+                )
+            }
+        } else {
+            format!(
+                "[...collapsed {} similar lines from {} to {}...]",
+                count,
+                Self::format_timestamp(first),
+                Self::format_timestamp(last)
+            )
+        }
+    }
+
+    pub(super) fn format_timestamp(log_line: &LogLine) -> String {
+        // Show the first timestamp token's value as-is from the original
+        // log — preserves the user's format and shows meaningful ranges.
+        first_timestamp_in(&log_line.tokens).unwrap_or_else(|| "unknown".to_string())
+    }
+
+    /// Which token kinds differ in value between a group's first and last
+    /// line — the "varying: ..." list of the compact marker. Labels and
+    /// comparable values are projections of the token taxonomy
+    /// (`Token::facts` / `Token::value_string`).
+    pub(super) fn summarize_variation_types(
+        &self,
+        first_tokens: &[Token],
+        last_tokens: &[Token],
+    ) -> Vec<String> {
+        let mut types = std::collections::HashSet::new();
+
+        // Kinds with `variation_compares_values == false` vary by
+        // presence, not by value, so they compare under a fixed value.
+        let get_token_info = |token: &Token| -> (&'static str, String) {
+            let facts = token.facts();
+            let value = if facts.variation_compares_values {
+                token.value_string()
+            } else {
+                String::new()
+            };
+            (facts.display_label, value)
+        };
+
+        // Create maps of token types to values for first and last
+        let mut first_values: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+        let mut last_values: std::collections::HashMap<&str, Vec<String>> =
+            std::collections::HashMap::new();
+
+        for token in first_tokens {
+            let (token_type, value) = get_token_info(token);
+            first_values.entry(token_type).or_default().push(value);
+        }
+
+        for token in last_tokens {
+            let (token_type, value) = get_token_info(token);
+            last_values.entry(token_type).or_default().push(value);
+        }
+
+        // Find token types that actually vary between first and last
+        let all_types: std::collections::HashSet<&str> = first_values
+            .keys()
+            .chain(last_values.keys())
+            .copied()
+            .collect();
+
+        for token_type in all_types {
+            // In essence mode, ignore timestamp variations as they're tokenized for temporal independence
+            if self.config.essence_mode && token_type == "timestamp" {
+                continue;
+            }
+
+            let first_vals = first_values.get(token_type).cloned().unwrap_or_default();
+            let last_vals = last_values.get(token_type).cloned().unwrap_or_default();
+
+            // If the sets of values differ, this token type varies
+            if first_vals != last_vals {
+                types.insert(token_type.to_string());
+            }
+        }
+
+        let mut result: Vec<String> = types.into_iter().collect();
+        result.sort();
+        result
     }
 
     /// Apply PII masking to a line when the run asks for it. Same

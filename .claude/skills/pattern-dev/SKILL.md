@@ -70,7 +70,7 @@ Key files:
 
 1. Create `src/patterns/your_pattern.rs`
 2. Implement `pub fn detect_and_replace(line: &str) -> (String, Vec<Token>)`
-3. Add the token variant to `Token` enum in `patterns/mod.rs`
+3. Add the token variant to `Token` enum in `patterns/mod.rs`, plus its `KindFacts` row in `Token::facts()` and its arm in `Token::value_string()` — the taxonomy owns machine name, display label, stats bucket, sample-worthiness, and value stringification; the folder/renderer consumers are projections of it
 4. Add `pub mod your_pattern;` to `patterns/mod.rs`
 5. Add a `DetectorEntry` to `DETECTOR_ORDER` in `normalize.rs` at the correct position (set `enabled`, a `prefilter` if a cheap byte check exists, and `defers_to_kubernetes` if the pattern must yield to KubernetesDetector)
 6. Add to `--disable-patterns` handling in `main.rs` (the `disable_patterns` → `config.normalize_*` mapping)

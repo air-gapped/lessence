@@ -9,7 +9,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::ingest::IngestReport;
 use crate::normalize::Normalizer;
-use crate::patterns::{LogLine, Token};
+use crate::patterns::{LogLine, StatsBucket, Token};
 
 /// Apply PII masking to original text by replacing email addresses with `<EMAIL>` tokens
 ///
@@ -228,6 +228,35 @@ pub struct FoldingStats {
 }
 
 impl FoldingStats {
+    /// Route one detected token into its distribution counter. The
+    /// token-kind → bucket mapping is a fact of the token taxonomy
+    /// (`Token::facts().stats_bucket`); this is the bucket → field side.
+    fn bump(&mut self, bucket: StatsBucket) {
+        match bucket {
+            StatsBucket::Timestamps => self.timestamps += 1,
+            StatsBucket::Ips => self.ips += 1,
+            StatsBucket::Ports => self.ports += 1,
+            StatsBucket::Fqdns => self.fqdns += 1,
+            StatsBucket::Hashes => self.hashes += 1,
+            StatsBucket::Uuids => self.uuids += 1,
+            StatsBucket::Pids => self.pids += 1,
+            StatsBucket::Durations => self.durations += 1,
+            StatsBucket::HttpStatus => self.http_status += 1,
+            StatsBucket::Sizes => self.sizes += 1,
+            StatsBucket::Percentages => self.percentages += 1,
+            StatsBucket::Paths => self.paths += 1,
+            StatsBucket::Json => self.json += 1,
+            StatsBucket::QuotedStrings => self.quoted_strings += 1,
+            StatsBucket::Names => self.names += 1,
+            StatsBucket::Brackets => self.brackets += 1,
+            StatsBucket::KeyValues => self.key_values += 1,
+            StatsBucket::LogModules => self.log_modules += 1,
+            StatsBucket::Structured => self.structured += 1,
+            StatsBucket::Kubernetes => self.kubernetes += 1,
+            StatsBucket::Emails => self.emails += 1,
+        }
+    }
+
     /// Every pattern category as (footer label, count, footer description).
     /// Single source of truth for the Pattern Distribution table and the
     /// active-category count, so a new counter cannot be forgotten in one
@@ -561,38 +590,10 @@ impl Count {
 }
 
 /// Discriminant name for a Token, used in `GroupRecord.token_types` and
-/// (in Phase 3) as the key in the `variation` map. Stable across
-/// serialisation runs because each variant returns a `&'static str`.
+/// as the key in the `variation` map. Projection of the token taxonomy
+/// (`Token::facts` in `patterns/mod.rs`).
 fn token_type_name(token: &Token) -> &'static str {
-    match token {
-        Token::Timestamp(_) => "TIMESTAMP",
-        Token::IPv4(_) => "IPV4",
-        Token::IPv6(_) => "IPV6",
-        Token::Fqdn(_) => "FQDN",
-        Token::Port(_) => "PORT",
-        Token::Hash(_, _) => "HASH",
-        Token::Uuid(_) => "UUID",
-        Token::Pid(_) => "PID",
-        Token::ThreadID(_) => "THREAD_ID",
-        Token::Path(_) => "PATH",
-        Token::Json(_) => "JSON",
-        Token::Duration(_) => "DURATION",
-        Token::Size(_) => "SIZE",
-        Token::Number(_) => "NUMBER",
-        Token::HttpStatus(_) => "HTTP_STATUS",
-        Token::QuotedString(_) => "QUOTED_STRING",
-        Token::Name(_) => "NAME",
-        Token::KubernetesNamespace(_) => "K8S_NAMESPACE",
-        Token::VolumeName(_) => "K8S_VOLUME",
-        Token::PluginType(_) => "K8S_PLUGIN",
-        Token::PodName(_) => "K8S_POD",
-        Token::HttpStatusClass(_) => "HTTP_STATUS_CLASS",
-        Token::BracketContext(_) => "BRACKET_CONTEXT",
-        Token::KeyValuePair { .. } => "KEY_VALUE",
-        Token::LogWithModule { .. } => "LOG_WITH_MODULE",
-        Token::StructuredMessage { .. } => "STRUCTURED_MESSAGE",
-        Token::Email(_) => "EMAIL",
-    }
+    token.facts().machine_name
 }
 
 /// Extract the first `Token::Timestamp(s)` value from a slice, if any.
@@ -691,75 +692,21 @@ impl From<VariationEntry> for JsonVariationEntry {
 type GroupRollup = BTreeMap<&'static str, VariationEntry>;
 
 /// Is this token type worth surfacing as samples (i.e., does the value
-/// carry identity information useful to an agent)?
-///
-/// - **Sample-worthy** (identity types): UUID, IP, Path, Email, Hash,
-///   Kubernetes objects, HTTP status, quoted strings, names, bracket
-///   context, structured JSON — values an agent uses to identify which
-///   specific entities were involved.
-/// - **Count-only** (measurement types): Timestamp, Port, Pid, ThreadID,
-///   Duration, Size, Number, KeyValuePair, LogWithModule,
-///   StructuredMessage — values where "how many distinct" is useful but
-///   showing specific values is noise.
-///
-/// The Phase 5 calibration may move token types between categories based
-/// on observed real-world value-to-noise ratio.
+/// carry identity information useful to an agent)? Projection of the
+/// token taxonomy; the identity-vs-measurement rationale is documented on
+/// `KindFacts::sample_worthy` in `patterns/mod.rs`. The Phase 5
+/// calibration may move token types between categories based on observed
+/// real-world value-to-noise ratio.
 fn is_sample_worthy(token: &Token) -> bool {
-    matches!(
-        token,
-        Token::Uuid(_)
-            | Token::IPv4(_)
-            | Token::IPv6(_)
-            | Token::Fqdn(_)
-            | Token::Path(_)
-            | Token::Email(_)
-            | Token::Hash(_, _)
-            | Token::KubernetesNamespace(_)
-            | Token::VolumeName(_)
-            | Token::PluginType(_)
-            | Token::PodName(_)
-            | Token::QuotedString(_)
-            | Token::Name(_)
-            | Token::HttpStatus(_)
-            | Token::HttpStatusClass(_)
-            | Token::BracketContext(_)
-            | Token::Json(_)
-    )
+    token.facts().sample_worthy
 }
 
 /// Extract the string representation of a token for sampling.
 /// Used only for sample-worthy token types; count-only types use
 /// `hash_token_value` instead to avoid retaining large strings.
+/// Projection of the token taxonomy (`Token::value_string`).
 fn token_value_string(token: &Token) -> String {
-    match token {
-        Token::Timestamp(s)
-        | Token::IPv4(s)
-        | Token::IPv6(s)
-        | Token::Fqdn(s)
-        | Token::Uuid(s)
-        | Token::Path(s)
-        | Token::Json(s)
-        | Token::Duration(s)
-        | Token::Size(s)
-        | Token::Number(s)
-        | Token::QuotedString(s)
-        | Token::Name(s)
-        | Token::KubernetesNamespace(s)
-        | Token::VolumeName(s)
-        | Token::PluginType(s)
-        | Token::PodName(s)
-        | Token::ThreadID(s)
-        | Token::HttpStatusClass(s)
-        | Token::Email(s) => s.clone(),
-        Token::Hash(_, s) => s.clone(),
-        Token::BracketContext(parts) => parts.join(","),
-        Token::Port(p) => p.to_string(),
-        Token::HttpStatus(s) => s.to_string(),
-        Token::Pid(p) => p.to_string(),
-        Token::KeyValuePair { key, value_type } => format!("{key}={value_type}"),
-        Token::LogWithModule { level, module } => format!("{level}:{module}"),
-        Token::StructuredMessage { component, level } => format!("{component}:{level}"),
-    }
+    token.value_string()
 }
 
 /// Hash a token value to a u64. Used for count-only tracking of
@@ -1528,32 +1475,7 @@ impl PatternFolder {
 
     fn count_pattern_types(&mut self, tokens: &[Token]) {
         for token in tokens {
-            match token {
-                Token::Timestamp(_) => self.stats.timestamps += 1,
-                Token::IPv4(_) | Token::IPv6(_) => self.stats.ips += 1,
-                Token::Fqdn(_) => self.stats.fqdns += 1,
-                Token::Port(_) => self.stats.ports += 1,
-                Token::Hash(_, _) => self.stats.hashes += 1,
-                Token::Uuid(_) => self.stats.uuids += 1,
-                Token::Pid(_) | Token::ThreadID(_) => self.stats.pids += 1,
-                Token::Duration(_) => self.stats.durations += 1,
-                Token::Size(_) => self.stats.sizes += 1,
-                Token::Number(_) => self.stats.percentages += 1, // Numbers often include percentages
-                Token::HttpStatus(_) | Token::HttpStatusClass(_) => self.stats.http_status += 1,
-                Token::Path(_) => self.stats.paths += 1,
-                Token::Json(_) => self.stats.json += 1,
-                Token::QuotedString(_) => self.stats.quoted_strings += 1,
-                Token::Name(_) => self.stats.names += 1,
-                Token::KubernetesNamespace(_)
-                | Token::VolumeName(_)
-                | Token::PluginType(_)
-                | Token::PodName(_) => self.stats.kubernetes += 1,
-                Token::BracketContext(_) => self.stats.brackets += 1,
-                Token::KeyValuePair { .. } => self.stats.key_values += 1,
-                Token::LogWithModule { .. } => self.stats.log_modules += 1,
-                Token::StructuredMessage { .. } => self.stats.structured += 1,
-                Token::Email(_) => self.stats.emails += 1,
-            }
+            self.stats.bump(token.facts().stats_bucket);
         }
     }
 

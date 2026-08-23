@@ -4339,3 +4339,138 @@ fn sized_pool_produces_same_output_as_default_pool() {
         "a sized pool must fold identically to the default pool"
     );
 }
+
+// ---------------------------------------------------------------
+// format_collapsed_line helpers (moved here with the renderer)
+// ---------------------------------------------------------------
+
+#[test]
+fn format_timestamp_preserves_source_formats() {
+    let normalizer = Normalizer::new(Config::default());
+    let line1 = normalizer
+        .normalize_line("2025-09-18 13:26:30,188 INFO: test message".to_string())
+        .unwrap();
+    assert_eq!(
+        PatternFolder::format_timestamp(&line1),
+        "2025-09-18 13:26:30,188"
+    );
+
+    let line2 = normalizer
+        .normalize_line("2025-09-18 13:26:53.345 UTC [24] LOG test".to_string())
+        .unwrap();
+    assert_eq!(
+        PatternFolder::format_timestamp(&line2),
+        "2025-09-18 13:26:53.345 UTC"
+    );
+
+    let line3 = normalizer
+        .normalize_line("2025-01-20T10:15:30.123Z INFO test".to_string())
+        .unwrap();
+    assert_eq!(
+        PatternFolder::format_timestamp(&line3),
+        "2025-01-20T10:15:30.123Z"
+    );
+}
+
+#[test]
+fn format_timestamp_invalid_timestamp_preserved() {
+    let normalizer = Normalizer::new(Config::default());
+    let line = normalizer
+        .normalize_line("2025-02-31 25:99:99,999 ERROR: invalid timestamp".to_string())
+        .unwrap();
+    assert_eq!(
+        PatternFolder::format_timestamp(&line),
+        "2025-02-31 25:99:99,999"
+    );
+}
+
+#[test]
+fn format_timestamp_missing_is_unknown() {
+    let normalizer = Normalizer::new(Config::default());
+    let line = normalizer
+        .normalize_line("Just a log message with no timestamp".to_string())
+        .unwrap();
+    assert_eq!(PatternFolder::format_timestamp(&line), "unknown");
+}
+
+// --- summarize_variation_types direct tests (mutant kills) ---
+
+#[test]
+fn variation_types_different_ips() {
+    let f = make_folder();
+    let first = vec![Token::IPv4("10.0.0.1".to_string())];
+    let last = vec![Token::IPv4("10.0.0.2".to_string())];
+    assert_eq!(f.summarize_variation_types(&first, &last), vec!["IP"]);
+}
+
+#[test]
+fn variation_types_same_tokens_no_variation() {
+    let f = make_folder();
+    let tokens = vec![Token::IPv4("10.0.0.1".to_string())];
+    assert!(
+        f.summarize_variation_types(&tokens, &tokens).is_empty(),
+        "Same tokens should produce no variation"
+    );
+}
+
+#[test]
+fn variation_types_essence_mode_skips_timestamps() {
+    let f = PatternFolder::new(Config {
+        essence_mode: true,
+        thread_count: Some(1),
+        ..Config::default()
+    });
+    let first = vec![Token::Timestamp("2025-01-01T00:00:00Z".to_string())];
+    let last = vec![Token::Timestamp("2025-01-02T00:00:00Z".to_string())];
+    assert!(
+        f.summarize_variation_types(&first, &last).is_empty(),
+        "Essence mode should skip timestamp variations"
+    );
+}
+
+#[test]
+fn variation_types_non_essence_includes_timestamps() {
+    let f = make_folder();
+    let first = vec![Token::Timestamp("2025-01-01T00:00:00Z".to_string())];
+    let last = vec![Token::Timestamp("2025-01-02T00:00:00Z".to_string())];
+    assert_eq!(
+        f.summarize_variation_types(&first, &last),
+        vec!["timestamp"]
+    );
+}
+
+#[test]
+fn variation_types_multiple_types_sorted() {
+    let f = make_folder();
+    let first = vec![
+        Token::IPv4("10.0.0.1".to_string()),
+        Token::Uuid("aaa".to_string()),
+    ];
+    let last = vec![
+        Token::IPv4("10.0.0.2".to_string()),
+        Token::Uuid("bbb".to_string()),
+    ];
+    assert_eq!(
+        f.summarize_variation_types(&first, &last),
+        vec!["IP", "UUID"]
+    );
+}
+
+#[test]
+fn variation_types_presence_only_kinds_compare_fixed() {
+    // LogWithModule / StructuredMessage vary by presence, not value: two
+    // different level:module payloads must NOT count as variation.
+    let f = make_folder();
+    let first = vec![Token::LogWithModule {
+        level: "error".to_string(),
+        module: "mod_ssl".to_string(),
+    }];
+    let last = vec![Token::LogWithModule {
+        level: "warn".to_string(),
+        module: "mod_jk".to_string(),
+    }];
+    assert!(
+        f.summarize_variation_types(&first, &last).is_empty(),
+        "presence-only kinds must not vary by payload"
+    );
+}
