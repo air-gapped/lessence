@@ -15,9 +15,10 @@
 //!    the markdown report.
 
 use super::{
-    BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup,
-    InputCompleteness, LineRef, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result,
-    StatsJson, SummaryRecord, TimeRange, Token, VariationCompleteness, Write, apply_pii_masking,
+    BTreeMap, Completeness, CompressionEstimates, Count, Duration, GroupCompleteness, GroupRecord,
+    GroupRollup, InputCompleteness, LineRef, PatternDistribution, PatternFolder, PatternGroup,
+    PreflightReport, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, SamplePatterns, StatsJson,
+    SummaryRecord, TimeRange, Token, VariationCompleteness, Write, apply_pii_masking,
     first_timestamp_in, io, render_compact_marker, token_type_name,
 };
 
@@ -569,6 +570,68 @@ impl PatternFolder {
         writeln!(handle)?;
         Ok(())
     }
+    /// Build the --preflight analysis report from the folder's stats.
+    fn build_preflight_report(&self) -> PreflightReport {
+        let stats = self.get_stats();
+
+        let compression_ratio = if stats.total_lines > 0 {
+            (stats.lines_saved as f64 / stats.total_lines as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        let output_lines = stats.total_lines.saturating_sub(stats.lines_saved);
+
+        let recommendations = vec![
+            format!("Compression achieved: {:.1}%", compression_ratio),
+            format!(
+                "Output size: {} lines (from {} original)",
+                output_lines, stats.total_lines
+            ),
+            if compression_ratio > 90.0 {
+                "Excellent compression - highly recommended for processing".to_string()
+            } else if compression_ratio > 70.0 {
+                "Good compression - recommended for processing".to_string()
+            } else {
+                "Low compression - consider if processing is beneficial".to_string()
+            },
+        ];
+
+        PreflightReport {
+            total_lines: stats.total_lines,
+            estimated_compression: CompressionEstimates {
+                default: format!("{compression_ratio:.1}% compression"),
+                with_paths: format!("{compression_ratio:.1}% compression"),
+                with_numbers: format!("{compression_ratio:.1}% compression"),
+                aggressive: format!("{compression_ratio:.1}% compression"),
+            },
+            pattern_distribution: PatternDistribution {
+                timestamps: stats.timestamps,
+                ips: stats.ips,
+                paths: stats.paths,
+                hashes: stats.hashes,
+                numbers: stats.durations, // Use durations as numbers
+                uuids: stats.uuids,
+                pids: stats.pids,
+            },
+            recommendations,
+            sample_patterns: SamplePatterns {
+                paths: vec![],
+                numbers: vec![],
+                timestamps: vec![],
+                ips: vec![],
+            },
+        }
+    }
+
+    /// Emit the pretty-printed --preflight JSON report.
+    pub fn print_preflight_json<W: Write>(&self, writer: &mut W) -> Result<()> {
+        let report = self.build_preflight_report();
+        let json = serde_json::to_string_pretty(&report)?;
+        writeln!(writer, "{json}")?;
+        Ok(())
+    }
+
     /// Emit the markdown document for the whole run. Group entries were
     /// buffered by the fold path into `markdown_entries`; this renders
     /// the header from run stats and wraps every entry in a code fence.

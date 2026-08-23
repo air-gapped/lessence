@@ -71,6 +71,21 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
     Ok(value)
 }
 
+/// Validate `--format` at the CLI boundary. Called from `main` (not a clap
+/// value_parser) so the error message and exit path stay exactly as they
+/// were when this lived behind the `output::OutputFormat` enum. The
+/// accepted aliases (`plain`, `md`, `jsonl`, any case) are part of that
+/// contract, even though the mode dispatch downstream compares the raw
+/// string and only reacts to `markdown`, `json`, and `jsonl`.
+pub fn validate_format(s: &str) -> anyhow::Result<()> {
+    match s.to_lowercase().as_str() {
+        "text" | "plain" | "markdown" | "md" | "json" | "jsonl" => Ok(()),
+        _ => Err(anyhow::anyhow!(
+            "Error: Invalid format '{s}'. Supported formats: text, markdown, json"
+        )),
+    }
+}
+
 fn validate_pattern_names(s: &str) -> Result<String, String> {
     let pattern = s.trim().to_lowercase();
 
@@ -203,6 +218,41 @@ mod tests {
         assert_eq!(
             validate_min_collapse("10").expect("above floor accepted"),
             10
+        );
+    }
+
+    // ---- validate_format ----
+
+    #[test]
+    fn format_text_and_alias() {
+        assert!(validate_format("text").is_ok());
+        assert!(validate_format("plain").is_ok());
+    }
+
+    #[test]
+    fn format_markdown_and_alias() {
+        assert!(validate_format("markdown").is_ok());
+        assert!(validate_format("md").is_ok());
+    }
+
+    #[test]
+    fn format_json_and_alias() {
+        assert!(validate_format("json").is_ok());
+        assert!(validate_format("jsonl").is_ok());
+    }
+
+    #[test]
+    fn format_case_insensitive() {
+        assert!(validate_format("TEXT").is_ok());
+        assert!(validate_format("Json").is_ok());
+    }
+
+    #[test]
+    fn format_invalid_names_supported_list() {
+        let err = validate_format("xml").expect_err("xml must be rejected");
+        assert_eq!(
+            err.to_string(),
+            "Error: Invalid format 'xml'. Supported formats: text, markdown, json"
         );
     }
 }

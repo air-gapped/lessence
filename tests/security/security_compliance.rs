@@ -6,7 +6,7 @@
 use lessence::config::Config;
 use lessence::patterns::email::EmailPatternDetector;
 use lessence::patterns::network::NetworkDetector;
-use lessence::patterns::timestamp::TimestampDetector;
+use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
 fn test_redos_protection_email() {
@@ -25,7 +25,7 @@ fn test_redos_protection_timestamp() {
     let large = format!("2024-01-01T12:00:00.{}Z!!!", "9".repeat(200));
 
     crate::common::assert_linear_scaling("timestamp_redos", &small, &large, |input| {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
 

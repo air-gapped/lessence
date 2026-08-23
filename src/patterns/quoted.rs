@@ -4,7 +4,8 @@ use std::sync::LazyLock;
 use super::Token;
 use super::{
     duration::DurationDetector, hash::HashDetector, names::NameDetector, network::NetworkDetector,
-    path::PathDetector, process::ProcessDetector, timestamp::TimestampDetector, uuid::UuidDetector,
+    path::PathDetector, process::ProcessDetector, timestamp::UnifiedTimestampDetector,
+    uuid::UuidDetector,
 };
 
 // Match quoted strings that contain variable content, including escaped quotes
@@ -39,7 +40,7 @@ impl QuotedStringDetector {
 
                 // 1. TIMESTAMPS (highest priority - most specific format)
                 let (new_normalized, _) =
-                    TimestampDetector::detect_and_replace(&normalized_content);
+                    UnifiedTimestampDetector::detect_and_replace(&normalized_content);
                 normalized_content = new_normalized;
 
                 // 2. PATHS (including full URLs - must run early to preserve URL structure)

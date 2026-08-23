@@ -1912,6 +1912,34 @@ fn format_group_pii_masking_masks_emails() {
 }
 
 // ---------------------------------------------------------------
+// print_preflight_json
+// ---------------------------------------------------------------
+
+#[test]
+fn preflight_report_counts_and_schema() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    f.process_line("2024-01-01 10:00:00 error").unwrap();
+    f.process_line("2024-01-01 10:00:01 error").unwrap();
+
+    let mut buf = Vec::new();
+    f.print_preflight_json(&mut buf).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&String::from_utf8(buf).unwrap()).unwrap();
+    assert_eq!(report["total_lines"], 2);
+    assert!(!report["recommendations"].as_array().unwrap().is_empty());
+    assert_eq!(report["pattern_distribution"]["timestamps"], 2);
+    // All four estimate fields deliberately carry the same measured value:
+    // the schema stayed stable after the per-scenario simulation was removed.
+    assert_eq!(
+        report["estimated_compression"]["default"],
+        report["estimated_compression"]["aggressive"]
+    );
+}
+
+// ---------------------------------------------------------------
 // print_stats
 // ---------------------------------------------------------------
 

@@ -15,17 +15,14 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod analyzer;
 mod cli;
 mod config;
 mod folder;
 mod ingest;
 mod normalize;
-mod output;
 mod patterns;
 mod report;
 
-use analyzer::LogAnalyzer;
 use cli::Cli;
 use config::Config;
 use folder::PatternFolder;
@@ -42,7 +39,7 @@ fn main() -> Result<()> {
     }
 
     // Validate output format before creating config
-    cli.format.parse::<output::OutputFormat>()?;
+    cli::validate_format(&cli.format)?;
 
     // --format markdown renders only the default fold output. These
     // combinations used to fall back to plain text silently; agents
@@ -136,9 +133,7 @@ fn main() -> Result<()> {
         let _ = folder.finish()?;
 
         // Output JSON analysis only
-        let analysis = LogAnalyzer::from_folder_stats(&folder, &config)?;
-        let json_output = serde_json::to_string_pretty(&analysis)?;
-        println!("{json_output}");
+        folder.print_preflight_json(&mut io::stdout())?;
         if ingest_report.fail_pattern_matched || input_failed {
             std::process::exit(1);
         }

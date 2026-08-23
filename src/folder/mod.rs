@@ -382,6 +382,50 @@ struct PatternHits {
 }
 
 // -------------------------------------------------------------------------
+// --preflight JSON schema. One pretty-printed report to stdout instead of
+// fold output; consumed by automation/CI.
+// -------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct PreflightReport {
+    total_lines: usize,
+    estimated_compression: CompressionEstimates,
+    pattern_distribution: PatternDistribution,
+    recommendations: Vec<String>,
+    sample_patterns: SamplePatterns,
+}
+
+/// Since the per-scenario compression simulation was removed (it was dead
+/// code), all four fields carry the same measured value. They are kept so
+/// the --preflight JSON schema stays stable for existing consumers.
+#[derive(Serialize)]
+struct CompressionEstimates {
+    default: String,
+    with_paths: String,
+    with_numbers: String,
+    aggressive: String,
+}
+
+#[derive(Serialize)]
+struct PatternDistribution {
+    timestamps: usize,
+    ips: usize,
+    paths: usize,
+    hashes: usize,
+    numbers: usize,
+    uuids: usize,
+    pids: usize,
+}
+
+#[derive(Serialize)]
+struct SamplePatterns {
+    paths: Vec<String>,
+    numbers: Vec<String>,
+    timestamps: Vec<String>,
+    ips: Vec<String>,
+}
+
+// -------------------------------------------------------------------------
 // JSONL output schema (Phase 2 — no rollups yet).
 //
 // One `GroupRecord` per flushed PatternGroup is emitted to stdout. After the

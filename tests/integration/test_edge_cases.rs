@@ -1,18 +1,18 @@
 // Integration Test: Edge Case Handling (T013)
 // Validates robust behavior with unusual inputs and boundary conditions
 
-use lessence::patterns::timestamp::TimestampDetector;
+use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
 fn test_empty_input() {
-    let (result, tokens) = TimestampDetector::detect_and_replace("");
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace("");
     assert_eq!(result, "");
     assert_eq!(tokens.len(), 0);
 }
 
 #[test]
 fn test_whitespace_only() {
-    let (result, tokens) = TimestampDetector::detect_and_replace("   \t\n  ");
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace("   \t\n  ");
     assert_eq!(result, "   \t\n  ");
     assert_eq!(tokens.len(), 0);
 }
@@ -21,7 +21,7 @@ fn test_whitespace_only() {
 fn test_very_long_line() {
     let prefix = "Very long line ".repeat(1000);
     let input = format!("{prefix}2025-09-29T10:15:30Z End");
-    let (result, tokens) = TimestampDetector::detect_and_replace(&input);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&input);
 
     assert!(result.ends_with("<TIMESTAMP> End"));
     assert_eq!(tokens.len(), 1);
@@ -41,14 +41,14 @@ fn test_malformed_timestamps() {
     // detector is regex-shaped, not a calendar validator, and for folding
     // purposes treating 2025-02-30 as a timestamp is correct behavior.
     for input in &malformed_cases[..3] {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         assert_eq!(result, "<TIMESTAMP>", "shape-valid input: {input}");
         assert_eq!(tokens.len(), 1);
     }
     // Wrong separators don't match any format — input must pass through
     // byte-identical with no tokens.
     for input in &malformed_cases[3..] {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         assert_eq!(&result, input, "wrong-separator input must be untouched");
         assert!(tokens.is_empty());
     }
@@ -57,7 +57,7 @@ fn test_malformed_timestamps() {
 #[test]
 fn test_unicode_timestamps() {
     let input = "Événement à 2025-09-29T10:15:30Z terminé";
-    let (result, tokens) = TimestampDetector::detect_and_replace(input);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
     assert_eq!(result, "Événement à <TIMESTAMP> terminé");
     assert_eq!(tokens.len(), 1);
@@ -72,7 +72,7 @@ fn test_special_characters() {
     ];
 
     for input in test_cases {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         assert!(
             result.contains("<TIMESTAMP>"),
             "Should handle special chars: {input}"
@@ -84,7 +84,7 @@ fn test_special_characters() {
 #[test]
 fn test_nested_brackets() {
     let input = "[[2025-09-29T10:15:30Z]] nested brackets";
-    let (result, tokens) = TimestampDetector::detect_and_replace(input);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
     assert!(result.contains("<TIMESTAMP>"));
     assert_eq!(tokens.len(), 1);
@@ -99,7 +99,7 @@ fn test_timestamp_at_boundaries() {
     ];
 
     for input in test_cases {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         assert!(
             result.contains("<TIMESTAMP>"),
             "Should detect at boundaries: {input}"
@@ -110,7 +110,7 @@ fn test_timestamp_at_boundaries() {
     // No word-boundary separators: the embedded timestamp is NOT detected
     // and the input passes through unchanged.
     let no_sep = "Start2025-09-29T10:15:30ZEnd";
-    let (result, tokens) = TimestampDetector::detect_and_replace(no_sep);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(no_sep);
     assert_eq!(result, no_sep);
     assert!(tokens.is_empty());
 }
@@ -118,7 +118,7 @@ fn test_timestamp_at_boundaries() {
 #[test]
 fn test_repeated_timestamps() {
     let input = "2025-09-29T10:15:30Z 2025-09-29T10:15:30Z 2025-09-29T10:15:30Z";
-    let (result, tokens) = TimestampDetector::detect_and_replace(input);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
     assert_eq!(result, "<TIMESTAMP> <TIMESTAMP> <TIMESTAMP>");
     assert_eq!(tokens.len(), 3);
@@ -128,7 +128,7 @@ fn test_repeated_timestamps() {
 fn test_overlapping_pattern_candidates() {
     // Patterns that might partially overlap
     let input = "2025-09-29T10:15:30.123456789Z";
-    let (result, tokens) = TimestampDetector::detect_and_replace(input);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
     assert_eq!(result, "<TIMESTAMP>");
     assert_eq!(tokens.len(), 1);
@@ -150,7 +150,7 @@ fn test_false_positive_prevention() {
     ];
 
     for input in false_positives {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         assert_eq!(&result, input, "false positive rewritten: {input}");
         assert!(
             tokens.is_empty(),
@@ -163,7 +163,7 @@ fn test_false_positive_prevention() {
 fn test_binary_data_safety() {
     // Test with binary-like data that might contain timestamp-like patterns
     let binary_like = "ÿþ2025\x00\x01\x0229T10:15:30Zÿþ";
-    let (result, tokens) = TimestampDetector::detect_and_replace(binary_like);
+    let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(binary_like);
 
     // Control bytes break the timestamp shape: input passes through
     // unchanged with no tokens (and no panic).

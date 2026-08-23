@@ -8,7 +8,7 @@ use lessence::config::Config;
 use lessence::normalize::Normalizer;
 use lessence::patterns::email::EmailPatternDetector;
 use lessence::patterns::network::NetworkDetector;
-use lessence::patterns::timestamp::TimestampDetector;
+use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
 fn test_email_timeout_scales_linearly() {
@@ -45,7 +45,7 @@ fn test_timestamp_timeout_scales_linearly() {
     let large = format!("2024-01-01T12:00:00.{}UTCX", "0".repeat(100));
 
     crate::common::assert_linear_scaling("timestamp_evil", &small, &large, |input| {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
 

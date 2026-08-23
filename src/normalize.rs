@@ -8,7 +8,7 @@ use crate::patterns::{
     email::EmailPatternDetector, hash::HashDetector, json::JsonDetector,
     kubernetes::KubernetesDetector, names::NameDetector, network::NetworkDetector,
     path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector,
-    timestamp::TimestampDetector, uuid::UuidDetector,
+    timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
 
 pub struct Normalizer {
@@ -35,7 +35,7 @@ impl Normalizer {
         // 1. TIMESTAMPS (highest priority - most specific format)
         if self.config.normalize_timestamps {
             let (new_normalized, mut new_tokens) =
-                TimestampDetector::detect_and_replace(&normalized);
+                UnifiedTimestampDetector::detect_and_replace(&normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
         }

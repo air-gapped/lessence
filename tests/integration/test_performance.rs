@@ -8,7 +8,7 @@
 // Coverage: every pattern detector + the full normalization pipeline.
 // If a new detector is added, add a scaling test here.
 
-use lessence::patterns::timestamp::TimestampDetector;
+use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
 fn test_single_timestamp_scales_linearly() {
@@ -16,7 +16,7 @@ fn test_single_timestamp_scales_linearly() {
     let large = format!("{small} {small} {small} {small}");
 
     crate::common::assert_linear_scaling("single_timestamp", &small, &large, |input| {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
 
@@ -27,7 +27,7 @@ fn test_multiple_timestamps_scales_linearly() {
     let large = format!("{base} {base} {base} {base}");
 
     crate::common::assert_linear_scaling("multiple_timestamps", &small, &large, |input| {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
 
@@ -38,7 +38,7 @@ fn test_no_timestamp_scales_linearly() {
     let large = format!("{base} {base} {base} {base}");
 
     crate::common::assert_linear_scaling("no_timestamp", &small, &large, |input| {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
 
@@ -57,7 +57,7 @@ fn test_long_line_scales_linearly() {
     );
 
     crate::common::assert_linear_scaling("long_line", &small, &large, |input| {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
 
@@ -239,7 +239,7 @@ fn test_memory_usage_stability() {
     // iteration (catches state leaking between calls), not merely not
     // panic.
     for i in 0..10000 {
-        let (result, tokens) = TimestampDetector::detect_and_replace(input);
+        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         assert_eq!(result, "<TIMESTAMP> Memory test message", "iteration {i}");
         assert_eq!(tokens.len(), 1, "iteration {i}");
     }
@@ -261,7 +261,7 @@ fn test_concurrent_performance() {
         let input_clone = Arc::clone(&input);
         let handle = thread::spawn(move || {
             for _ in 0..250 {
-                let (result, tokens) = TimestampDetector::detect_and_replace(&input_clone);
+                let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&input_clone);
                 assert_eq!(result, "<TIMESTAMP> Concurrent test message");
                 assert_eq!(tokens.len(), 1);
             }
@@ -290,7 +290,7 @@ fn test_repeated_detection_is_deterministic() {
 
     let first: Vec<_> = test_inputs
         .iter()
-        .map(|i| TimestampDetector::detect_and_replace(i))
+        .map(|i| UnifiedTimestampDetector::detect_and_replace(i))
         .collect();
     // The first four formats must actually exercise the detector; the
     // bare unix-epoch form is deliberately NOT detected at this level
@@ -308,7 +308,7 @@ fn test_repeated_detection_is_deterministic() {
     for round in 0..100 {
         let again: Vec<_> = test_inputs
             .iter()
-            .map(|i| TimestampDetector::detect_and_replace(i))
+            .map(|i| UnifiedTimestampDetector::detect_and_replace(i))
             .collect();
         assert_eq!(first, again, "results drifted on round {round}");
     }

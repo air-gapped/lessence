@@ -5,7 +5,7 @@
 // one approach isn't dramatically slower than another.
 // All tests are immune to CPU contention from parallel test runs.
 
-use lessence::patterns::timestamp::{TimestampDetector, UnifiedTimestampDetector};
+use lessence::patterns::timestamp::UnifiedTimestampDetector;
 use std::time::Instant;
 
 fn measure_detect(input: &str, iters: u32) -> std::time::Duration {
@@ -117,7 +117,7 @@ fn test_backward_compatibility_performance() {
 
     let start_compat = Instant::now();
     for _ in 0..iters {
-        let _ = TimestampDetector::detect_and_replace(input);
+        let _ = UnifiedTimestampDetector::detect_and_replace(input);
     }
     let compat_duration = start_compat.elapsed();
 

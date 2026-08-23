@@ -11,16 +11,6 @@ pub use formats::{PatternSource, TimestampFormat, TimestampPattern};
 pub use priority::{FormatFamily, PatternPriority};
 pub use registry::TimestampRegistry;
 
-// Compatibility layer for old API
-pub struct TimestampDetector;
-
-impl TimestampDetector {
-    /// Legacy API compatibility - delegates to UnifiedTimestampDetector
-    pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        UnifiedTimestampDetector::detect_and_replace(text)
-    }
-}
-
 // Module structure
 pub mod detector;
 pub mod formats;

@@ -1,16 +1,13 @@
 //! lessence - Intelligent log compression via pattern-based folding
 
-pub mod analyzer;
 pub mod cli;
 pub mod config;
 pub mod folder;
 pub mod ingest;
 pub mod normalize;
-pub mod output;
 pub mod patterns;
 pub mod report;
 
-pub use analyzer::LogAnalyzer;
 pub use config::Config;
 pub use folder::{PatternFolder, apply_pii_masking};
 
