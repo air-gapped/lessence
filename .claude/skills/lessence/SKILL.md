@@ -203,7 +203,7 @@ kubectl logs deploy/app | lessence --format json \
 
 ### Tabular/columnar output (DB stats, RocksDB, vmstat)
 ```bash
-# Default threshold (75) may over- or under-group tabular rows.
+# Default threshold (83) may over- or under-group tabular rows.
 # Experiment with lower values:
 lessence --threshold 50 --summary -q < stats.log
 ```

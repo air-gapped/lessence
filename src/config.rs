@@ -1,7 +1,9 @@
 /// Default similarity threshold in percent. Single origin for the clap
 /// default on `--threshold` and `Config::default()` — they diverged once
-/// (75 vs 85) and the CLI value is the documented behavior.
-pub const DEFAULT_THRESHOLD: u8 = 75;
+/// (75 vs 85). 83 comes from the 2026-08 re-sweep under the 0.4.4 LCS
+/// matcher (r98.12/vm9): distinct HTTP status classes re-merge at ≤81
+/// and the fold cost jumps ~50% at ≥84, so 83 is the measured optimum.
+pub const DEFAULT_THRESHOLD: u8 = 83;
 /// Default minimum group size before folding (`--min-collapse`).
 pub const DEFAULT_MIN_COLLAPSE: usize = 3;
 /// Default cap on line length in bytes (`--max-line-length`, 1 MiB).
@@ -314,8 +316,8 @@ mod tests {
     #[test]
     fn default_config_values() {
         let c = Config::default();
-        // 75 is the documented CLI default; Config::default() must match it
-        assert_eq!(c.threshold, 75);
+        // 83 is the documented CLI default; Config::default() must match it
+        assert_eq!(c.threshold, 83);
         assert_eq!(c.min_collapse, 3);
         assert!(c.normalize_timestamps);
         assert!(c.normalize_hashes);

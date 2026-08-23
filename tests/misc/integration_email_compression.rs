@@ -207,7 +207,10 @@ fn test_email_performance_impact() {
 
     let output_lines: Vec<&str> = stdout.lines().collect();
 
-    // Should achieve significant compression
+    // Should achieve significant compression. The 1-2 digit counters stay
+    // literal (numbers under 3 digits are never folded), so these 6-token
+    // lines fold only while the default threshold admits a 1-token
+    // difference (LCS 5/6 ≈ 83.3%) — this bound would fail at 84+.
     assert!(
         output_lines.len() < 100,
         "Should compress 2000 lines to less than 100"

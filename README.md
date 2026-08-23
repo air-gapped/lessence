@@ -7,14 +7,14 @@ Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually br
 $ lessence kubelet.log
 
 E0909 13:07:09.181236    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58 podName:9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc nodeName:}" failed. No retries permitted until 2025-09-09 13:09:11.181196845 +0000 UTC m=+225563.950173486 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-52r58" (UniqueName: "kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58") pod "pushprox-kube-proxy-client-9djm4" (UID: "9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/cattle-monitoring-system/serviceaccounts/pushprox-kube-proxy-client/token": read tcp 127.0.0.1:51706->127.0.0.1:6443: read: connection reset by peer
-[+116 similar | E0909 13:07:09.181236 → E0909 13:21:43.418369 | fqdn×1 {kubernetes.io}, ipv4×1 {127.0.0.1}, k8s_namespace×1 {<FQDN><PATH>}, k8s_volume×1 {oidc-token}, name×14, number×1, path×34, quoted_string×19, uuid×16]
+[+100 similar | E0909 13:07:09.181236 → E0909 13:21:43.418369 | fqdn×1 {kubernetes.io}, ipv4×1 {127.0.0.1}, k8s_namespace×1 {<FQDN><PATH>}, k8s_volume×1 {oidc-token}, name×14, number×1, path×34, quoted_string×19, uuid×16]
 E0909 13:21:43.418369    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/b39ae9d7-1732-44cd-bdc5-9eded447db57-kube-api-access-tp9r4 podName:b39ae9d7-1732-44cd-bdc5-9eded447db57 nodeName:}" failed. No retries permitted until 2025-09-09 13:23:45.418347157 +0000 UTC m=+226438.187323798 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-tp9r4" (UniqueName: "kubernetes.io/projected/b39ae9d7-1732-44cd-bdc5-9eded447db57-kube-api-access-tp9r4") pod "traefik-jp8rf" (UID: "b39ae9d7-1732-44cd-bdc5-9eded447db57") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/traefik/serviceaccounts/traefik/token": net/http: TLS handshake timeout
 W0909 13:07:12.237366    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
 [+37 similar | W0909 13:07:12.237366 → W0909 13:21:42.989676 | number×1, path×1 {transport.go:356]}]
 W0909 13:21:42.989676    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
 ...
 
-Original: 2,000 lines → 103 lines (94.8% reduction)
+Original: 2,000 lines → 132 lines (93.4% reduction)
 ```
 <!-- gen:example:end -->
 
@@ -137,7 +137,7 @@ headline example above is the only CI-verified number.
 
 <!-- gen:flags:begin -->
 ```
---threshold <THRESHOLD>    Percent of tokens two lines must share to group (0-100). Raise (e.g. 85) for stricter, per-message splitting; lower for more folding [default: 75]
+--threshold <THRESHOLD>    Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting [default: 83]
 --min-collapse <MIN_COLLAPSE>    Minimum lines before folding (min: 3) [default: 3]
 --disable-patterns <DISABLE_PATTERNS>    Disable specific pattern groups (comma-separated). Valid names: timestamp, hash, network, uuid, email, path, duration, json, kubernetes, http-status, brackets, key-value, process, quoted-string, name
 --quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
