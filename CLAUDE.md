@@ -30,16 +30,17 @@ good reason.
 
 ```
 src/
-  main.rs              # CLI entry (clap)
-  config.rs            # Configuration
-  folder.rs            # Core folding engine (parallel via rayon)
+  main.rs              # Binary entry: mode dispatch over the lib (clap)
+  lib.rs               # Library root
+  cli.rs               # CLI argument definitions and validators
+  config.rs            # Configuration + PATTERN_REGISTRY
+  ingest.rs            # Shared input contract: limits, escapes, fail-on-pattern
   normalize.rs         # Pattern normalization + similarity matching
+  folder/              # Core folding engine (parallel via rayon)
+    mod.rs             #   grouping, rollups, PII masking
+    render.rs          #   all output modes: text, markdown, JSONL, summary, stats
   patterns/            # 16 pattern detectors (timestamp, email, hash, network, ...)
     timestamp/         # Unified timestamp detection (30+ formats, registry-based)
-  essence/             # --essence mode: timestamp removal for pattern analysis
-  output/              # Text and markdown formatters
-  analyzer.rs          # Log analysis
-  cli/                 # CLI argument definitions
 ```
 
 **How folding works**: Lines are normalized (variable parts replaced with tokens like `<IP>`, `<TIMESTAMP>`, `<UUID>`), then grouped by similarity. Groups of 3+ similar lines are collapsed to a representative line + count.
