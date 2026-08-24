@@ -272,3 +272,98 @@ fn test_format_selection_errors() {
 
     println!("✅ Format selection error handling validated");
 }
+
+// ---- Alias and case canonicalization (lessence-fiz) ----
+//
+// Every accepted spelling of --format must reach the dispatch code in its
+// canonical form. Before the fix, validation lowercased but dispatch
+// compared the raw string, so `--format md` and any uppercase spelling
+// silently emitted text.
+
+fn run_with_format(format: &str) -> String {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--format", format, "--no-stats"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn lessence");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin")
+        .write_all(b"alpha event one\nbeta event two\n")
+        .unwrap();
+    let output = child.wait_with_output().expect("Failed to read output");
+    assert!(
+        output.status.success(),
+        "--format {format} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("Invalid UTF-8 output")
+}
+
+fn assert_markdown(format: &str) {
+    let stdout = run_with_format(format);
+    assert!(
+        stdout.contains("# Log Analysis"),
+        "--format {format} must emit the markdown document, got: {stdout}"
+    );
+}
+
+fn assert_json(format: &str) {
+    let stdout = run_with_format(format);
+    assert!(
+        stdout.lines().all(|l| l.starts_with('{')),
+        "--format {format} must emit JSONL records, got: {stdout}"
+    );
+}
+
+fn assert_text(format: &str) {
+    let stdout = run_with_format(format);
+    assert!(
+        !stdout.starts_with('{') && !stdout.contains("# Log Analysis"),
+        "--format {format} must emit plain text, got: {stdout}"
+    );
+}
+
+#[test]
+fn format_spelling_text() {
+    assert_text("text");
+}
+
+#[test]
+fn format_spelling_plain_alias() {
+    assert_text("plain");
+}
+
+#[test]
+fn format_spelling_markdown() {
+    assert_markdown("markdown");
+}
+
+#[test]
+fn format_spelling_md_alias() {
+    assert_markdown("md");
+}
+
+#[test]
+fn format_spelling_markdown_uppercase() {
+    assert_markdown("MARKDOWN");
+}
+
+#[test]
+fn format_spelling_json() {
+    assert_json("json");
+}
+
+#[test]
+fn format_spelling_json_uppercase() {
+    assert_json("JSON");
+}
+
+#[test]
+fn format_spelling_jsonl() {
+    assert_json("jsonl");
+}

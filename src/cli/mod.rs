@@ -71,15 +71,18 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
     Ok(value)
 }
 
-/// Validate `--format` at the CLI boundary. Called from `main` (not a clap
+/// Validate `--format` at the CLI boundary and return the canonical
+/// spelling the mode dispatch compares against: `text`, `markdown`,
+/// `json`, or `jsonl`. Accepted aliases (`plain`, `md`, any case)
+/// normalize here so `--format md` and `--format JSON` behave exactly
+/// like their canonical forms. Called from `main` (not a clap
 /// value_parser) so the error message and exit path stay exactly as they
-/// were when this lived behind the `output::OutputFormat` enum. The
-/// accepted aliases (`plain`, `md`, `jsonl`, any case) are part of that
-/// contract, even though the mode dispatch downstream compares the raw
-/// string and only reacts to `markdown`, `json`, and `jsonl`.
-pub fn validate_format(s: &str) -> anyhow::Result<()> {
+/// were when this lived behind the `output::OutputFormat` enum.
+pub fn validate_format(s: &str) -> anyhow::Result<String> {
     match s.to_lowercase().as_str() {
-        "text" | "plain" | "markdown" | "md" | "json" | "jsonl" => Ok(()),
+        "text" | "plain" => Ok("text".to_string()),
+        "markdown" | "md" => Ok("markdown".to_string()),
+        canonical @ ("json" | "jsonl") => Ok(canonical.to_string()),
         _ => Err(anyhow::anyhow!(
             "Error: Invalid format '{s}'. Supported formats: text, markdown, json"
         )),
@@ -225,26 +228,27 @@ mod tests {
 
     #[test]
     fn format_text_and_alias() {
-        assert!(validate_format("text").is_ok());
-        assert!(validate_format("plain").is_ok());
+        assert_eq!(validate_format("text").unwrap(), "text");
+        assert_eq!(validate_format("plain").unwrap(), "text");
     }
 
     #[test]
     fn format_markdown_and_alias() {
-        assert!(validate_format("markdown").is_ok());
-        assert!(validate_format("md").is_ok());
+        assert_eq!(validate_format("markdown").unwrap(), "markdown");
+        assert_eq!(validate_format("md").unwrap(), "markdown");
     }
 
     #[test]
     fn format_json_and_alias() {
-        assert!(validate_format("json").is_ok());
-        assert!(validate_format("jsonl").is_ok());
+        assert_eq!(validate_format("json").unwrap(), "json");
+        assert_eq!(validate_format("jsonl").unwrap(), "jsonl");
     }
 
     #[test]
     fn format_case_insensitive() {
-        assert!(validate_format("TEXT").is_ok());
-        assert!(validate_format("Json").is_ok());
+        assert_eq!(validate_format("TEXT").unwrap(), "text");
+        assert_eq!(validate_format("Json").unwrap(), "json");
+        assert_eq!(validate_format("MARKDOWN").unwrap(), "markdown");
     }
 
     #[test]

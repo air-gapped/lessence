@@ -38,13 +38,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Validate output format before creating config
-    cli::validate_format(&cli.format)?;
+    // Validate output format before creating config; downstream dispatch
+    // compares against the canonical spelling this returns.
+    let format = cli::validate_format(&cli.format)?;
 
     // --format markdown renders only the default fold output. These
     // combinations used to fall back to plain text silently; agents
     // prefer a loud error over silently-wrong output.
-    if cli.format == "markdown" && (cli.top.is_some() || cli.summary || cli.fit || cli.preflight) {
+    if format == "markdown" && (cli.top.is_some() || cli.summary || cli.fit || cli.preflight) {
         eprintln!(
             "lessence: --format markdown supports only the default fold output; \
              drop --top/--summary/--fit/--preflight or use --format text or json"
@@ -53,7 +54,7 @@ fn main() -> Result<()> {
     }
 
     let requested_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
-    let json_summary = requested_summary && matches!(cli.format.as_str(), "json" | "jsonl");
+    let json_summary = requested_summary && matches!(format.as_str(), "json" | "jsonl");
     let json_summary_default_cap = json_summary && cli.top.is_none();
     // JSON summary uses the regular JSONL group schema with the summary-mode
     // default cap. This keeps every flag combination machine-parseable.
@@ -65,7 +66,7 @@ fn main() -> Result<()> {
     let mut config = Config {
         threshold: cli.threshold,
         min_collapse: cli.min_collapse,
-        output_format: cli.format,
+        output_format: format,
         stats: !cli.no_stats, // Default true unless explicitly disabled
         preserve_color: cli.preserve_color,
         preflight: cli.preflight,
