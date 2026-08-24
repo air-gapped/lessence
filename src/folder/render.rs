@@ -51,7 +51,7 @@ impl PatternFolder {
         // PII masking applies to rollup samples in every mode: the text
         // compact marker and the JSON `variation` field both surface raw
         // sample values, so both must mask.
-        if self.config.sanitize_pii && !self.config.essence_mode {
+        if self.config.sanitize_pii {
             mask_rollup_pii(&mut rollup);
         }
         if self.is_json_output() {
@@ -188,12 +188,7 @@ impl PatternFolder {
                 &group.first().original
             };
 
-            // Apply PII masking if enabled
-            let first_line_output = if self.config.sanitize_pii && !self.config.essence_mode {
-                apply_pii_masking(first_line, &group.first().tokens)
-            } else {
-                first_line.clone()
-            };
+            let first_line_output = self.maybe_mask_pii(first_line, &group.first().tokens);
             result.push_str(&first_line_output);
             result.push('\n');
             result.push_str(&collapsed_line);
@@ -213,13 +208,7 @@ impl PatternFolder {
                 if !self.config.essence_mode || first_line != last_line {
                     result.push('\n');
 
-                    // Apply PII masking if enabled
-                    let last_line_output = if self.config.sanitize_pii && !self.config.essence_mode
-                    {
-                        apply_pii_masking(last_line, &group.last().tokens)
-                    } else {
-                        last_line.clone()
-                    };
+                    let last_line_output = self.maybe_mask_pii(last_line, &group.last().tokens);
                     result.push_str(&last_line_output);
                 }
             }
@@ -231,8 +220,9 @@ impl PatternFolder {
 
             if self.config.essence_mode {
                 // In essence mode, show only the first occurrence of each unique pattern
-                let line_text = &group.first().normalized;
-                result.push_str(line_text);
+                let line_text =
+                    self.maybe_mask_pii(&group.first().normalized, &group.first().tokens);
+                result.push_str(&line_text);
                 // Track lines saved (all duplicate lines in the group)
                 if group.count() > 1 {
                     self.stats.lines_saved += group.count().saturating_sub(1);
@@ -244,12 +234,7 @@ impl PatternFolder {
                         result.push('\n');
                     }
 
-                    // Apply PII masking if enabled
-                    let line_output = if self.config.sanitize_pii {
-                        apply_pii_masking(&line.original, &line.tokens)
-                    } else {
-                        line.original.clone()
-                    };
+                    let line_output = self.maybe_mask_pii(&line.original, &line.tokens);
                     result.push_str(&line_output);
                 }
             }
@@ -790,14 +775,19 @@ impl PatternFolder {
         result
     }
 
-    /// Apply PII masking to a line when the run asks for it. Same
-    /// condition as the text renderer: essence mode already shows
-    /// tokenised text, so masking applies only outside it.
+    /// Apply PII masking to a line when the run asks for it. Outside
+    /// essence mode the full pass runs (emails via tokens, then the
+    /// credential rules). Essence mode shows normalized text, which
+    /// already tokenises emails out — but credential values are not
+    /// tokens and survive normalization, so the credential rules must
+    /// still run there.
     fn maybe_mask_pii(&self, line: &str, tokens: &[Token]) -> String {
-        if self.config.sanitize_pii && !self.config.essence_mode {
-            apply_pii_masking(line, tokens)
-        } else {
+        if !self.config.sanitize_pii {
             line.to_string()
+        } else if self.config.essence_mode {
+            mask_credentials(line)
+        } else {
+            apply_pii_masking(line, tokens)
         }
     }
 }
