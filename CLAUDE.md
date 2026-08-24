@@ -63,7 +63,7 @@ src/
 --disable-patterns X,Y     Disable specific pattern detectors
 --threshold 83             Similarity percentage (0-100)
 --min-collapse 3           Minimum lines before folding (min: 3)
---sanitize-pii             Mask email addresses
+--sanitize-pii             Mask emails and credential-class values (key assignments, JWTs, provider keys)
 --preserve-color           Keep ANSI codes
 ```
 

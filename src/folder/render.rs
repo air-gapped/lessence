@@ -19,7 +19,7 @@ use super::{
     GroupRollup, InputCompleteness, LineRef, LogLine, PatternDistribution, PatternFolder,
     PatternGroup, PreflightReport, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, SamplePatterns, StatsJson,
     SummaryRecord, TimeRange, Token, VariationCompleteness, Write, apply_pii_masking,
-    first_timestamp_in, io, render_compact_marker, token_type_name,
+    first_timestamp_in, io, mask_credentials, render_compact_marker, token_type_name,
 };
 
 impl PatternFolder {
@@ -52,7 +52,7 @@ impl PatternFolder {
         // compact marker and the JSON `variation` field both surface raw
         // sample values, so both must mask.
         if self.config.sanitize_pii && !self.config.essence_mode {
-            mask_rollup_emails(&mut rollup);
+            mask_rollup_pii(&mut rollup);
         }
         if self.is_json_output() {
             self.format_group_json(group, rollup)
@@ -115,7 +115,10 @@ impl PatternFolder {
             id,
             count: group.count(),
             token_types: token_types.into_iter().collect(),
-            normalized: group.first().normalized.clone(),
+            // Detectors tokenize emails out of the normalized text, but
+            // credential values they don't tokenize survive in it — mask
+            // this field like first/last, not just the raw lines.
+            normalized: self.maybe_mask_pii(&group.first().normalized, &group.first().tokens),
             first: LineRef {
                 source: self.source_name(group.first_source_id),
                 line: self.maybe_mask_pii(&group.first().original, &group.first().tokens),
@@ -799,12 +802,13 @@ impl PatternFolder {
     }
 }
 
-/// Mask email addresses inside rollup samples. The EMAIL entry's own
-/// samples collapse to the mask token; occurrences of those email values
-/// embedded in other entries' samples (quoted strings, structured
-/// messages) are replaced as well. Uses only exact values the rollup
-/// itself observed -- no additional pattern matching.
-fn mask_rollup_emails(rollup: &mut GroupRollup) {
+/// Mask PII inside rollup samples. The EMAIL entry's own samples collapse
+/// to the mask token; occurrences of those email values embedded in other
+/// entries' samples (quoted strings, structured messages) are replaced as
+/// well, and every sample then passes through the same credential-class
+/// masking as full lines so no output field can leak what the line
+/// renderer would have masked.
+fn mask_rollup_pii(rollup: &mut GroupRollup) {
     let emails: Vec<String> = rollup
         .get("EMAIL")
         .map(|entry| entry.samples.clone())
@@ -821,6 +825,7 @@ fn mask_rollup_emails(rollup: &mut GroupRollup) {
                         *sample = sample.replace(email.as_str(), "<EMAIL>");
                     }
                 }
+                *sample = mask_credentials(sample);
             }
         }
     }

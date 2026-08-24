@@ -41,7 +41,7 @@ Example: `--disable-patterns timestamp,uuid` to keep timestamps and UUIDs litera
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sanitize-pii` | off | Mask email addresses with `<EMAIL>` in output. |
+| `--sanitize-pii` | off | Mask emails (`<EMAIL>`) and credential-class values: `key=value`/`key: value` assignments to credential-named keys (`<SECRET>`), JWTs (`<JWT>`), and `sk-`/`ghp_`/`xox`-style provider keys (`<KEY>`). |
 | `--max-line-length N` | 1MB | Skip lines exceeding this length. Supports K/M/G suffixes. |
 | `--max-lines N` | unlimited | Stop processing after N lines. |
 | `--preserve-color` | off | Keep ANSI escape codes (stripped by default). |

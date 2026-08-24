@@ -112,3 +112,68 @@ fn test_sanitize_pii_with_email_disabled() {
         "Email not detected, so not masked"
     );
 }
+
+// ---- Credential-class masking (lessence-q9y) ----
+// Every secret below is a synthetic fixture; none must survive in output.
+
+#[test]
+fn test_sanitize_pii_masks_credential_assignment() {
+    let stdout = run_lessence(&["--sanitize-pii"], b"login password=hunter2fixture ok\n");
+    assert!(stdout.contains("<SECRET>"), "Should mask value: {stdout}");
+    assert!(
+        !stdout.contains("hunter2fixture"),
+        "Fixture secret must not survive: {stdout}"
+    );
+}
+
+#[test]
+fn test_sanitize_pii_masks_jwt() {
+    let stdout = run_lessence(
+        &["--sanitize-pii"],
+        b"auth Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmN\n",
+    );
+    assert!(stdout.contains("<JWT>"), "Should mask JWT: {stdout}");
+    assert!(
+        !stdout.contains("eyJhbGciOiJIUzI1NiJ9"),
+        "Fixture JWT must not survive: {stdout}"
+    );
+}
+
+#[test]
+fn test_sanitize_pii_masks_provider_key() {
+    let stdout = run_lessence(&["--sanitize-pii"], b"push with ghp_FixtureAbCd1234EfGh\n");
+    assert!(
+        stdout.contains("<KEY>"),
+        "Should mask provider key: {stdout}"
+    );
+    assert!(
+        !stdout.contains("ghp_FixtureAbCd1234EfGh"),
+        "Fixture key must not survive: {stdout}"
+    );
+}
+
+#[test]
+fn test_credentials_pass_through_without_flag() {
+    // Masking is opt-in: without --sanitize-pii the line is untouched.
+    let stdout = run_lessence(&[], b"login password=hunter2fixture ok\n");
+    assert!(
+        stdout.contains("password=hunter2fixture"),
+        "Without the flag the line must pass through: {stdout}"
+    );
+}
+
+#[test]
+fn test_sanitize_pii_json_no_secret_in_any_field() {
+    // A folding group in JSON mode surfaces raw lines in first.line /
+    // last.line and sample values in variation — no field may leak.
+    let input = b"auth req token=FIXTURESECRET1 done\n\
+                  auth req token=FIXTURESECRET2 done\n\
+                  auth req token=FIXTURESECRET3 done\n\
+                  auth req token=FIXTURESECRET4 done\n";
+    let stdout = run_lessence(&["--sanitize-pii", "--format", "json"], input);
+    assert!(
+        !stdout.contains("FIXTURESECRET"),
+        "No fixture secret may appear in any JSON field: {stdout}"
+    );
+    assert!(stdout.contains("<SECRET>"), "Should mask values: {stdout}");
+}

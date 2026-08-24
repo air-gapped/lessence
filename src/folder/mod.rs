@@ -1,9 +1,11 @@
 use anyhow::Result;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
+use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use crate::config::Config;
@@ -11,7 +13,9 @@ use crate::ingest::IngestReport;
 use crate::normalize::Normalizer;
 use crate::patterns::{LogLine, StatsBucket, Token};
 
-/// Apply PII masking to original text by replacing email addresses with `<EMAIL>` tokens
+/// Apply PII masking to original text: email addresses (from detected
+/// tokens) become `<EMAIL>`, then credential-class values (assignments,
+/// JWTs, provider keys — see `mask_credentials` below) are masked.
 ///
 /// Takes the original log line text and detected tokens, returns masked text with
 /// all Token::Email instances replaced with the literal `<EMAIL>` string.
@@ -58,7 +62,46 @@ pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
         result.replace_range(start..end, "<EMAIL>");
     }
 
-    result
+    mask_credentials(&result)
+}
+
+/// Credential-class value in a `key = value` / `key: value` assignment.
+/// Matches any key ending in a credential word (so `client_secret`,
+/// `access_token`, and `DB_PASSWORD` all match), captures the key and
+/// separator, and masks only the value. Over-masking prose like
+/// `invalid token: expected` is accepted: under --sanitize-pii the
+/// conservative direction is to mask too much, never too little.
+static CREDENTIAL_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|master[_-]?key|access[_-]?key)"?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
+    )
+    .expect("static regex")
+});
+
+/// JSON Web Token: three base64url segments, the first always `eyJ`
+/// (base64 of `{"`). Catches both `Bearer eyJ...` headers and bare JWTs.
+static JWT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").expect("static regex")
+});
+
+/// Provider-prefixed API keys: `sk-` (OpenAI/Stripe style), `ghp_`/`gho_`/
+/// `ghu_`/`ghs_`/`ghr_` (GitHub), `xox?-` (Slack). The length floor keeps
+/// hyphenated prose like `sk-learn` unmasked.
+static PROVIDER_KEY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|xox[a-z]-[A-Za-z0-9-]{8,})")
+        .expect("static regex")
+});
+
+/// Mask credential-class values: assignments to credential-named keys,
+/// JWTs, and provider-prefixed API keys. Runs as part of the single
+/// --sanitize-pii pass (all callers gate on the flag), so every output
+/// mode and field masks identically. Assignment masking runs first so
+/// `token: eyJ...` collapses to one `<SECRET>` rather than a nested mask.
+fn mask_credentials(text: &str) -> String {
+    let masked = CREDENTIAL_ASSIGNMENT.replace_all(text, "${1}<SECRET>");
+    let masked = JWT.replace_all(&masked, "<JWT>");
+    let masked = PROVIDER_KEY.replace_all(&masked, "<KEY>");
+    masked.into_owned()
 }
 
 #[derive(Debug)]

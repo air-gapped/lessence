@@ -154,6 +154,138 @@ fn pii_masking_non_email_tokens_ignored() {
     assert_eq!(result, "10.0.0.1 <EMAIL>");
 }
 
+// ---------------------------------------------------------------
+// mask_credentials (credential-class rules on the same pass)
+// All secrets below are synthetic fixtures.
+// ---------------------------------------------------------------
+
+#[test]
+fn credentials_password_equals() {
+    assert_eq!(
+        mask_credentials("login password=hunter2 ok"),
+        "login password=<SECRET> ok"
+    );
+}
+
+#[test]
+fn credentials_token_colon_space() {
+    assert_eq!(mask_credentials("token: abc123"), "token: <SECRET>");
+}
+
+#[test]
+fn credentials_compound_key_suffix() {
+    // Keys ENDING in a credential word must match too (client_secret,
+    // access_token); kills removal of the leading [A-Za-z0-9_.-]* class.
+    assert_eq!(
+        mask_credentials("oauth client_secret=s3cr3t, retrying"),
+        "oauth client_secret=<SECRET>, retrying"
+    );
+}
+
+#[test]
+fn credentials_quoted_value_masked_whole() {
+    assert_eq!(
+        mask_credentials(r#"password = "two words""#),
+        "password = <SECRET>"
+    );
+}
+
+#[test]
+fn credentials_json_style_key() {
+    assert_eq!(
+        mask_credentials(r#"{"api_key": "abc123"}"#),
+        r#"{"api_key": <SECRET>}"#
+    );
+}
+
+#[test]
+fn credentials_case_insensitive() {
+    assert_eq!(mask_credentials("DB_PASSWORD=x1"), "DB_PASSWORD=<SECRET>");
+}
+
+#[test]
+fn credentials_value_stops_at_query_separator() {
+    assert_eq!(
+        mask_credentials("GET /cb?access_token=abc123&user=bob"),
+        "GET /cb?access_token=<SECRET>&user=bob"
+    );
+}
+
+#[test]
+fn credentials_plain_prose_untouched() {
+    let line = "the operation completed successfully";
+    assert_eq!(mask_credentials(line), line);
+}
+
+#[test]
+fn credentials_keyword_without_separator_untouched() {
+    let line = "token bucket refilled";
+    assert_eq!(mask_credentials(line), line);
+}
+
+#[test]
+fn credentials_bearer_jwt_masked() {
+    assert_eq!(
+        mask_credentials("auth Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmN"),
+        "auth Bearer <JWT>"
+    );
+}
+
+#[test]
+fn credentials_two_segment_jwt_untouched() {
+    // A real JWT has three segments; two-segment lookalikes stay.
+    let line = "config eyJhbGciOiJIUzI1NiJ9.partial loaded";
+    assert_eq!(mask_credentials(line), line);
+}
+
+#[test]
+fn credentials_provider_key_sk() {
+    assert_eq!(
+        mask_credentials("using sk-abc123def456ghi789 today"),
+        "using <KEY> today"
+    );
+}
+
+#[test]
+fn credentials_provider_key_ghp() {
+    assert_eq!(
+        mask_credentials("push with ghp_AbCd1234EfGh5678"),
+        "push with <KEY>"
+    );
+}
+
+#[test]
+fn credentials_provider_key_xoxb() {
+    assert_eq!(
+        mask_credentials("slack xoxb-1234567890-abcdef"),
+        "slack <KEY>"
+    );
+}
+
+#[test]
+fn credentials_short_sk_prefix_untouched() {
+    // Length floor keeps hyphenated prose like sk-learn unmasked.
+    let line = "sk-learn pipeline step";
+    assert_eq!(mask_credentials(line), line);
+}
+
+#[test]
+fn credentials_assignment_wins_over_jwt() {
+    // Rule order: token: <jwt> collapses to one <SECRET>, not <JWT>.
+    assert_eq!(
+        mask_credentials("token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig12345"), // synthetic fixture, gitleaks:allow
+        "token: <SECRET>"
+    );
+}
+
+#[test]
+fn pii_masking_applies_credential_rules() {
+    // apply_pii_masking must run the credential pass after emails.
+    let tokens = vec![Token::Email("a@b.com".into())];
+    let result = apply_pii_masking("a@b.com password=hunter2", &tokens);
+    assert_eq!(result, "<EMAIL> password=<SECRET>");
+}
+
 /// Ranked modes must hold every group: with eviction active, patterns past
 /// the 1,000-group flush threshold vanished from both the ranking and the
 /// coverage denominator ("1000 of 1000 patterns" on 1,100-pattern input).

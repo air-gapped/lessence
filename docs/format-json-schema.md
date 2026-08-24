@@ -90,7 +90,7 @@ Two record types, discriminated by the `type` field:
 | `id` | integer | Monotonic counter within a run. Stable: 0 for the first group flushed, 1 for the second, and so on. Resets per invocation. |
 | `count` | integer | Number of input lines that joined this group. For a group of 1, this is 1 (no folding). |
 | `token_types` | array of strings | Sorted list of token type discriminant names that appeared in the group's first or last line. UPPERCASE convention. Deterministic across runs. |
-| `normalized` | string | The first line's normalized form (variable parts replaced with `<TOKEN>` placeholders). This is the "template" that agents group lines by. |
+| `normalized` | string | The first line's normalized form (variable parts replaced with `<TOKEN>` placeholders). This is the "template" that agents group lines by. PII-masked if `--sanitize-pii` is set. |
 | `first.source` | string \| null | Explicit input filename exactly as supplied to lessence, or null for stdin. |
 | `first.line` | string | The first input line that created this group, as-is. PII-masked if `--sanitize-pii` is set. |
 | `first.line_no` | integer | Exact 1-indexed line number within `first.source`, or within stdin when `source` is null. |
@@ -113,7 +113,7 @@ Each value records both the bounded data and how to interpret its counts:
 |---|---|---|
 | `distinct_count` | integer | Number of distinct values seen for this token type across the group's lines. When `capped: true`, this is a lower bound (`≥ ROLLUP_DISTINCT_CAP`). |
 | `distinct_count_kind` | `"exact"` \| `"lower_bound"` | Explicit interpretation of `distinct_count`. |
-| `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically. Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>` and email values embedded in other types' samples are masked as well. |
+| `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically. Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>`, email values embedded in other types' samples are masked as well, and credential-class values in samples are masked (`<SECRET>`/`<JWT>`/`<KEY>`). |
 | `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation and further distinct values were dropped. `false` means `distinct_count` is exact. |
 | `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
 | `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |
