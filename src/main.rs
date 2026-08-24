@@ -15,17 +15,10 @@ use std::time::Instant;
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-mod cli;
-mod config;
-mod folder;
-mod ingest;
-mod normalize;
-mod patterns;
-
-use cli::Cli;
-use config::Config;
-use folder::PatternFolder;
-use ingest::{Event, Ingestor};
+use lessence::cli::{self, Cli};
+use lessence::config::{self, Config};
+use lessence::folder::PatternFolder;
+use lessence::ingest::{self, Event, Ingestor};
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
