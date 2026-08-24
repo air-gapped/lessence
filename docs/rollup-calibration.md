@@ -10,10 +10,9 @@ rollup constants in `src/folder.rs`:
 These were initially shipped as `PLACEHOLDER_*` constants during Phases
 3–4 of the structured-folding-output feature (see
 `.ideas/structured-folding-output-for-agents.md`) and retired in Phase 5
-using the calibration harness at `benches/calibrate_rollup.rs`.
-
-**Reproducing this report**: `cargo bench --bench calibrate_rollup`.
-Re-run whenever the corpus changes or pattern detectors are revised.
+using a one-shot calibration harness (`benches/calibrate_rollup.rs`,
+deleted after this report was recorded — recover it from git history at
+tag v0.4.5 if the corpus changes or pattern detectors are revised).
 
 ## Methodology
 
