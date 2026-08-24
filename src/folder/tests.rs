@@ -4476,55 +4476,6 @@ fn sized_pool_produces_same_output_as_default_pool() {
 // format_collapsed_line helpers (moved here with the renderer)
 // ---------------------------------------------------------------
 
-#[test]
-fn format_timestamp_preserves_source_formats() {
-    let normalizer = Normalizer::new(Config::default());
-    let line1 = normalizer
-        .normalize_line("2025-09-18 13:26:30,188 INFO: test message".to_string())
-        .unwrap();
-    assert_eq!(
-        PatternFolder::format_timestamp(&line1),
-        "2025-09-18 13:26:30,188"
-    );
-
-    let line2 = normalizer
-        .normalize_line("2025-09-18 13:26:53.345 UTC [24] LOG test".to_string())
-        .unwrap();
-    assert_eq!(
-        PatternFolder::format_timestamp(&line2),
-        "2025-09-18 13:26:53.345 UTC"
-    );
-
-    let line3 = normalizer
-        .normalize_line("2025-01-20T10:15:30.123Z INFO test".to_string())
-        .unwrap();
-    assert_eq!(
-        PatternFolder::format_timestamp(&line3),
-        "2025-01-20T10:15:30.123Z"
-    );
-}
-
-#[test]
-fn format_timestamp_invalid_timestamp_preserved() {
-    let normalizer = Normalizer::new(Config::default());
-    let line = normalizer
-        .normalize_line("2025-02-31 25:99:99,999 ERROR: invalid timestamp".to_string())
-        .unwrap();
-    assert_eq!(
-        PatternFolder::format_timestamp(&line),
-        "2025-02-31 25:99:99,999"
-    );
-}
-
-#[test]
-fn format_timestamp_missing_is_unknown() {
-    let normalizer = Normalizer::new(Config::default());
-    let line = normalizer
-        .normalize_line("Just a log message with no timestamp".to_string())
-        .unwrap();
-    assert_eq!(PatternFolder::format_timestamp(&line), "unknown");
-}
-
 // --- summarize_variation_types direct tests (mutant kills) ---
 
 #[test]

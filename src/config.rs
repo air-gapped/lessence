@@ -35,7 +35,6 @@ pub struct Config {
     pub output_format: String,
     pub stats: bool,
     pub preserve_color: bool,
-    pub compact: bool,
     pub preflight: bool,
     pub summary: bool,
     // Constitutional CLI flags
@@ -76,7 +75,6 @@ impl Default for Config {
             output_format: DEFAULT_OUTPUT_FORMAT.to_string(),
             stats: true,
             preserve_color: false,
-            compact: true,
             preflight: false,
             summary: false,
             // Constitutional CLI flags defaults
@@ -339,7 +337,6 @@ mod tests {
         assert_eq!(c.output_format, "text");
         assert!(c.stats);
         assert!(!c.preserve_color);
-        assert!(c.compact);
         assert!(!c.preflight);
         assert!(!c.summary);
         assert!(!c.essence_mode);

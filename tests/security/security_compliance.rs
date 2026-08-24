@@ -103,17 +103,12 @@ fn test_input_line_count_limit() {
 
 #[test]
 fn test_pii_sanitization_functionality() {
-    use lessence::sanitize_email;
-    let masked = sanitize_email("user@example.com");
-    assert!(
-        !masked.contains("user@example.com"),
-        "Email should be masked, got: {masked}"
-    );
-    // sanitize_email masks to "u***@e***.com" format, not <EMAIL>
-    assert!(
-        masked.contains("***"),
-        "Should contain masked portion, got: {masked}"
-    );
+    // The production masking path: emails found as tokens become <EMAIL>.
+    use lessence::apply_pii_masking;
+    use lessence::patterns::Token;
+    let tokens = vec![Token::Email("user@example.com".into())];
+    let masked = apply_pii_masking("login user@example.com ok", &tokens);
+    assert_eq!(masked, "login <EMAIL> ok");
 }
 
 #[test]

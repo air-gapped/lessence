@@ -21,7 +21,6 @@ mod folder;
 mod ingest;
 mod normalize;
 mod patterns;
-mod report;
 
 use cli::Cli;
 use config::Config;

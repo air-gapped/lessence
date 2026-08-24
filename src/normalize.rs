@@ -17,9 +17,6 @@ use crate::patterns::{
 /// that says which detectors run, in which order, under which gates —
 /// `normalize_line` just walks it.
 struct DetectorEntry {
-    /// User-facing pattern-group name (matches `config::PATTERN_REGISTRY`).
-    #[allow(dead_code)] // documentation + future diagnostics
-    name: &'static str,
     /// Config gate: is this detector enabled for the run?
     enabled: fn(&Config) -> bool,
     /// Cheap byte-level gate on the partially-normalized line; the
@@ -42,7 +39,6 @@ struct DetectorEntry {
 static DETECTOR_ORDER: &[DetectorEntry] = &[
     // TIMESTAMPS: most specific formats, highest priority.
     DetectorEntry {
-        name: "timestamp",
         enabled: |c| c.normalize_timestamps,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -50,7 +46,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // EMAIL: before paths so emails inside URLs are handled correctly.
     DetectorEntry {
-        name: "email",
         enabled: |c| c.normalize_emails,
         prefilter: Some(|_, s| s.contains('@')),
         defers_to_kubernetes: None,
@@ -58,7 +53,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // PATHS: before network patterns so URLs are consumed as whole units.
     DetectorEntry {
-        name: "path",
         enabled: |c| c.normalize_paths,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -66,7 +60,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // JSON: structured data, Event objects, K8s objects.
     DetectorEntry {
-        name: "json",
         enabled: |c| c.normalize_json,
         prefilter: Some(|_, s| s.contains('{')),
         defers_to_kubernetes: None,
@@ -74,7 +67,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // UUIDs: before hashes, whose hex pattern would fragment a UUID.
     DetectorEntry {
-        name: "uuid",
         enabled: |c| c.normalize_uuids,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -82,7 +74,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // NETWORK: IPs, ports, FQDNs; after paths to avoid breaking URLs.
     DetectorEntry {
-        name: "network",
         enabled: |c| c.normalize_ips || c.normalize_ports || c.normalize_fqdns,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -97,7 +88,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // HASHES: after UUIDs (see above).
     DetectorEntry {
-        name: "hash",
         enabled: |c| c.normalize_hashes,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -105,7 +95,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // PROCESS IDs: [pid=123], (12345).
     DetectorEntry {
-        name: "process",
         enabled: |c| c.normalize_pids,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -115,7 +104,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // which additionally defer to it on kubernetes-shaped lines (their
     // `defers_to_kubernetes` predicates below).
     DetectorEntry {
-        name: "kubernetes",
         enabled: |c| c.normalize_kubernetes,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -123,7 +111,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // HTTP STATUS: groups status codes into classes (200-299 -> 2xx).
     DetectorEntry {
-        name: "http-status",
         enabled: |c| c.normalize_http_status,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -131,7 +118,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // BRACKET CONTEXT: [error] [mod_jk] style tags.
     DetectorEntry {
-        name: "brackets",
         enabled: |c| c.normalize_brackets,
         prefilter: Some(|_, s| {
             s.contains('[') && BracketContextDetector::has_bracket_indicators(s)
@@ -141,7 +127,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // KEY-VALUE: config=value pairs.
     DetectorEntry {
-        name: "key-value",
         enabled: |c| c.normalize_key_value,
         prefilter: Some(|_, s| s.contains('=')),
         defers_to_kubernetes: None,
@@ -151,7 +136,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // same flag as BracketContext: --disable-patterns brackets must
     // disable every bracket-shaped detector.
     DetectorEntry {
-        name: "log-module",
         enabled: |c| c.normalize_brackets,
         prefilter: Some(|_, s| {
             s.contains('[') && LogWithModuleDetector::has_log_module_indicators(s)
@@ -163,7 +147,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // is gated by --disable-patterns json, the logfmt half by
     // --disable-patterns key-value.
     DetectorEntry {
-        name: "structured",
         enabled: |c| c.normalize_json || c.normalize_key_value,
         prefilter: Some(|c, s| {
             ((c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('=')))
@@ -175,7 +158,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // DURATIONS & MEASUREMENTS: broad (decimals, sizes, percentages);
     // late, after every more specific pattern above.
     DetectorEntry {
-        name: "duration",
         enabled: |c| c.normalize_durations,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -184,7 +166,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // NAMES: generic hyphenated component names with variable suffixes;
     // after the specific patterns to catch what remains.
     DetectorEntry {
-        name: "name",
         enabled: |c| c.normalize_names,
         prefilter: None,
         defers_to_kubernetes: None,
@@ -193,7 +174,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // QUOTED STRINGS: last, so it cannot consume content the detectors
     // above tokenize (paths in quotes in particular).
     DetectorEntry {
-        name: "quoted-string",
         enabled: |c| c.normalize_quoted,
         prefilter: Some(|_, s| s.contains('"') || s.contains('\'')),
         defers_to_kubernetes: None,
