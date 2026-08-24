@@ -80,7 +80,6 @@ mimalloc = { version = "0.1", default-features = false }
 mutants = "0.0.4"
 criterion = { version = "0.8", features = ["html_reports"] }
 tempfile = "3.0"
-toml = "1.1"
 regex = "1.12"
 insta = "1"
 proptest = "1"

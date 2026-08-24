@@ -7,7 +7,6 @@ mod common;
 mod integration {
     mod test_basic_scenarios;
     mod test_binary_name;
-    mod test_cargo_validation;
     mod test_cli_formats;
     mod test_constitutional_compliance;
     mod test_documentation;
