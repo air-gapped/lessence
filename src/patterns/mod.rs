@@ -307,6 +307,14 @@ pub struct LogLine {
     pub normalized: String,
     pub tokens: Vec<Token>,
     pub hash: u64,
+    /// Hash of this line's anchor values — the fields that must match exactly
+    /// for two lines to fold together (see `normalize::anchor_hash`). Zero
+    /// when the line carries no anchor, which is most lines.
+    ///
+    /// Already folded into `hash`, so the folder's exact-hash group index
+    /// cannot attach a line to a group with a different anchor. Kept
+    /// separately because the similarity path needs to reject on it.
+    pub(crate) anchor: u64,
     /// Lazily computed similarity-token cache. Most lines in fold-heavy
     /// logs resolve through the folder's exact-hash group index and never
     /// enter a similarity comparison, so the tokenization cost is only
@@ -321,8 +329,16 @@ impl LogLine {
             normalized,
             tokens,
             hash,
+            anchor: 0,
             sim_cache: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Attach anchor values. Chained onto `new` so the many test call sites
+    /// that build anchor-free lines stay as they are.
+    pub(crate) fn anchored(mut self, anchor: u64) -> Self {
+        self.anchor = anchor;
+        self
     }
 
     pub(crate) fn sim(&self) -> &SimTokens {

@@ -1,6 +1,8 @@
 use ahash::AHasher;
 use anyhow::Result;
+use regex::Regex;
 use std::hash::{Hash, Hasher};
+use std::sync::LazyLock;
 
 use crate::config::Config;
 use crate::patterns::{
@@ -187,6 +189,103 @@ pub struct Normalizer {
     email_detector: EmailPatternDetector,
 }
 
+/// A quoted HTTP request line: `"GET /metrics HTTP/1.1"`. The capture is the
+/// request target.
+static REQUEST_TARGET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT) ([^"\s]*) HTTP/"#)
+        .expect("request-target anchor pattern must compile")
+});
+
+/// A PCI address, `domain:bus:device.function` — `0000:21:00.0`.
+static PCI_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
+        .expect("pci-address anchor pattern must compile")
+});
+
+/// Hash the fields that must match exactly for two lines to fold together.
+///
+/// Normalization erases variable text on purpose, but some of what it erases
+/// is the entire point of the line: which endpoint was requested, which device
+/// failed. Two lines differing only there are not the same event, yet they
+/// differ by one token out of a dozen and sail past any similarity threshold
+/// low enough to be useful elsewhere. Raising the threshold instead is not an
+/// option — it costs far more folding everywhere else than it recovers here.
+///
+/// So these fields are compared for equality, never for similarity. Returns 0
+/// when the line has no anchor, which is the common case; two anchor-free
+/// lines therefore group exactly as they did before.
+///
+/// Anchors are read from the raw line, before normalization erases them.
+fn anchor_hash(original: &str) -> u64 {
+    let mut hasher = AHasher::default();
+    let mut found = false;
+
+    // `HTTP/` is a cheap literal the regex engine can prescan for.
+    if original.contains("HTTP/") {
+        for caps in REQUEST_TARGET.captures_iter(original) {
+            hash_route(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
+            found = true;
+        }
+    }
+
+    // A PCI address needs both separators; the pair is rare enough together to
+    // keep the scan off most lines.
+    if original.contains(':') && original.contains('.') {
+        for found_addr in PCI_ADDRESS.find_iter(original) {
+            found_addr.as_str().hash(&mut hasher);
+            found = true;
+        }
+    }
+
+    if found { hasher.finish() } else { 0 }
+}
+
+/// Hash a request target as its route — the part that says *what was asked
+/// for*, with the part that says *which one* removed.
+///
+/// A segment's identity is its non-numeric skeleton, so `/downloads/product_1`
+/// and `/downloads/product_2` are one route, as are `/api/devices/42/` and
+/// `/api/devices/99/`. `/login/` and `/metrics` are not. Getting this wrong in
+/// either direction is expensive: too strict and every web log fragments per
+/// object id, too loose and the anchor stops separating endpoints at all.
+fn hash_route(target: &str, hasher: &mut AHasher) {
+    // A query string is per-request data, not route identity.
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    for segment in path.split('/') {
+        if segment.is_empty() {
+            "/".hash(hasher);
+            continue;
+        }
+        // A long hex-ish run is an opaque id (uuid, digest, slug), whatever
+        // letters it happens to contain.
+        if segment.len() >= 8
+            && segment
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'_')
+        {
+            "<id>".hash(hasher);
+            continue;
+        }
+        // Otherwise keep the skeleton and collapse each digit run, so
+        // `product_1` and `product_2` hash alike. `v1` and `v2` collapse too,
+        // where the digit *is* the identity — but an API version is normally
+        // its own segment, and fragmenting every object id is the worse error.
+        let mut in_digits = false;
+        for byte in segment.bytes() {
+            if byte.is_ascii_digit() {
+                if !in_digits {
+                    "<d>".hash(hasher);
+                    in_digits = true;
+                }
+            } else {
+                in_digits = false;
+                byte.hash(hasher);
+            }
+        }
+        "|".hash(hasher);
+    }
+}
+
 impl Normalizer {
     pub fn new(config: Config) -> Self {
         Self {
@@ -220,10 +319,15 @@ impl Normalizer {
             tokens.append(&mut new_tokens);
         }
 
-        // Generate hash for fast comparison
-        let hash = self.calculate_hash(&normalized);
+        // Anchors come from the raw line: normalization has just erased the
+        // very fields they identify.
+        let anchor = anchor_hash(&original);
 
-        Ok(LogLine::new(original, normalized, tokens, hash))
+        // Fold the anchor into the line hash so the folder's exact-hash group
+        // index cannot attach this line to a group with a different anchor.
+        let hash = self.calculate_hash(&normalized) ^ anchor.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+
+        Ok(LogLine::new(original, normalized, tokens, hash).anchored(anchor))
     }
 
     fn calculate_hash(&self, normalized: &str) -> u64 {
@@ -377,6 +481,12 @@ impl Normalizer {
         // Quick hash comparison first
         if line1.hash == line2.hash {
             return true;
+        }
+
+        // Anchors are matched, never scored: two lines naming different
+        // endpoints or devices are different events however alike they read.
+        if line1.anchor != line2.anchor {
+            return false;
         }
 
         let threshold = f64::from(self.config.threshold);
@@ -1659,5 +1769,156 @@ mod tests {
             .unwrap();
         assert!(!normalizer.are_similar(&a, &b));
         assert!(normalizer.similarity_score(&a, &b) < f64::from(Config::default().threshold));
+    }
+
+    // ---- anchors ----
+
+    fn normalize(line: &str) -> LogLine {
+        Normalizer::new(Config::default())
+            .normalize_line(line.to_string())
+            .unwrap()
+    }
+
+    /// Two NetBox access lines differing only in the endpoint. Normalization
+    /// erases both paths to `<PATH>`, leaving one token of difference out of
+    /// eight — comfortably similar at any default-ish threshold. Without an
+    /// anchor these folded into one group whose representative claimed an
+    /// endpoint that most of its lines never touched.
+    #[test]
+    fn anchor_separates_different_endpoints() {
+        let normalizer = Normalizer::new(Config::default());
+        let login = normalize(
+            r#"[2026-08-16 14:08:34 +0200] ::ffff - "GET /login/ HTTP/1.1" 200 17450.949"#,
+        );
+        let admin = normalize(
+            r#"[2026-08-16 14:08:31 +0200] ::ffff - "GET /admin/ HTTP/1.1" 200 14502.251"#,
+        );
+
+        assert_ne!(
+            login.anchor, admin.anchor,
+            "different endpoints, different anchors"
+        );
+        assert!(!normalizer.are_similar(&login, &admin));
+        // Without the anchor these would have been judged similar.
+        assert!(
+            normalizer.similarity_score(&login, &admin) >= f64::from(Config::default().threshold),
+            "the point of the anchor is that similarity alone does not separate these"
+        );
+    }
+
+    /// The same endpoint with different object ids is one route, so folding
+    /// must still happen. This is the direction that costs compression if it
+    /// goes wrong: every web log would fragment per id.
+    #[test]
+    fn anchor_keeps_one_route_together() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = normalize(
+            r#"10.0.0.1 - - [17/May/2015:08:05:32 +0000] "GET /api/devices/42/ HTTP/1.1" 200 490"#,
+        );
+        let second = normalize(
+            r#"10.0.0.2 - - [17/May/2015:08:05:33 +0000] "GET /api/devices/9137/ HTTP/1.1" 200 490"#,
+        );
+
+        assert_eq!(first.anchor, second.anchor, "same route, same anchor");
+        assert!(normalizer.are_similar(&first, &second));
+    }
+
+    /// A digit run inside a segment is an id too — `product_1` and `product_2`
+    /// are one route. Treating the whole segment as literal cost 11 points of
+    /// compression on the nginx corpus.
+    #[test]
+    fn anchor_collapses_digits_inside_a_segment() {
+        let a = normalize(
+            r#"10.0.0.1 - - [17/May/2015:08:05:32 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0"#,
+        );
+        let b = normalize(
+            r#"10.0.0.1 - - [17/May/2015:08:05:33 +0000] "GET /downloads/product_2 HTTP/1.1" 304 0"#,
+        );
+        assert_eq!(a.anchor, b.anchor);
+    }
+
+    /// A query string is per-request data, not route identity.
+    #[test]
+    fn anchor_ignores_the_query_string() {
+        let a = normalize(
+            r#"10.0.0.1 - - [17/May/2015:08:05:32 +0000] "GET /search?q=alpha HTTP/1.1" 200 12"#,
+        );
+        let b = normalize(
+            r#"10.0.0.1 - - [17/May/2015:08:05:33 +0000] "GET /search?q=beta HTTP/1.1" 200 12"#,
+        );
+        assert_eq!(a.anchor, b.anchor);
+    }
+
+    /// Two GPUs failing the same way are two failures, not one. Normalization
+    /// keeps only the bus byte of the address, so these differ in two tokens
+    /// out of twenty and merged before.
+    #[test]
+    fn anchor_separates_pci_devices() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = normalize(
+            "2026/08/06 01:05:43 WARNING: unable to detect IOMMU FD for [0000:21:00.0 open /sys/bus/pci/devices/0000:21:00.0/vfio-dev: no such file or directory]",
+        );
+        let second = normalize(
+            "2026/08/06 01:05:43 WARNING: unable to detect IOMMU FD for [0000:65:00.0 open /sys/bus/pci/devices/0000:65:00.0/vfio-dev: no such file or directory]",
+        );
+
+        assert_ne!(first.anchor, second.anchor);
+        assert!(!normalizer.are_similar(&first, &second));
+    }
+
+    /// Two mentions of the same device anchor alike, so repeated warnings for
+    /// one GPU still fold.
+    #[test]
+    fn anchor_matches_for_the_same_pci_device() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = normalize(
+            "2026/08/06 01:05:43 WARNING: unable to detect IOMMU FD for [0000:21:00.0 open /sys/bus/pci/devices/0000:21:00.0/vfio-dev: no such file or directory]",
+        );
+        let second = normalize(
+            "2026/08/06 01:07:10 WARNING: unable to detect IOMMU FD for [0000:21:00.0 open /sys/bus/pci/devices/0000:21:00.0/vfio-dev: no such file or directory]",
+        );
+
+        assert_eq!(first.anchor, second.anchor);
+        assert!(normalizer.are_similar(&first, &second));
+    }
+
+    /// Most lines carry no anchor at all and must group exactly as before.
+    #[test]
+    fn lines_without_anchors_are_untouched() {
+        let plain = normalize(
+            "Sep 14 06:58:42 epyc systemd[1]: modprobe@configfs.service: Deactivated successfully.",
+        );
+        assert_eq!(
+            plain.anchor, 0,
+            "a line with no request or device carries no anchor"
+        );
+
+        let normalizer = Normalizer::new(Config::default());
+        let other = normalize(
+            "Sep 14 06:58:43 epyc systemd[1]: modprobe@fuse.service: Deactivated successfully.",
+        );
+        assert_eq!(other.anchor, 0);
+        assert!(normalizer.are_similar(&plain, &other));
+    }
+
+    /// The anchor is folded into the line hash, so the folder's exact-hash
+    /// group index cannot attach a line to a group with a different anchor
+    /// without ever consulting `are_similar`.
+    #[test]
+    fn anchor_is_folded_into_the_line_hash() {
+        let login = normalize(
+            r#"[2026-08-16 14:08:34 +0200] ::ffff - "GET /login/ HTTP/1.1" 200 17450.949"#,
+        );
+        let admin = normalize(
+            r#"[2026-08-16 14:08:34 +0200] ::ffff - "GET /admin/ HTTP/1.1" 200 17450.949"#,
+        );
+        assert_eq!(
+            login.normalized, admin.normalized,
+            "normalization erases both paths identically — that is the trap"
+        );
+        assert_ne!(
+            login.hash, admin.hash,
+            "the hash must still tell them apart"
+        );
     }
 }
