@@ -64,20 +64,13 @@ impl EmailPatternDetector {
             return false;
         }
 
-        // Must contain exactly one @ symbol
-        let at_count = candidate.chars().filter(|&c| c == '@').count();
-        if at_count != 1 {
+        // Must contain exactly one @ symbol, splitting local from domain
+        let Some((local, domain)) = candidate.split_once('@') else {
+            return false;
+        };
+        if domain.contains('@') {
             return false;
         }
-
-        // Split into local and domain parts
-        let parts: Vec<&str> = candidate.split('@').collect();
-        if parts.len() != 2 {
-            return false;
-        }
-
-        let local = parts[0];
-        let domain = parts[1];
 
         // Non-empty local and domain parts
         if local.is_empty() || domain.is_empty() {
