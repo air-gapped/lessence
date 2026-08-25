@@ -10,7 +10,6 @@ mod unit {
     mod test_log_module_pattern;
     mod test_markdown_output;
     mod test_pii_sanitization;
-    mod test_priority_assignment;
     mod test_structured_message_pattern;
     mod test_text_output;
 }

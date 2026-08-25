@@ -221,9 +221,8 @@ fn test_full_pipeline_scales_linearly() {
 #[test]
 fn test_pattern_compilation_succeeds() {
     // Verify patterns load correctly and have expected count
-    use lessence::patterns::timestamp::TimestampRegistry;
-    let registry = TimestampRegistry::new();
-    let patterns = registry.get_patterns();
+    use lessence::patterns::timestamp::patterns;
+    let patterns = patterns();
     assert!(
         patterns.len() >= 30,
         "Should have sufficient patterns, got {}",

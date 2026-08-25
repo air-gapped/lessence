@@ -40,7 +40,7 @@ src/
     mod.rs             #   grouping, rollups, PII masking
     render.rs          #   all output modes: text, markdown, JSONL, summary, stats
   patterns/            # 16 pattern detectors (timestamp, email, hash, network, ...)
-    timestamp/         # Unified timestamp detection (30+ formats, registry-based)
+    timestamp/         # Unified timestamp detection (38 formats, one scored table)
 ```
 
 **How folding works**: Lines are normalized (variable parts replaced with tokens like `<IP>`, `<TIMESTAMP>`, `<UUID>`), then grouped by similarity. Groups of 3+ similar lines are collapsed to a representative line + count.

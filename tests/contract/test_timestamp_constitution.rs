@@ -1,15 +1,13 @@
 // Contract Test: Constitutional Compliance for Unified Timestamp System
 
-use lessence::patterns::timestamp::{TimestampFormat, TimestampRegistry, UnifiedTimestampDetector};
+use lessence::patterns::timestamp::{UnifiedTimestampDetector, patterns};
 
 #[test]
 fn test_pattern_count_constitutional_requirement() {
-    let registry = TimestampRegistry::new();
-    let patterns = registry.get_patterns();
     assert!(
-        patterns.len() >= 30,
+        patterns().len() >= 30,
         "Constitutional violation: Must have 30+ patterns, found {}",
-        patterns.len()
+        patterns().len()
     );
 }
 
@@ -47,62 +45,44 @@ fn test_thread_safety_constitutional_requirement() {
 
 #[test]
 fn test_pattern_completeness_constitutional_requirement() {
-    let registry = TimestampRegistry::new();
-    let patterns = registry.get_patterns();
-
-    let has_iso8601 = patterns
-        .iter()
-        .any(|p| matches!(p.format_type, TimestampFormat::ISO8601Enhanced));
-    assert!(has_iso8601, "Missing ISO8601 patterns");
-
-    let has_unix = patterns
-        .iter()
-        .any(|p| matches!(p.format_type, TimestampFormat::UnixTimestamp));
-    assert!(has_unix, "Missing Unix timestamp patterns");
-
-    let has_k8s = patterns
-        .iter()
-        .any(|p| matches!(p.format_type, TimestampFormat::KubernetesLog));
-    assert!(has_k8s, "Missing Kubernetes patterns");
-
-    let has_us = patterns
-        .iter()
-        .any(|p| matches!(p.format_type, TimestampFormat::USDate));
-    assert!(has_us, "Missing US date patterns");
-
-    let has_db = patterns
-        .iter()
-        .any(|p| matches!(p.format_type, TimestampFormat::MySQLTimestamp));
-    assert!(has_db, "Missing database patterns");
+    // One representative per family must be present. Names are the stable
+    // identifiers in the pattern table.
+    for required in [
+        "iso8601-enhanced",
+        "unix-timestamp",
+        "kubernetes-log",
+        "us-date",
+        "mysql-timestamp",
+    ] {
+        assert!(
+            patterns().iter().any(|p| p.name == required),
+            "Missing pattern: {required}"
+        );
+    }
 }
 
 #[test]
 fn test_priority_ordering_constitutional_requirement() {
-    let registry = TimestampRegistry::new();
-    let patterns = registry.get_patterns();
-
-    let unix_patterns: Vec<_> = patterns
+    // Unix epoch patterns must lose every overlap against a real date: a bare
+    // 10-13 digit integer is far more often an id, a size, or a port.
+    let unix: Vec<i32> = patterns()
         .iter()
-        .filter(|p| {
-            matches!(
-                p.format_type,
-                TimestampFormat::UnixTimestamp
-                    | TimestampFormat::UnixTimestampMs
-                    | TimestampFormat::UnixTimestampNs
-            )
-        })
+        .filter(|p| p.name.starts_with("unix-"))
+        .map(|p| p.score)
         .collect();
+    assert!(!unix.is_empty(), "Must have Unix timestamp patterns");
 
-    assert!(
-        !unix_patterns.is_empty(),
-        "Must have Unix timestamp patterns"
-    );
+    let worst_other = patterns()
+        .iter()
+        .filter(|p| !p.name.starts_with("unix-"))
+        .map(|p| p.score)
+        .max()
+        .expect("table has non-unix patterns");
 
-    for pattern in &unix_patterns {
+    for score in unix {
         assert!(
-            pattern.priority.unix_timestamp_penalty,
-            "Unix timestamp {:?} must have penalty",
-            pattern.format_type
+            score > worst_other,
+            "Unix pattern scored {score}, must rank below every other pattern ({worst_other})"
         );
     }
 }
