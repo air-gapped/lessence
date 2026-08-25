@@ -46,6 +46,20 @@ Example: `--disable-patterns timestamp,uuid` to keep timestamps and UUIDs litera
 | `--max-lines N` | unlimited | Stop processing after N lines. |
 | `--preserve-color` | off | Keep ANSI escape codes (stripped by default). |
 
+## Record framing
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--frame-continuations` | off | Attach indented lines to the record above them, so a stack trace folds as one event instead of one group per frame. |
+
+Reach for it when a log carries multi-line records — Python/Java tracebacks,
+`Caused by:` chains, indented YAML — and the fold has split one exception into
+a group per frame, which destroys the causal order. Off by default because it
+changes what a record means: one output record can then span several physical
+lines. Line numbers still point at the line the record starts on, the stats
+footer still counts physical lines, and `--fail-on-pattern` still tests every
+physical line, so a match hiding inside a frame still fails the run.
+
 ## CI Integration
 
 | Flag | Default | Description |

@@ -74,6 +74,7 @@ fn main() -> Result<()> {
         top_n: effective_top,
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),
+        frame_continuations: cli.frame_continuations,
         ..Config::default()
     };
     for name in &cli.disable_patterns {

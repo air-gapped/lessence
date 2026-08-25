@@ -154,6 +154,7 @@ headline example above is the only CI-verified number.
 --top <TOP>    Show only the N most frequent patterns, sorted by count
 --fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
 --fail-on-pattern <FAIL_ON_PATTERN>    Exit 1 if any input line matches this regex (for CI gating)
+--frame-continuations    Attach indented continuation lines to the record above them, so a stack trace folds as one event instead of one group per frame [default: false]
 --completions <COMPLETIONS>    Generate shell completion script and exit
 FILE...    Input files (reads stdin if none given, use - for explicit stdin)
 ```

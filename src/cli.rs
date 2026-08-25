@@ -194,6 +194,11 @@ pub struct Cli {
     #[arg(long)]
     pub fail_on_pattern: Option<String>,
 
+    /// Attach indented continuation lines to the record above them, so a stack
+    /// trace folds as one event instead of one group per frame
+    #[arg(long)]
+    pub frame_continuations: bool,
+
     /// Generate shell completion script and exit
     #[arg(long)]
     pub completions: Option<clap_complete::Shell>,
