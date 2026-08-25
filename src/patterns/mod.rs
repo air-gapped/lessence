@@ -335,6 +335,30 @@ impl LogLine {
 /// these indicators belong to KubernetesDetector, so the bracket and
 /// log-module detectors skip them. Declared per-entry in the detector
 /// ordering table in `normalize.rs` (`defers_to_kubernetes`).
+/// Fold every match of `regex` that `recognise` accepts, pushing one token per
+/// fold and leaving unrecognised matches in the text verbatim.
+///
+/// Detectors that scan a line for one shape and rewrite it in place all had the
+/// same body: `replace_all` with a closure that either pushes a token and
+/// returns a placeholder, or returns `caps[0]` unchanged. The second half is
+/// the easy one to get wrong when copied, so it lives here once.
+pub(crate) fn fold_matches(
+    text: &mut String,
+    tokens: &mut Vec<Token>,
+    regex: &regex::Regex,
+    recognise: impl Fn(&regex::Captures) -> Option<(Token, String)>,
+) {
+    *text = regex
+        .replace_all(text, |caps: &regex::Captures| match recognise(caps) {
+            Some((token, replacement)) => {
+                tokens.push(token);
+                replacement
+            }
+            None => caps.get(0).unwrap().as_str().to_string(),
+        })
+        .to_string();
+}
+
 pub(crate) fn has_kubernetes_indicators(text: &str) -> bool {
     has_k8s_resource_indicators(text) || has_k8s_component_names(text)
 }

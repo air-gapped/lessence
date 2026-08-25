@@ -72,13 +72,23 @@ impl StructuredMessageDetector {
         !text.contains(r#""response":"#)
     }
 
-    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter (has_structured_indicators) excludes all inputs that would match CONTAINER_STRUCTURED_REGEX, so this is dead code in practice
-    fn apply_container_pattern(text: &str, tokens: &mut Vec<Token>) {
-        for caps in CONTAINER_STRUCTURED_REGEX.captures_iter(text) {
-            let level = caps.get(1).unwrap().as_str();
-            let component = caps.get(2).unwrap().as_str();
+    /// Collect one `StructuredMessage` per match that `accept` recognises.
+    ///
+    /// `level_group` and `component_group` are capture indices, because the
+    /// JSON variants disagree about which field comes first.
+    fn collect(
+        text: &str,
+        tokens: &mut Vec<Token>,
+        regex: &Regex,
+        level_group: usize,
+        component_group: usize,
+        accept: impl Fn(&str, &str) -> bool,
+    ) {
+        for caps in regex.captures_iter(text) {
+            let level = caps.get(level_group).unwrap().as_str();
+            let component = caps.get(component_group).unwrap().as_str();
 
-            if Self::is_application_component(component) {
+            if accept(component, level) {
                 tokens.push(Token::StructuredMessage {
                     component: component.to_lowercase(),
                     level: level.to_lowercase(),
@@ -87,47 +97,48 @@ impl StructuredMessageDetector {
         }
     }
 
-    fn apply_json_pattern(text: &str, tokens: &mut Vec<Token>) {
-        for caps in JSON_STRUCTURED_REGEX.captures_iter(text) {
-            let level = caps.get(1).unwrap().as_str();
-            let component = caps.get(2).unwrap().as_str();
+    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter (has_structured_indicators) excludes all inputs that would match CONTAINER_STRUCTURED_REGEX, so this is dead code in practice
+    fn apply_container_pattern(text: &str, tokens: &mut Vec<Token>) {
+        // Container logs carry a bracketed level rather than a log-level
+        // field, so only the component is validated here.
+        Self::collect(text, tokens, &CONTAINER_STRUCTURED_REGEX, 1, 2, |c, _| {
+            Self::is_application_component(c)
+        });
+    }
 
-            if Self::is_valid_structured_log(component, level) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-            }
-        }
+    fn apply_json_pattern(text: &str, tokens: &mut Vec<Token>) {
+        Self::collect(
+            text,
+            tokens,
+            &JSON_STRUCTURED_REGEX,
+            1,
+            2,
+            Self::is_valid_structured_log,
+        );
     }
 
     #[cfg_attr(test, mutants::skip)] // Equivalent mutant: JSON alt pattern (component first, level second) is rarely matched after the primary JSON pattern already consumed the input
     fn apply_json_alt_pattern(text: &str, tokens: &mut Vec<Token>) {
-        for caps in JSON_STRUCTURED_ALT_REGEX.captures_iter(text) {
-            let component = caps.get(1).unwrap().as_str();
-            let level = caps.get(2).unwrap().as_str();
-
-            if Self::is_valid_structured_log(component, level) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-            }
-        }
+        // Component first, level second — hence the swapped group indices.
+        Self::collect(
+            text,
+            tokens,
+            &JSON_STRUCTURED_ALT_REGEX,
+            2,
+            1,
+            Self::is_valid_structured_log,
+        );
     }
 
     fn apply_logfmt_pattern(text: &str, tokens: &mut Vec<Token>) {
-        for caps in LOGFMT_STRUCTURED_REGEX.captures_iter(text) {
-            let level = caps.get(1).unwrap().as_str();
-            let component = caps.get(2).unwrap().as_str();
-
-            if Self::is_valid_structured_log(component, level) {
-                tokens.push(Token::StructuredMessage {
-                    component: component.to_lowercase(),
-                    level: level.to_lowercase(),
-                });
-            }
-        }
+        Self::collect(
+            text,
+            tokens,
+            &LOGFMT_STRUCTURED_REGEX,
+            1,
+            2,
+            Self::is_valid_structured_log,
+        );
     }
 
     fn is_application_component(component: &str) -> bool {

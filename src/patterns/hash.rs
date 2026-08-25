@@ -65,63 +65,24 @@ impl HashDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Process in order of specificity (longest first to avoid conflicts)
-
-        // SHA512 (128 chars)
-        for cap in SHA512_REGEX.find_iter(text) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::SHA512, hash_str.to_string()));
+        // Fixed-width hex runs, longest first so a SHA-512 is not eaten as
+        // eight 16-char generics. Each regex scans for tokens, then folds its
+        // own matches away before the next, shorter one runs.
+        for (regex, hash_type) in [
+            (&*SHA512_REGEX, HashType::SHA512),
+            (&*SHA256_REGEX, HashType::SHA256),
+            (&*HEX_56_REGEX, HashType::Generic(56)),
+            (&*HEX_48_REGEX, HashType::Generic(48)),
+            (&*SHA1_REGEX, HashType::SHA1),
+            (&*MD5_REGEX, HashType::MD5),
+            (&*HEX_24_REGEX, HashType::Generic(24)),
+            (&*HEX_16_REGEX, HashType::Generic(16)),
+        ] {
+            for found in regex.find_iter(&result) {
+                tokens.push(Token::Hash(hash_type.clone(), found.as_str().to_string()));
+            }
+            result = regex.replace_all(&result, "<HASH>").to_string();
         }
-        result = SHA512_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // SHA256 (64 chars)
-        for cap in SHA256_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::SHA256, hash_str.to_string()));
-        }
-        result = SHA256_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // Generic 56-char hex
-        for cap in HEX_56_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::Generic(56), hash_str.to_string()));
-        }
-        result = HEX_56_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // Generic 48-char hex
-        for cap in HEX_48_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::Generic(48), hash_str.to_string()));
-        }
-        result = HEX_48_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // SHA1 (40 chars)
-        for cap in SHA1_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::SHA1, hash_str.to_string()));
-        }
-        result = SHA1_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // MD5 (32 chars)
-        for cap in MD5_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::MD5, hash_str.to_string()));
-        }
-        result = MD5_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // Generic 24-char hex
-        for cap in HEX_24_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::Generic(24), hash_str.to_string()));
-        }
-        result = HEX_24_REGEX.replace_all(&result, "<HASH>").to_string();
-
-        // Generic 16-char hex
-        for cap in HEX_16_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            tokens.push(Token::Hash(HashType::Generic(16), hash_str.to_string()));
-        }
-        result = HEX_16_REGEX.replace_all(&result, "<HASH>").to_string();
 
         // Git commit hashes (7-39 chars, after longer ones are processed).
         // Require both a digit and a letter: pure digits are numbers
