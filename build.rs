@@ -25,13 +25,24 @@ fn git(args: &[&str]) -> Option<String> {
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LESSENCE_BUILD_ID");
-    // Watch the source tree so the dirty flag stays honest, and HEAD so a bare
-    // `git commit` (no file changes) still refreshes the hash. `--git-path`
-    // resolves correctly inside git worktrees, where `.git` is a file.
+    // Watch the source tree so the dirty flag stays honest, and enough of git
+    // that a commit refreshes the hash even when no source file changed.
+    // `--git-path` resolves correctly inside worktrees, where `.git` is a file.
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
-    if let Some(head) = git(&["rev-parse", "--git-path", "HEAD"]) {
-        println!("cargo:rerun-if-changed={head}");
+    for path in ["HEAD", "index"] {
+        if let Some(resolved) = git(&["rev-parse", "--git-path", path]) {
+            println!("cargo:rerun-if-changed={resolved}");
+        }
+    }
+    // HEAD only records which branch is checked out; committing rewrites the
+    // branch's ref file, not HEAD. Without watching the ref too, a commit that
+    // touches no source leaves the embedded hash pointing at its parent — the
+    // exact stale-identity problem this whole file exists to prevent.
+    if let Some(branch) = git(&["symbolic-ref", "--quiet", "HEAD"])
+        && let Some(resolved) = git(&["rev-parse", "--git-path", &branch])
+    {
+        println!("cargo:rerun-if-changed={resolved}");
     }
 
     let build_id = std::env::var("LESSENCE_BUILD_ID")
