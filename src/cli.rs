@@ -107,8 +107,23 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
     Ok(pattern)
 }
 
+/// Shown by `--version`: semver plus the build identity embedded by `build.rs`.
+///
+/// The commit and target triple are part of the version because two binaries
+/// with the same semver can differ — any commit between releases changes
+/// behaviour without bumping Cargo.toml, and the musl build allocates
+/// differently from the glibc one.
+pub const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("LESSENCE_BUILD_ID"),
+    ", ",
+    env!("LESSENCE_TARGET"),
+    ")"
+);
+
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None)]
 pub struct Cli {
     /// Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting
     #[arg(long, default_value_t = crate::config::DEFAULT_THRESHOLD, value_parser = clap::value_parser!(u8).range(0..=100))]

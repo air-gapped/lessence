@@ -81,6 +81,13 @@ jobs:
     if: github.event.action == 'released' || github.event_name == 'workflow_dispatch'
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    # build.rs embeds this in `--version`. Set explicitly because the cross-rs
+    # container that builds aarch64 has no git, so the build.rs fallback there
+    # would report `unknown`. CROSS_CONTAINER_OPTS forwards it into that
+    # container; a plain job env var does not cross the docker boundary.
+    env:
+      LESSENCE_BUILD_ID: ${{ github.sha }}
+      CROSS_CONTAINER_OPTS: --env LESSENCE_BUILD_ID=${{ github.sha }}
     strategy:
       fail-fast: false
       matrix:
