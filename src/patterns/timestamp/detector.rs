@@ -1,15 +1,213 @@
-// Unified Timestamp Detection Engine
-// Constitutional requirement: Replace both timestamp.rs and essence/processor.rs
+//! Unified timestamp detection.
+//!
+//! One table of regexes, each with an overlap-resolution score. Every line is
+//! scanned by every pattern; where two matches overlap, the lower score wins.
+//!
+//! # The score
+//!
+//! Lower is stronger. The bands come from how much evidence a match carries
+//! and how badly a false positive hurts:
+//!
+//! | band | family | why |
+//! |------|--------|-----|
+//! | -100..-40 | structured (ISO 8601, RFC 2822/822) | full date + time + zone; unmistakable |
+//! | 0..60 | application (Kubernetes, Docker, Apache, Log4j, cloud) | full date + time, vendor-shaped |
+//! | 140..160 | regional (US, European, Windows) | `01/02/2024` is a date, but which field is the month is a guess |
+//! | 240 | database (MySQL, Oracle) | short forms, easily matched by accident |
+//! | 350..360 | legacy (syslog, ANSI C, bare time, durations) | no year, or no date at all |
+//! | 1480..1490 | unix epochs | a bare 10-13 digit integer is far more often an id, a size, or a port |
+//!
+//! Ties are broken by position in this table, which is why the table is
+//! written pre-sorted: what you read is the resolution order. Two patterns
+//! sharing a score can still disagree about how much text to swallow —
+//! `us-date` takes the trailing `AM` of `01/02/2024 10:00:00 AM` and
+//! `european-date` does not — so the order is load-bearing, not cosmetic.
+//!
+//! To add a format: put one `p(...)` line in the band it belongs to. Nothing
+//! else needs touching.
 
-use super::{DetectionResult, TimestampMatch, TimestampRegistry, Token};
+use super::{DetectionResult, TimestampMatch, Token};
+use regex::Regex;
 use std::sync::LazyLock;
 
-/// Central timestamp pattern detection system
-/// Replaces both src/patterns/timestamp.rs and src/essence/processor.rs patterns
-pub struct UnifiedTimestampDetector;
+/// One timestamp regex and the score that decides who wins an overlap.
+pub struct TimestampPattern {
+    /// Stable identifier, used by the format-coverage contract tests.
+    pub name: &'static str,
+    pub regex: Regex,
+    /// Lower wins. See the module docs for the bands.
+    pub score: i32,
+}
 
-/// Static registry for efficient pattern access
-static TIMESTAMP_REGISTRY: LazyLock<TimestampRegistry> = LazyLock::new(TimestampRegistry::new);
+fn p(name: &'static str, pattern: &str, score: i32) -> TimestampPattern {
+    TimestampPattern {
+        name,
+        regex: Regex::new(pattern).expect("timestamp pattern must compile"),
+        score,
+    }
+}
+
+/// All timestamp patterns, pre-sorted by score (strongest first).
+static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
+    vec![
+        // ---- structured ----
+        p(
+            "iso8601-enhanced",
+            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)\b",
+            -100,
+        ),
+        p(
+            "week-date",
+            r"\b\d{4}-W\d{2}-\d(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
+            -90,
+        ),
+        p(
+            "ordinal-date",
+            r"\b\d{4}-\d{3}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
+            -90,
+        ),
+        p(
+            "iso8601-full",
+            r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:\s*(?:UTC|GMT|[+-]\d{2}:?\d{2}?))?\b",
+            -90,
+        ),
+        p(
+            "rfc2822",
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\b",
+            -80,
+        ),
+        p(
+            "rfc822",
+            r"\w{3},\s+\d{2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT",
+            -40,
+        ),
+        // ---- application ----
+        p("kubernetes-log", r"[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+", 0),
+        p(
+            "docker-log",
+            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z\b",
+            0,
+        ),
+        p(
+            "java-simple-date",
+            r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{1,9}\b",
+            30,
+        ),
+        p(
+            "apache-common",
+            r"\[\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\]",
+            30,
+        ),
+        p(
+            "log4j",
+            r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s+\[",
+            30,
+        ),
+        p(
+            "nginx-access",
+            r"\b\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2}\b",
+            60,
+        ),
+        p(
+            "splunk",
+            r"\b\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2}\.\d{1,6}\b",
+            60,
+        ),
+        // Cloud logs differ only in fractional-second width: 3 / 6 / 7 digits.
+        p("aws", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", 60),
+        p("gcp", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", 60),
+        p("azure", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z", 60),
+        // ---- regional ----
+        p(
+            "us-date-12h",
+            r"\b\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}:\d{2}(?:\.\d{1,9})?\s*(?:AM|PM|am|pm)\b",
+            140,
+        ),
+        // Order matters against `european-date` below: both match
+        // `01/02/2024 10:00:00 AM` from the same offset, but only this one
+        // swallows the meridiem.
+        p(
+            "us-date",
+            r"\b\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:\s*(?:AM|PM))?\b",
+            140,
+        ),
+        p(
+            "european-date",
+            r"\b[0-3]\d/[01]\d/\d{4}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            140,
+        ),
+        p(
+            "us-date-dash",
+            r"\b\d{1,2}-\d{1,2}-\d{4}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            160,
+        ),
+        p(
+            "european-date-dot",
+            r"\b[0-3]\d\.[01]\d\.\d{4}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            160,
+        ),
+        p(
+            "windows-event",
+            r"\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}:\d{2}\s+(?:AM|PM)",
+            160,
+        ),
+        p("windows-iis", r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", 160),
+        // ---- database ----
+        p("mysql-timestamp", r"\b\d{6}\s+\d{2}:\d{2}:\d{2}\b", 240),
+        p(
+            "oracle",
+            r"\b\d{2}-[A-Z]{3}-\d{2}\s+\d{2}\.\d{2}\.\d{2}(?:\.\d+)?\s*(?:AM|PM)?",
+            240,
+        ),
+        // ---- legacy ----
+        p("compact", r"\b20\d{12}\b", 350),
+        p(
+            "syslog-bsd",
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            350,
+        ),
+        p("ibm-format", r"\b\d{2}\.\d{3}\s+\d{2}:\d{2}:\d{2}\b", 350),
+        p(
+            "syslog-with-year",
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            360,
+        ),
+        p(
+            "time-only",
+            r"\b\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?\b",
+            360,
+        ),
+        p(
+            "duration",
+            r"\bP(?:\d+Y)?(?:\d+M)?(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?\b",
+            360,
+        ),
+        p(
+            "git-commit",
+            r"\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}",
+            360,
+        ),
+        p(
+            "ansic",
+            r"\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}",
+            360,
+        ),
+        // ---- unix epochs ----
+        p("unix-prefixed", r"@1[0-9]{9,10}(?:\.\d{1,9})?\b", 1480),
+        p("unix-bracketed", r"\[1[0-9]{9,10}(?:\.\d{1,9})?\]", 1480),
+        p("unix-timestamp", r"\b1[0-9]{9,10}(?:\.\d{1,9})?\b", 1490),
+        p("unix-timestamp-ms", r"\b\d{13}\b", 1490),
+        p("unix-timestamp-ns", r"\b\d{19}\b", 1490),
+    ]
+});
+
+/// The full pattern table, strongest first.
+pub fn patterns() -> &'static [TimestampPattern] {
+    &PATTERNS
+}
+
+/// Central timestamp pattern detection system
+pub struct UnifiedTimestampDetector;
 
 impl UnifiedTimestampDetector {
     /// Primary detection interface - replaces TimestampDetector::detect_and_replace
@@ -45,21 +243,17 @@ impl UnifiedTimestampDetector {
             };
         }
 
-        let registry = &*TIMESTAMP_REGISTRY;
-        let patterns = registry.get_patterns();
-
         let mut all_matches = Vec::new();
 
         // Find all possible matches
-        for pattern in patterns {
+        for pattern in patterns() {
             for regex_match in pattern.regex.find_iter(text) {
-                let timestamp_match = TimestampMatch {
+                all_matches.push(TimestampMatch {
                     original: regex_match.as_str().to_string(),
                     start_pos: regex_match.start(),
                     end_pos: regex_match.end(),
-                    priority: pattern.priority.clone(),
-                };
-                all_matches.push(timestamp_match);
+                    score: pattern.score,
+                });
             }
         }
 
@@ -104,12 +298,10 @@ impl UnifiedTimestampDetector {
             return matches;
         }
 
-        // Sort by priority first (most specific patterns first)
-        matches.sort_by(|a, b| {
-            a.priority
-                .effective_score()
-                .cmp(&b.priority.effective_score())
-        });
+        // Strongest patterns first. The sort is stable and the input arrived
+        // position-sorted, so equal scores fall back to position and then to
+        // table order — see the module docs on why that order is load-bearing.
+        matches.sort_by_key(|m| m.score);
 
         let mut resolved = Vec::new();
         // Accepted, mutually-disjoint intervals keyed by start position.
@@ -176,6 +368,81 @@ impl UnifiedTimestampDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- the table itself ----
+
+    #[test]
+    fn table_is_sorted_by_score() {
+        // The table is read top-to-bottom as the resolution order, and
+        // `resolve_overlaps` relies on a stable sort to fall back to it on
+        // ties. An out-of-order line would silently change which pattern wins.
+        let scores: Vec<i32> = patterns().iter().map(|p| p.score).collect();
+        let mut sorted = scores.clone();
+        sorted.sort_unstable();
+        assert_eq!(
+            scores, sorted,
+            "PATTERNS must be written pre-sorted by score"
+        );
+    }
+
+    #[test]
+    fn table_names_are_unique() {
+        let mut names: Vec<&str> = patterns().iter().map(|p| p.name).collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(names.len(), total, "pattern names must be unique");
+    }
+
+    #[test]
+    fn unix_epochs_rank_below_everything_else() {
+        // Constitutional requirement: a bare integer must never outrank a
+        // real date, because most 10-13 digit integers in logs are not times.
+        let worst_non_unix = patterns()
+            .iter()
+            .filter(|p| !p.name.starts_with("unix-"))
+            .map(|p| p.score)
+            .max()
+            .unwrap();
+        let best_unix = patterns()
+            .iter()
+            .filter(|p| p.name.starts_with("unix-"))
+            .map(|p| p.score)
+            .min()
+            .unwrap();
+        assert!(
+            best_unix > worst_non_unix,
+            "unix epoch patterns must score above (lose to) every other pattern"
+        );
+    }
+
+    #[test]
+    fn tie_between_us_and_european_date_is_deterministic() {
+        // Both patterns match `01/02/2024 10:00:00 AM` from offset 0 with the
+        // same score, but `us-date` also takes the ` AM`. Before the table was
+        // pre-sorted the winner was drawn from HashMap iteration order, so the
+        // same input normalised two different ways across runs.
+        let (out, _) = UnifiedTimestampDetector::detect_and_replace("01/02/2024 10:00:00 AM alpha");
+        assert_eq!(out, "<TIMESTAMP> alpha");
+    }
+
+    #[test]
+    fn detection_is_stable_across_calls() {
+        let input = "01/02/2024 10:00:00 AM alpha";
+        let first = UnifiedTimestampDetector::detect_and_replace(input).0;
+        for _ in 0..50 {
+            assert_eq!(UnifiedTimestampDetector::detect_and_replace(input).0, first);
+        }
+    }
+
+    #[test]
+    fn table_covers_thirty_plus_formats() {
+        assert!(
+            patterns().len() >= 30,
+            "constitutional requirement: 30+ timestamp formats, got {}",
+            patterns().len()
+        );
+    }
 
     #[test]
     fn has_timestamp_indicators_year_and_colon() {
@@ -433,15 +700,13 @@ mod tests {
 
     // ---- resolve_overlaps: boundary tests ----
 
-    fn make_match(start: usize, end: usize, specificity: u32) -> TimestampMatch {
+    /// `score` is the overlap-resolution score: lower wins.
+    fn make_match(start: usize, end: usize, score: i32) -> TimestampMatch {
         TimestampMatch {
             original: String::new(),
             start_pos: start,
             end_pos: end,
-            priority: super::super::priority::PatternPriority::new(
-                specificity,
-                super::super::priority::FormatFamily::Structured,
-            ),
+            score,
         }
     }
 
@@ -453,7 +718,7 @@ mod tests {
 
     #[test]
     fn resolve_overlaps_no_overlap() {
-        let matches = vec![make_match(0, 10, 90), make_match(15, 25, 80)];
+        let matches = vec![make_match(0, 10, -90), make_match(15, 25, -80)];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 2);
     }
@@ -461,8 +726,8 @@ mod tests {
     #[test]
     fn resolve_overlaps_overlap_higher_wins() {
         // Two matches overlap: 0..20 and 10..30
-        // Higher specificity (90) should win
-        let matches = vec![make_match(0, 20, 90), make_match(10, 30, 50)];
+        // Stronger score (-90) should win
+        let matches = vec![make_match(0, 20, -90), make_match(10, 30, -50)];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].start_pos, 0);
@@ -472,7 +737,7 @@ mod tests {
     #[test]
     fn resolve_overlaps_adjacent_both_survive() {
         // Touching but not overlapping: 0..10 and 10..20
-        let matches = vec![make_match(0, 10, 90), make_match(10, 20, 80)];
+        let matches = vec![make_match(0, 10, -90), make_match(10, 20, -80)];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 2);
     }
@@ -480,16 +745,16 @@ mod tests {
     #[test]
     fn resolve_overlaps_end_equals_start_both_survive() {
         // Kills mutant: `candidate_range.end > used_range.start` → `>= `
-        // Higher priority match at 5..15 selected first.
+        // Stronger match at 5..15 selected first.
         // Then candidate 0..5: start(0) < used_end(15) = true,
         // end(5) > used_start(5) → 5 > 5 = false → no overlap → survives.
         // With >=: 5 >= 5 = true → overlap → wrongly excluded.
-        let matches = vec![make_match(5, 15, 90), make_match(0, 5, 50)];
+        let matches = vec![make_match(5, 15, -90), make_match(0, 5, -50)];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 2, "adjacent end==start should not overlap");
     }
 
-    // ---- Mutant-killing: has_timestamp_indicators line 84 ----
+    // ---- Mutant-killing: has_timestamp_indicators ----
 
     #[test]
     fn ts_ind_requires_colon() {
@@ -507,12 +772,12 @@ mod tests {
         ));
     }
 
-    // ---- Mutant-killing: resolve_overlaps line 124 ----
+    // ---- Mutant-killing: resolve_overlaps ----
 
     #[test]
     fn resolve_overlaps_single_match() {
         // Single match should always survive
-        let matches = vec![make_match(5, 15, 90)];
+        let matches = vec![make_match(5, 15, -90)];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].start_pos, 5);
@@ -521,14 +786,14 @@ mod tests {
     #[test]
     fn resolve_overlaps_three_overlapping() {
         // Three overlapping matches: 0..20, 5..25, 10..30
-        // Highest priority (90) wins, others excluded
+        // Strongest (-90) wins, others excluded
         let matches = vec![
-            make_match(0, 20, 90),
-            make_match(5, 25, 50),
-            make_match(10, 30, 30),
+            make_match(0, 20, -90),
+            make_match(5, 25, -50),
+            make_match(10, 30, -30),
         ];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
-        assert_eq!(result.len(), 1, "only highest priority should survive");
+        assert_eq!(result.len(), 1, "only strongest should survive");
         assert_eq!(result[0].start_pos, 0);
     }
 
@@ -543,7 +808,7 @@ mod tests {
         const N: usize = 20_000;
         // Disjoint intervals 0..1, 2..3, 4..5, ... (a one-unit gap between each)
         // so none overlap; all must be retained.
-        let matches: Vec<_> = (0..N).map(|i| make_match(i * 2, i * 2 + 1, 90)).collect();
+        let matches: Vec<_> = (0..N).map(|i| make_match(i * 2, i * 2 + 1, -90)).collect();
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), N, "every disjoint match must survive");
         // Output is position-sorted and preserves each interval.
@@ -556,32 +821,32 @@ mod tests {
     #[test]
     fn resolve_overlaps_many_overlapping_one_wins() {
         // Adversarial counterpart: thousands of mutually-overlapping
-        // candidates. Highest priority (added first in priority order) wins
-        // and blocks all others; the neighbour probe still runs in O(log k).
+        // candidates. The strongest score wins and blocks all others; the
+        // neighbour probe still runs in O(log k).
         const N: usize = 20_000;
-        // All share position 0..N+1; give the first the highest specificity.
+        // All share position 0..N+1; scores -10 down to -(10 + N - 1).
         let mut matches: Vec<_> = (0..N)
-            .map(|i| make_match(0, N + 1, 10 + i as u32))
+            .map(|i| make_match(0, N + 1, -10 - i as i32))
             .collect();
-        matches.reverse(); // highest specificity no longer first in input order
+        matches.reverse(); // strongest no longer first in input order
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
-        assert_eq!(result.len(), 1, "all overlap; only top priority survives");
-        assert_eq!(result[0].priority.specificity_score, 10 + (N as u32 - 1));
+        assert_eq!(result.len(), 1, "all overlap; only strongest survives");
+        assert_eq!(result[0].score, -10 - (N as i32 - 1));
     }
 
     #[test]
     fn resolve_overlaps_rejects_candidate_overlapping_successor() {
-        // High-priority match at [10,20); lower-priority candidate [5,15)
-        // starts BEFORE it. The successor check (used_start < end) must
-        // reject it — only the predecessor check was previously pinned.
-        let matches = vec![make_match(10, 20, 10), make_match(5, 15, 1)];
+        // Strong match at [10,20); weaker candidate [5,15) starts BEFORE it.
+        // The successor check (used_start < end) must reject it — only the
+        // predecessor check was previously pinned.
+        let matches = vec![make_match(10, 20, -10), make_match(5, 15, -1)];
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(
             result.len(),
             1,
-            "overlapping low-priority candidate must be dropped"
+            "overlapping weaker candidate must be dropped"
         );
         assert_eq!(result[0].start_pos, 10);
-        assert_eq!(result[0].priority.specificity_score, 10);
+        assert_eq!(result[0].score, -10);
     }
 }

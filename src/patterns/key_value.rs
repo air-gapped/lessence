@@ -64,89 +64,56 @@ impl KeyValueDetector {
         // match in a pass sees the same pre-pass string, so evaluating it
         // once is exact (and turns a Θ(matches × line) scan into Θ(line)).
         let in_metrics_context = Self::is_metrics_context(text);
-        *text = METRICS_KV_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let key = caps.get(1).unwrap().as_str();
-                let value = caps.get(2).unwrap().as_str();
-
-                if in_metrics_context {
-                    let value_type = Self::classify_value_type(value);
-                    tokens.push(Token::KeyValuePair {
-                        key: key.to_lowercase(),
-                        value_type,
-                    });
-                    "<KEY_VALUE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+        super::fold_matches(text, tokens, &METRICS_KV_REGEX, |caps| {
+            in_metrics_context
+                .then(|| Self::pair(caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str()))
+        });
     }
 
     fn apply_config_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         let in_config_context = Self::is_config_context(text);
-        *text = CONFIG_KV_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let key = caps.get(1).unwrap().as_str();
-                let value = caps.get(2).unwrap().as_str();
-
-                if in_config_context {
-                    let value_type = Self::classify_value_type(value);
-                    tokens.push(Token::KeyValuePair {
-                        key: key.to_lowercase(),
-                        value_type,
-                    });
-                    "<KEY_VALUE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+        super::fold_matches(text, tokens, &CONFIG_KV_REGEX, |caps| {
+            in_config_context
+                .then(|| Self::pair(caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str()))
+        });
     }
 
     fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         let in_logging_json = Self::is_logging_json(text);
-        *text = JSON_KV_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let key = caps.get(1).unwrap().as_str();
-                let value = caps
-                    .get(2)
-                    .or_else(|| caps.get(3))
-                    .map_or("null", |m| m.as_str());
-
-                if in_logging_json {
-                    let value_type = Self::classify_value_type(value);
-                    tokens.push(Token::KeyValuePair {
-                        key: key.to_lowercase(),
-                        value_type,
-                    });
-                    format!(r#""{key}": <KEY_VALUE>"#)
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
+        super::fold_matches(text, tokens, &JSON_KV_REGEX, |caps| {
+            let key = caps.get(1).unwrap().as_str();
+            // A JSON value arrives in group 2 (quoted) or group 3 (bare);
+            // neither present means an explicit null.
+            let value = caps
+                .get(2)
+                .or_else(|| caps.get(3))
+                .map_or("null", |m| m.as_str());
+            in_logging_json.then(|| {
+                let (token, _) = Self::pair(key, value);
+                (token, format!(r#""{key}": <KEY_VALUE>"#))
             })
-            .to_string();
+        });
     }
 
     fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         let line_allows = Self::line_allows_key_value(text);
-        *text = KEY_VALUE_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let key = caps.get(1).unwrap().as_str();
-                let value = caps.get(2).unwrap().as_str();
+        super::fold_matches(text, tokens, &KEY_VALUE_REGEX, |caps| {
+            let key = caps.get(1).unwrap().as_str();
+            let value = caps.get(2).unwrap().as_str();
+            (line_allows && Self::is_valid_key_value_pair(key, value))
+                .then(|| Self::pair(key, value))
+        });
+    }
 
-                if line_allows && Self::is_valid_key_value_pair(key, value) {
-                    let value_type = Self::classify_value_type(value);
-                    tokens.push(Token::KeyValuePair {
-                        key: key.to_lowercase(),
-                        value_type,
-                    });
-                    "<KEY_VALUE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+    /// The token and placeholder every key-value pass folds to.
+    fn pair(key: &str, value: &str) -> (Token, String) {
+        (
+            Token::KeyValuePair {
+                key: key.to_lowercase(),
+                value_type: Self::classify_value_type(value),
+            },
+            "<KEY_VALUE>".to_string(),
+        )
     }
 
     fn classify_value_type(value: &str) -> String {

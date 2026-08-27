@@ -11,11 +11,7 @@ fn test_concurrent_pattern_access() {
 
     // Spawn multiple threads accessing patterns simultaneously
     for _ in 0..20 {
-        let handle = thread::spawn(|| {
-            let registry = lessence::patterns::timestamp::TimestampRegistry::new();
-            let patterns = registry.get_patterns();
-            patterns.len()
-        });
+        let handle = thread::spawn(|| lessence::patterns::timestamp::patterns().len());
         handles.push(handle);
     }
 
@@ -81,17 +77,13 @@ fn test_concurrent_detection_operations() {
 
 #[test]
 fn test_registry_thread_safety() {
-    use lessence::patterns::timestamp::TimestampRegistry;
+    use lessence::patterns::timestamp::patterns;
 
     let mut handles = vec![];
 
     // Multiple threads creating registries (lazy initialization test)
     for _ in 0..10 {
-        let handle = thread::spawn(|| {
-            let registry = TimestampRegistry::new();
-            let patterns = registry.get_patterns();
-            patterns.len()
-        });
+        let handle = thread::spawn(|| patterns().len());
         handles.push(handle);
     }
 

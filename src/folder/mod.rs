@@ -1103,6 +1103,16 @@ impl PatternFolder {
     /// summary record is rendered.
     pub fn absorb_ingest_report(&mut self, report: &IngestReport, any_source_failed: bool) {
         self.json_skipped_overlong_lines += report.overlong_lines_skipped;
+        // `--frame-continuations` delivers a stack trace as one record, so the
+        // per-record tally under-reports the file. Add the merged lines back:
+        // they were read and they are represented in the output, just not as
+        // records of their own. Without this the input size and the
+        // compression ratio both understate what was processed.
+        self.stats.total_lines += report.continuation_lines_absorbed;
+        // They are also lines the reader never has to look at, so they count
+        // as saved too — otherwise the ratio would report framing as pure
+        // input growth with no benefit.
+        self.stats.lines_saved += report.continuation_lines_absorbed;
         if report.max_lines_reached {
             self.json_input_complete = false;
             self.json_max_lines_reached = true;

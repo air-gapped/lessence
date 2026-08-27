@@ -30,7 +30,11 @@ license: MIT
 rest — and the root cause is rarely in the last N lines. lessence
 normalizes variable parts (timestamps, IPs, UUIDs, hashes, PIDs), groups
 similar lines, and folds duplicates into a representative line + count,
-so every distinct pattern stays visible. When it does bound output
+so every distinct pattern stays visible. Fields that identify *what the
+line is about* — the request target of an HTTP request, a PCI device
+address — are matched exactly, never approximately, so a group's
+representative names an endpoint and device its members really used.
+When it does bound output
 (`--summary`, `--top N`) it says how many patterns were omitted. Prefer
 the view that declares its blind spots over the one that hides them.
 

@@ -307,6 +307,14 @@ pub struct LogLine {
     pub normalized: String,
     pub tokens: Vec<Token>,
     pub hash: u64,
+    /// Hash of this line's anchor values — the fields that must match exactly
+    /// for two lines to fold together (see `normalize::anchor_hash`). Zero
+    /// when the line carries no anchor, which is most lines.
+    ///
+    /// Already folded into `hash`, so the folder's exact-hash group index
+    /// cannot attach a line to a group with a different anchor. Kept
+    /// separately because the similarity path needs to reject on it.
+    pub(crate) anchor: u64,
     /// Lazily computed similarity-token cache. Most lines in fold-heavy
     /// logs resolve through the folder's exact-hash group index and never
     /// enter a similarity comparison, so the tokenization cost is only
@@ -321,8 +329,16 @@ impl LogLine {
             normalized,
             tokens,
             hash,
+            anchor: 0,
             sim_cache: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Attach anchor values. Chained onto `new` so the many test call sites
+    /// that build anchor-free lines stay as they are.
+    pub(crate) fn anchored(mut self, anchor: u64) -> Self {
+        self.anchor = anchor;
+        self
     }
 
     pub(crate) fn sim(&self) -> &SimTokens {
@@ -335,6 +351,30 @@ impl LogLine {
 /// these indicators belong to KubernetesDetector, so the bracket and
 /// log-module detectors skip them. Declared per-entry in the detector
 /// ordering table in `normalize.rs` (`defers_to_kubernetes`).
+/// Fold every match of `regex` that `recognise` accepts, pushing one token per
+/// fold and leaving unrecognised matches in the text verbatim.
+///
+/// Detectors that scan a line for one shape and rewrite it in place all had the
+/// same body: `replace_all` with a closure that either pushes a token and
+/// returns a placeholder, or returns `caps[0]` unchanged. The second half is
+/// the easy one to get wrong when copied, so it lives here once.
+pub(crate) fn fold_matches(
+    text: &mut String,
+    tokens: &mut Vec<Token>,
+    regex: &regex::Regex,
+    recognise: impl Fn(&regex::Captures) -> Option<(Token, String)>,
+) {
+    *text = regex
+        .replace_all(text, |caps: &regex::Captures| match recognise(caps) {
+            Some((token, replacement)) => {
+                tokens.push(token);
+                replacement
+            }
+            None => caps.get(0).unwrap().as_str().to_string(),
+        })
+        .to_string();
+}
+
 pub(crate) fn has_kubernetes_indicators(text: &str) -> bool {
     has_k8s_resource_indicators(text) || has_k8s_component_names(text)
 }

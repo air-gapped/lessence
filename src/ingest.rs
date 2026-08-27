@@ -85,6 +85,11 @@ pub enum Event<'a> {
 pub struct IngestReport {
     /// The `--fail-on-pattern` regex matched at least one raw line.
     pub fail_pattern_matched: bool,
+    /// Physical lines merged into the record above them by
+    /// `--frame-continuations`. They were delivered, just not as records of
+    /// their own, so line accounting has to add them back or the input size
+    /// and compression ratio under-report.
+    pub continuation_lines_absorbed: usize,
     /// Lines dropped by `--max-line-length`.
     pub overlong_lines_skipped: usize,
     /// Ingestion stopped early because `--max-lines` was reached.
@@ -98,6 +103,7 @@ pub struct Ingestor {
     max_line_length: Option<usize>,
     strip_escapes: bool,
     fail_regex: Option<regex::Regex>,
+    frame_continuations: bool,
 }
 
 impl Ingestor {
@@ -117,6 +123,7 @@ impl Ingestor {
             max_line_length: config.max_line_length,
             strip_escapes: !config.preserve_color,
             fail_regex,
+            frame_continuations: config.frame_continuations,
         })
     }
 
@@ -128,6 +135,11 @@ impl Ingestor {
     {
         let mut report = IngestReport::default();
         let mut lines_seen = 0usize;
+        // The record being assembled while `--frame-continuations` is on: its
+        // text so far, and the physical line it started at. A record is only
+        // handed to the sink once the next non-continuation line proves it is
+        // finished, so every emit below is one line behind the read cursor.
+        let mut pending: Option<(String, usize)> = None;
         'inputs: for input in readers {
             sink(Event::BeginInput {
                 source: input.source.as_deref(),
@@ -161,14 +173,58 @@ impl Ingestor {
                     line = strip_terminal_escapes(&line);
                 }
 
+                if !self.frame_continuations {
+                    sink(Event::Line {
+                        text: &line,
+                        line_number: line_index + 1,
+                    })?;
+                    continue;
+                }
+
+                // An indented line continues the record above it — a stack
+                // frame, a caret row, a `Caused by:`. Joined with a space
+                // rather than a newline so one record stays one line, which
+                // every downstream mode assumes.
+                if is_continuation(&line)
+                    && let Some((text, _)) = pending.as_mut()
+                {
+                    text.push(' ');
+                    text.push_str(line.trim_start());
+                    report.continuation_lines_absorbed += 1;
+                    continue;
+                }
+
+                if let Some((text, start)) = pending.replace((line, line_index + 1)) {
+                    sink(Event::Line {
+                        text: &text,
+                        line_number: start,
+                    })?;
+                }
+            }
+
+            // A record still open at end of input is complete: nothing follows
+            // it. Flushed inside the input loop so its line number is not
+            // reported against the next file.
+            if let Some((text, start)) = pending.take() {
                 sink(Event::Line {
-                    text: &line,
-                    line_number: line_index + 1,
+                    text: &text,
+                    line_number: start,
                 })?;
             }
         }
         Ok(report)
     }
+}
+
+/// Does this line continue the record above it rather than start a new one?
+///
+/// Leading whitespace is the near-universal convention for a continuation:
+/// Python and Java stack frames, `Caused by:` chains, YAML block scalars and
+/// the caret rows under a Rust or Python error are all indented under the line
+/// that introduced them. A blank line is not a continuation — it separates
+/// records rather than extending one.
+fn is_continuation(line: &str) -> bool {
+    line.starts_with([' ', '\t']) && !line.trim().is_empty()
 }
 
 /// Strip terminal escape sequences and neutralize bare C0 control bytes so that
@@ -504,5 +560,153 @@ mod tests {
         // DCS: ESC P ... ST must be removed entirely.
         let input = "before\x1bPq#0;1;2evil\x1b\\after";
         assert_eq!(strip_terminal_escapes(input), "beforeafter");
+    }
+
+    // ---- continuation framing ----
+
+    fn framing() -> Ingestor {
+        ingestor(&Config {
+            frame_continuations: true,
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn framing_is_off_by_default() {
+        // One record per physical line remains the default: framing changes
+        // what a record means, so it must be asked for.
+        let ing = ingestor(&Config::default());
+        let (events, report) = record(&ing, vec![reader(None, "Traceback:\n  at foo\n")]);
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(None),
+                Recorded::Line("Traceback:".into(), 1),
+                Recorded::Line("  at foo".into(), 2),
+            ]
+        );
+        assert_eq!(report.continuation_lines_absorbed, 0);
+    }
+
+    #[test]
+    fn framing_attaches_indented_lines_to_the_record_above() {
+        let (events, report) = record(
+            &framing(),
+            vec![reader(None, "Traceback:\n  at foo\n\tat bar\nnext event\n")],
+        );
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(None),
+                // The frames join with a space: one record stays one line,
+                // which every downstream mode assumes.
+                Recorded::Line("Traceback: at foo at bar".into(), 1),
+                Recorded::Line("next event".into(), 4),
+            ]
+        );
+        // Both frames were read and are represented — they just are not
+        // records of their own, so accounting has to add them back.
+        assert_eq!(report.continuation_lines_absorbed, 2);
+    }
+
+    #[test]
+    fn framed_record_reports_its_first_physical_line() {
+        // The line number has to point at where the event starts, so a reader
+        // can jump to it in the original file.
+        let (events, _) = record(
+            &framing(),
+            vec![reader(
+                None,
+                "one
+two
+Traceback:\n  at foo\n  at bar\n",
+            )],
+        );
+        assert_eq!(
+            events[3],
+            Recorded::Line("Traceback: at foo at bar".into(), 3)
+        );
+    }
+
+    #[test]
+    fn framing_flushes_a_record_left_open_at_end_of_input() {
+        // Nothing follows the last frame, so the record is complete.
+        let (events, _) = record(&framing(), vec![reader(None, "Traceback:\n  at foo\n")]);
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(None),
+                Recorded::Line("Traceback: at foo".into(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn framing_does_not_carry_a_record_across_inputs() {
+        // A record open at the end of one file must not swallow the first
+        // line of the next, nor report its line number against it.
+        let (events, _) = record(
+            &framing(),
+            vec![
+                reader(Some("a.log"), "Traceback:\n  at foo\n"),
+                reader(Some("b.log"), "  still indented\n"),
+            ],
+        );
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(Some("a.log".into())),
+                Recorded::Line("Traceback: at foo".into(), 1),
+                Recorded::Begin(Some("b.log".into())),
+                // No record is open, so an indented first line is its own.
+                Recorded::Line("  still indented".into(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn framing_treats_a_blank_line_as_a_separator_not_a_continuation() {
+        // A whitespace-only line ends the record rather than extending it;
+        // blank lines separate events in most formats.
+        let (events, report) = record(
+            &framing(),
+            vec![reader(None, "Traceback:\n  at foo\n   \nnext\n")],
+        );
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(None),
+                Recorded::Line("Traceback: at foo".into(), 1),
+                Recorded::Line("   ".into(), 3),
+                Recorded::Line("next".into(), 4),
+            ]
+        );
+        assert_eq!(report.continuation_lines_absorbed, 1);
+    }
+
+    #[test]
+    fn framing_leaves_unindented_input_alone() {
+        // A log with no continuations must ingest exactly as it does today.
+        let text = "alpha\nbeta\ngamma\n";
+        let (framed, framed_report) = record(&framing(), vec![reader(None, text)]);
+        let (plain, _) = record(&ingestor(&Config::default()), vec![reader(None, text)]);
+        assert_eq!(framed, plain);
+        assert_eq!(framed_report.continuation_lines_absorbed, 0);
+    }
+
+    #[test]
+    fn framing_still_fail_checks_every_physical_line() {
+        // --fail-on-pattern is a CI gate: a match hiding inside a stack frame
+        // must still trip it, so the check stays on raw physical lines.
+        let ing = ingestor(&Config {
+            frame_continuations: true,
+            fail_pattern: Some("SecretLeak".to_string()),
+            ..Config::default()
+        });
+        let (_, report) = record(&ing, vec![reader(None, "Traceback:\n  at SecretLeak\n")]);
+        assert!(
+            report.fail_pattern_matched,
+            "a pattern inside a continuation line must still fail the run"
+        );
     }
 }

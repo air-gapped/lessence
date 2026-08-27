@@ -48,6 +48,9 @@ pub struct Config {
     pub top_n: Option<usize>, // --top N: show only N most frequent patterns
     pub stats_json: bool,   // --stats-json: emit JSON stats to stderr
     pub fail_pattern: Option<String>, // --fail-on-pattern: exit 1 when regex matches input
+    /// --frame-continuations: attach indented continuation lines to the record
+    /// above them, so a stack trace folds as one event instead of one per frame.
+    pub frame_continuations: bool,
 }
 
 impl Default for Config {
@@ -88,6 +91,7 @@ impl Default for Config {
             top_n: None,         // No top-N filtering by default
             stats_json: false,   // No JSON stats by default
             fail_pattern: None,  // No fail pattern by default
+            frame_continuations: false, // Opt-in: one record per physical line by default
         }
     }
 }

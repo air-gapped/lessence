@@ -68,38 +68,23 @@ impl UuidDetector {
             })
             .to_string();
 
-        // Trace IDs
-        for cap in TRACE_ID_REGEX.captures_iter(&result) {
-            let trace_id = cap.get(1).unwrap().as_str();
-            if Self::is_likely_id(trace_id) {
-                tokens.push(Token::Uuid(trace_id.to_string()));
+        // Trace, session and correlation ids all carry the value in group 1
+        // and fold to a keyword-prefixed placeholder.
+        for (regex, replacement) in [
+            (&*TRACE_ID_REGEX, "trace=<UUID>"),
+            (&*SESSION_ID_REGEX, "session=<UUID>"),
+            (&*CORRELATION_ID_REGEX, "correlation_id=<UUID>"),
+        ] {
+            for caps in regex.captures_iter(&result) {
+                let id = caps.get(1).unwrap().as_str();
+                if Self::is_likely_id(id) {
+                    tokens.push(Token::Uuid(id.to_string()));
+                }
             }
+            // Folded whether or not the value looked like an id: the
+            // surrounding keyword is evidence enough that the field is one.
+            result = regex.replace_all(&result, replacement).to_string();
         }
-        result = TRACE_ID_REGEX
-            .replace_all(&result, "trace=<UUID>")
-            .to_string();
-
-        // Session IDs
-        for cap in SESSION_ID_REGEX.captures_iter(&result) {
-            let session_id = cap.get(1).unwrap().as_str();
-            if Self::is_likely_id(session_id) {
-                tokens.push(Token::Uuid(session_id.to_string()));
-            }
-        }
-        result = SESSION_ID_REGEX
-            .replace_all(&result, "session=<UUID>")
-            .to_string();
-
-        // Correlation IDs
-        for cap in CORRELATION_ID_REGEX.captures_iter(&result) {
-            let correlation_id = cap.get(1).unwrap().as_str();
-            if Self::is_likely_id(correlation_id) {
-                tokens.push(Token::Uuid(correlation_id.to_string()));
-            }
-        }
-        result = CORRELATION_ID_REGEX
-            .replace_all(&result, "correlation_id=<UUID>")
-            .to_string();
 
         // UUIDs without hyphens (but avoid overlap with other hash patterns)
         for cap in UUID_NO_HYPHENS_REGEX.find_iter(&result) {

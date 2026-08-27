@@ -1874,6 +1874,7 @@ fn absorb_ingest_report_sets_input_completeness() {
     let report = crate::ingest::IngestReport {
         fail_pattern_matched: false,
         overlong_lines_skipped: 2,
+        continuation_lines_absorbed: 0,
         max_lines_reached: true,
     };
     f.absorb_ingest_report(&report, true);

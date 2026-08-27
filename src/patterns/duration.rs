@@ -70,39 +70,24 @@ impl DurationDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Process in order of specificity (most specific first)
-
-        // K8s duration fields (most specific)
-        for cap in K8S_DURATION_FIELD_REGEX.find_iter(text) {
-            let duration_str = cap.as_str();
-            tokens.push(Token::Duration(duration_str.to_string()));
+        // Process in order of specificity: each pass folds its own matches
+        // away before the next, looser one runs, so `<SIZE>` can never be
+        // re-read as a bare number.
+        for (regex, placeholder, token) in [
+            (
+                &*K8S_DURATION_FIELD_REGEX,
+                "<DURATION_FIELD>",
+                Token::Duration as fn(String) -> Token,
+            ),
+            (&*DURATION_WITH_UNIT_REGEX, "<DURATION>", Token::Duration),
+            (&*MEMORY_ADDR_REGEX, "<ADDR>", Token::Number),
+            (&*SIZE_REGEX, "<SIZE>", Token::Size),
+        ] {
+            for found in regex.find_iter(&result) {
+                tokens.push(token(found.as_str().to_string()));
+            }
+            result = regex.replace_all(&result, placeholder).to_string();
         }
-        result = K8S_DURATION_FIELD_REGEX
-            .replace_all(&result, "<DURATION_FIELD>")
-            .to_string();
-
-        // Duration with units in quotes
-        for cap in DURATION_WITH_UNIT_REGEX.find_iter(&result) {
-            let duration_str = cap.as_str();
-            tokens.push(Token::Duration(duration_str.to_string()));
-        }
-        result = DURATION_WITH_UNIT_REGEX
-            .replace_all(&result, "<DURATION>")
-            .to_string();
-
-        // Memory addresses
-        for cap in MEMORY_ADDR_REGEX.find_iter(&result) {
-            let addr_str = cap.as_str();
-            tokens.push(Token::Number(addr_str.to_string()));
-        }
-        result = MEMORY_ADDR_REGEX.replace_all(&result, "<ADDR>").to_string();
-
-        // Sizes with units
-        for cap in SIZE_REGEX.find_iter(&result) {
-            let size_str = cap.as_str();
-            tokens.push(Token::Size(size_str.to_string()));
-        }
-        result = SIZE_REGEX.replace_all(&result, "<SIZE>").to_string();
 
         // HTTP status codes
         for cap in HTTP_STATUS_REGEX.captures_iter(&result) {
@@ -126,26 +111,21 @@ impl DurationDetector {
             })
             .to_string();
 
-        // Percentages
-        for cap in PERCENTAGE_REGEX.find_iter(&result) {
-            let pct_str = cap.as_str();
-            tokens.push(Token::Number(pct_str.to_string()));
+        // Loosest passes last, on whatever text the placeholders left behind.
+        for (regex, placeholder, token) in [
+            (
+                &*PERCENTAGE_REGEX,
+                "<PCT>",
+                Token::Number as fn(String) -> Token,
+            ),
+            (&*DECIMAL_REGEX, "<DECIMAL>", Token::Duration),
+            (&*INTEGER_REGEX, "<NUMBER>", Token::Number),
+        ] {
+            for found in regex.find_iter(&result) {
+                tokens.push(token(found.as_str().to_string()));
+            }
+            result = regex.replace_all(&result, placeholder).to_string();
         }
-        result = PERCENTAGE_REGEX.replace_all(&result, "<PCT>").to_string();
-
-        // General decimal numbers (least specific, catch remaining)
-        for cap in DECIMAL_REGEX.find_iter(&result) {
-            let decimal_str = cap.as_str();
-            tokens.push(Token::Duration(decimal_str.to_string()));
-        }
-        result = DECIMAL_REGEX.replace_all(&result, "<DECIMAL>").to_string();
-
-        // Integer numbers (3+ digits, catch remaining numeric IDs)
-        for cap in INTEGER_REGEX.find_iter(&result) {
-            let int_str = cap.as_str();
-            tokens.push(Token::Number(int_str.to_string()));
-        }
-        result = INTEGER_REGEX.replace_all(&result, "<NUMBER>").to_string();
 
         (result, tokens)
     }

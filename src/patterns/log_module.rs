@@ -81,101 +81,86 @@ impl LogWithModuleDetector {
     }
 
     fn apply_apache_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = APACHE_LOG_MODULE_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let level = caps.get(1).unwrap().as_str();
-                let module = caps.get(2).unwrap().as_str();
-
-                if Self::is_apache_module(module) {
-                    tokens.push(Token::LogWithModule {
+        super::fold_matches(text, tokens, &APACHE_LOG_MODULE_REGEX, |caps| {
+            let level = caps.get(1).unwrap().as_str();
+            let module = caps.get(2).unwrap().as_str();
+            Self::is_apache_module(module).then(|| {
+                (
+                    Token::LogWithModule {
                         level: level.to_lowercase(),
                         module: module.to_string(),
-                    });
-                    "<LOG_WITH_MODULE>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
+                    },
+                    "<LOG_WITH_MODULE>".to_string(),
+                )
             })
-            .to_string();
+        });
     }
 
     fn apply_nginx_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = NGINX_LOG_MODULE_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let level = caps.get(1).unwrap().as_str();
-                let module = caps.get(2).unwrap().as_str();
-
-                if Self::is_nginx_module(module) {
-                    tokens.push(Token::LogWithModule {
+        super::fold_matches(text, tokens, &NGINX_LOG_MODULE_REGEX, |caps| {
+            let level = caps.get(1).unwrap().as_str();
+            let module = caps.get(2).unwrap().as_str();
+            Self::is_nginx_module(module).then(|| {
+                (
+                    Token::LogWithModule {
                         level: level.to_lowercase(),
                         module: module.to_string(),
-                    });
-                    format!("[{level}] <LOG_WITH_MODULE>")
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
+                    },
+                    format!("[{level}] <LOG_WITH_MODULE>"),
+                )
             })
-            .to_string();
+        });
     }
 
     #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter requires bracket/uppercase indicators that pure syslog inputs (facility.level) never have
     fn apply_syslog_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = SYSLOG_FACILITY_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let facility = caps.get(1).unwrap().as_str();
-                let level = caps.get(2).unwrap().as_str();
-                let daemon = caps.get(3).unwrap().as_str();
-
-                if Self::is_syslog_daemon(daemon) {
-                    tokens.push(Token::LogWithModule {
+        super::fold_matches(text, tokens, &SYSLOG_FACILITY_REGEX, |caps| {
+            let facility = caps.get(1).unwrap().as_str();
+            let level = caps.get(2).unwrap().as_str();
+            let daemon = caps.get(3).unwrap().as_str();
+            Self::is_syslog_daemon(daemon).then(|| {
+                (
+                    Token::LogWithModule {
                         level: Self::normalize_syslog_level(level),
                         module: daemon.to_string(),
-                    });
-                    format!("{facility}.{level} <LOG_WITH_MODULE>:")
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
+                    },
+                    format!("{facility}.{level} <LOG_WITH_MODULE>:"),
+                )
             })
-            .to_string();
+        });
     }
 
     fn apply_framework_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = FRAMEWORK_LOG_MODULE_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let level = caps.get(1).unwrap().as_str();
-                let module = caps.get(2).unwrap().as_str();
-
-                if Self::is_framework_module(module) {
-                    tokens.push(Token::LogWithModule {
+        super::fold_matches(text, tokens, &FRAMEWORK_LOG_MODULE_REGEX, |caps| {
+            let level = caps.get(1).unwrap().as_str();
+            let module = caps.get(2).unwrap().as_str();
+            Self::is_framework_module(module).then(|| {
+                (
+                    Token::LogWithModule {
                         level: level.to_lowercase(),
                         module: module.to_string(),
-                    });
-                    format!("{level} [<LOG_WITH_MODULE>]")
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
+                    },
+                    format!("{level} [<LOG_WITH_MODULE>]"),
+                )
             })
-            .to_string();
+        });
     }
 
     fn apply_systemd_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = SYSTEMD_LOG_MODULE_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let service = caps.get(1).unwrap().as_str();
-                let level = caps.get(2).unwrap().as_str();
-                let component = caps.get(3).unwrap().as_str();
-
-                if Self::is_systemd_component(component) {
-                    tokens.push(Token::LogWithModule {
+        super::fold_matches(text, tokens, &SYSTEMD_LOG_MODULE_REGEX, |caps| {
+            let service = caps.get(1).unwrap().as_str();
+            let level = caps.get(2).unwrap().as_str();
+            let component = caps.get(3).unwrap().as_str();
+            Self::is_systemd_component(component).then(|| {
+                (
+                    Token::LogWithModule {
                         level: level.to_lowercase(),
                         module: format!("{service}.{component}"),
-                    });
-                    format!("{service}[PID]: [{level}] <LOG_WITH_MODULE>:")
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
+                    },
+                    format!("{service}[PID]: [{level}] <LOG_WITH_MODULE>:"),
+                )
             })
-            .to_string();
+        });
     }
 
     fn is_apache_module(module: &str) -> bool {
