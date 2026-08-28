@@ -14,6 +14,21 @@ use super::{
 static QUOTED_STRING_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
 
+// A DNS-1123-ish instance identifier standing alone as a whole field value:
+// "redis-sentinel-gitlab", "iperf3", "argocd/iperf3". Whether such a value
+// folds must not depend on how long it happens to be (bead lessence-8jb): the
+// 25-char rule below made renaming an app change whether its lines fold.
+//
+// The leading letter excludes bare numerals and HttpStatusDetector's own bare
+// `2xx`/`5xx` output. The class excludes whitespace (prose belongs to the
+// length rule), uppercase (enum values like OK/DENIED/StatefulSet) and `<`/`>`
+// (placeholders left by the detectors that ran before this one).
+static INSTANCE_IDENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9._/-]*[a-z0-9]$").unwrap());
+
+// Two characters carry no identity worth folding.
+const MIN_IDENT_LEN: usize = 3;
+
 // autoresearch: the per-quoted-string cascade below is a pure function of the
 // quoted text, so its result can be memoized. Real corpora repeat a small set
 // of quoted field names/values millions of times (source 146: ~600k cascade
@@ -23,9 +38,14 @@ const QUOTED_CACHE_MAX_ENTRIES: usize = 8192;
 const QUOTED_CACHE_MAX_KEY_LEN: usize = 256;
 
 thread_local! {
-    static QUOTED_CACHE: std::cell::RefCell<std::collections::HashMap<String, (String, bool)>> =
+    static QUOTED_CACHE: std::cell::RefCell<std::collections::HashMap<String, QuotedOutcome>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
 }
+
+/// The verdict for one quoted string: the replacement text, whether a
+/// `QuotedString` token is emitted, and whether the verdict came from the
+/// instance-identifier shape rule (which is vetoed in JSON key position).
+type QuotedOutcome = (String, bool, bool);
 
 pub struct QuotedStringDetector;
 
@@ -36,39 +56,48 @@ impl QuotedStringDetector {
         if !text.contains('"') {
             return (text.to_string(), Vec::new());
         }
-        let mut result = text.to_string();
+        let haystack = text.to_string();
         let mut tokens = Vec::new();
 
         // Replace all variable quoted strings with placeholder in one pass
-        result = QUOTED_STRING_PATTERN
-            .replace_all(&result, |caps: &regex::Captures| {
-                let quoted_string = caps.get(0).unwrap().as_str();
+        let result = QUOTED_STRING_PATTERN
+            .replace_all(&haystack, |caps: &regex::Captures| {
+                let matched = caps.get(0).unwrap();
+                let quoted_string = matched.as_str();
 
                 let cacheable = quoted_string.len() <= QUOTED_CACHE_MAX_KEY_LEN;
-                if cacheable {
-                    let hit = QUOTED_CACHE.with(|c| c.borrow().get(quoted_string).cloned());
-                    if let Some((replacement, had_token)) = hit {
-                        if had_token {
-                            tokens.push(Token::QuotedString(quoted_string.to_string()));
-                        }
-                        return replacement;
+                let cached = if cacheable {
+                    QUOTED_CACHE.with(|c| c.borrow().get(quoted_string).cloned())
+                } else {
+                    None
+                };
+
+                let (replacement, had_token, shape_folded) = if let Some(outcome) = cached {
+                    outcome
+                } else {
+                    let outcome = Self::normalize_quoted(quoted_string);
+                    if cacheable {
+                        QUOTED_CACHE.with(|c| {
+                            let mut cache = c.borrow_mut();
+                            if cache.len() < QUOTED_CACHE_MAX_ENTRIES {
+                                cache.insert(quoted_string.to_string(), outcome.clone());
+                            }
+                        });
                     }
+                    outcome
+                };
+
+                // A JSON key has the same shape as an instance name — there is
+                // no way to tell `"app-namespace"` from `"redis-sentinel"` by
+                // looking at the string alone. One byte of lookahead settles
+                // it: a key is followed by `:`. Folding keys would erase the
+                // record's schema from the template.
+                if shape_folded && haystack.as_bytes().get(matched.end()) == Some(&b':') {
+                    return quoted_string.to_string();
                 }
 
-                let (replacement, had_token) = Self::normalize_quoted(quoted_string);
                 if had_token {
                     tokens.push(Token::QuotedString(quoted_string.to_string()));
-                }
-                if cacheable {
-                    QUOTED_CACHE.with(|c| {
-                        let mut cache = c.borrow_mut();
-                        if cache.len() < QUOTED_CACHE_MAX_ENTRIES {
-                            cache.insert(
-                                quoted_string.to_string(),
-                                (replacement.clone(), had_token),
-                            );
-                        }
-                    });
                 }
                 replacement
             })
@@ -77,9 +106,16 @@ impl QuotedStringDetector {
         (result, tokens)
     }
 
+    /// Whole-value instance identifier: a DNS-1123-ish label standing alone as
+    /// a field value. See [`INSTANCE_IDENT`] for why each condition is there.
+    fn is_instance_ident(content: &str) -> bool {
+        content.len() >= MIN_IDENT_LEN
+            && content.bytes().any(|b| b == b'-' || b.is_ascii_digit())
+            && INSTANCE_IDENT.is_match(content)
+    }
+
     /// The full normalization cascade for one quoted string (quotes included).
-    /// Returns the replacement text and whether a QuotedString token is emitted.
-    fn normalize_quoted(quoted_string: &str) -> (String, bool) {
+    fn normalize_quoted(quoted_string: &str) -> QuotedOutcome {
         // Normalize patterns WITHIN the quoted content before deciding
         let quoted_content = &quoted_string[1..quoted_string.len() - 1]; // Remove quotes
         let mut normalized_content = quoted_content.to_string();
@@ -127,20 +163,22 @@ impl QuotedStringDetector {
                 || quoted_content.contains('['))
         {
             // This is escaped JSON or structured data - normalize it
-            ("<ESCAPED_JSON>".to_string(), true)
+            ("<ESCAPED_JSON>".to_string(), true, false)
         } else if normalized_content != quoted_content {
             // Normalization changed the content, it contains variable patterns
             // Store the original quoted string but replace with normalized version
-            (format!("\"{normalized_content}\""), true) // Keep it quoted with normalized content
+            (format!("\"{normalized_content}\""), true, false) // Keep it quoted with normalized content
+        } else if Self::is_instance_ident(quoted_content) {
+            // An instance name — folds on its shape, at any length.
+            ("<QUOTED_STRING>".to_string(), true, true)
         } else {
-            // No patterns found inside, treat as potential variable name
-            // This covers cases like "volume-name", "pod-uuid" etc.
+            // No patterns found inside and no identifier shape: prose or a
+            // bare word. Length is the only signal left, and for free text it
+            // is a reasonable one — a long message is usually per-event.
             if quoted_string.len() > 25 {
-                // Only very long strings are likely variable names
-                ("<QUOTED_STRING>".to_string(), true)
+                ("<QUOTED_STRING>".to_string(), true, false)
             } else {
-                // Keep shorter quoted strings unchanged (may contain patterns we couldn't detect)
-                (quoted_string.to_string(), false)
+                (quoted_string.to_string(), false, false)
             }
         }
     }
@@ -156,15 +194,15 @@ mod tests {
 
         let (normalized, tokens) = QuotedStringDetector::detect_and_replace(input);
 
-        // "csi-log" (9 chars with quotes) has no detectable patterns and is below 25-char
-        // threshold, so it's kept as-is and produces no token. The other 3 quoted strings
-        // have internal patterns that get normalized, producing 3 tokens.
-        assert_eq!(tokens.len(), 3);
+        // "csi-log" is a whole-value instance identifier (hyphen, no
+        // whitespace), so it folds on its shape regardless of length. The
+        // other 3 quoted strings have internal patterns that get normalized.
+        assert_eq!(tokens.len(), 4);
 
         // Verify normalized output contains expected patterns
         assert!(
-            normalized.contains("\"csi-log\""),
-            "csi-log should be kept as-is"
+            !normalized.contains("\"csi-log\""),
+            "csi-log is an instance name and should fold: {normalized}"
         );
         assert!(
             normalized.contains("csi-rbdplugin-<SUFFIX>"),
@@ -186,12 +224,12 @@ mod tests {
 
     #[test]
     fn test_exclude_short_strings() {
-        let input = r#"value "x" and "ab" but "longer-value""#;
+        let input = r#"value "x" and "ab" but "plain""#;
 
         let (normalized, tokens) = QuotedStringDetector::detect_and_replace(input);
 
-        // "longer-value" (14 chars with quotes) is below the 25-char threshold for
-        // unmodified quoted strings, so no tokens are produced
+        // Below MIN_IDENT_LEN, and a bare word carries no identifier shape, so
+        // none of these fold.
         assert_eq!(tokens.len(), 0);
         assert_eq!(normalized, input);
     }
@@ -376,6 +414,146 @@ mod tests {
         assert!(
             result.contains("<ESCAPED_JSON>"),
             "backslash+brace should trigger escaped JSON: {result}, tokens: {tokens:?}"
+        );
+    }
+
+    // ---- instance-identifier shape rule (bead lessence-8jb) ----
+
+    /// Fold one quoted string in value position and return the result.
+    fn fold_value(value: &str) -> String {
+        let (normalized, _) =
+            QuotedStringDetector::detect_and_replace(&format!(r#"{{"k":"{value}"}}"#));
+        normalized
+    }
+
+    #[test]
+    fn shape_fold_is_length_independent_bead_8jb() {
+        // The bead's repro: five application names spanning the old 25-char
+        // boundary. Whether they fold must not depend on how long they are.
+        for value in [
+            "iperf3",
+            "rook-ceph",
+            "redis-sentinel-gitlab",
+            "redis-sentinel-gitlab-prod",
+            "redis-sentinel-gitlab-prod-eu",
+        ] {
+            assert_eq!(
+                fold_value(value),
+                r#"{"k":<QUOTED_STRING>}"#,
+                "{value} should fold on its shape"
+            );
+        }
+    }
+
+    #[test]
+    fn shape_requires_hyphen_or_digit() {
+        // A bare lowercase word is shape-identical to an enum value such as a
+        // log level, so it stays literal. Each disjunct tested alone.
+        assert_eq!(fold_value("harbor"), r#"{"k":"harbor"}"#);
+        assert_eq!(fold_value("rook-ceph"), r#"{"k":<QUOTED_STRING>}"#);
+        assert_eq!(fold_value("iperf3"), r#"{"k":<QUOTED_STRING>}"#);
+    }
+
+    #[test]
+    fn shape_requires_leading_letter() {
+        // HttpStatusDetector emits a bare `2xx`, not an angle-bracket
+        // placeholder. A leading digit must not be eaten, or 2xx merges with
+        // 5xx.
+        assert_eq!(fold_value("2xx"), r#"{"k":"2xx"}"#);
+        assert_eq!(fold_value("a2x"), r#"{"k":<QUOTED_STRING>}"#);
+    }
+
+    #[test]
+    fn shape_requires_trailing_alphanumeric() {
+        assert_eq!(fold_value("abc-"), r#"{"k":"abc-"}"#);
+        assert_eq!(fold_value("abc-d"), r#"{"k":<QUOTED_STRING>}"#);
+    }
+
+    #[test]
+    fn shape_minimum_length_boundary() {
+        assert_eq!(fold_value("a1"), r#"{"k":"a1"}"#);
+        assert_eq!(fold_value("a-b"), r#"{"k":<QUOTED_STRING>}"#);
+    }
+
+    #[test]
+    fn shape_rejects_whitespace() {
+        // Prose stays with the length rule. This value is under 25 chars, so
+        // the length rule cannot mask a shape-rule mistake.
+        assert_eq!(fold_value("Update ok-1"), r#"{"k":"Update ok-1"}"#);
+    }
+
+    #[test]
+    fn shape_rejects_uppercase() {
+        assert_eq!(fold_value("InfoRefs-Pack"), r#"{"k":"InfoRefs-Pack"}"#);
+    }
+
+    #[test]
+    fn shape_accepts_slash_for_qualified_names() {
+        // argocd emits "app-qualified-name":"argocd/iperf3"; without `/` in
+        // the class those lines refuse to merge.
+        assert_eq!(fold_value("argocd/iperf3"), r#"{"k":<QUOTED_STRING>}"#);
+    }
+
+    #[test]
+    fn shape_rejects_empty_value() {
+        let (normalized, tokens) = QuotedStringDetector::detect_and_replace(r#"{"k":""}"#);
+        assert_eq!(normalized, r#"{"k":""}"#);
+        assert_eq!(tokens.len(), 0);
+    }
+
+    #[test]
+    fn shape_vetoed_when_the_string_is_a_json_key() {
+        // A key has the same shape as an instance name. Folding it would erase
+        // the record's schema from the template.
+        let (normalized, _) =
+            QuotedStringDetector::detect_and_replace(r#"{"app-namespace":"argocd"}"#);
+        assert_eq!(normalized, r#"{"app-namespace":"argocd"}"#);
+    }
+
+    #[test]
+    fn shape_not_vetoed_for_the_same_string_in_value_position() {
+        // Paired with the veto test above: together they prove the veto is
+        // positional and is not baked into the memo cache.
+        assert_eq!(fold_value("app-namespace"), r#"{"k":<QUOTED_STRING>}"#);
+    }
+
+    #[test]
+    fn shape_veto_and_fold_of_the_same_string_on_one_line() {
+        let (normalized, tokens) =
+            QuotedStringDetector::detect_and_replace(r#"{"app-namespace":"app-namespace"}"#);
+        assert_eq!(normalized, r#"{"app-namespace":<QUOTED_STRING>}"#);
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn shape_fold_emits_one_quoted_string_token() {
+        let (_, tokens) =
+            QuotedStringDetector::detect_and_replace(r#"{"k":"redis-sentinel-gitlab"}"#);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(
+            tokens[0],
+            Token::QuotedString("\"redis-sentinel-gitlab\"".to_string())
+        );
+    }
+
+    #[test]
+    fn claimed_content_beats_the_shape_rule() {
+        // The inner cascade already recognised something here; the shape rule
+        // must not run ahead of it and throw that away.
+        let normalized = fold_value("v1.31.4");
+        assert!(
+            !normalized.contains("<QUOTED_STRING>"),
+            "claimed content must keep its normalized form: {normalized}"
+        );
+        assert!(normalized.contains("<DECIMAL>"), "{normalized}");
+    }
+
+    #[test]
+    fn escaped_json_beats_the_shape_rule() {
+        let (normalized, _) = QuotedStringDetector::detect_and_replace(r#"{"k":"a-b\"c:d"}"#);
+        assert!(
+            normalized.contains("<ESCAPED_JSON>"),
+            "escaped JSON keeps priority: {normalized}"
         );
     }
 
