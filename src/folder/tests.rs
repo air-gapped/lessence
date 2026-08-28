@@ -1330,6 +1330,93 @@ fn make_folder() -> PatternFolder {
     })
 }
 
+// ---- VARIES: untokenised words that differ inside a merged group (w1p) ----
+
+fn rollup_of(lines: &[&str]) -> GroupRollup {
+    let mut f = make_folder();
+    for l in lines {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1, "these lines must fold into one group");
+    f.rollup_computer.compute(&f.buffer[0])
+}
+
+#[test]
+fn varies_reports_words_no_detector_tokenised() {
+    // lessence-w1p: ten subsystems folded into one group whose rollup said
+    // distinct_count 1. The words must surface like any token type.
+    // Enough fixed words around the one that varies for the lines to
+    // clear the similarity threshold, as the real Patroni lines do.
+    let r = rollup_of(&[
+        "2025-09-14 09:09:14,580 - bootstrapping - INFO - Configuring patroni",
+        "2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring crontab",
+        "2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring bootstrap",
+    ]);
+    let v = &r[VARIES];
+    assert_eq!(v.distinct_count, 3);
+    assert_eq!(v.samples, vec!["bootstrap", "crontab", "patroni"]);
+    assert!(!v.capped);
+}
+
+#[test]
+fn varies_includes_the_representative_value() {
+    // The first line's word is part of the variation too; a reader must
+    // see {6, 7}, not just {7}.
+    let r = rollup_of(&[
+        "mod_jk child in error state 6",
+        "mod_jk child in error state 7",
+        "mod_jk child in error state 6",
+    ]);
+    assert_eq!(r[VARIES].samples, vec!["6", "7"]);
+}
+
+#[test]
+fn varies_is_absent_when_only_tokens_differ() {
+    // <NUMBER> already reports these; VARIES must not duplicate it.
+    let r = rollup_of(&["req took 111 ms", "req took 222 ms", "req took 333 ms"]);
+    assert!(!r.contains_key(VARIES), "{r:?}");
+    assert!(r.contains_key("NUMBER"));
+}
+
+#[test]
+fn varies_is_absent_for_identical_lines() {
+    let r = rollup_of(&["same words here", "same words here", "same words here"]);
+    assert!(!r.contains_key(VARIES), "{r:?}");
+}
+
+#[test]
+fn varies_skips_members_with_a_different_word_count() {
+    // An inserted word shifts every later position; pairing them would
+    // report the whole tail as variation. The similarity metric tolerated
+    // the insertion; VARIES stays silent rather than lie.
+    let r = rollup_of(&[
+        "worker started handling batch alpha beta gamma delta",
+        "worker started now handling batch alpha beta gamma delta",
+        "worker started handling batch alpha beta gamma delta",
+    ]);
+    assert!(!r.contains_key(VARIES), "{r:?}");
+}
+
+#[test]
+fn varies_is_capped_like_every_other_type() {
+    let lines: Vec<String> = (0..80).map(|i| format!("unit u{i} started")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        threshold: 50,
+        ..Config::default()
+    });
+    for l in &refs {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    let v = &r[VARIES];
+    assert!(v.capped, "80 distinct words must hit the cap");
+    assert_eq!(v.distinct_count, ROLLUP_DISTINCT_CAP);
+}
+
 // ---- --explain: why a line founded a group instead of joining one ----
 
 fn explaining_folder() -> PatternFolder {

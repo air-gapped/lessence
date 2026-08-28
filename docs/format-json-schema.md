@@ -120,6 +120,14 @@ Each value records both the bounded data and how to interpret its counts:
 
 ### Sample-worthy vs count-only token types
 
+**`VARIES`** is not a token type. It reports words that differ between a
+group's members which no detector tokenised — `Configuring patroni` folded
+with `Configuring crontab` on similarity, and without this entry the rollup
+would claim one distinct value over ten. Sample-worthy; the values are the
+point. Computed positionally against the representative, so members with a
+different word count contribute nothing rather than misattribute a shifted
+tail. Absent when nothing untokenised varied.
+
 **Sample-worthy** (identity types — samples are useful): `UUID`,
 `IPV4`, `IPV6`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
 `K8S_PLUGIN`, `K8S_POD`, `QUOTED_STRING`, `NAME`, `HTTP_STATUS`,

@@ -389,8 +389,26 @@ type=NETFILTER_CFG msg=audit(1481076985.580:66): table=mangle family=2 entries=6
 type=NETFILTER_CFG msg=audit(1481076985.582:67): table=mangle family=2 entries=6
 type=NETFILTER_CFG msg=audit(1481076985.583:68): table=mangle family=2 entries=6
 
+##CASE lessence-w1p out_present=varies×2 {6, 7}
+##WHY two lines that fold on similarity but differ in an untokenised word must report
+##WHY  that word in the rollup — the invariant "zero data loss" held only for tokens
+##FROM examples/apache_sample.log — 29 lines said "state 6" for 7 that said "state 7"
+[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6
+[Sun Dec 04 04:51:18 2005] [error] mod_jk child workerEnv in error state 6
+[Sun Dec 04 04:59:38 2005] [error] mod_jk child workerEnv in error state 7
+
+##CASE lessence-w1p out_present="VARIES":{"distinct_count":3
+##WHY the rollup reports a varying bare word in JSON like any other type, with
+##WHY  the exact count and the values as samples
+##FROM examples/harbor_postgres_primary.log — rollup claimed distinct_count 1 over 10 values
+##FLAGS --format json
+2025-09-14 09:09:14,580 - bootstrapping - INFO - Configuring patroni
+2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring crontab
+2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring wal-e
+
 ##TODO study-small-int-in-prose-folds groups=1
-##WHY a trailing small integer folds the same way whatever its value (root cause 5)
+##WHY a trailing small integer folds the same way whatever its value (root cause 5);
+##WHY  with VARIES the 10-group split is now the only remaining cost
 ##FROM examples/apache_error_production.log — 10 groups at 81.8; slot N folds, state N does not
 [Thu Jan 30 05:18:19 2024] [error] mod_jk child workerEnv in error state 1
 [Fri Feb 07 21:55:52 2024] [error] mod_jk child workerEnv in error state 5

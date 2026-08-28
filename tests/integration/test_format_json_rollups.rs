@@ -146,6 +146,7 @@ fn sample_worthy_types_produce_samples_when_distinct_values_exist() {
     let records = parse_jsonl(&raw);
 
     const SAMPLE_WORTHY_TYPES: &[&str] = &[
+        "VARIES",
         "IPV4",
         "IPV6",
         "UUID",

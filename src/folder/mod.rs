@@ -860,6 +860,10 @@ fn hash_token_value(token: &Token) -> u64 {
 /// per process and breaks determinism across runs. FNV-1a is trivially
 /// cross-platform and cross-version stable. Quality is sufficient for
 /// seeding a ChaCha8Rng; we're not defending a hash table.
+/// Rollup key for words that differ between members of a group without any
+/// detector having tokenised them. Sample-worthy: the values are the point.
+pub(super) const VARIES: &str = "VARIES";
+
 fn seed_for_group(normalized: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0100_0000_01b3;
@@ -1066,6 +1070,43 @@ impl RollupComputer {
                     }
                 }
             }
+        }
+
+        // Words the detectors never touched can still differ between
+        // members — `Configuring patroni` folded with `Configuring crontab`
+        // because eight words in nine match. Tokens are the only thing the
+        // loop above can see, so without this pass the rollup would report
+        // those ten subsystems as one, and "zero data loss" would hold only
+        // for tokenised variation (lessence-w1p). Compare each member to the
+        // representative word by word; a differing word that is not a
+        // placeholder is reported under VARIES like any other type.
+        let rep: Vec<&str> = group.first().normalized.split_whitespace().collect();
+        let mut varies: HashSet<String> = HashSet::new();
+        let mut varies_capped = false;
+        for line in group.lines.iter().skip(1) {
+            let words: Vec<&str> = line.normalized.split_whitespace().collect();
+            // A different word count means the lines differ in structure,
+            // which the similarity metric already tolerated; positional
+            // pairing would misattribute every word after the gap.
+            if words.len() != rep.len() {
+                continue;
+            }
+            for (r, w) in rep.iter().zip(&words) {
+                if r == w || w.contains('<') || r.contains('<') {
+                    continue;
+                }
+                if varies.len() >= self.distinct_cap {
+                    varies_capped = true;
+                    break;
+                }
+                varies.insert((*w).to_string());
+                if !varies.contains(*r) && varies.len() < self.distinct_cap {
+                    varies.insert((*r).to_string());
+                }
+            }
+        }
+        if !varies.is_empty() {
+            per_type.insert(VARIES, (Accumulator::Values(varies), varies_capped));
         }
 
         // Finalise: draw samples deterministically from each Accumulator.
