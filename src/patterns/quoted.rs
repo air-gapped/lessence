@@ -49,6 +49,19 @@ type QuotedOutcome = (String, bool, bool);
 
 pub struct QuotedStringDetector;
 
+/// Is the quoted string at `end` a JSON key? A key is followed by `:`, with
+/// optional whitespace first — `"k":v` and `"k": v` are both JSON.
+fn followed_by_colon(bytes: &[u8], mut at: usize) -> bool {
+    while let Some(b) = bytes.get(at) {
+        match b {
+            b' ' | b'\t' => at += 1,
+            b':' => return true,
+            _ => return false,
+        }
+    }
+    false
+}
+
 impl QuotedStringDetector {
     /// Detect and replace quoted strings that appear to be variables
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
@@ -87,12 +100,18 @@ impl QuotedStringDetector {
                     outcome
                 };
 
-                // A JSON key has the same shape as an instance name — there is
-                // no way to tell `"app-namespace"` from `"redis-sentinel"` by
-                // looking at the string alone. One byte of lookahead settles
-                // it: a key is followed by `:`. Folding keys would erase the
-                // record's schema from the template.
-                if shape_folded && haystack.as_bytes().get(matched.end()) == Some(&b':') {
+                // A JSON key looks like any other quoted string — there is no
+                // way to tell `"app-namespace"` from `"redis-sentinel"`, or a
+                // 30-char key from a 30-char message, by the string alone. One
+                // lookahead settles it: a key is followed by `:`. A key that
+                // folds erases the record's schema from the template, whichever
+                // rule folded it, so the veto covers every whole-string
+                // replacement — but not a key an inner detector rewrote, which
+                // keeps its quotes and its shape.
+                let whole_replacement = had_token && replacement == "<QUOTED_STRING>";
+                if (shape_folded || whole_replacement)
+                    && followed_by_colon(haystack.as_bytes(), matched.end())
+                {
                     return quoted_string.to_string();
                 }
 

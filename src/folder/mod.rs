@@ -169,6 +169,11 @@ pub(super) struct Nearest {
     pub group_line_no: usize,
     /// `similarity_score` against that group's representative, in percent.
     pub score: f64,
+    /// The two lines carry different anchors (endpoint, device), so they were
+    /// never scored: anchors are matched, not scored. Present only when true,
+    /// and it explains a high `score` that still did not join.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub anchor_mismatch: bool,
     /// The first token pair that differs, in line order. `None` when the two
     /// lines tokenize identically but still failed (anchor mismatch).
     pub first_diff: Option<FirstDiff>,
@@ -1291,6 +1296,7 @@ impl PatternFolder {
         Some(Nearest {
             group_line_no: nearest.first_line_no,
             score: (score * 10.0).round() / 10.0,
+            anchor_mismatch: line.anchor != nearest.first().anchor,
             first_diff: first_diff(line, nearest.first()),
         })
     }

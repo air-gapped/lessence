@@ -305,3 +305,22 @@ req took 333 sec
 ##FLAGS --format json
 req took 111 ms
 req took 333 sec
+
+##CASE lessence-8jb template_present="database_system_identifier":
+##WHY a JSON key followed by a SPACE and then a colon is still a key and keeps its name;
+##WHY  the veto must skip whitespace before looking for ':'
+##FROM examples/harbor_postgres_primary.log shape — Patroni emits `"key": value`
+{"database_system_identifier": "7383418833110614841", "role": "master"}
+
+##CASE lessence-8jb template_present="set_app_managed_resources_ms":
+##WHY a JSON key longer than 25 chars keeps its name; the length rule must not fold keys
+##FROM the argocd reconciliation record; before this the key became <QUOTED_STRING>
+{"set_app_managed_resources_ms":12,"x":"y"}
+
+##CASE explain out_present="anchor_mismatch":true
+##WHY --explain says when a high score did not join because the anchors differ, instead
+##WHY  of reporting a misleading 100
+##FROM examples/security_attacks.log sqlmap sweep: 6 paths, 6 anchors, score 100 each
+##FLAGS --explain
+1.1.1.1 - - [20/Jan/2025:10:21:10 +0000] "GET /admin/login.php HTTP/1.1" 404 1234
+1.1.1.1 - - [20/Jan/2025:10:21:11 +0000] "GET /wp-admin/x.php HTTP/1.1" 404 1234
