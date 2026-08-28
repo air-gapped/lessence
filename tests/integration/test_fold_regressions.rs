@@ -50,6 +50,9 @@ struct Case {
     flags: Vec<String>,
     expect: Expect,
     lines: Vec<String>,
+    /// `##TODO`: a known defect with no fix yet. Documents the expected
+    /// behaviour; checked only by the ignored `known_open_defects` test.
+    todo: bool,
 }
 
 fn parse(corpus: &str) -> Vec<Case> {
@@ -59,7 +62,12 @@ fn parse(corpus: &str) -> Vec<Case> {
         let lineno = n + 1;
         let bad = |msg: &str| -> ! { panic!("fold_regressions.log line {lineno}: {msg}") };
 
-        if let Some(rest) = raw.strip_prefix("##CASE ") {
+        let (rest, todo) = match (raw.strip_prefix("##CASE "), raw.strip_prefix("##TODO ")) {
+            (Some(r), _) => (Some(r), false),
+            (None, Some(r)) => (Some(r), true),
+            _ => (None, false),
+        };
+        if let Some(rest) = rest {
             let (bead, spec) = rest
                 .split_once(' ')
                 .unwrap_or_else(|| bad("##CASE needs a bead and an expectation"));
@@ -92,6 +100,7 @@ fn parse(corpus: &str) -> Vec<Case> {
                 flags: Vec::new(),
                 expect,
                 lines: Vec::new(),
+                todo,
             });
             continue;
         }
@@ -217,12 +226,10 @@ fn count_groups(stdout: &str) -> usize {
         .count()
 }
 
-#[test]
-fn known_fold_regressions() {
-    let cases = parse(CORPUS);
+/// Run every case in `cases`, returning one complaint per failure.
+fn check(cases: &[Case]) -> Vec<String> {
     let mut failures = Vec::new();
-
-    for case in &cases {
+    for case in cases {
         let got = run(case, "1");
         let stdout = got.stdout.as_str();
         let complaint = match &case.expect {
@@ -266,7 +273,13 @@ fn known_fold_regressions() {
             ));
         }
     }
+    failures
+}
 
+#[test]
+fn known_fold_regressions() {
+    let cases: Vec<Case> = parse(CORPUS).into_iter().filter(|c| !c.todo).collect();
+    let failures = check(&cases);
     assert!(
         failures.is_empty(),
         "{} of {} fold regressions came back:\n\n{}\n",
@@ -274,6 +287,33 @@ fn known_fold_regressions() {
         cases.len(),
         failures.join("\n\n")
     );
+}
+
+/// The `##TODO` blocks: defects the 25-corpus study found that have no fix
+/// yet. Ignored so the suite stays green; run it to see what is still open,
+/// and promote a block to `##CASE` when its fix lands:
+///
+///     cargo test --test integration known_open_defects -- --ignored --nocapture
+#[test]
+#[ignore = "documents open defects; promote each ##TODO to ##CASE as it is fixed"]
+fn known_open_defects() {
+    let cases: Vec<Case> = parse(CORPUS).into_iter().filter(|c| c.todo).collect();
+    let failures = check(&cases);
+    let fixed = cases.len() - failures.len();
+    eprintln!(
+        "\n{} open defects documented, {} of them now pass and should be promoted to ##CASE\n",
+        cases.len(),
+        fixed
+    );
+    if fixed > 0 {
+        let passing: Vec<_> = cases
+            .iter()
+            .filter(|c| !failures.iter().any(|f| f.starts_with(&c.bead)))
+            .map(|c| c.bead.as_str())
+            .collect();
+        eprintln!("promote: {passing:?}\n");
+    }
+    // Deliberately no assert: this test reports, it does not gate.
 }
 
 /// `\e` for the escape byte, so an ANSI case stays readable in the corpus.

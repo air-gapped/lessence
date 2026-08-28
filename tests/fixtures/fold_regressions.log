@@ -324,3 +324,129 @@ req took 333 sec
 ##FLAGS --explain
 1.1.1.1 - - [20/Jan/2025:10:21:10 +0000] "GET /admin/login.php HTTP/1.1" 404 1234
 1.1.1.1 - - [20/Jan/2025:10:21:11 +0000] "GET /wp-admin/x.php HTTP/1.1" 404 1234
+
+
+##  ---------------------------------------------------------------------------
+##  25-corpus study, 2026-08-28. These are NOT bead-derived: each is a shape one
+##  of the 25 examples/ corpora struggles with, found by ground-truth-first
+##  study (see the study bead). Expectations are what SHOULD happen. Blocks
+##  marked ##TODO fail today and are skipped by the harness until the root
+##  cause lands; un-comment the ##CASE line when it does.
+##  ---------------------------------------------------------------------------
+
+##TODO study-quoted-sentence-is-the-event groups=2
+##WHY a quoted sentence in msg IS the event; two different sentences must not fold
+##WHY  into one <QUOTED_STRING> group because both are over 25 chars (root cause 1)
+##FROM examples/argocd_server_production.log — 59,948 of 60,849 lines, 5 events, 1 group
+{"level":"info","msg":"Loading TLS configuration from secret argocd/argocd-server-tls","time":"2025-09-14T09:08:47Z"}
+{"level":"info","msg":"Loading TLS configuration from secret argocd/argocd-server-tls","time":"2025-09-14T09:09:05Z"}
+{"level":"info","msg":"invalidated cache for resource in namespace: argocd with the name: argocd-notifications-cm","time":"2025-09-14T09:08:47Z"}
+{"level":"info","msg":"invalidated cache for resource in namespace: argocd with the name: argocd-notifications-cm","time":"2025-09-14T09:09:47Z"}
+
+##TODO study-config-word-does-not-change-tokenising groups=1
+##WHY the username "config" must not flip how sshd[PID]: tokenises (root cause 2)
+##FROM examples/openssh_brute_force.log lines 1 and 2476
+Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 port 47192
+Jan 26 06:01:41 d2-4-bhs5 sshd[3581664]: Invalid user config from 171.251.29.253 port 46400
+Jan 26 07:11:02 d2-4-bhs5 sshd[3582011]: Invalid user deploy from 45.148.10.72 port 51022
+
+##TODO study-configuration-word-is-not-eaten template_absent=all endpoints<QUOTED_STRING>
+##WHY the word "Configuration" inside a quoted reason must not trip the config sniff and
+##WHY  swallow neighbouring fields (root cause 2)
+##FROM examples/cilium_full.log
+time="2025-08-30T14:36:55.873925586Z" level=info msg="regenerating all endpoints" reason="Configuration or devices changed" subsys=endpoint-manager
+
+##TODO study-epoch-at-prefix-without-colon template_present=<TIMESTAMP>
+##WHY the @epoch pattern exists but is unreachable because the pre-filter wants a colon
+##FROM examples/enhanced_timestamps.log
+@1758304800.311 Prometheus metric collected value=45.67
+
+##TODO study-klog-file-line-is-identity groups=3
+##WHY klog's file.go:NNN] is the event identity and must anchor, not tokenise (root cause 3)
+##FROM examples/apiserver_production.log — 4 call sites merged into one group of 301
+E0910 00:02:39.914326       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: context deadline exceeded" logger="UnhandledError"
+E0910 00:02:47.788735       1 finisher.go:175] "Unhandled Error" err="FinishRequest: post-timeout activity - time-elapsed: 768.083us, panicked: false, err: context canceled, panic-reason: <nil>" logger="UnhandledError"
+E0910 00:02:39.917803       1 writers.go:135] "Unhandled Error" err="apiserver was unable to write a fallback JSON response: http: Handler timeout" logger="UnhandledError"
+
+##TODO study-systemd-unit-is-identity groups=2
+##WHY two units failing are two incidents; the unit name must anchor (root cause 3)
+##FROM examples/epyc_7days_journalctl.log — rke2-agent x8 absorbed into containerd x103,328
+Sep 14 06:38:27 epyc systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
+Sep 14 06:40:27 epyc systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
+Sep 14 09:37:04 epyc systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
+Sep 14 09:37:14 epyc systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
+
+##TODO study-auditd-type-is-identity template_present=type=USYS_CONFIG
+##WHY auditd's type= is its only discriminator and must stay literal in the template, never
+##WHY  <KEY_VALUE> (root cause 3); in the corpus it merged with 25 type=PATH lines
+##FROM examples/linux_auditd.log
+type=USYS_CONFIG msg=audit(1481076993.000:402): pid=1232 uid=0 auid=4294967295 ses=4294967295 msg='changing system time exe="/usr/sbin/hwclock" hostname=? addr=? terminal=? res=success'
+
+##TODO study-auditd-record-id-is-one-token groups=1
+##WHY audit(epoch.ms:seq) is one record id; the seq must not keep 324 boot lines apart
+##FROM examples/linux_auditd.log — 306 groups from 324 NETFILTER_CFG lines (root cause 5)
+type=NETFILTER_CFG msg=audit(1481076985.580:66): table=mangle family=2 entries=6
+type=NETFILTER_CFG msg=audit(1481076985.582:67): table=mangle family=2 entries=6
+type=NETFILTER_CFG msg=audit(1481076985.583:68): table=mangle family=2 entries=6
+
+##TODO study-small-int-in-prose-folds groups=1
+##WHY a trailing small integer folds the same way whatever its value (root cause 5)
+##FROM examples/apache_error_production.log — 10 groups at 81.8; slot N folds, state N does not
+[Thu Jan 30 05:18:19 2024] [error] mod_jk child workerEnv in error state 1
+[Fri Feb 07 21:55:52 2024] [error] mod_jk child workerEnv in error state 5
+[Fri Jul 04 20:56:15 2024] [error] mod_jk child workerEnv in error state 10
+
+##TODO study-logfmt-small-int-folds template_absent=partition=0
+##WHY partition=0..4 already folds (3 lines, 1 group) but the template LIES: it says
+##WHY  partition=0 for members with 2 and 4. A small logfmt int must tokenise (root cause 5)
+##FROM examples/microservices.log
+20/01/2025 10:20:04.100 [kafka-consumer-user-events-1] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=0 lag=1250 threshold=1000
+20/01/2025 10:20:04.300 [kafka-consumer-user-events-3] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=2 lag=1450 threshold=1000
+20/01/2025 10:20:04.500 [kafka-consumer-user-events-5] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=4 lag=1650 threshold=1000
+
+##TODO study-pod-suffix-after-hash-folds groups=1
+##WHY the 5-char pod suffix folds even when the preceding chunk is already <HASH> (root cause 5)
+##FROM examples/kubectl_events.log — score 80.0 on -7j5z7 vs -v9w7t
+gitlab-stage   60m   Normal   Scheduled   Pod/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-7j5z7   Successfully assigned gitlab-stage/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-7j5z7 to node1
+gitlab-stage   21m   Normal   Scheduled   Pod/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-v9w7t   Successfully assigned gitlab-stage/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-v9w7t to node1
+gitlab-stage   11m   Normal   Scheduled   Pod/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-k2m8p   Successfully assigned gitlab-stage/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-k2m8p to node1
+
+##TODO study-http-version-is-not-a-path template_absent=HTTP<PATH>
+##WHY HTTP/1.1 is a protocol version; found in 7 of 25 corpora (root cause 6)
+##FROM examples/nginx_sample.log
+93.180.71.3 - - [17/May/2015:08:05:32 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)"
+
+##TODO study-no-fabricated-pid-label template_absent=pid=
+##WHY a placeholder must not add text the input never had; found in 6 corpora (root cause 6)
+##FROM examples/realistic_repetitive.log
+Jan 20 10:15:00 server01 disk-monitor[1234]: /var/log disk usage: 85% (warning threshold: 80%)
+
+##TODO study-ssh-fingerprint-is-one-atom template_absent=RSA <TIMESTAMP>
+##WHY a 16-group colon-hex fingerprint must not be carved up by 4 detectors (root cause 6)
+##FROM examples/linux_auth_secure.log
+Feb 22 16:48:04 slave22 sshd[2805]: Accepted publickey for drewr from 69.245.39.97 port 34202 ssh2: RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e
+
+##TODO study-19-digit-id-is-not-a-timestamp template_absent=<TIMESTAMP>
+##WHY a negative 19-digit id is not an epoch; it also fabricates time_range (root cause 6)
+##FROM examples/hdfs_sample.log
+081109 203807 222 INFO dfs.DataNode$PacketResponder: PacketResponder 0 for block blk_-6952295868487656571 terminating
+
+##TODO study-systemd-instance-unit-is-not-email template_absent=<EMAIL>
+##WHY name@instance.service is a systemd unit (root cause 6)
+##FROM examples/epyc_7days_journalctl.log
+Sep 14 06:58:42 epyc systemd[1]: modprobe@configfs.service: Deactivated successfully.
+
+##TODO study-ipv4-mapped-ipv6-is-one-token template_absent=<IP>:<IP>
+##WHY [::ffff:172.26.1.74] is one address (root cause 6)
+##FROM examples/vllm_embedding_production.log
+[W920 01:39:36.529051908 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [::ffff:172.26.1.74]:60835 (errno: 97 - Address family not supported by protocol).
+
+##TODO study-duration-unit-does-not-change-detector template_present=<DURATION_FIELD>
+##WHY duration=272ms and duration=2.9s are the same field; detector order must not differ by unit
+##FROM examples/prometheus.log
+ts=2025-09-19T05:00:28.582Z caller=head.go:1360 level=info component=tsdb msg="Head GC completed" caller=truncateMemory duration=272.602256ms
+
+##TODO study-keyvalue-does-not-insert-a-space template_absent="level": <KEY_VALUE>
+##WHY the template must be a template of the input; JSON_KV_REGEX inserts a space (root cause 6)
+##FROM examples/k8s_json_sample.log
+{"level":"info","msg":"Alloc=503706 TotalAlloc=2674428701 Sys=1185679 NumGC=12520 Goroutines=1606","time":"2026-08-27T23:17:24Z"}
