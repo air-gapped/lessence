@@ -374,8 +374,18 @@ impl Normalizer {
             return (2.0 * lcs as f64 / (a.len() + b.len()) as f64) * 100.0;
         }
 
-        // Fallback for token-overflow or whitespace-only lines: positional
-        // byte overlap (no allocation — works on &[u8] directly).
+        // Token multiset for lines that overran the LCS bound but still carry
+        // hashes. Order-insensitive, so it can rate two permutations of the
+        // same tokens as identical; for structured records, whose key order is
+        // stable, that is a far smaller error than the positional comparison's
+        // collapse to near zero when one early value changes length.
+        if let Some(ratio) = Self::multiset_ratio(line1, line2) {
+            return ratio;
+        }
+
+        // Fallback for whitespace-only lines and lines past
+        // MAX_MULTISET_TOKENS: positional byte overlap (no allocation — works
+        // on &[u8] directly).
         let b1 = s1.as_bytes();
         let b2 = s2.as_bytes();
         let mut matches: u32 = 0;
@@ -398,6 +408,30 @@ impl Normalizer {
 
     /// Size of the multiset intersection of two ascending-sorted hash
     /// slices (standard two-pointer merge).
+    /// Similarity from the token multisets, on the same 2*common/total scale
+    /// the LCS path uses so the threshold means the same thing either way.
+    ///
+    /// `None` when either line carries no hashes — whitespace-only, or past
+    /// `MAX_MULTISET_TOKENS` — leaving those to the positional fallback.
+    fn multiset_ratio(line1: &LogLine, line2: &LogLine) -> Option<f64> {
+        let (sim1, sim2) = (line1.sim(), line2.sim());
+        let (a, b) = (sim1.sorted_hashes(), sim2.sorted_hashes());
+        if a.is_empty() || b.is_empty() {
+            return None;
+        }
+        // Message identity first: a record's leading tokens say what it IS,
+        // and the multiset cannot see them because it discards order. Without
+        // this, a large shared payload outvotes the few words that distinguish
+        // two different messages.
+        if let (Some(lead1), Some(lead2)) = (sim1.lead(), sim2.lead())
+            && lead1 != lead2
+        {
+            return Some(0.0);
+        }
+        let common = Self::multiset_intersection(a, b);
+        Some((2.0 * common as f64 / (a.len() + b.len()) as f64) * 100.0)
+    }
+
     fn multiset_intersection(a: &[u64], b: &[u64]) -> usize {
         let (mut i, mut j, mut common) = (0, 0, 0);
         while i < a.len() && j < b.len() {
@@ -541,8 +575,16 @@ impl Normalizer {
             return Self::token_lcs(s1, a, s2, b, Some(need)) >= need;
         }
 
-        // Whitespace-only or token-overflow lines: fall back to the full
-        // score (byte-positional path).
+        // One side overran the LCS bound. Compare token multisets instead:
+        // O(n) over the sorted hash views, and — unlike a byte-positional
+        // comparison — unaffected by one value changing length and shifting
+        // everything after it.
+        if let Some(ratio) = Self::multiset_ratio(line1, line2) {
+            return ratio >= threshold;
+        }
+
+        // Whitespace-only lines, or lines past MAX_MULTISET_TOKENS: fall back
+        // to the full score (byte-positional path).
         self.similarity_score(line1, line2) >= threshold
     }
 }
@@ -955,23 +997,30 @@ mod tests {
         );
     }
 
+    /// Token count that reaches the positional byte fallback: past
+    /// MAX_MULTISET_TOKENS, where the hashes are no longer kept. Between
+    /// MAX_SIMILARITY_TOKENS and this the multiset path handles the line.
+    const BYTE_FALLBACK_TOKENS: usize = crate::patterns::MAX_MULTISET_TOKENS + 1;
+
     #[test]
     fn test_similarity_score_byte_fallback_division_direction() {
-        // Exercises the byte-overlap fallback (token overflow: > 64 tokens).
-        // Kills mutant: `/ max_len` → `* max_len` or `+ max_len`.
+        // Exercises the byte-overlap fallback. Kills mutant: `/ max_len` →
+        // `* max_len` or `+ max_len`.
         let normalizer = Normalizer::new(Config::default());
+        // `"a "` per token, so the prefix is exactly 2 bytes per token and
+        // matches positionally; an equally long differing tail makes it 50%.
+        let prefix_bytes = BYTE_FALLBACK_TOKENS * 2;
         let half_match = |c: char| {
-            let mut s: String = std::iter::repeat_n("a ", 65).collect(); // 65 tokens, 130 bytes
-            s.push_str(&c.to_string().repeat(130));
+            let mut s: String = std::iter::repeat_n("a ", BYTE_FALLBACK_TOKENS).collect();
+            s.push_str(&c.to_string().repeat(prefix_bytes));
             s
         };
         let a = LogLine::new(half_match('X'), half_match('X'), vec![], 0);
         let b = LogLine::new(half_match('Y'), half_match('Y'), vec![], 1);
         let score = normalizer.similarity_score(&a, &b);
-        // First 130 of 260 bytes match positionally: 50.0
         assert!(
             (score - 50.0).abs() < f64::EPSILON,
-            "130/260 matching bytes should give 50.0, got {score}"
+            "half the bytes matching should give 50.0, got {score}"
         );
     }
 
@@ -981,21 +1030,29 @@ mod tests {
 
     #[test]
     fn test_similarity_score_byte_fallback_uneven_ratio() {
-        // Token overflow with a 3/4 positional byte match. Kills the
-        // `==` → `!=` mutant in the fallback loop (a 50/50 split is
-        // invariant under that inversion, this is not).
-        let mk = |tail: char| {
-            let mut s: String = std::iter::repeat_n("a ", 65).collect(); // 130 bytes
-            s.push_str(&"m".repeat(260)); // 260 matching bytes
-            s.push_str(&tail.to_string().repeat(130)); // 130 differing bytes
+        // Byte fallback with a 3/4 positional match. Kills the `==` → `!=`
+        // mutant in the fallback loop (a 50/50 split is invariant under that
+        // inversion, this is not).
+        //
+        // matching = 2 bytes/token prefix + 2 shared bytes; the differing tail
+        // is a third of that, which puts matching/total at exactly 3/4.
+        let matching = BYTE_FALLBACK_TOKENS * 2 + 2;
+        assert!(
+            matching.is_multiple_of(3),
+            "tail must divide exactly for an exact 75.0"
+        );
+        let tail = matching / 3;
+        let mk = |t: char| {
+            let mut s: String = std::iter::repeat_n("a ", BYTE_FALLBACK_TOKENS).collect();
+            s.push_str("mm");
+            s.push_str(&t.to_string().repeat(tail));
             s
         };
         let normalizer = Normalizer::new(Config::default());
         let score = normalizer.similarity_score(&raw_line(mk('X'), 0), &raw_line(mk('Y'), 1));
-        // 390 of 520 bytes match: 75.0
         assert!(
             (score - 75.0).abs() < f64::EPSILON,
-            "390/520 matching bytes should give 75.0, got {score}"
+            "three quarters of the bytes matching should give 75.0, got {score}"
         );
     }
 
@@ -1919,6 +1976,86 @@ mod tests {
         assert_ne!(
             login.hash, admin.hash,
             "the hash must still tell them apart"
+        );
+    }
+
+    // ---- overflow lines: multiset instead of byte positions ----
+
+    /// Build a line of `n` whitespace tokens whose 4th token is `state`, so
+    /// the head differs when `state` does and the tail is identical.
+    fn wide_line(state: &str, n: usize) -> String {
+        let tail: Vec<String> = (0..n).map(|i| format!("f{i}=v{i}")).collect();
+        format!("evt one two {state} {}", tail.join(" "))
+    }
+
+    #[test]
+    fn overflow_lines_fold_like_short_ones() {
+        // Regression for the token-overflow cliff: two lines differing in one
+        // value folded when short and split when long, because past
+        // MAX_SIMILARITY_TOKENS the comparison became positional bytes, which
+        // one length change knocks out of alignment. Nothing about the
+        // difference changes with the length of the identical tail, so the
+        // verdict must not either.
+        let normalizer = Normalizer::new(Config::default());
+        let short = |s: &str| normalizer.normalize_line(wide_line(s, 10)).unwrap();
+        let long = |s: &str| normalizer.normalize_line(wide_line(s, 200)).unwrap();
+
+        // Same head, one differing payload token — the head check is not what
+        // is under test here.
+        assert!(
+            normalizer.are_similar(&short("same alpha"), &short("same bravo")),
+            "short lines differing in one payload token fold"
+        );
+        assert!(
+            normalizer.are_similar(&long("same alpha"), &long("same bravo")),
+            "the same pair must still fold once past MAX_SIMILARITY_TOKENS"
+        );
+    }
+
+    #[test]
+    fn overflow_lines_keep_distinct_messages_apart() {
+        // The multiset is order-insensitive, so a large shared payload can
+        // outvote the few words that say what a record IS. A real Rancher log
+        // merged 18 "Updating TLS secret for ..." lines into an "Active TLS
+        // secret ..." group before the ordered head check went in.
+        let normalizer = Normalizer::new(Config::default());
+        let active = normalizer.normalize_line(wide_line("Active", 200)).unwrap();
+        let updating = normalizer
+            .normalize_line(wide_line("Updating", 200))
+            .unwrap();
+        assert!(
+            !normalizer.are_similar(&active, &updating),
+            "a differing head must keep two messages apart however alike their payloads"
+        );
+    }
+
+    #[test]
+    fn overflow_similarity_is_order_insensitive_in_the_payload() {
+        // What the multiset buys: a value changing length mid-record shifts
+        // every byte after it, which is exactly what defeated the positional
+        // comparison. The head is identical here, so only the payload differs.
+        let normalizer = Normalizer::new(Config::default());
+        let a = normalizer
+            .normalize_line(format!("evt one two same {}", "x ".repeat(100)))
+            .unwrap();
+        let b = normalizer
+            .normalize_line(format!("evt one two same {}xlonger", "x ".repeat(99)))
+            .unwrap();
+        assert!(normalizer.similarity_score(&a, &b) > 90.0);
+    }
+
+    #[test]
+    fn lines_past_the_multiset_bound_keep_the_byte_fallback() {
+        // Past MAX_MULTISET_TOKENS the hashes are not kept, so the positional
+        // path still runs. Truncating the hash set instead would let two
+        // records agreeing only on their first few thousand tokens score as
+        // identical.
+        let huge = crate::patterns::MAX_MULTISET_TOKENS + 10;
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer.normalize_line(wide_line("up", huge)).unwrap();
+        assert!(
+            line.sim().sorted_hashes().is_empty(),
+            "a line past the bound carries no hashes"
         );
     }
 }

@@ -238,10 +238,40 @@ impl Token {
 }
 
 /// Maximum whitespace tokens per line that the LCS similarity comparison
-/// handles; longer lines fall back to the positional byte overlap. 64 covers
-/// virtually all real log lines while bounding the DP at 64×64 token
-/// comparisons on the stack with zero allocation.
+/// handles. 64 covers virtually all real log lines while bounding the DP at
+/// 64×64 token comparisons on the stack with zero allocation.
 pub(crate) const MAX_SIMILARITY_TOKENS: usize = 64;
+
+/// Leading tokens an overflow line keeps in order, as message identity.
+///
+/// The multiset comparison is order-insensitive, which is fine for a record's
+/// payload but not for the words that say what the record IS. On a real
+/// Rancher log, "Active TLS secret ..." and "Updating TLS secret for ..." share
+/// a several-hundred-token `map[...]` payload that swamps the four words
+/// telling them apart, so multiset similarity alone merged 18 "Updating" lines
+/// into an "Active" group. Requiring the head to match in order keeps distinct
+/// messages apart while still folding records that differ only in their body.
+///
+/// Four, because that is the conventional log-line prefix — timestamp, level,
+/// component, first word of the message — so it reaches the first word that
+/// carries meaning without extending into the payload. Raising it to 8 was
+/// measured as strictly worse: it pulls JSON field values into the identity
+/// and cost 25 extra groups on the k8s fixture (165 vs 140) for no additional
+/// separation. A discriminator sitting deeper than the fourth token would be
+/// missed; the principled successor is an order-sensitive LCS over the first
+/// `MAX_SIMILARITY_TOKENS` tokens, which is strictly more work than the
+/// evidence so far justifies.
+pub(crate) const MULTISET_LEAD: usize = 4;
+
+/// Maximum tokens for which the multiset fallback keeps hashes.
+///
+/// Above [`MAX_SIMILARITY_TOKENS`] the LCS DP is too expensive, but a token
+/// multiset is still O(n) and — unlike a positional byte comparison — is not
+/// defeated by one value changing length. Keeping the hashes costs 8 bytes per
+/// token, so the count is bounded: 4096 tokens is 32 KB per line, and a
+/// structured record big enough to exceed it is well past the point where
+/// order-insensitive matching would still be meaningful.
+pub(crate) const MAX_MULTISET_TOKENS: usize = 4096;
 
 /// One whitespace token of a normalized line: its ahash plus the byte range
 /// into `LogLine::normalized`. Hash inequality proves token inequality, so
@@ -265,21 +295,55 @@ pub(crate) enum SimTokens {
         toks: Vec<SimTok>,
         sorted_hashes: Vec<u64>,
     },
-    /// More tokens than the LCS comparison handles — similarity uses the
-    /// positional byte-overlap fallback instead.
-    Overflow,
+    /// Between [`MAX_SIMILARITY_TOKENS`] and [`MAX_MULTISET_TOKENS`] tokens:
+    /// too many for the LCS DP, but the sorted hashes are kept so similarity
+    /// can compare token multisets instead of byte positions, plus the first
+    /// [`MULTISET_LEAD`] hashes in order as message identity.
+    Overflow {
+        lead: [u64; MULTISET_LEAD],
+        sorted_hashes: Vec<u64>,
+    },
+    /// Past [`MAX_MULTISET_TOKENS`], or a line too long to index with u32.
+    /// Similarity falls back to positional byte overlap. Truncating the hash
+    /// set instead would let two records that agree only on their first few
+    /// thousand tokens score as identical, which is a worse failure than the
+    /// one the multiset path fixes.
+    Unbounded,
+}
+
+impl SimTokens {
+    /// Token hashes in ascending order, for the multiset comparison. Empty
+    /// when the line carries none.
+    pub(crate) fn sorted_hashes(&self) -> &[u64] {
+        match self {
+            SimTokens::Tokens { sorted_hashes, .. } | SimTokens::Overflow { sorted_hashes, .. } => {
+                sorted_hashes
+            }
+            SimTokens::Unbounded => &[],
+        }
+    }
+
+    /// The first [`MULTISET_LEAD`] token hashes in line order, for overflow
+    /// lines only. `None` elsewhere: the LCS path already respects order, and
+    /// an unbounded line has no hashes at all.
+    pub(crate) fn lead(&self) -> Option<&[u64; MULTISET_LEAD]> {
+        match self {
+            SimTokens::Overflow { lead, .. } => Some(lead),
+            SimTokens::Tokens { .. } | SimTokens::Unbounded => None,
+        }
+    }
 }
 
 impl SimTokens {
     fn from_normalized(s: &str) -> Self {
         use std::hash::{Hash, Hasher};
         if s.len() > u32::MAX as usize {
-            return SimTokens::Overflow;
+            return SimTokens::Unbounded;
         }
         let mut toks = Vec::with_capacity(16);
         for tok in s.split_whitespace() {
             if toks.len() == MAX_SIMILARITY_TOKENS {
-                return SimTokens::Overflow;
+                return Self::overflow_from(s);
             }
             // split_whitespace yields subslices of `s`, so the offset is
             // recoverable from pointer distance.
@@ -296,6 +360,32 @@ impl SimTokens {
         sorted_hashes.sort_unstable();
         SimTokens::Tokens {
             toks,
+            sorted_hashes,
+        }
+    }
+
+    /// Hash every token of a line that overran the LCS bound, keeping only the
+    /// sorted hashes. Positions are dropped: the multiset comparison does not
+    /// use them, and at these sizes they are the bulk of the memory.
+    fn overflow_from(s: &str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut sorted_hashes: Vec<u64> = Vec::with_capacity(MAX_SIMILARITY_TOKENS * 2);
+        let mut lead = [0u64; MULTISET_LEAD];
+        for tok in s.split_whitespace() {
+            if sorted_hashes.len() == MAX_MULTISET_TOKENS {
+                return SimTokens::Unbounded;
+            }
+            let mut hasher = ahash::AHasher::default();
+            tok.hash(&mut hasher);
+            let h = hasher.finish();
+            if sorted_hashes.len() < MULTISET_LEAD {
+                lead[sorted_hashes.len()] = h;
+            }
+            sorted_hashes.push(h);
+        }
+        sorted_hashes.sort_unstable();
+        SimTokens::Overflow {
+            lead,
             sorted_hashes,
         }
     }
