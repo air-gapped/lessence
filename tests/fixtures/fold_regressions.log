@@ -343,14 +343,14 @@ req took 333 sec
 {"level":"info","msg":"invalidated cache for resource in namespace: argocd with the name: argocd-notifications-cm","time":"2025-09-14T09:08:47Z"}
 {"level":"info","msg":"invalidated cache for resource in namespace: argocd with the name: argocd-notifications-cm","time":"2025-09-14T09:09:47Z"}
 
-##TODO study-config-word-does-not-change-tokenising groups=1
+##CASE study-config-word-does-not-change-tokenising groups=1
 ##WHY the username "config" must not flip how sshd[PID]: tokenises (root cause 2)
 ##FROM examples/openssh_brute_force.log lines 1 and 2476
 Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 port 47192
 Jan 26 06:01:41 d2-4-bhs5 sshd[3581664]: Invalid user config from 171.251.29.253 port 46400
 Jan 26 07:11:02 d2-4-bhs5 sshd[3582011]: Invalid user deploy from 45.148.10.72 port 51022
 
-##TODO study-configuration-word-is-not-eaten template_absent=all endpoints<QUOTED_STRING>
+##CASE study-configuration-word-is-not-eaten template_absent=all endpoints<QUOTED_STRING>
 ##WHY the word "Configuration" inside a quoted reason must not trip the config sniff and
 ##WHY  swallow neighbouring fields (root cause 2)
 ##FROM examples/cilium_full.log
@@ -376,7 +376,7 @@ Sep 14 06:40:27 epyc systemd[1]: rke2-agent.service: Main process exited, code=e
 Sep 14 09:37:04 epyc systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
 Sep 14 09:37:14 epyc systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
 
-##TODO study-auditd-type-is-identity template_present=type=USYS_CONFIG
+##CASE study-auditd-type-is-identity template_present=type=USYS_CONFIG
 ##WHY auditd's type= is its only discriminator and must stay literal in the template, never
 ##WHY  <KEY_VALUE> (root cause 3); in the corpus it merged with 25 type=PATH lines
 ##FROM examples/linux_auditd.log
@@ -446,7 +446,7 @@ Sep 14 06:58:42 epyc systemd[1]: modprobe@configfs.service: Deactivated successf
 ##FROM examples/prometheus.log
 ts=2025-09-19T05:00:28.582Z caller=head.go:1360 level=info component=tsdb msg="Head GC completed" caller=truncateMemory duration=272.602256ms
 
-##TODO study-keyvalue-does-not-insert-a-space template_absent="level": <KEY_VALUE>
+##CASE study-keyvalue-does-not-insert-a-space template_absent="level": <KEY_VALUE>
 ##WHY the template must be a template of the input; JSON_KV_REGEX inserts a space (root cause 6)
 ##FROM examples/k8s_json_sample.log
 {"level":"info","msg":"Alloc=503706 TotalAlloc=2674428701 Sys=1185679 NumGC=12520 Goroutines=1606","time":"2026-08-27T23:17:24Z"}

@@ -8,15 +8,9 @@ static KEY_VALUE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-// Configuration-style key-value: config: key=value, other=123
+// `=`-only pairs; runs before the `[=:]` regex (see detect_and_replace)
 static CONFIG_KV_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*=\s*([^\s,;|]+)").unwrap());
-
-// Metrics-style key-value: cpu=75%, memory=60%
-static METRICS_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*=\s*(\d+(?:\.\d+)?(?:%|ms|s|MB|GB|KB|rps|qps)?)")
-        .unwrap()
-});
 
 // JSON-style key-value: "key": "value" or "key":123
 static JSON_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -36,11 +30,20 @@ impl KeyValueDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Apply key-value detection in order of specificity
-        Self::apply_metrics_pattern(&mut result, &mut tokens);
-        Self::apply_config_pattern(&mut result, &mut tokens);
+        // Two passes, each deciding on its own match. There used to be two
+        // more — "metrics" and "config" — that ran unrestricted key=value
+        // regexes gated by a whole-line keyword sniff ("config", "cpu",
+        // "settings"...). A word anywhere on the line then changed how an
+        // unrelated field tokenised: the username "config" in an sshd line
+        // turned `sshd[1234]:` into `sshd[<KEY_VALUE>` and split the group
+        // (lessence-moq). The general pass already covers every pair those
+        // two accepted that was worth folding.
         Self::apply_json_pattern(&mut result, &mut tokens);
-        Self::apply_general_pattern(&mut result, &mut tokens);
+        // `=` pairs before `[=:]` pairs: on `config: host=localhost` the
+        // looser regex would otherwise match `config: host` first and eat
+        // the key of the real pair.
+        Self::apply_general_pattern(&mut result, &mut tokens, &CONFIG_KV_REGEX);
+        Self::apply_general_pattern(&mut result, &mut tokens, &KEY_VALUE_REGEX);
 
         (result, tokens)
     }
@@ -58,28 +61,7 @@ impl KeyValueDetector {
         !text.contains("ftp://") // URLs
     }
 
-    #[cfg_attr(test, mutants::skip)] // apply_general_pattern matches the same KV inputs — redundant coverage
-    fn apply_metrics_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        // Line-level decision hoisted out of the per-match closure: every
-        // match in a pass sees the same pre-pass string, so evaluating it
-        // once is exact (and turns a Θ(matches × line) scan into Θ(line)).
-        let in_metrics_context = Self::is_metrics_context(text);
-        super::fold_matches(text, tokens, &METRICS_KV_REGEX, |caps| {
-            in_metrics_context
-                .then(|| Self::pair(caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str()))
-        });
-    }
-
-    fn apply_config_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        let in_config_context = Self::is_config_context(text);
-        super::fold_matches(text, tokens, &CONFIG_KV_REGEX, |caps| {
-            in_config_context
-                .then(|| Self::pair(caps.get(1).unwrap().as_str(), caps.get(2).unwrap().as_str()))
-        });
-    }
-
     fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        let in_logging_json = Self::is_logging_json(text);
         super::fold_matches(text, tokens, &JSON_KV_REGEX, |caps| {
             let key = caps.get(1).unwrap().as_str();
             // A JSON value arrives in group 2 (quoted) or group 3 (bare);
@@ -88,16 +70,21 @@ impl KeyValueDetector {
                 .get(2)
                 .or_else(|| caps.get(3))
                 .map_or("null", |m| m.as_str());
-            in_logging_json.then(|| {
-                let (token, _) = Self::pair(key, value);
-                (token, format!(r#""{key}": <KEY_VALUE>"#))
-            })
+            let (token, _) = Self::pair(key, value);
+            // Keep the source's own spacing after the colon — the template
+            // must be a template OF the input, not a reformatting of it.
+            let whole = caps.get(0).unwrap().as_str();
+            let colon = whole.find(':').unwrap_or(0);
+            let value_start = whole[colon + 1..]
+                .find(|c: char| !c.is_whitespace())
+                .map_or(whole.len(), |i| colon + 1 + i);
+            Some((token, format!("{}<KEY_VALUE>", &whole[..value_start])))
         });
     }
 
-    fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>) {
+    fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
         let line_allows = Self::line_allows_key_value(text);
-        super::fold_matches(text, tokens, &KEY_VALUE_REGEX, |caps| {
+        super::fold_matches(text, tokens, regex, |caps| {
             let key = caps.get(1).unwrap().as_str();
             let value = caps.get(2).unwrap().as_str();
             (line_allows && Self::is_valid_key_value_pair(key, value))
@@ -191,70 +178,6 @@ impl KeyValueDetector {
         "string".to_string()
     }
 
-    fn is_metrics_context(text: &str) -> bool {
-        let metrics_indicators = [
-            "metrics",
-            "stats",
-            "performance",
-            "monitor",
-            "usage",
-            "cpu",
-            "memory",
-            "disk",
-            "network",
-            "load",
-            "throughput",
-            "latency",
-            "response_time",
-            "error_rate",
-            "success_rate",
-        ];
-
-        let lower_text = text.to_lowercase();
-        metrics_indicators
-            .iter()
-            .any(|&indicator| lower_text.contains(indicator))
-    }
-
-    fn is_config_context(text: &str) -> bool {
-        let config_indicators = [
-            "config",
-            "configuration",
-            "settings",
-            "params",
-            "parameters",
-            "options",
-            "properties",
-            "environment",
-            "variables",
-        ];
-
-        let lower_text = text.to_lowercase();
-        config_indicators
-            .iter()
-            .any(|&indicator| lower_text.contains(indicator))
-    }
-
-    fn is_logging_json(text: &str) -> bool {
-        // Check if this appears to be a structured log entry
-        let log_indicators = [
-            "level",
-            "timestamp",
-            "message",
-            "msg",
-            "component",
-            "service",
-            "logger",
-            "severity",
-            "time",
-            "ts",
-        ];
-
-        log_indicators
-            .iter()
-            .any(|&indicator| text.contains(indicator))
-    }
-
     /// Thin composition kept for unit tests; production code hoists
     /// `line_allows_key_value` out of the per-match closure.
     #[cfg(test)]
@@ -265,16 +188,11 @@ impl KeyValueDetector {
     /// Line-level exclusions (math expressions, SQL) — computed once per
     /// pass, not per match.
     fn line_allows_key_value(text: &str) -> bool {
-        // Exclude mathematical expressions
-        if text.contains(" + ")
-            || text.contains(" - ")
-            || text.contains(" * ")
-            || text.contains(" / ")
-        {
-            return false;
-        }
-
-        // Exclude SQL queries
+        // Exclude SQL queries. The arithmetic guard that used to live here
+        // (" - ", " + "...) vetoed every logback/log4j line, whose fixed
+        // `Logger - message` separator is a dash, so `attempt_count=1` never
+        // folded on any Java log (lessence-moq). A `k=v` next to a minus sign
+        // is still a `k=v`; the per-pair allowlist decides.
         let upper = text.to_uppercase();
         !(upper.contains("SELECT ")
             || upper.contains("INSERT ")
@@ -372,11 +290,58 @@ mod tests {
 
     #[test]
     fn test_config_detection() {
+        // `host`, `port` and `ssl` are all on the general allowlist, so they
+        // fold on their own merits — the word "config" elsewhere on the line
+        // is not what decides it (lessence-moq).
         let config_line = "Database config: host=localhost, port=5432, ssl=true";
         let (result, tokens) = KeyValueDetector::detect_and_replace(config_line);
+        assert_eq!(tokens.len(), 3, "{result}");
+        assert_eq!(
+            result,
+            "Database config: <KEY_VALUE>, <KEY_VALUE>, <KEY_VALUE>"
+        );
 
-        assert!(tokens.len() >= 3);
-        assert!(result.contains("<KEY_VALUE>"));
+        // And the same pairs fold identically on a line with no such word.
+        let plain = "Database ready: host=localhost, port=5432, ssl=true";
+        let (plain_result, plain_tokens) = KeyValueDetector::detect_and_replace(plain);
+        assert_eq!(plain_tokens.len(), 3);
+        assert_eq!(
+            plain_result,
+            "Database ready: <KEY_VALUE>, <KEY_VALUE>, <KEY_VALUE>"
+        );
+    }
+
+    #[test]
+    fn a_keyword_elsewhere_on_the_line_does_not_change_a_field() {
+        // lessence-moq: the username "config" used to flip sshd[1234]: into
+        // sshd[<KEY_VALUE> and split an 11,318-line group.
+        let a = "sshd[3581664]: Invalid user config from 171.251.29.253 port 46400";
+        let b = "sshd[3581664]: Invalid user sammy from 171.251.29.253 port 46400";
+        let (ra, _) = KeyValueDetector::detect_and_replace(a);
+        let (rb, _) = KeyValueDetector::detect_and_replace(b);
+        assert_eq!(ra.replace("config", "sammy"), rb);
+    }
+
+    #[test]
+    fn a_dash_separator_does_not_veto_the_line() {
+        // logback's `Logger - message` has a dash on every line.
+        let line =
+            "WARN CircuitBreaker - Circuit breaker is HALF_OPEN, attempt_count=1, failure_rate=65%";
+        let (result, tokens) = KeyValueDetector::detect_and_replace(line);
+        assert!(
+            result.contains("<KEY_VALUE>"),
+            "attempt_count is on the allowlist and must fold: {result}"
+        );
+        assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn json_pass_keeps_the_source_spacing() {
+        // The template is a template OF the input; it must not reformat it.
+        let (compact, _) = KeyValueDetector::detect_and_replace(r#"{"level":"info","n":5}"#);
+        assert_eq!(compact, r#"{"level":<KEY_VALUE>,"n":<KEY_VALUE>}"#);
+        let (spaced, _) = KeyValueDetector::detect_and_replace(r#"{"level": "info", "n": 5}"#);
+        assert_eq!(spaced, r#"{"level": <KEY_VALUE>, "n": <KEY_VALUE>}"#);
     }
 
     #[test]
@@ -896,14 +861,6 @@ mod tests {
 
     // ---- Mutant-killing: is_config_context false negative ----
 
-    #[test]
-    fn config_context_returns_false_for_non_config() {
-        // Input without any config keywords should return false
-        assert!(!KeyValueDetector::is_config_context(
-            "just a plain log line with no keywords"
-        ));
-    }
-
     // ---- Mutant-killing: is_valid_key_value_context SQL exclusion per-keyword ----
 
     #[test]
@@ -948,34 +905,6 @@ mod tests {
 
     // ---- Mutant-killing: is_valid_key_value_context math exclusion per-operator ----
 
-    #[test]
-    fn kv_ctx_excludes_math_plus_only() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "a + b"
-        ));
-    }
-
-    #[test]
-    fn kv_ctx_excludes_math_minus_only() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "a - b"
-        ));
-    }
-
-    #[test]
-    fn kv_ctx_excludes_math_mul_only() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "a * b"
-        ));
-    }
-
-    #[test]
-    fn kv_ctx_excludes_math_div_only() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout", "30", "a / b"
-        ));
-    }
-
     // ---- Mutant-killing: is_valid_key_value_context valid_keys per-group ----
 
     #[test]
@@ -1009,29 +938,7 @@ mod tests {
 
     // ---- is_metrics_context: per-branch test ----
 
-    #[test]
-    fn metrics_ctx_positive() {
-        assert!(KeyValueDetector::is_metrics_context("cpu usage report"));
-    }
-
-    #[test]
-    fn metrics_ctx_negative() {
-        assert!(!KeyValueDetector::is_metrics_context("hello world"));
-    }
-
     // ---- is_logging_json: per-branch test ----
-
-    #[test]
-    fn logging_json_positive() {
-        assert!(KeyValueDetector::is_logging_json(
-            r#"{"level":"info","msg":"ok"}"#
-        ));
-    }
-
-    #[test]
-    fn logging_json_negative() {
-        assert!(!KeyValueDetector::is_logging_json("no json here"));
-    }
 
     // ---- Mutant-killing: apply_metrics_pattern (replace with ()) ----
 
@@ -1080,16 +987,5 @@ mod tests {
             "30",
             "timeout=30"
         ));
-    }
-
-    #[test]
-    fn general_pattern_line_exclusion_blocks_valid_pair() {
-        // A math-expression line fails line_allows_key_value even though
-        // "timeout=30" is a valid pair: nothing may be replaced (kills
-        // the && -> || mutant joining the two gates).
-        let line = "calc x + y timeout=30 done";
-        let (result, tokens) = KeyValueDetector::detect_and_replace(line);
-        assert_eq!(result, line);
-        assert!(tokens.is_empty(), "no tokens expected, got {tokens:?}");
     }
 }
