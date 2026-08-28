@@ -1,0 +1,127 @@
+##  lessence fold regressions — one block per bug we actually hit.
+##
+##  The examples/ corpora are ~100 MB of real logs, gitignored, and live on one
+##  machine. This file is the opposite: the smallest input that reproduces each
+##  past defect, checked into git, asserted in milliseconds. A case earns its
+##  place by having been a real bug — ##FROM is the receipt, and several were
+##  confirmed by running the stored v0.4.1 binary and watching it get them wrong.
+##
+##  Block format, blank-line separated:
+##    ##CASE <bead-or-commit> <expectation>
+##    ##WHY  <what the case protects, one line>
+##    ##FROM <where the shape came from>
+##    <input lines>
+##
+##  Expectations:
+##    groups=N     the lines must end up in exactly N groups
+##    absent=<TOK> the first line's normalized form must NOT contain <TOK>
+##    present=TEXT the first line's normalized form MUST contain TEXT
+##
+##  Lines are either from an Apache-2.0 licensed corpus, stock upstream product
+##  text, or reproduce the SHAPE of a private corpus without its content.
+##  Add a case whenever a fold bug is fixed — cheaper than re-deriving the
+##  reproduction from a bead six months later.
+
+##CASE lessence-8jb groups=1
+##WHY a field value folds on its shape, not on how long it happens to be
+##FROM argocd controller shape; the 25-char rule split these by name length
+{"application":"redis-sentinel","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-gitlab","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-gitlab-prod","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-gitlab-prod-eu","level":"info","msg":"Update successful"}
+
+##CASE lessence-8jb groups=2
+##WHY a bare word is shape-identical to a log level, so it must never fold
+##FROM the guard that keeps error lines out of info groups
+{"level":"info","msg":"reconcile finished"}
+{"level":"error","msg":"reconcile finished"}
+
+##CASE lessence-8jb groups=1
+##WHY a JSON number folds whatever its digit count
+##FROM argocd reconciliation shape; a latency crossing 100 ms used to split the group
+{"msg":"Reconciliation completed","diff_ms":4,"git_ms":4}
+{"msg":"Reconciliation completed","diff_ms":82,"git_ms":82}
+{"msg":"Reconciliation completed","diff_ms":123,"git_ms":123}
+{"msg":"Reconciliation completed","diff_ms":4567,"git_ms":4567}
+
+##CASE lessence-8jb present=application
+##WHY a JSON key keeps its name in the template; only the value folds
+##FROM the one-byte colon lookahead in QuotedStringDetector
+{"application":"redis-sentinel-gitlab","level":"info","msg":"Update successful"}
+
+##CASE lessence-fo2 groups=1
+##WHY a record past the similarity token cap folds on the same basis as a short one
+##FROM gitaly shape, ~1 KB; these used to land in one group each
+{"component":"streamserver","level":"info","state":"ok","f0":"v0" "f1":"v1" "f2":"v2" "f3":"v3" "f4":"v4" "f5":"v5" "f6":"v6" "f7":"v7" "f8":"v8" "f9":"v9" "f10":"v10" "f11":"v11" "f12":"v12" "f13":"v13" "f14":"v14" "f15":"v15" "f16":"v16" "f17":"v17" "f18":"v18" "f19":"v19" "f20":"v20" "f21":"v21" "f22":"v22" "f23":"v23" "f24":"v24" "f25":"v25" "f26":"v26" "f27":"v27" "f28":"v28" "f29":"v29" "f30":"v30" "f31":"v31" "f32":"v32" "f33":"v33" "f34":"v34" "f35":"v35" "f36":"v36" "f37":"v37" "f38":"v38" "f39":"v39" "f40":"v40" "f41":"v41" "f42":"v42" "f43":"v43" "f44":"v44" "f45":"v45" "f46":"v46" "f47":"v47" "f48":"v48" "f49":"v49" "f50":"v50" "f51":"v51" "f52":"v52" "f53":"v53" "f54":"v54" "f55":"v55" "f56":"v56" "f57":"v57" "f58":"v58" "f59":"v59"}
+{"component":"streamserver","level":"info","state":"degraded","f0":"v0" "f1":"v1" "f2":"v2" "f3":"v3" "f4":"v4" "f5":"v5" "f6":"v6" "f7":"v7" "f8":"v8" "f9":"v9" "f10":"v10" "f11":"v11" "f12":"v12" "f13":"v13" "f14":"v14" "f15":"v15" "f16":"v16" "f17":"v17" "f18":"v18" "f19":"v19" "f20":"v20" "f21":"v21" "f22":"v22" "f23":"v23" "f24":"v24" "f25":"v25" "f26":"v26" "f27":"v27" "f28":"v28" "f29":"v29" "f30":"v30" "f31":"v31" "f32":"v32" "f33":"v33" "f34":"v34" "f35":"v35" "f36":"v36" "f37":"v37" "f38":"v38" "f39":"v39" "f40":"v40" "f41":"v41" "f42":"v42" "f43":"v43" "f44":"v44" "f45":"v45" "f46":"v46" "f47":"v47" "f48":"v48" "f49":"v49" "f50":"v50" "f51":"v51" "f52":"v52" "f53":"v53" "f54":"v54" "f55":"v55" "f56":"v56" "f57":"v57" "f58":"v58" "f59":"v59"}
+{"component":"streamserver","level":"info","state":"failed","f0":"v0" "f1":"v1" "f2":"v2" "f3":"v3" "f4":"v4" "f5":"v5" "f6":"v6" "f7":"v7" "f8":"v8" "f9":"v9" "f10":"v10" "f11":"v11" "f12":"v12" "f13":"v13" "f14":"v14" "f15":"v15" "f16":"v16" "f17":"v17" "f18":"v18" "f19":"v19" "f20":"v20" "f21":"v21" "f22":"v22" "f23":"v23" "f24":"v24" "f25":"v25" "f26":"v26" "f27":"v27" "f28":"v28" "f29":"v29" "f30":"v30" "f31":"v31" "f32":"v32" "f33":"v33" "f34":"v34" "f35":"v35" "f36":"v36" "f37":"v37" "f38":"v38" "f39":"v39" "f40":"v40" "f41":"v41" "f42":"v42" "f43":"v43" "f44":"v44" "f45":"v45" "f46":"v46" "f47":"v47" "f48":"v48" "f49":"v49" "f50":"v50" "f51":"v51" "f52":"v52" "f53":"v53" "f54":"v54" "f55":"v55" "f56":"v56" "f57":"v57" "f58":"v58" "f59":"v59"}
+
+##CASE lessence-fo2 groups=2
+##WHY a large identical payload must not outvote the words naming the event: the two
+##WHY  Updating lines fold together, Active stays out
+##FROM rancher TLS shape; a multiset alone merged Updating into Active
+2025/09/14 07:25:53 [INFO] Updating TLS secret for system/serving-cert (count: 407): map[cn-a:1 cn-b:2 cn-c:3]
+2025/09/14 07:25:56 [INFO] Updating TLS secret for system/tls-internal (count: 96): map[cn-a:1 cn-b:2 cn-c:3]
+2025/09/14 07:25:53 [INFO] Active TLS secret / (ver=) (count 5): map[cn-a:1 cn-b:2 cn-c:3]
+
+##CASE lessence-pms groups=1
+##WHY one inserted token must not cascade into a near-zero similarity score
+##FROM the positional-byte comparison the token LCS replaced
+worker started handling batch alpha beta gamma delta epsilon
+worker started now handling batch alpha beta gamma delta epsilon
+worker started handling batch alpha beta gamma delta epsilon
+
+##CASE lessence-cau groups=1
+##WHY a non-ASCII line folds without panicking on a byte offset
+##FROM UTF-8 slicing used to cut mid-character
+INFO anvandaren kunde inte autentiseras mot servern älg
+INFO anvandaren kunde inte autentiseras mot servern björn
+INFO anvandaren kunde inte autentiseras mot servern räv
+
+##CASE lessence-s53 absent=<FQDN>
+##WHY a dotted source-file reference is not a hostname
+##FROM prometheus shape; v0.4.1 normalized caller=checkpoint.go to caller=<FQDN>
+ts=2025-09-19T03:00:27.455Z caller=checkpoint.go:101 level=info component=tsdb msg="Creating checkpoint"
+
+##CASE lessence-s53 absent=<FQDN>
+##WHY a dotted class identifier is not a hostname
+##FROM stock Hadoop text; v0.4.1 normalized dfs.DataNode to <FQDN>
+081109 203615 148 INFO dfs.DataNode$PacketResponder: PacketResponder 1 for block blk_38865049064139660 terminating
+
+##CASE lessence-s53 absent=<FQDN>
+##WHY a dotted method identifier is not a hostname
+##FROM stock Apache mod_jk text; v0.4.1 normalized workerEnv.init() to <FQDN>()
+[Sun Dec 04 04:47:44 2005] [notice] workerEnv.init() ok /etc/httpd/conf/workers2.properties
+
+##CASE lessence-qkj absent=<UUID>
+##WHY the ordinary English word request is not a request id
+##FROM stock Kubernetes text; v0.4.1 rewrote it to `cancel request_id=<UUID> for`
+W0909 13:07:12.237366    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
+
+##CASE a585a63 absent=<HASH>
+##WHY a bracketed pid is a pid, not a hash
+##FROM examples/openssh_brute_force.log (Apache-2.0, Rootly AI Labs); v0.4.1 said <HASH>
+Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 port 47192
+
+##CASE lessence-gho groups=2
+##WHY different request endpoints stay in different groups
+##FROM examples/nginx_sample.log shape, already committed as a fixture
+93.180.71.3 - - [17/May/2015:08:05:32 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3"
+93.180.71.3 - - [17/May/2015:08:05:33 +0000] "GET /admin/config HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3"
+
+##CASE lessence-arch-2026-08-r98.12 groups=3
+##WHY distinct HTTP status classes do not re-merge at the default threshold of 83
+##FROM examples/nginx_sample.log, real lines; 2xx, 3xx and 4xx on one path
+93.180.71.3 - - [17/May/2015:08:05:32 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)"
+93.180.71.3 - - [17/May/2015:08:05:23 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)"
+80.91.33.133 - - [17/May/2015:08:05:24 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.17)"
+217.168.17.5 - - [17/May/2015:08:05:34 +0000] "GET /downloads/product_1 HTTP/1.1" 200 490 "-" "Debian APT-HTTP/1.3 (0.8.10.3)"
+93.180.71.3 - - [17/May/2015:08:05:57 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)"
+217.168.17.5 - - [17/May/2015:08:05:42 +0000] "GET /downloads/product_1 HTTP/1.1" 404 332 "-" "Debian APT-HTTP/1.3 (0.8.10.3)"
+
+##CASE lessence-8jb groups=1
+##WHY identical brute-force attempts still fold to one group
+##FROM examples/openssh_brute_force.log (Apache-2.0, Rootly AI Labs)
+Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 port 47192
+Jan 26 00:01:11 d2-4-bhs5 sshd[3578112]: Invalid user deploy from 35.246.248.48 port 47444
+Jan 26 00:02:19 d2-4-bhs5 sshd[3578390]: Invalid user oracle from 35.246.248.48 port 48002

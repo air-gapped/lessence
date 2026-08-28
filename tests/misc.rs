@@ -9,6 +9,7 @@ mod misc {
     mod pii_sanitization;
     mod test_detection_performance;
     mod test_email_statistics;
+    mod test_fold_scaling;
     mod test_normalizer_properties;
     mod test_output_snapshots;
     mod test_sanitize_pii;
