@@ -1330,6 +1330,65 @@ fn make_folder() -> PatternFolder {
     })
 }
 
+// ---- bead lessence-8jb: field values fold on shape, not on length ----
+
+#[test]
+fn compact_json_lines_differing_in_one_field_value_fold_into_one_group() {
+    let mut f = make_folder();
+    for app in [
+        "redis-sentinel",
+        "redis-sentinel-gitlab",
+        "redis-sentinel-gitlab-prod",
+        "redis-sentinel-gitlab-prod-eu",
+    ] {
+        f.process_line(&format!(
+            r#"{{"application":"{app}","level":"info","msg":"Update successful"}}"#
+        ))
+        .unwrap();
+    }
+    assert_eq!(
+        f.buffer.len(),
+        1,
+        "four records differing only in `application` must fold into one group, \
+         whatever the length of the value: {:?}",
+        f.buffer
+            .iter()
+            .map(|g| g.first().normalized.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn quoted_logfmt_lines_differing_in_one_field_value_fold_into_one_group() {
+    let mut f = make_folder();
+    for app in [
+        "redis-sentinel",
+        "redis-sentinel-gitlab",
+        "redis-sentinel-gitlab-prod",
+        "redis-sentinel-gitlab-prod-eu",
+    ] {
+        f.process_line(&format!(r#"level=info app="{app}" msg="sync""#))
+            .unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1, "same for the quoted logfmt shape");
+}
+
+#[test]
+fn compact_json_lines_differing_in_one_numeric_field_fold_into_one_group() {
+    let mut f = make_folder();
+    for ms in ["4", "82", "123", "4567"] {
+        f.process_line(&format!(
+            r#"{{"msg":"Reconciliation completed","diff_ms":{ms}}}"#
+        ))
+        .unwrap();
+    }
+    assert_eq!(
+        f.buffer.len(),
+        1,
+        "a latency crossing 100 ms must not change how the line folds"
+    );
+}
+
 #[test]
 fn process_line_increments_total_lines() {
     let mut f = make_folder();
