@@ -3,12 +3,19 @@ use std::sync::LazyLock;
 
 use super::Token;
 
-// Generic hyphenated names with variable suffixes
-// Matches patterns like: component-name-suffix, kube-api-access-suffix
+// Generic hyphenated names with variable suffixes:
+// component-name-suffix, kube-api-access-suffix. A prefix segment may be a
+// word, a digit-led chunk (`v2`, `1`, a pod-template hash) or a placeholder
+// an earlier detector left behind (`<HASH>`, `<NUMBER>`), so a generated
+// Kubernetes name such as `web-v2-<HASH>-7j5z7` is seen as one name.
 static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([a-z][a-z0-9]*(?:-[a-z][a-z0-9]*)*)-([a-z0-9]{5,})\b")
+    Regex::new(r"\b([a-z][a-z0-9]*(?:-(?:[a-z0-9]+|<[A-Z_]+>))*)-([a-z0-9]{5,})\b")
         .expect("Failed to compile hyphenated names regex")
 });
+
+// The alphabet Kubernetes draws generated-name suffixes and pod-template
+// hashes from (k8s.io/apimachinery rand.String): no vowels, no y, no 0/1/3.
+const K8S_RAND_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
 
 // Common prefixes that should be preserved (not treated as variable)
 static COMMON_PREFIXES: &[&str] = &[
@@ -43,9 +50,10 @@ impl NameDetector {
                 let prefix = caps.get(1).unwrap().as_str();
                 let suffix = caps.get(2).unwrap().as_str();
                 let full_name = caps.get(0).unwrap().as_str();
+                let prev = prefix.rsplit('-').next().unwrap_or("");
 
                 // Check if this looks like a variable suffix (hash-like or random)
-                if Self::is_variable_suffix(suffix) {
+                if Self::is_variable_suffix(prev, suffix) {
                     // Check if the prefix is a known common pattern
                     if Self::is_common_prefix(prefix) {
                         tokens.push(Token::Name(full_name.to_string()));
@@ -65,7 +73,8 @@ impl NameDetector {
         (result, tokens)
     }
 
-    fn is_variable_suffix(suffix: &str) -> bool {
+    /// `prev` is the prefix segment right before the suffix.
+    fn is_variable_suffix(prev: &str, suffix: &str) -> bool {
         // Variable suffixes are typically:
         // - 5+ characters mixed alphanumeric (hash-like)
         // - Contains both letters and numbers
@@ -84,12 +93,30 @@ impl NameDetector {
             return false;
         }
 
+        // A Kubernetes generated name: a 5-char rand.String chunk right after
+        // another variable segment — `<HASH>`, `<NUMBER>` (a CronJob's minute
+        // number) or a pod-template hash that was not hex. Two variable
+        // segments in a row cannot be a word, so this holds for `hcwqj` as
+        // much as for `7j5z7`. A lone all-letter chunk is not enough:
+        // `https`, `pgsql`, `smtps`, `nfsv4` all fit the alphabet.
+        if suffix.len() == 5
+            && Self::is_k8s_rand(suffix)
+            && (prev.starts_with('<')
+                || ((8..=10).contains(&prev.len()) && Self::is_k8s_rand(prev)))
+        {
+            return true;
+        }
+
         let has_letters = suffix.chars().any(char::is_alphabetic);
         let has_numbers = suffix.chars().any(char::is_numeric);
         let all_lowercase = suffix.chars().all(|c| c.is_lowercase() || c.is_numeric());
 
         // Only accept if it has both letters and numbers (hash-like)
         has_letters && has_numbers && all_lowercase
+    }
+
+    fn is_k8s_rand(s: &str) -> bool {
+        s.bytes().all(|b| K8S_RAND_ALPHABET.contains(&b))
     }
 
     fn is_common_prefix(prefix: &str) -> bool {
@@ -123,26 +150,90 @@ mod tests {
         }
     }
 
+    /// A generated Kubernetes name is one name even when an earlier detector
+    /// already replaced its template hash or job number, and even when the
+    /// 5-char suffix happens to contain no digit.
+    #[test]
+    fn generated_pod_name_after_placeholder_is_one_name() {
+        let cases = [
+            // Deployment pod, hex template hash already <HASH>, suffix has no digit
+            (
+                "pod web-v2-<HASH>-hcwqj ready",
+                "pod <COMPONENT>-<SUFFIX> ready",
+            ),
+            // digit-led segment inside the base name (`all-in-1-v2`)
+            (
+                "Pod/ledger-all-in-1-v2-<HASH>-x4q7c",
+                "Pod/<COMPONENT>-<SUFFIX>",
+            ),
+            // CronJob pod: minute number already <NUMBER>
+            ("pod backup-db-<NUMBER>-tvszq", "pod <COMPONENT>-<SUFFIX>"),
+            // non-hex template hash survived the hash detector
+            ("pod portal-5b8dfd9ck-bdwdp", "pod <COMPONENT>-<SUFFIX>"),
+            // the whole name is tokenised, not just its tail
+            (
+                "Pulled Pod/web-<HASH>-hcwqj image",
+                "Pulled Pod/<COMPONENT>-<SUFFIX> image",
+            ),
+        ];
+        for (input, expected) in cases {
+            let (result, tokens) = NameDetector::detect_and_replace(input);
+            assert_eq!(result, expected, "input: {input}");
+            assert!(
+                tokens.iter().any(|t| matches!(t, Token::Name(_))),
+                "no Name token for {input}"
+            );
+        }
+    }
+
+    /// An all-letter 5-char chunk with nothing variable before it is a word
+    /// until proven otherwise: `https` and `pgsql` fit the alphabet too.
+    #[test]
+    fn lone_all_letter_suffix_stays_literal() {
+        for input in [
+            "port proxy-https open",
+            "db main-pgsql up",
+            "pod osd-prepare-g8-nztxp done",
+        ] {
+            let (result, tokens) = NameDetector::detect_and_replace(input);
+            assert_eq!(result, input);
+            assert!(tokens.is_empty(), "{input}");
+        }
+    }
+
     #[test]
     fn test_variable_suffix_detection() {
-        assert!(NameDetector::is_variable_suffix("9djm4")); // mixed alphanumeric
-        assert!(NameDetector::is_variable_suffix("52r58")); // mixed alphanumeric
-        assert!(NameDetector::is_variable_suffix("kh8lj")); // mixed alphanumeric
+        assert!(NameDetector::is_variable_suffix("", "9djm4")); // mixed alphanumeric
+        assert!(NameDetector::is_variable_suffix("", "52r58")); // mixed alphanumeric
+        assert!(NameDetector::is_variable_suffix("", "kh8lj")); // mixed alphanumeric
         // "abcde" is all letters with no numbers — the code requires both letters AND numbers
-        assert!(!NameDetector::is_variable_suffix("abcde"));
+        assert!(!NameDetector::is_variable_suffix("", "abcde"));
 
-        assert!(!NameDetector::is_variable_suffix("abc")); // too short
-        assert!(!NameDetector::is_variable_suffix("stable")); // common word
-        assert!(!NameDetector::is_variable_suffix("123")); // too short
+        assert!(!NameDetector::is_variable_suffix("", "abc")); // too short
+        assert!(!NameDetector::is_variable_suffix("", "stable")); // common word
+        assert!(!NameDetector::is_variable_suffix("", "123")); // too short
+    }
+
+    #[test]
+    fn k8s_rand_suffix_needs_a_variable_segment_before_it() {
+        assert!(NameDetector::is_variable_suffix("<HASH>", "hcwqj"));
+        assert!(NameDetector::is_variable_suffix("<NUMBER>", "tvszq"));
+        assert!(NameDetector::is_variable_suffix("5b8dfd9ck", "bdwdp")); // 9-char template hash
+        assert!(!NameDetector::is_variable_suffix("proxy", "https")); // a word before it
+        assert!(!NameDetector::is_variable_suffix("<HASH>", "hcwqa")); // `a` is not in the alphabet
+        assert!(!NameDetector::is_variable_suffix("<HASH>", "hcwqjx")); // 6 chars is not a suffix
+        assert!(!NameDetector::is_variable_suffix("abcdefgh", "hcwqj")); // vowels: not a template hash
+        assert!(!NameDetector::is_variable_suffix("bcdfghj", "hcwqj")); // 7 chars: too short for one
+        assert!(!NameDetector::is_variable_suffix("bcdfghjklmn", "hcwqj")); // 11: too long
     }
 
     #[test]
     fn variable_suffix_boundary_4_chars() {
-        assert!(!NameDetector::is_variable_suffix("ab1c")); // exactly 4 — too short
+        assert!(!NameDetector::is_variable_suffix("", "ab1c")); // exactly 4 — too short
     }
 
     #[test]
     fn variable_suffix_boundary_5_chars() {
-        assert!(NameDetector::is_variable_suffix("ab1c2")); // exactly 5 — accepted
+        assert!(NameDetector::is_variable_suffix("", "ab1c2")); // exactly 5 — accepted
     }
 }

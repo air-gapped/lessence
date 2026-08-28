@@ -1518,9 +1518,9 @@ fn compact_json_lines_differing_in_one_field_value_fold_into_one_group() {
     let mut f = make_folder();
     for app in [
         "redis-sentinel",
-        "redis-sentinel-gitlab",
-        "redis-sentinel-gitlab-prod",
-        "redis-sentinel-gitlab-prod-eu",
+        "redis-sentinel-wiki",
+        "redis-sentinel-wiki-prod",
+        "redis-sentinel-wiki-prod-eu",
     ] {
         f.process_line(&format!(
             r#"{{"application":"{app}","level":"info","msg":"Update successful"}}"#
@@ -1544,9 +1544,9 @@ fn quoted_logfmt_lines_differing_in_one_field_value_fold_into_one_group() {
     let mut f = make_folder();
     for app in [
         "redis-sentinel",
-        "redis-sentinel-gitlab",
-        "redis-sentinel-gitlab-prod",
-        "redis-sentinel-gitlab-prod-eu",
+        "redis-sentinel-wiki",
+        "redis-sentinel-wiki-prod",
+        "redis-sentinel-wiki-prod-eu",
     ] {
         f.process_line(&format!(r#"level=info app="{app}" msg="sync""#))
             .unwrap();

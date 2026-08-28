@@ -15,7 +15,7 @@ static QUOTED_STRING_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
 
 // A DNS-1123-ish instance identifier standing alone as a whole field value:
-// "redis-sentinel-gitlab", "iperf3", "argocd/iperf3". Whether such a value
+// "redis-sentinel-wiki", "iperf3", "argocd/iperf3". Whether such a value
 // folds must not depend on how long it happens to be (bead lessence-8jb): the
 // 25-char rule below made renaming an app change whether its lines fold.
 //
@@ -456,9 +456,9 @@ mod tests {
         for value in [
             "iperf3",
             "rook-ceph",
-            "redis-sentinel-gitlab",
-            "redis-sentinel-gitlab-prod",
-            "redis-sentinel-gitlab-prod-eu",
+            "redis-sentinel-wiki",
+            "redis-sentinel-wiki-prod",
+            "redis-sentinel-wiki-prod-eu",
         ] {
             assert_eq!(
                 fold_value(value),
@@ -551,11 +551,11 @@ mod tests {
     #[test]
     fn shape_fold_emits_one_quoted_string_token() {
         let (_, tokens) =
-            QuotedStringDetector::detect_and_replace(r#"{"k":"redis-sentinel-gitlab"}"#);
+            QuotedStringDetector::detect_and_replace(r#"{"k":"redis-sentinel-wiki"}"#);
         assert_eq!(tokens.len(), 1);
         assert_eq!(
             tokens[0],
-            Token::QuotedString("\"redis-sentinel-gitlab\"".to_string())
+            Token::QuotedString("\"redis-sentinel-wiki\"".to_string())
         );
     }
 

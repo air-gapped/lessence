@@ -1457,7 +1457,7 @@ mod tests {
         // A quoted instance name is what the detector tokenises; a quoted
         // sentence stays literal by design (lessence-7lj), so the probe must
         // be a name, not prose.
-        let input = "message \"redis-sentinel-gitlab\" done";
+        let input = "message \"redis-sentinel-wiki\" done";
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_quoted = false, input);
         assert!(
@@ -1962,7 +1962,7 @@ mod tests {
     #[test]
     fn lines_without_anchors_are_untouched() {
         let plain = normalize(
-            "Sep 14 06:58:42 epyc systemd[1]: modprobe@configfs.service: Deactivated successfully.",
+            "Sep 14 06:58:42 oryx systemd[1]: modprobe@configfs.service: Deactivated successfully.",
         );
         assert_eq!(
             plain.anchor, 0,
@@ -1971,7 +1971,7 @@ mod tests {
 
         let normalizer = Normalizer::new(Config::default());
         let other = normalize(
-            "Sep 14 06:58:43 epyc systemd[1]: modprobe@fuse.service: Deactivated successfully.",
+            "Sep 14 06:58:43 oryx systemd[1]: modprobe@fuse.service: Deactivated successfully.",
         );
         assert_eq!(other.anchor, 0);
         assert!(normalizer.are_similar(&plain, &other));

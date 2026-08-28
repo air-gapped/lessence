@@ -8,19 +8,24 @@ use std::sync::LazyLock;
 // kubernetes-heavy logs (≈30–40% of cycles in compiler/Utf8Compiler paths
 // per profiling).
 
-static NS_REGEXES: LazyLock<[Regex; 4]> = LazyLock::new(|| {
+// A namespace slot is a shape: whatever sits in it is a namespace. No
+// vocabulary of "known" namespaces decides — the position does.
+static NS_REGEXES: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     [
         Regex::new(r"Namespace:([a-z0-9][a-z0-9-]*[a-z0-9])").unwrap(),
         Regex::new(r"namespace:([a-z0-9][a-z0-9-]*[a-z0-9])").unwrap(),
         Regex::new(r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/").unwrap(),
-        Regex::new(r"_([a-z0-9][a-z0-9-]*[a-z0-9])\(").unwrap(),
+        // klog's structured pod reference: pod="namespace/name"
+        Regex::new(r#"pod="([a-z0-9][a-z0-9-]*[a-z0-9])/"#).unwrap(),
+        // kubelet's container reference: pod=<name>_<namespace>(<uid>)
+        Regex::new(r"pod=[^\s_]+_([a-z0-9][a-z0-9-]*[a-z0-9])\(").unwrap(),
     ]
 });
 
-static VOLUME_REGEXES: LazyLock<[Regex; 5]> = LazyLock::new(|| {
+// `kube-api-access-<suffix>` is not here: the name detector folds it, with
+// its token, like every other hyphenated name with a generated suffix.
+static VOLUME_REGEXES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
     [
-        Regex::new(r#"volume "kube-api-access-[a-z0-9]+""#).unwrap(),
-        Regex::new(r"volume kube-api-access-[a-z0-9]+").unwrap(),
         Regex::new(r#"volume "([a-z0-9][a-z0-9-]*[a-z0-9]-secret)""#).unwrap(),
         Regex::new(r#"volume "([a-z0-9][a-z0-9-]*[a-z0-9]-token)""#).unwrap(),
         Regex::new(r"volume (oidc-token)").unwrap(),
@@ -30,11 +35,15 @@ static VOLUME_REGEXES: LazyLock<[Regex; 5]> = LazyLock::new(|| {
 static PLUGIN_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"plugin type="([^"]+)""#).unwrap());
 
-static POD_REGEXES: LazyLock<[Regex; 2]> = LazyLock::new(|| {
+// A pod slot holds a pod name whatever its kind — Deployment
+// (`web-<HASH>-x4q7c`), StatefulSet (`db-0`), static (`etcd-node3`) — so
+// the whole name folds. Earlier detectors may already have left placeholders
+// in it. The last capture group is the name.
+static POD_REGEXES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
     [
         Regex::new(r"Name:([a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]+)").unwrap(),
-        Regex::new(r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/([a-z0-9][a-z0-9-]*[a-z0-9]-[a-z0-9]+)")
-            .unwrap(),
+        Regex::new(r"pod ([a-z0-9][a-z0-9-]*[a-z0-9])/((?:[a-z0-9-]|<[A-Z_]+>)+)").unwrap(),
+        Regex::new(r#"pod="([a-z0-9][a-z0-9-]*[a-z0-9])/([^"]+)""#).unwrap(),
     ]
 });
 
@@ -63,7 +72,11 @@ impl KubernetesDetector {
         let result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Apply all Kubernetes patterns in order (only if kubernetes content detected)
+        // Apply all Kubernetes patterns in order (only if kubernetes content detected).
+        // Pods first: the namespace regexes then see `pod ns/<POD_NAME>`.
+        let (result, pod_tokens) = Self::normalize_pod_names(result);
+        tokens.extend(pod_tokens);
+
         let (result, ns_tokens) = Self::normalize_namespaces(result);
         tokens.extend(ns_tokens);
 
@@ -72,9 +85,6 @@ impl KubernetesDetector {
 
         let (result, plugin_tokens) = Self::normalize_plugin_types(result);
         tokens.extend(plugin_tokens);
-
-        let (result, pod_tokens) = Self::normalize_pod_names(result);
-        tokens.extend(pod_tokens);
 
         // Re-enabled with fixed regex patterns that avoid backtracking
         let (result, name_field_tokens) = Self::normalize_name_fields(result);
@@ -89,27 +99,12 @@ impl KubernetesDetector {
         let mut tokens = Vec::new();
 
         for re in NS_REGEXES.iter() {
-            let captures: Vec<_> = re.captures_iter(&result).collect();
-            for capture in captures {
-                if let Some(namespace) = capture.get(1) {
-                    let namespace_str = namespace.as_str();
-                    // Only normalize common Kubernetes namespaces
-                    if Self::is_common_k8s_namespace(namespace_str) {
-                        tokens.push(Token::KubernetesNamespace(namespace_str.to_string()));
-                    }
-                }
+            for capture in re.captures_iter(&result) {
+                tokens.push(Token::KubernetesNamespace(capture[1].to_string()));
             }
             result = re
                 .replace_all(&result, |caps: &regex::Captures| {
-                    let namespace = caps.get(1).unwrap().as_str();
-                    if Self::is_common_k8s_namespace(namespace) {
-                        caps.get(0)
-                            .unwrap()
-                            .as_str()
-                            .replace(namespace, "<NAMESPACE>")
-                    } else {
-                        caps.get(0).unwrap().as_str().to_string()
-                    }
+                    Self::replace_group(caps, 1, "<NAMESPACE>")
                 })
                 .to_string();
         }
@@ -117,34 +112,28 @@ impl KubernetesDetector {
         (result, tokens)
     }
 
+    /// Replace one capture group inside the whole match by position, so a
+    /// namespace that also appears in the pod name is replaced once.
+    fn replace_group(caps: &regex::Captures, idx: usize, placeholder: &str) -> String {
+        let whole = caps.get(0).unwrap();
+        let group = caps.get(idx).unwrap();
+        let text = whole.as_str();
+        let (start, end) = (group.start() - whole.start(), group.end() - whole.start());
+        format!("{}{placeholder}{}", &text[..start], &text[end..])
+    }
+
     /// Normalize volume names
-    #[cfg_attr(test, mutants::skip)] // capture.len() > 1 is always true: the regexes always have a capture group
     fn normalize_volume_names(text: String) -> (String, Vec<Token>) {
         let mut result = text;
         let mut tokens = Vec::new();
 
         for re in VOLUME_REGEXES.iter() {
-            let captures: Vec<_> = re.captures_iter(&result).collect();
-            for capture in captures {
-                if capture.len() > 1
-                    && let Some(volume) = capture.get(1)
-                {
-                    tokens.push(Token::VolumeName(volume.as_str().to_string()));
-                }
+            for capture in re.captures_iter(&result) {
+                tokens.push(Token::VolumeName(capture[1].to_string()));
             }
             result = re
                 .replace_all(&result, |caps: &regex::Captures| {
-                    if caps.get(0).unwrap().as_str().contains("kube-api-access") {
-                        caps.get(0)
-                            .unwrap()
-                            .as_str()
-                            .replace("kube-api-access-", "kube-api-access-<SUFFIX>")
-                    } else {
-                        caps.get(0)
-                            .unwrap()
-                            .as_str()
-                            .replace(caps.get(1).unwrap().as_str(), "<VOLUME_NAME>")
-                    }
+                    Self::replace_group(caps, 1, "<VOLUME_NAME>")
                 })
                 .to_string();
         }
@@ -184,9 +173,7 @@ impl KubernetesDetector {
             }
             result = re
                 .replace_all(&result, |caps: &regex::Captures| {
-                    let full_match = caps.get(0).unwrap().as_str();
-                    let pod_name = caps.get(caps.len() - 1).unwrap().as_str();
-                    full_match.replace(pod_name, "<POD_NAME>")
+                    Self::replace_group(caps, caps.len() - 1, "<POD_NAME>")
                 })
                 .to_string();
         }
@@ -232,28 +219,6 @@ impl KubernetesDetector {
 
         (result, tokens)
     }
-
-    /// Check if a namespace is a common Kubernetes namespace that should be normalized
-    fn is_common_k8s_namespace(namespace: &str) -> bool {
-        matches!(
-            namespace,
-            "kube-system"
-                | "kube-public"
-                | "kube-node-lease"
-                | "default"
-                | "gpu-operator"
-                | "rook-ceph"
-                | "kubevirt"
-                | "traefik"
-                | "cilium-test-1"
-                | "cattle-monitoring-system"
-                | "keycloak"
-                | "monitoring"
-                | "logging"
-                | "istio-system"
-                | "cert-manager"
-        )
-    }
 }
 
 #[cfg(test)]
@@ -276,12 +241,24 @@ mod tests {
 
     #[test]
     fn test_volume_normalization() {
-        let text = r#"volume "kube-api-access-abc123" failed"#;
-        let (result, _) = KubernetesDetector::detect_and_replace(text);
+        let text = r#"volume "grafana-token" and volume "db-secret" failed"#;
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        assert_eq!(
+            result,
+            r#"volume "<VOLUME_NAME>" and volume "<VOLUME_NAME>" failed"#
+        );
+        assert_eq!(tokens.len(), 2);
+    }
 
-        // The replacement inserts <SUFFIX> after "kube-api-access-" but the original
-        // suffix text remains appended (string replace only replaces the prefix portion)
-        assert!(result.contains("kube-api-access-<SUFFIX>"));
+    /// `kube-api-access-<suffix>` belongs to the name detector, which folds
+    /// the suffix and keeps a token. Inserting a placeholder here used to
+    /// leave `kube-api-access-<SUFFIX>abc12` — a template of nothing.
+    #[test]
+    fn kube_api_access_is_left_to_the_name_detector() {
+        let text = r#"volume "kube-api-access-abc12" and volume kube-api-access-def34 failed"#;
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        assert_eq!(result, text);
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 
     #[test]
@@ -337,37 +314,15 @@ mod tests {
         assert_eq!(result, text);
     }
 
-    // ---- Mutant-killing: normalize_volume_names boundary ----
-
-    #[test]
-    fn volume_names_captures_len_boundary() {
-        // Kills mutant: `capture.len() > 1` → `capture.len() >= 1` (line ~102)
-        // A kube-api-access match has only capture group 0 (no group 1), so
-        // len() == 1, meaning > 1 is false. If mutated to >= 1, it would try
-        // capture.get(1) on a None, which would panic or produce wrong tokens.
-        let text = r"volume kube-api-access-abc123 failed";
-        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
-        // Should succeed without panic — the kube-api-access pattern has no capture group 1
-        assert!(
-            result.contains("kube-api-access-<SUFFIX>"),
-            "result: {result}"
-        );
-        // kube-api-access patterns don't push VolumeName tokens (only named-capture patterns do)
-        let _ = tokens; // just verify no panic
-    }
-
     // ---- Mutant-killing: normalize_pod_names arithmetic ----
 
     #[test]
     fn pod_names_capture_last_group() {
-        // Kills mutant: `capture.len() - 1` → `capture.len() + 1` or `/ 1` (lines ~165, 172)
-        // The pod pattern "pod ns/pod-name" has 2 capture groups: (1)=ns, (2)=pod-name
-        // capture.len() = 3 (0=full, 1=ns, 2=pod). len()-1 = 2, which is the pod name.
-        // If mutated to len()+1 = 4, it would be out of bounds.
-        // Use a non-common namespace so normalize_namespaces doesn't alter the text first.
-        let text = "Error for pod my-app-ns/nginx-abc123: failed";
+        // Kills mutant: `capture.len() - 1` → `capture.len() + 1` or `/ 1`.
+        // The `Name:` pattern has one capture group: len() = 2, len()-1 = 1
+        // is the pod name; +1 is out of bounds and yields no token.
+        let text = "pod Name:nginx-abc123 failed";
         let (result, tokens) = KubernetesDetector::detect_and_replace(text);
-        // Should detect the pod name (the last capture group)
         assert!(
             tokens.iter().any(|t| matches!(t, Token::PodName(_))),
             "Should detect pod name, tokens: {tokens:?}"
@@ -378,34 +333,81 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: is_common_k8s_namespace replace with true ----
-
+    /// Whatever sits in a namespace slot is a namespace — there is no list
+    /// of "known" namespaces deciding which ones fold.
     #[test]
-    fn is_common_k8s_namespace_rejects_unknown() {
-        // Kills mutant: `is_common_k8s_namespace` replaced with `true`
-        // An unknown namespace should NOT be normalized
-        assert!(!KubernetesDetector::is_common_k8s_namespace("my-custom-ns"));
-        assert!(!KubernetesDetector::is_common_k8s_namespace("production"));
-        assert!(!KubernetesDetector::is_common_k8s_namespace("staging"));
+    fn any_namespace_in_a_namespace_slot_is_normalized() {
+        let cases = [
+            (
+                "Error for pod my-custom-ns/nginx-abc123: failed",
+                "Error for pod <NAMESPACE>/<POD_NAME>: failed",
+            ),
+            (
+                r#"volume started" pod="shop/web-7d4b9c2f8e-x4q7c""#,
+                r#"volume started" pod="<NAMESPACE>/<POD_NAME>""#,
+            ),
+            (
+                "container=agent pod=web-x4q7c_shop(<UUID>)",
+                "container=agent pod=web-x4q7c_<NAMESPACE>(<UUID>)",
+            ),
+            // the namespace is also the pod name: each replaced once, by position
+            (
+                "Error for pod shop/shop: failed",
+                "Error for pod <NAMESPACE>/<POD_NAME>: failed",
+            ),
+        ];
+        for (input, expected) in cases {
+            let (result, tokens) = KubernetesDetector::detect_and_replace(input);
+            assert_eq!(result, expected, "input: {input}");
+            assert!(
+                tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::KubernetesNamespace(_))),
+                "no namespace token for {input}"
+            );
+        }
     }
 
+    /// A pod slot folds every kind of pod name, including the ones no
+    /// suffix rule can see: a StatefulSet ordinal, a static pod, a name that
+    /// already carries a placeholder from an earlier detector.
     #[test]
-    fn is_common_k8s_namespace_accepts_known() {
-        assert!(KubernetesDetector::is_common_k8s_namespace("kube-system"));
-        assert!(KubernetesDetector::is_common_k8s_namespace("default"));
-        assert!(KubernetesDetector::is_common_k8s_namespace("monitoring"));
+    fn pod_slot_folds_every_pod_kind() {
+        let cases = [
+            (
+                "for pod db/db-0: failed",
+                "for pod <NAMESPACE>/<POD_NAME>: failed",
+            ),
+            (
+                "for pod sys/etcd-node3 ok",
+                "for pod <NAMESPACE>/<POD_NAME> ok",
+            ),
+            (
+                r#"ok" pod="web/web-<HASH>-hcwqj""#,
+                r#"ok" pod="<NAMESPACE>/<POD_NAME>""#,
+            ),
+            (
+                "for pod web/web-<NUMBER>-deploy-<HASH>-x4q7c: failed",
+                "for pod <NAMESPACE>/<POD_NAME>: failed",
+            ),
+        ];
+        for (input, expected) in cases {
+            let (result, tokens) = KubernetesDetector::detect_and_replace(input);
+            assert_eq!(result, expected, "input: {input}");
+            assert!(
+                tokens.iter().any(|t| matches!(t, Token::PodName(_))),
+                "no pod token for {input}"
+            );
+        }
     }
 
+    /// `_word(` alone is not a namespace slot: `jk2_init()` and `pam_unix(`
+    /// are function names.
     #[test]
-    fn unknown_namespace_not_normalized() {
-        // Integration test: unknown namespace should NOT be replaced with <NAMESPACE>
-        // This kills the mutant where is_common_k8s_namespace always returns true
-        let text = "Error for pod my-custom-ns/nginx-abc123: failed";
-        let (result, _tokens) = KubernetesDetector::detect_and_replace(text);
-        // "my-custom-ns" is NOT a common k8s namespace, so it should be preserved
-        assert!(
-            result.contains("my-custom-ns"),
-            "Unknown namespace should NOT be replaced: {result}"
-        );
+    fn underscore_call_is_not_a_namespace() {
+        let text = "kubelet jk2_init() Found child; pam_unix(cron:session): opened";
+        let (result, tokens) = KubernetesDetector::detect_and_replace(text);
+        assert_eq!(result, text);
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 }

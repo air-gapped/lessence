@@ -143,10 +143,6 @@ fn test_constitutional_compliance_kubelet() {
     // is a regression: name it and its bead, or fix it. A shape vanishing
     // is progress: delete its line.
     let known: &[(&str, &str)] = &[
-        // lessence-k2b item 4: the 5-char pod suffix after an already
-        // tokenised chunk — `pod="ns/name-<NUMBER>-7j5z7"` — is not
-        // recognised, so 99 pod lines each sit at 80.0 next to their group.
-        ("<W>=\"<NAME>\"", "lessence-k2b"),
         // lessence-ch5: two klog lines from different source files scoring
         // 76-81 because everything but `file.go:<LINE>]` matches. They ARE
         // different events; ch5 makes file:line an anchor, at which point
@@ -158,6 +154,8 @@ fn test_constitutional_compliance_kubelet() {
         ("<W>=\"<W>", "distinct error cause, by design"),
         // `EOF"` vs `read`: last word of two different error sentences.
         ("<W>\"", "distinct error cause, by design"),
+        // `unexpected` (EOF) vs `read` (connection reset): two error tails.
+        ("<W>", "distinct error cause, by design"),
     ];
     let unexplained: Vec<_> = near_misses
         .keys()

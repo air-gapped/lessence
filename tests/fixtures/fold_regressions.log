@@ -45,9 +45,9 @@
 ##WHY a field value folds on its shape, not on how long it happens to be
 ##FROM argocd controller shape; the 25-char rule split these by name length
 {"application":"redis-sentinel","level":"info","msg":"Update successful"}
-{"application":"redis-sentinel-gitlab","level":"info","msg":"Update successful"}
-{"application":"redis-sentinel-gitlab-prod","level":"info","msg":"Update successful"}
-{"application":"redis-sentinel-gitlab-prod-eu","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-wiki","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-wiki-prod","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-wiki-prod-eu","level":"info","msg":"Update successful"}
 
 ##CASE lessence-8jb groups=2
 ##WHY a bare word is shape-identical to a log level, so it must never fold
@@ -66,7 +66,7 @@
 ##CASE lessence-8jb template_present=application
 ##WHY a JSON key keeps its name in the template; only the value folds
 ##FROM the one-byte colon lookahead in QuotedStringDetector
-{"application":"redis-sentinel-gitlab","level":"info","msg":"Update successful"}
+{"application":"redis-sentinel-wiki","level":"info","msg":"Update successful"}
 
 ##CASE lessence-fo2 groups=1
 ##WHY a record past the similarity token cap folds like a short one
@@ -370,11 +370,11 @@ E0910 00:02:39.917803       1 writers.go:135] "Unhandled Error" err="apiserver w
 
 ##TODO study-systemd-unit-is-identity groups=2
 ##WHY two units failing are two incidents; the unit name must anchor (root cause 3)
-##FROM examples/epyc_7days_journalctl.log — rke2-agent x8 absorbed into containerd x103,328
-Sep 14 06:38:27 epyc systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
-Sep 14 06:40:27 epyc systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
-Sep 14 09:37:04 epyc systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
-Sep 14 09:37:14 epyc systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
+##FROM the journalctl corpus — rke2-agent x8 absorbed into containerd x103,328
+Sep 14 06:38:27 oryx systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
+Sep 14 06:40:27 oryx systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
+Sep 14 09:37:04 oryx systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
+Sep 14 09:37:14 oryx systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
 
 ##CASE study-auditd-type-is-identity template_present=type=USYS_CONFIG
 ##WHY auditd's type= is its only discriminator and must stay literal in the template, never
@@ -422,12 +422,26 @@ type=NETFILTER_CFG msg=audit(1481076985.583:68): table=mangle family=2 entries=6
 20/01/2025 10:20:04.300 [kafka-consumer-user-events-3] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=2 lag=1450 threshold=1000
 20/01/2025 10:20:04.500 [kafka-consumer-user-events-5] WARN ConsumerLagMonitor - Consumer lag for topic=user-events partition=4 lag=1650 threshold=1000
 
-##TODO study-pod-suffix-after-hash-folds groups=1
-##WHY the 5-char pod suffix folds even when the preceding chunk is already <HASH> (root cause 5)
-##FROM examples/kubectl_events.log — score 80.0 on -7j5z7 vs -v9w7t
-gitlab-stage   60m   Normal   Scheduled   Pod/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-7j5z7   Successfully assigned gitlab-stage/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-7j5z7 to node1
-gitlab-stage   21m   Normal   Scheduled   Pod/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-v9w7t   Successfully assigned gitlab-stage/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-v9w7t to node1
-gitlab-stage   11m   Normal   Scheduled   Pod/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-k2m8p   Successfully assigned gitlab-stage/gitlab-sidekiq-all-in-1-v2-6cf6f474bd-k2m8p to node1
+##CASE lessence-k2b groups=1
+##WHY the 5-char pod suffix folds even when the chunk before it is already <HASH> (k2b item 4)
+##FROM kubectl-events shape; three pods of one ReplicaSet scored 80.0 against each other
+payments-stage   60m   Normal   Scheduled   Pod/ledger-worker-all-in-1-v2-7d4b9c2f8e-x4q7c   Successfully assigned payments-stage/ledger-worker-all-in-1-v2-7d4b9c2f8e-x4q7c to node3
+payments-stage   21m   Normal   Scheduled   Pod/ledger-worker-all-in-1-v2-7d4b9c2f8e-m9t2z   Successfully assigned payments-stage/ledger-worker-all-in-1-v2-7d4b9c2f8e-m9t2z to node3
+payments-stage   11m   Normal   Scheduled   Pod/ledger-worker-all-in-1-v2-7d4b9c2f8e-b6w8n   Successfully assigned payments-stage/ledger-worker-all-in-1-v2-7d4b9c2f8e-b6w8n to node3
+
+##CASE lessence-k2b template_present=kube-api-access-<SUFFIX> for pod
+##WHY the projected-volume name is replaced whole; a placeholder inserted in front of the real suffix left `kube-api-access-<SUFFIX>gm4xp` in 5,902 kubelet lines (k2b item 5)
+##FROM kubelet projected.go shape
+E0909 13:07:30.032336    3116 projected.go:194] Error preparing data for projected volume kube-api-access-p7wqz for pod metrics-stack/otel-agent-daemonset-x7k2m: failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/metrics-stack/serviceaccounts/otel-agent/token": net/http: TLS handshake timeout
+E0909 13:07:30.032352    3116 projected.go:194] Error preparing data for projected volume kube-api-access-d4kml for pod metrics-stack/otel-collector-validator-b2m9q: failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/metrics-stack/serviceaccounts/otel-collector-validator/token": net/http: TLS handshake timeout
+E0909 13:07:30.032492    3116 projected.go:194] Error preparing data for projected volume kube-api-access-n2xrt for pod metrics-stack/otel-exporter-daemonset-k4c7w: failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/metrics-stack/serviceaccounts/otel-exporter/token": net/http: TLS handshake timeout
+
+##CASE lessence-k2b groups=1
+##WHY whatever sits in pod="ns/name" is a namespace and a pod name because of where it sits, not because it is on a list; 80 of 99 kubelet near-misses were cross-namespace
+##FROM kubelet reconciler_common shape — a Deployment pod, a CronJob pod, a StatefulSet pod
+I0918 19:48:33.672316 1119763 reconciler_common.go:245] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-t3d95\" (UniqueName: \"kubernetes.io/projected/1b7e0a4c-52d3-4e8f-9a61-3c5d7e9f0b2a-kube-api-access-t3d95\") pod \"embed-api-300-deployment-embed-5c7f9a2b4d-mzqtb\" (UID: \"1b7e0a4c-52d3-4e8f-9a61-3c5d7e9f0b2a\") " pod="embed/embed-api-300-deployment-embed-5c7f9a2b4d-mzqtb"
+I0918 19:48:41.118204 1119763 reconciler_common.go:245] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-prmm6\" (UniqueName: \"kubernetes.io/projected/6e2d8f1a-7b3c-4d5e-8f9a-0b1c2d3e4f5a-kube-api-access-prmm6\") pod \"nightly-backup-wiki-db-29304410-77kp4\" (UID: \"6e2d8f1a-7b3c-4d5e-8f9a-0b1c2d3e4f5a\") " pod="wiki-db/nightly-backup-wiki-db-29304410-77kp4"
+I0918 19:48:52.905117 1119763 reconciler_common.go:245] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-55h7w\" (UniqueName: \"kubernetes.io/projected/9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d-kube-api-access-55h7w\") pod \"cache-redis-2\" (UID: \"9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d\") " pod="cache/cache-redis-2"
 
 ##TODO study-http-version-is-not-a-path template_absent=HTTP<PATH>
 ##WHY HTTP/1.1 is a protocol version; found in 7 of 25 corpora (root cause 6)
@@ -451,8 +465,8 @@ Feb 22 16:48:04 slave22 sshd[2805]: Accepted publickey for drewr from 69.245.39.
 
 ##TODO study-systemd-instance-unit-is-not-email template_absent=<EMAIL>
 ##WHY name@instance.service is a systemd unit (root cause 6)
-##FROM examples/epyc_7days_journalctl.log
-Sep 14 06:58:42 epyc systemd[1]: modprobe@configfs.service: Deactivated successfully.
+##FROM the journalctl corpus
+Sep 14 06:58:42 oryx systemd[1]: modprobe@configfs.service: Deactivated successfully.
 
 ##TODO study-ipv4-mapped-ipv6-is-one-token template_absent=<IP>:<IP>
 ##WHY [::ffff:172.26.1.74] is one address (root cause 6)
