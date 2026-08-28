@@ -143,11 +143,6 @@ fn test_constitutional_compliance_kubelet() {
     // is a regression: name it and its bead, or fix it. A shape vanishing
     // is progress: delete its line.
     let known: &[(&str, &str)] = &[
-        // lessence-ch5: two klog lines from different source files scoring
-        // 76-81 because everything but `file.go:<LINE>]` matches. They ARE
-        // different events; ch5 makes file:line an anchor, at which point
-        // these stop being near-misses and this entry can go.
-        ("<W>:<NAME>]", "lessence-ch5"),
         // `err="Patch` vs `err="Post`, `err="container` vs `err="init`: the
         // first word of a quoted error sentence differs. Different causes;
         // correctly apart. Sits here only because the score is high.

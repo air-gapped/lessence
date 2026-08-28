@@ -209,6 +209,33 @@ static PCI_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
         .expect("pci-address anchor pattern must compile")
 });
 
+/// A klog header, `E0910 00:02:39.914326       1 status.go:71]`. The capture
+/// is the call site, `file.go:line` — klog's event identity, the way a
+/// syslog program name is.
+static KLOG_CALL_SITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[IWEF]\d{4} \d\d:\d\d:\d\d\.\d{6}\s+\d+ ([A-Za-z0-9_]+\.go:\d+)\]")
+        .expect("klog call-site anchor pattern must compile")
+});
+
+/// A systemd message whose subject is a unit, `systemd[1]: containerd.service:
+/// Main process exited`. The capture is the unit. Messages *about* a unit
+/// (`Starting containerd.service - ...`) are not this shape and carry no
+/// anchor. Mount, device, swap and path units are named after the thing they
+/// mount — a pod volume, a device node — so for them the message is the
+/// identity and the unit is the instance; they are left to similarity.
+static SYSTEMD_UNIT_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"systemd\[\d+\]: ([A-Za-z0-9@._:\\-]+\.(?:service|slice|scope|socket|timer|target)): ",
+    )
+    .expect("systemd unit anchor pattern must compile")
+});
+
+/// An audit record's type, `type=SYSCALL msg=audit(...)`. The capture is the
+/// type — auditd's only discriminator between record kinds.
+static AUDIT_RECORD_TYPE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^type=([A-Z_]+) msg=audit\(").expect("audit type anchor pattern must compile")
+});
+
 /// Hash the fields that must match exactly for two lines to fold together.
 ///
 /// Normalization erases variable text on purpose, but some of what it erases
@@ -253,7 +280,76 @@ fn anchor_hash(original: &str) -> u64 {
         }
     }
 
+    // Some grammars put the event identity in a fixed position as a name:
+    // klog's call site, systemd's unit, auditd's record type. Each is one
+    // token out of many, so similarity alone merges across them.
+    if original.contains(".go:") {
+        for caps in KLOG_CALL_SITE.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+    if original.contains("systemd[") {
+        for caps in SYSTEMD_UNIT_SUBJECT.captures_iter(original) {
+            // `cri-containerd-<hash>.scope` and `<uuid>-rootfs.mount` are one
+            // unit kind each, not thousands: hash the skeleton, as for routes.
+            let unit = caps.get(1).map_or("", |m| m.as_str());
+            // systemd escapes `-` in unit names as `\x2d`; undo it so a uuid
+            // is one id run.
+            if unit.contains("\\x2d") {
+                hash_skeleton(&unit.replace("\\x2d", "-"), &mut hasher);
+            } else {
+                hash_skeleton(unit, &mut hasher);
+            }
+            found = true;
+        }
+    }
+    if original.starts_with("type=") {
+        for caps in AUDIT_RECORD_TYPE.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+
     if found { hasher.finish() } else { 0 }
+}
+
+/// Hash a name with its instance ids removed: a run holding 8+ hex digits
+/// (a hash, a uuid with its hyphens) hashes as `<id>`, every other digit run
+/// as `<d>`, all else as itself. `cri-containerd-9f3e...a1.scope` and
+/// `session-1234.scope` thus name their kind, not their instance.
+fn hash_skeleton(text: &str, hasher: &mut AHasher) {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !(bytes[i].is_ascii_hexdigit() || bytes[i] == b'-') {
+            bytes[i].hash(hasher);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut hex = 0;
+        while i < bytes.len() && (bytes[i].is_ascii_hexdigit() || bytes[i] == b'-') {
+            hex += usize::from(bytes[i].is_ascii_hexdigit());
+            i += 1;
+        }
+        if hex >= 8 {
+            "<id>".hash(hasher);
+            continue;
+        }
+        let mut in_digits = false;
+        for &byte in &bytes[start..i] {
+            if byte.is_ascii_digit() {
+                if !in_digits {
+                    "<d>".hash(hasher);
+                    in_digits = true;
+                }
+            } else {
+                in_digits = false;
+                byte.hash(hasher);
+            }
+        }
+    }
 }
 
 /// Hash a request target as its route — the part that says *what was asked
@@ -1958,23 +2054,153 @@ mod tests {
         assert!(normalizer.are_similar(&first, &second));
     }
 
+    /// The same klog message from two call sites is two events. Only the
+    /// `file.go:line` token differs, so similarity alone would merge them.
+    #[test]
+    fn anchor_separates_klog_call_sites() {
+        let normalizer = Normalizer::new(Config::default());
+        let status = normalize(
+            r#"E0910 00:02:39.914326       1 status.go:71] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError""#,
+        );
+        let writers = normalize(
+            r#"E0910 00:02:39.917803       1 writers.go:135] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError""#,
+        );
+        assert_ne!(status.anchor, writers.anchor, "different call sites");
+        assert!(!normalizer.are_similar(&status, &writers));
+        assert!(
+            normalizer.similarity_score(&status, &writers)
+                >= f64::from(Config::default().threshold),
+            "the anchor, not the score, keeps these apart"
+        );
+    }
+
+    /// One call site stays one call site whatever the pid, the time or the
+    /// line's other variable parts.
+    #[test]
+    fn anchor_keeps_one_klog_call_site_together() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = normalize(
+            r#"E0910 00:02:39.914326       1 status.go:71] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError""#,
+        );
+        let second = normalize(
+            r#"E0910 00:03:12.001200  114343 status.go:71] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError""#,
+        );
+        assert_eq!(first.anchor, second.anchor);
+        assert!(normalizer.are_similar(&first, &second));
+    }
+
+    /// Two units failing are two incidents. The corpus had 8 rke2-agent
+    /// failures absorbed into 103,328 containerd ones under a template that
+    /// named rke2-agent.
+    #[test]
+    fn anchor_separates_systemd_units() {
+        let normalizer = Normalizer::new(Config::default());
+        let agent = normalize(
+            "Sep 14 06:38:27 oryx systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE",
+        );
+        let containerd = normalize(
+            "Sep 14 09:37:04 oryx systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE",
+        );
+        assert_ne!(agent.anchor, containerd.anchor, "different units");
+        assert!(!normalizer.are_similar(&agent, &containerd));
+        assert!(
+            normalizer.similarity_score(&agent, &containerd)
+                >= f64::from(Config::default().threshold),
+            "the anchor, not the score, keeps these apart"
+        );
+        let again = normalize(
+            "Sep 14 06:40:27 oryx systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE",
+        );
+        assert_eq!(agent.anchor, again.anchor, "same unit, same anchor");
+    }
+
+    /// A message *about* a unit is not the unit speaking: `Starting
+    /// containerd.service - ...` carries no anchor and folds as before.
+    #[test]
+    fn anchor_ignores_messages_about_units() {
+        let line = normalize(
+            "Sep 14 06:38:27 oryx systemd[1]: Starting containerd.service - containerd container runtime...",
+        );
+        assert_eq!(line.anchor, 0);
+    }
+
+    /// auditd's `type=` is the record kind; two kinds with near-identical
+    /// bodies are still two kinds.
+    #[test]
+    fn anchor_separates_audit_record_types() {
+        let acq = normalize(
+            "type=CRED_ACQ msg=audit(1481077254.276:518): pid=3014 uid=0 auid=0 ses=1 msg='op=PAM:setcred acct=\"root\" exe=\"/usr/sbin/cron\" hostname=? addr=? terminal=cron res=success'",
+        );
+        let disp = normalize(
+            "type=CRED_DISP msg=audit(1481077254.280:520): pid=3014 uid=0 auid=0 ses=1 msg='op=PAM:setcred acct=\"root\" exe=\"/usr/sbin/cron\" hostname=? addr=? terminal=cron res=success'",
+        );
+        assert_ne!(acq.anchor, disp.anchor, "different record types");
+        let acq2 = normalize(
+            "type=CRED_ACQ msg=audit(1481077300.101:530): pid=3020 uid=0 auid=0 ses=2 msg='op=PAM:setcred acct=\"root\" exe=\"/usr/sbin/cron\" hostname=? addr=? terminal=cron res=success'",
+        );
+        assert_eq!(acq.anchor, acq2.anchor, "same type, same anchor");
+        // `type=` must open the line: a key=value elsewhere is not a record type.
+        let prose = normalize("event type=CRED_ACQ msg=audit(1.0:1): done");
+        assert_eq!(prose.anchor, 0);
+    }
+
     /// Most lines carry no anchor at all and must group exactly as before.
     #[test]
     fn lines_without_anchors_are_untouched() {
         let plain = normalize(
-            "Sep 14 06:58:42 oryx systemd[1]: modprobe@configfs.service: Deactivated successfully.",
+            "Sep 14 06:58:42 oryx kernel: usb 1-1: new high-speed USB device number 4 using xhci_hcd",
         );
         assert_eq!(
             plain.anchor, 0,
-            "a line with no request or device carries no anchor"
+            "a line with no request, device, call site, unit or record type carries no anchor"
         );
 
         let normalizer = Normalizer::new(Config::default());
         let other = normalize(
-            "Sep 14 06:58:43 oryx systemd[1]: modprobe@fuse.service: Deactivated successfully.",
+            "Sep 14 06:58:43 oryx kernel: usb 1-2: new high-speed USB device number 5 using xhci_hcd",
         );
         assert_eq!(other.anchor, 0);
         assert!(normalizer.are_similar(&plain, &other));
+    }
+
+    /// A unit whose name carries an instance id — a container scope, a pod
+    /// volume mount — is one unit kind. The corpus has 555 `cri-containerd-
+    /// <hash>.scope` units; anchoring each one is the PCI-inventory mistake.
+    #[test]
+    fn anchor_names_the_unit_kind_not_the_instance() {
+        let a = normalize(
+            "Sep 14 06:58:42 oryx systemd[1]: cri-containerd-9f3e7c2a1b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f.scope: Deactivated successfully.",
+        );
+        let b = normalize(
+            "Sep 14 06:58:43 oryx systemd[1]: cri-containerd-0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9.scope: Deactivated successfully.",
+        );
+        assert_eq!(a.anchor, b.anchor, "same unit kind");
+        assert_ne!(a.anchor, 0);
+
+        // A mount unit is named after what it mounts: the message is the
+        // identity there, so it carries no anchor and folds by similarity.
+        let mount = normalize(
+            "Sep 14 06:58:42 oryx systemd[1]: var-lib-kubelet-pods-f27aee6d\\x2d4bc2\\x2d43f0\\x2d9be3\\x2d7a1b2c3d4e5f-volumes-kubernetes.io\\x7eprojected-kube\\x2dapi\\x2daccess\\x2dvmch5.mount: Deactivated successfully.",
+        );
+        assert_eq!(mount.anchor, 0, "mount units are not anchored");
+
+        // `\x2d` is systemd's escaped hyphen: a uuid written that way is
+        // still one id.
+        let esc_a = normalize(
+            "Sep 14 06:58:42 oryx systemd[1]: run-rke2-f27aee6d\\x2d4bc2\\x2d43f0\\x2d9be3\\x2d7a1b2c3d4e5f.scope: Deactivated successfully.",
+        );
+        let esc_b = normalize(
+            "Sep 14 06:58:43 oryx systemd[1]: run-rke2-01af48d9\\x2d3471\\x2d4acf\\x2d93aa\\x2d689c01b31dff.scope: Deactivated successfully.",
+        );
+        assert_eq!(esc_a.anchor, esc_b.anchor, "escaped uuid is one id run");
+
+        let session = normalize(
+            "Sep 14 06:58:42 oryx systemd[1]: session-1234.scope: Deactivated successfully.",
+        );
+        let session2 = normalize(
+            "Sep 14 06:58:42 oryx systemd[1]: session-98.scope: Deactivated successfully.",
+        );
+        assert_eq!(session.anchor, session2.anchor, "digit runs collapse");
     }
 
     /// The anchor is folded into the line hash, so the folder's exact-hash

@@ -368,13 +368,29 @@ E0910 00:02:39.914326       1 status.go:71] "Unhandled Error" err="apiserver rec
 E0910 00:02:47.788735       1 finisher.go:175] "Unhandled Error" err="FinishRequest: post-timeout activity - time-elapsed: 768.083us, panicked: false, err: context canceled, panic-reason: <nil>" logger="UnhandledError"
 E0910 00:02:39.917803       1 writers.go:135] "Unhandled Error" err="apiserver was unable to write a fallback JSON response: http: Handler timeout" logger="UnhandledError"
 
-##TODO study-systemd-unit-is-identity groups=2
-##WHY two units failing are two incidents; the unit name must anchor (root cause 3)
+##CASE lessence-ch5 groups=2
+##WHY two units failing are two incidents; the unit name anchors (root cause 3)
 ##FROM the journalctl corpus — rke2-agent x8 absorbed into containerd x103,328
 Sep 14 06:38:27 oryx systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
 Sep 14 06:40:27 oryx systemd[1]: rke2-agent.service: Main process exited, code=exited, status=1/FAILURE
 Sep 14 09:37:04 oryx systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
 Sep 14 09:37:14 oryx systemd[1]: containerd.service: Main process exited, code=exited, status=1/FAILURE
+
+##CASE lessence-ch5 groups=2
+##WHY klog's file.go:line is the call site; the same message from two call sites is two events, and only that token differs
+##FROM apiserver shape; the sentence-keeping rule (7lj) cannot separate these
+E0910 00:02:39.914326       1 status.go:71] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError"
+E0910 00:02:40.114326       1 status.go:71] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError"
+E0910 00:02:39.917803       1 writers.go:135] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError"
+E0910 00:02:41.017803       1 writers.go:135] "Unhandled Error" err="context deadline exceeded" logger="UnhandledError"
+
+##CASE lessence-ch5 groups=2
+##WHY auditd's type= is the record kind; CRED_ACQ and CRED_DISP log the same PAM body and only the type differs
+##FROM linux_auditd shape
+type=CRED_ACQ msg=audit(1481077043.057:413): pid=1298 uid=0 auid=1000 ses=1 subj=system_u:system_r:sshd_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="some_user" exe="/usr/sbin/sshd" hostname=203.0.113.7 addr=203.0.113.7 terminal=ssh res=success'
+type=CRED_ACQ msg=audit(1481077101.220:419): pid=1310 uid=0 auid=1000 ses=1 subj=system_u:system_r:sshd_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="some_user" exe="/usr/sbin/sshd" hostname=203.0.113.9 addr=203.0.113.9 terminal=ssh res=success'
+type=CRED_DISP msg=audit(1481077049.058:427): pid=1298 uid=0 auid=1000 ses=1 subj=system_u:system_r:sshd_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="some_user" exe="/usr/sbin/sshd" hostname=203.0.113.7 addr=203.0.113.7 terminal=ssh res=success'
+type=CRED_DISP msg=audit(1481077107.301:433): pid=1310 uid=0 auid=1000 ses=1 subj=system_u:system_r:sshd_t:s0-s0:c0.c1023 msg='op=PAM:setcred grantors=pam_env,pam_unix acct="some_user" exe="/usr/sbin/sshd" hostname=203.0.113.9 addr=203.0.113.9 terminal=ssh res=success'
 
 ##CASE study-auditd-type-is-identity template_present=type=USYS_CONFIG
 ##WHY auditd's type= is its only discriminator and must stay literal in the template, never
