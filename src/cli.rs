@@ -199,6 +199,12 @@ pub struct Cli {
     #[arg(long)]
     pub frame_continuations: bool,
 
+    /// Dev mode: annotate each JSON group record with the existing group it
+    /// scored highest against before founding its own, the score, and the
+    /// first token that differed. Implies --format json.
+    #[arg(long)]
+    pub explain: bool,
+
     /// Generate shell completion script and exit
     #[arg(long)]
     pub completions: Option<clap_complete::Shell>,

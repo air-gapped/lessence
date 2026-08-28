@@ -60,6 +60,25 @@ lines. Line numbers still point at the line the record starts on, the stats
 footer still counts physical lines, and `--fail-on-pattern` still tests every
 physical line, so a match hiding inside a frame still fails the run.
 
+## Diagnosing the fold
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--explain` | off | Annotate each JSON group record with `nearest`: the `first.line_no` of the existing group this line scored highest against before founding its own, the `score` (percent), and `first_diff` — the first whitespace token where the two disagree. Implies `--format json`. |
+
+Reach for it when a log folds worse than expected and the question is *why
+these lines did not join*. A singleton whose `nearest.score` sits just under
+`--threshold` with `first_diff` on a bare number, name, or quoted value is a
+shape lessence does not yet recognise:
+
+```bash
+lessence --explain app.log | jq -c 'select(.count==1 and .nearest.score>70) | {n:.first.line_no, score:.nearest.score, diff:.nearest.first_diff}'
+```
+
+Groups that joined an existing group, or were founded into an empty buffer,
+carry no `nearest`. The field is only computed under the flag and never
+influences the fold; with the flag off, output is byte-identical.
+
 ## CI Integration
 
 | Flag | Default | Description |

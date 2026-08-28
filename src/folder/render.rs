@@ -134,6 +134,7 @@ impl PatternFolder {
                 last_seen: first_timestamp_in(&group.last().tokens),
             },
             variation,
+            nearest: group.nearest.clone(),
         };
 
         Ok(serde_json::to_string(&record)?)

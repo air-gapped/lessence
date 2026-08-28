@@ -32,7 +32,12 @@ fn main() -> Result<()> {
 
     // Validate output format before creating config; downstream dispatch
     // compares against the canonical spelling this returns.
-    let format = cli::validate_format(&cli.format)?;
+    let mut format = cli::validate_format(&cli.format)?;
+    // --explain annotates the JSON group records; there is nothing to
+    // annotate in the other formats.
+    if cli.explain && !matches!(format.as_str(), "json" | "jsonl") {
+        format = "json".to_string();
+    }
 
     // --format markdown renders only the default fold output. These
     // combinations used to fall back to plain text silently; agents
@@ -75,6 +80,7 @@ fn main() -> Result<()> {
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),
         frame_continuations: cli.frame_continuations,
+        explain: cli.explain,
         ..Config::default()
     };
     for name in &cli.disable_patterns {

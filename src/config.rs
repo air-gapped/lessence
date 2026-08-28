@@ -51,6 +51,9 @@ pub struct Config {
     /// --frame-continuations: attach indented continuation lines to the record
     /// above them, so a stack trace folds as one event instead of one per frame.
     pub frame_continuations: bool,
+    /// --explain: record, for every new group, the nearest existing group it
+    /// failed to join. Read-only diagnostics; folding is unchanged.
+    pub explain: bool,
 }
 
 impl Default for Config {
@@ -92,6 +95,7 @@ impl Default for Config {
             stats_json: false,   // No JSON stats by default
             fail_pattern: None,  // No fail pattern by default
             frame_continuations: false, // Opt-in: one record per physical line by default
+            explain: false,
         }
     }
 }

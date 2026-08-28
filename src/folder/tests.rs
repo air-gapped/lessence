@@ -1330,6 +1330,100 @@ fn make_folder() -> PatternFolder {
     })
 }
 
+// ---- --explain: why a line founded a group instead of joining one ----
+
+fn explaining_folder() -> PatternFolder {
+    PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        explain: true,
+        ..Config::default()
+    })
+}
+
+#[test]
+fn explain_records_the_nearest_group_and_the_first_differing_token() {
+    let mut f = explaining_folder();
+    f.process_line("req took 111 ms").unwrap();
+    f.process_line("req took 222 ms").unwrap();
+    // Same shape up to the unit: scores high, still refused, differs at "ms".
+    f.process_line("req took 333 sec").unwrap();
+    let founded = f.buffer.last().unwrap();
+    let nearest = founded
+        .nearest
+        .as_ref()
+        .expect("a miss records its nearest group");
+    assert_eq!(nearest.group_line_no, 1);
+    assert!(
+        nearest.score > 50.0 && nearest.score < 100.0,
+        "score={}",
+        nearest.score
+    );
+    let diff = nearest.first_diff.as_ref().expect("the lines differ");
+    assert_eq!(diff.ours, "sec");
+    assert_eq!(diff.theirs, "ms");
+    assert_eq!(&founded.first().normalized[diff.at..diff.at + 3], "sec");
+}
+
+#[test]
+fn explain_leaves_the_first_group_and_hash_hits_unexplained() {
+    let mut f = explaining_folder();
+    f.process_line("alpha one").unwrap();
+    assert!(
+        f.buffer[0].nearest.is_none(),
+        "nothing to compare the first line against"
+    );
+    f.process_line("alpha one").unwrap();
+    assert_eq!(f.buffer.len(), 1, "identical line joins by hash");
+    assert!(
+        f.buffer[0].nearest.is_none(),
+        "a group that was joined, not founded, has no nearest"
+    );
+}
+
+#[test]
+fn explain_score_is_the_highest_across_the_whole_buffer() {
+    // Three unrelated groups, then a line close to the MIDDLE one: the scan
+    // must not stop at the first candidate.
+    let mut f = explaining_folder();
+    f.process_line("zzz zzz zzz zzz").unwrap();
+    f.process_line("req took 111 ms").unwrap();
+    f.process_line("yyy yyy yyy yyy").unwrap();
+    f.process_line("req took 333 sec").unwrap();
+    let nearest = f.buffer.last().unwrap().nearest.as_ref().unwrap();
+    assert_eq!(nearest.group_line_no, 2);
+}
+
+#[test]
+fn explain_first_diff_reports_a_surplus_token_when_one_line_is_a_prefix() {
+    let mut f = explaining_folder();
+    f.process_line("req took 111 ms").unwrap();
+    f.process_line("req took 222 ms retrying").unwrap();
+    let diff = f
+        .buffer
+        .last()
+        .unwrap()
+        .nearest
+        .as_ref()
+        .unwrap()
+        .first_diff
+        .as_ref()
+        .unwrap();
+    assert_eq!(diff.ours, "retrying");
+    assert_eq!(diff.theirs, "");
+}
+
+#[test]
+fn explain_off_emits_no_nearest_field() {
+    let mut f = make_folder();
+    f.process_line("req took 111 ms").unwrap();
+    f.process_line("totally unrelated").unwrap();
+    assert!(f.buffer[1].nearest.is_none());
+    let group = f.buffer.pop().unwrap();
+    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    assert!(!json.contains("nearest"), "{json}");
+}
+
 // ---- bead lessence-8jb: field values fold on shape, not on length ----
 
 #[test]

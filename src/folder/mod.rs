@@ -118,6 +118,68 @@ struct PatternGroup {
     /// input had no filename (stdin). IDs resolve through `PatternFolder`.
     first_source_id: SourceId,
     last_source_id: SourceId,
+    /// --explain only: the existing group this line scored highest against
+    /// before founding its own, or `None` when the buffer was empty.
+    nearest: Option<Nearest>,
+}
+
+/// First whitespace token at which two normalized lines disagree. Tokenizes
+/// the way similarity does (`split_whitespace`), so the answer names the
+/// token the score actually tripped over.
+fn first_diff(line: &LogLine, rep: &LogLine) -> Option<FirstDiff> {
+    let ours = line.normalized.split_whitespace();
+    let theirs = rep.normalized.split_whitespace();
+    for (a, b) in ours.zip(theirs) {
+        if a != b {
+            let at = a.as_ptr() as usize - line.normalized.as_ptr() as usize;
+            return Some(FirstDiff {
+                ours: a.to_string(),
+                theirs: b.to_string(),
+                at,
+            });
+        }
+    }
+    // One is a prefix of the other: the diff is the first surplus token.
+    let ours: Vec<&str> = line.normalized.split_whitespace().collect();
+    let theirs: Vec<&str> = rep.normalized.split_whitespace().collect();
+    match ours.len().cmp(&theirs.len()) {
+        std::cmp::Ordering::Greater => {
+            let a = ours[theirs.len()];
+            Some(FirstDiff {
+                ours: a.to_string(),
+                theirs: String::new(),
+                at: a.as_ptr() as usize - line.normalized.as_ptr() as usize,
+            })
+        }
+        std::cmp::Ordering::Less => Some(FirstDiff {
+            ours: String::new(),
+            theirs: theirs[ours.len()].to_string(),
+            at: line.normalized.len(),
+        }),
+        std::cmp::Ordering::Equal => None,
+    }
+}
+
+/// Why a line founded a new group instead of joining one (`--explain`).
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct Nearest {
+    /// `first.line_no` of the nearest group — the one key that is fixed the
+    /// moment a group is founded. JSON `id` is assigned at flush time, and
+    /// groups flush out of buffer order, so it is not knowable here.
+    pub group_line_no: usize,
+    /// `similarity_score` against that group's representative, in percent.
+    pub score: f64,
+    /// The first token pair that differs, in line order. `None` when the two
+    /// lines tokenize identically but still failed (anchor mismatch).
+    pub first_diff: Option<FirstDiff>,
+}
+
+/// One diverging token pair, plus its byte offset in the new line.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct FirstDiff {
+    pub ours: String,
+    pub theirs: String,
+    pub at: usize,
 }
 
 impl PatternGroup {
@@ -133,6 +195,7 @@ impl PatternGroup {
             last_line_no: location.line_no,
             first_source_id: location.source_id,
             last_source_id: location.source_id,
+            nearest: None,
         }
     }
 
@@ -547,6 +610,10 @@ struct GroupRecord {
     /// deterministic samples for sample-worthy types. The key order is
     /// stable (BTreeMap) so agents can diff records across runs.
     variation: GroupRollup,
+    /// `--explain` only: the group this one came closest to joining. Absent
+    /// otherwise, so default output is byte-identical with the flag off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nearest: Option<Nearest>,
 }
 
 /// Terminal summary record for the JSONL stream. Flattens the existing
@@ -1210,6 +1277,24 @@ impl PatternFolder {
         Ok(None)
     }
 
+    /// The buffered group `line` scored highest against, with the first token
+    /// that differs. Full `similarity_score` on every group, so this is only
+    /// ever called under `--explain`.
+    fn nearest_group(&self, line: &LogLine) -> Option<Nearest> {
+        let (idx, score) = self
+            .buffer
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (i, self.normalizer.similarity_score(line, g.first())))
+            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+        let nearest = &self.buffer[idx];
+        Some(Nearest {
+            group_line_no: nearest.first_line_no,
+            score: (score * 10.0).round() / 10.0,
+            first_diff: first_diff(line, nearest.first()),
+        })
+    }
+
     /// Attach a normalized line to its group: O(1) exact-hash lookup via
     /// `group_index` first, then the linear similarity scan, then a new
     /// group. The hash shortcut picks the same group the scan would (see
@@ -1230,13 +1315,24 @@ impl PatternFolder {
                 self.buffer[index].add_line(normalized_line, self.position_counter);
             }
         } else {
+            // --explain: the line is about to found a group. Before it does,
+            // record which existing group it came closest to joining and
+            // where the two first disagree. Diagnostics only — the decision
+            // above is already made and this cannot change it.
+            let nearest = self
+                .config
+                .explain
+                .then(|| self.nearest_group(&normalized_line))
+                .flatten();
+
             // Create a new group at current position
             let rep_hash = normalized_line.hash;
-            let group = if let Some(location) = location {
+            let mut group = if let Some(location) = location {
                 PatternGroup::new_at(normalized_line, self.position_counter, location)
             } else {
                 PatternGroup::new(normalized_line, self.position_counter)
             };
+            group.nearest = nearest;
             self.buffer.push(group);
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
