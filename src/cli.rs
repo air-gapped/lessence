@@ -205,6 +205,11 @@ pub struct Cli {
     #[arg(long)]
     pub explain: bool,
 
+    /// Dev mode: run this other lessence binary on the same input and print
+    /// only the groups that fold differently. Exit 1 if anything moved.
+    #[arg(long, value_name = "LESSENCE")]
+    pub diff: Option<std::path::PathBuf>,
+
     /// Generate shell completion script and exit
     #[arg(long)]
     pub completions: Option<clap_complete::Shell>,

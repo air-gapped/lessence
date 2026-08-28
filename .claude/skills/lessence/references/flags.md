@@ -79,6 +79,23 @@ Groups that joined an existing group, or were founded into an empty buffer,
 carry no `nearest`. The field is only computed under the flag and never
 influences the fold; with the flag off, output is byte-identical.
 
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--diff LESSENCE` | — | Run `LESSENCE` (another lessence binary) on the same input and print only the groups that fold differently: `joined` (used to stand alone, now folds into another), `split` (the reverse), `resized` (same group, different membership). Ends with `groups: A -> B   moved: N`. Exit 1 if anything moved, like `diff(1)`. |
+
+Reach for it after any change to `src/normalize.rs` or `src/folder/`, with the
+previous release binary as the argument. It replaces running two binaries by
+hand and diffing hundreds of output lines: each reported line is one *input*
+line whose fate changed, ready to be judged.
+
+```bash
+lessence --diff ~/.cargo/bin/lessence examples/*.log
+```
+
+Both sides run with `--format json --threads 1 -q`; groups are matched on
+`first.line_no`, so the report is stable across builds even though JSON `id`
+is assigned in flush order.
+
 ## CI Integration
 
 | Flag | Default | Description |

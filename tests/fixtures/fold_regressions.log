@@ -281,3 +281,27 @@ req took 111 ms
 req took 222 ms
 req took 333 ms
 req took 444 ms
+
+##CASE explain out_present="nearest":{"group_line_no":1,
+##WHY --explain names the group a founding line came closest to joining, keyed
+##WHY  by that group's first line number
+##FROM the dev-mode flag; a singleton next to a near-match at line 1
+##FLAGS --explain
+req took 111 ms
+req took 222 ms
+req took 333 sec
+
+##CASE explain out_present="first_diff":{"ours":"sec","theirs":"ms"
+##WHY --explain reports the first token the two lines disagree on, in line order
+##FROM the dev-mode flag; the unit is the only difference
+##FLAGS --explain
+req took 111 ms
+req took 222 ms
+req took 333 sec
+
+##CASE explain out_absent=nearest
+##WHY with --explain off the JSON stream is byte-identical to before the flag existed
+##FROM the flag must be read-only; --format json alone emits no nearest field
+##FLAGS --format json
+req took 111 ms
+req took 333 sec

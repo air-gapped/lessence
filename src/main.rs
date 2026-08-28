@@ -30,6 +30,14 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // --diff is a comparison of two binaries' output, not a fold of its own.
+    // Everything below configures a fold, so it dispatches out here.
+    if let Some(other) = &cli.diff {
+        let me = std::env::current_exe()?;
+        let moved = lessence::diff::run(other, &me, &cli.files, "1")?;
+        std::process::exit(i32::from(moved > 0));
+    }
+
     // Validate output format before creating config; downstream dispatch
     // compares against the canonical spelling this returns.
     let mut format = cli::validate_format(&cli.format)?;

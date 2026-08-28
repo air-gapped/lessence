@@ -2,6 +2,7 @@
 
 pub mod cli;
 pub mod config;
+pub mod diff;
 pub mod folder;
 pub mod ingest;
 pub mod normalize;
