@@ -334,7 +334,7 @@ req took 333 sec
 ##  cause lands; un-comment the ##CASE line when it does.
 ##  ---------------------------------------------------------------------------
 
-##TODO study-quoted-sentence-is-the-event groups=2
+##CASE study-quoted-sentence-is-the-event groups=2
 ##WHY a quoted sentence in msg IS the event; two different sentences must not fold
 ##WHY  into one <QUOTED_STRING> group because both are over 25 chars (root cause 1)
 ##FROM examples/argocd_server_production.log — 59,948 of 60,849 lines, 5 events, 1 group
@@ -361,7 +361,7 @@ time="2025-08-30T14:36:55.873925586Z" level=info msg="regenerating all endpoints
 ##FROM examples/enhanced_timestamps.log
 @1758304800.311 Prometheus metric collected value=45.67
 
-##TODO study-klog-file-line-is-identity groups=3
+##CASE study-klog-file-line-is-identity groups=3
 ##WHY klog's file.go:NNN] is the event identity and must anchor, not tokenise (root cause 3)
 ##FROM examples/apiserver_production.log — 4 call sites merged into one group of 301
 E0910 00:02:39.914326       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: context deadline exceeded" logger="UnhandledError"

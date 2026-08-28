@@ -183,22 +183,26 @@ impl QuotedStringDetector {
         {
             // This is escaped JSON or structured data - normalize it
             ("<ESCAPED_JSON>".to_string(), true, false)
-        } else if normalized_content != quoted_content {
-            // Normalization changed the content, it contains variable patterns
-            // Store the original quoted string but replace with normalized version
-            (format!("\"{normalized_content}\""), true, false) // Keep it quoted with normalized content
+        } else if normalized_content != quoted_content || quoted_content.contains('<') {
+            // The content carries variable patterns: either the inner cascade
+            // just found them, or — far more often, since this detector runs
+            // last — the main pipeline already replaced them with `<TOKEN>`
+            // placeholders before we got here. Either way the variable parts
+            // are tokenised and the words around them ARE the template. Keep
+            // it quoted with the placeholders in place.
+            (format!("\"{normalized_content}\""), true, false)
         } else if Self::is_instance_ident(quoted_content) {
             // An instance name — folds on its shape, at any length.
             ("<QUOTED_STRING>".to_string(), true, true)
         } else {
-            // No patterns found inside and no identifier shape: prose or a
-            // bare word. Length is the only signal left, and for free text it
-            // is a reasonable one — a long message is usually per-event.
-            if quoted_string.len() > 25 {
-                ("<QUOTED_STRING>".to_string(), true, false)
-            } else {
-                (quoted_string.to_string(), false, false)
-            }
+            // Nothing variable inside and no identifier shape. A sentence
+            // ("Loading TLS configuration from secret") is the event, not a
+            // value of it — two different sentences are two different events
+            // however long they are, so it stays literal exactly as an
+            // unquoted sentence would. Length used to decide here, and on a
+            // JSON `msg` that folded 98.5% of a 60,849-line log into one group
+            // (lessence-7lj).
+            (quoted_string.to_string(), false, false)
         }
     }
 }
@@ -577,42 +581,35 @@ mod tests {
     }
 
     #[test]
-    fn quoted_string_long_unmodified_threshold() {
-        // Kills mutant: `> 25` → `>= 25` (line ~91)
-        // The threshold applies when no normalization patterns match inside the quoted content.
-        // Use content that no detector will normalize (no IPs, timestamps, UUIDs, names, etc.)
-        // A simple repeated word with spaces — normalizers won't touch it.
-        // Content must be plain text that doesn't trigger ANY detector.
+    fn a_quoted_sentence_stays_literal_whatever_its_length() {
+        // lessence-7lj: length used to decide here (> 25 chars -> folded).
+        // A sentence with nothing variable inside IS the event; two different
+        // sentences are two events at any length.
+        for content in [
+            "it is a very simple tex",            // 23 chars, under the old floor
+            "it is a very simple text",           // 24 — the old boundary
+            "it is a very simple text indeed ok", // well over
+        ] {
+            let input = format!(r#"x "{content}""#);
+            let (result, tokens) = QuotedStringDetector::detect_and_replace(&input);
+            assert_eq!(result, input, "prose must survive verbatim");
+            assert!(tokens.is_empty(), "prose emits no token: {tokens:?}");
+        }
+    }
 
-        // We need quoted_string.len() == 25
-        // quoted_string includes the quotes: "..." = content_len + 2
-        // For len == 25, content_len = 23
-        // For len == 26, content_len = 24
-        // Use spaces and lowercase words to avoid pattern detection
-        let content_23 = "it is a very simple tex"; // 23 chars
-        assert_eq!(content_23.len(), 23);
-        let input_25 = format!(r#"x "{content_23}""#);
-        let (result25, tokens25) = QuotedStringDetector::detect_and_replace(&input_25);
+    #[test]
+    fn a_quoted_sentence_keeps_placeholders_the_pipeline_already_put_in_it() {
+        // This detector runs last. By then the main pipeline has replaced the
+        // variable parts with <TOKEN>s; the inner cascade then finds nothing
+        // left to change. That must count as "claimed", not fall through to
+        // the prose branch — the words around the placeholders are the template.
+        let input = r#"{"msg":"Refreshing app status (expiry: <DURATION>), level (2)"}"#;
+        let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
+        assert_eq!(result, input);
         assert_eq!(
-            tokens25.len(),
-            0,
-            "25-char quoted string should NOT produce token: {result25}"
-        );
-        assert_eq!(result25, input_25);
-
-        // 24 chars content + 2 quotes = 26 total → > 25 → replaced
-        let content_24 = "it is a very simple text";
-        assert_eq!(content_24.len(), 24);
-        let input_26 = format!(r#"x "{content_24}""#);
-        let (result26, tokens26) = QuotedStringDetector::detect_and_replace(&input_26);
-        assert_eq!(
-            tokens26.len(),
+            tokens.len(),
             1,
-            "26-char quoted string should produce token: {result26}"
-        );
-        assert!(
-            result26.contains("<QUOTED_STRING>"),
-            "should be replaced: {result26}"
+            "one QuotedString token for the claimed value"
         );
     }
 

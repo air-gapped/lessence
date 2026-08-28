@@ -31,10 +31,33 @@ fn test_nginx_compression_improvement() {
     println!("  Output lines: {output_lines}");
     println!("  Compression ratio: {compression_ratio:.1}%");
 
-    // Nginx logs achieve ~78% compression
+    // This asserted `>= 75%` from the days when a ratio was the only way
+    // to see a regression. A ratio cannot tell a lost fold from a found
+    // event: two distinct user agents ("Go 1.1 package http", "urlgrabber
+    // yum") used to vanish inside the APT group behind one opaque
+    // <QUOTED_STRING>; keeping the sentence's words (lessence-7lj) surfaces
+    // them as their own lines, and the ratio drops by exactly that. The
+    // real guarantee is that the repetitive bulk still folds hard and the
+    // status classes stay apart.
     assert!(
-        compression_ratio >= 75.0,
-        "Nginx compression should be ≥75%, got {compression_ratio:.1}%"
+        compression_ratio >= 70.0,
+        "Nginx compression collapsed: {compression_ratio:.1}% — the APT client \
+         flood is no longer folding"
+    );
+    let biggest = compressed_output
+        .lines()
+        .filter_map(|l| {
+            l.strip_prefix("[+")?
+                .split(' ')
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0);
+    assert!(
+        biggest >= 30,
+        "the 34-line 304/APT group must fold as one; largest fold marker was +{biggest}"
     );
 }
 

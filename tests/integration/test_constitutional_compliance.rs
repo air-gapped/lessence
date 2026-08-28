@@ -77,42 +77,139 @@ fn test_constitutional_compliance_kubelet() {
         return;
     };
 
+    // This used to assert `output_lines <= 700`. A line count is a proxy
+    // for "did the fold get worse" from a time when nothing could say WHAT
+    // got worse. It fails both ways: 98.5% of a log in one group passes it,
+    // and a correct split of one blob into three real events breaks it.
+    //
+    // --explain can say what got worse. A singleton whose nearest group
+    // scores at or above the threshold, with no anchor keeping them apart,
+    // is a line lessence itself reports as "should have joined". Every one
+    // of those is an under-fold with a cause. The gate is therefore: the
+    // set of such near-miss shapes may only shrink, and every shape still
+    // present must name the bead that owns it.
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--no-stats"])
+        .args(["--explain", "--threads", "1", "-q"])
         .stdin(file)
         .output()
         .expect("Failed to execute lessence");
-
     assert!(output.status.success(), "lessence execution failed");
+    let stdout = str::from_utf8(&output.stdout).expect("Invalid UTF-8");
 
-    let compressed = str::from_utf8(&output.stdout).expect("Invalid UTF-8");
-    let output_lines = compressed.lines().count();
-    let original = std::fs::read_to_string("examples/kubelet.log").unwrap();
-    let input_lines = original.lines().count();
-    let ratio = ((input_lines - output_lines) as f64 / input_lines as f64) * 100.0;
+    let mut groups = 0usize;
+    let mut lines = 0usize;
+    let mut near_misses: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::default();
+    for record in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(record) else {
+            continue;
+        };
+        if v["type"] != "group" {
+            continue;
+        }
+        groups += 1;
+        let count = v["count"].as_u64().unwrap_or(0) as usize;
+        lines += count;
+        let nearest = &v["nearest"];
+        if count != 1 || nearest.is_null() {
+            continue;
+        }
+        // Anchors are matched, never scored: that split is on purpose.
+        if nearest["anchor_mismatch"] == true {
+            continue;
+        }
+        // Just under the threshold is the fingerprint of a missing shape
+        // rule, not of a distinct event. 75 leaves headroom below 83 so a
+        // rule that pushes a shape from 80 down to 78 still counts as open.
+        let score = nearest["score"].as_f64().unwrap_or(0.0);
+        if score < 75.0 {
+            continue;
+        }
+        // Reduce the differing token to its shape so 98 pod names with
+        // different suffixes count as ONE cause.
+        let ours = nearest["first_diff"]["ours"].as_str().unwrap_or("");
+        *near_misses.entry(shape_of(ours)).or_default() += 1;
+    }
+    assert_eq!(lines, 70_548, "every input line lands in exactly one group");
+    println!(
+        "Constitutional compliance (kubelet.log): {groups} groups, {} near-miss shapes",
+        near_misses.len()
+    );
+    for (shape, n) in &near_misses {
+        println!("  {n:>4}  {shape}");
+    }
 
-    println!("Constitutional compliance (kubelet.log):");
-    println!("  Input: {input_lines}, Output: {output_lines}, Ratio: {ratio:.1}%");
+    // Known under-folds, each owned by a bead. A new shape appearing here
+    // is a regression: name it and its bead, or fix it. A shape vanishing
+    // is progress: delete its line.
+    let known: &[(&str, &str)] = &[
+        // lessence-k2b item 4: the 5-char pod suffix after an already
+        // tokenised chunk — `pod="ns/name-<NUMBER>-7j5z7"` — is not
+        // recognised, so 99 pod lines each sit at 80.0 next to their group.
+        ("<W>=\"<NAME>\"", "lessence-k2b"),
+        // lessence-ch5: two klog lines from different source files scoring
+        // 76-81 because everything but `file.go:<LINE>]` matches. They ARE
+        // different events; ch5 makes file:line an anchor, at which point
+        // these stop being near-misses and this entry can go.
+        ("<W>:<NAME>]", "lessence-ch5"),
+        // `err="Patch` vs `err="Post`, `err="container` vs `err="init`: the
+        // first word of a quoted error sentence differs. Different causes;
+        // correctly apart. Sits here only because the score is high.
+        ("<W>=\"<W>", "distinct error cause, by design"),
+        // `EOF"` vs `read`: last word of two different error sentences.
+        ("<W>\"", "distinct error cause, by design"),
+    ];
+    let unexplained: Vec<_> = near_misses
+        .keys()
+        .filter(|shape| !known.iter().any(|(k, _)| *k == shape.as_str()))
+        .collect();
+    assert!(
+        unexplained.is_empty(),
+        "CONSTITUTIONAL VIOLATION: near-miss singleton shapes with no owning bead: {unexplained:#?}\n\
+         Each is a line lessence reports it should have folded (nearest.score >= 75, no anchor).\n\
+         Fix the shape, or add it to `known` with the bead that tracks it."
+    );
+}
 
-    assert!(
-        output_lines <= 700,
-        "CONSTITUTIONAL VIOLATION: {output_lines} > 700 lines"
-    );
-    assert!(
-        ratio >= 99.0,
-        "CONSTITUTIONAL VIOLATION: {ratio:.1}% < 99.0%"
-    );
-    // Range calibrated against the token-LCS similarity metric (measured
-    // 380 on this corpus). The lower bound guards against over-merging,
-    // the upper bound against under-folding regressions. The pre-LCS
-    // positional metric produced 800-1100 because one inserted token
-    // cascaded into a near-zero score and split groups that belonged
-    // together (e.g. 32 separate nestedpendingoperations groups differing
-    // only in volume UUIDs).
-    assert!(
-        (300..=700).contains(&output_lines),
-        "Output {output_lines} outside expected range [300, 700]"
-    );
+/// Collapse a differing token to its shape. A hyphenated name with its
+/// placeholders — `harbor/backup-<NUMBER>-x9k2m`, `vllm/vllm-<HASH>-q1w2e` —
+/// is one shape, `<NAME>`, because the cause of the near-miss is the name
+/// as a whole, not how many hyphens it happens to have. Anything else keeps
+/// its punctuation so `file.go:<LINE>]` and `err="EOF"` stay distinct.
+fn shape_of(token: &str) -> String {
+    let mut out = String::new();
+    let mut name = String::new();
+    let flush = |name: &mut String, out: &mut String| {
+        if name.is_empty() {
+            return;
+        }
+        // A bare word stays a word; a word containing a hyphen or a
+        // placeholder is a name.
+        if name.contains('-') || name.contains('<') {
+            out.push_str("<NAME>");
+        } else {
+            out.push_str("<W>");
+        }
+        name.clear();
+    };
+    let mut depth = 0u8;
+    for c in token.chars() {
+        let in_name =
+            c.is_alphanumeric() || matches!(c, '_' | '.' | '-' | '/' | '<' | '>') || depth > 0;
+        if in_name {
+            if c == '<' {
+                depth += 1;
+            } else if c == '>' {
+                depth = depth.saturating_sub(1);
+            }
+            name.push(c);
+        } else {
+            flush(&mut name, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut name, &mut out);
+    out
 }
 
 #[test]

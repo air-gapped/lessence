@@ -196,6 +196,13 @@ static REQUEST_TARGET: LazyLock<Regex> = LazyLock::new(|| {
         .expect("request-target anchor pattern must compile")
 });
 
+/// The status code that follows a quoted request line in an access log:
+/// `... HTTP/1.1" 404 332`. The capture is its first digit — the class.
+static REQUEST_STATUS_CLASS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#" HTTP/[0-9.]+" ([1-5])\d\d\b"#)
+        .expect("request-status anchor pattern must compile")
+});
+
 /// A PCI address, `domain:bus:device.function` — `0000:21:00.0`.
 static PCI_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
@@ -224,6 +231,15 @@ fn anchor_hash(original: &str) -> u64 {
     if original.contains("HTTP/") {
         for caps in REQUEST_TARGET.captures_iter(original) {
             hash_route(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
+            found = true;
+        }
+        // A 200 and a 404 for the same route are two events. This used to
+        // hold only because the user-agent folded to one opaque token; once a
+        // quoted sentence keeps its words (lessence-7lj) the shared UA tokens
+        // outvote the one status token and 2xx and 4xx re-merge. The class
+        // is identity, so it is matched here, never scored.
+        for caps in REQUEST_STATUS_CLASS.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
             found = true;
         }
     }
@@ -1438,7 +1454,10 @@ mod tests {
 
     #[test]
     fn normalize_quoted_disabled_suppresses_quoted_tokens() {
-        let input = "message \"some variable value here\" done";
+        // A quoted instance name is what the detector tokenises; a quoted
+        // sentence stays literal by design (lessence-7lj), so the probe must
+        // be a name, not prose.
+        let input = "message \"redis-sentinel-gitlab\" done";
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_quoted = false, input);
         assert!(
