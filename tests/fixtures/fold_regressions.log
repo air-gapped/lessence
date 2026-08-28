@@ -2,20 +2,39 @@
 ##
 ##  The examples/ corpora are ~100 MB of real logs, gitignored, and live on one
 ##  machine. This file is the opposite: the smallest input that reproduces each
-##  past defect, checked into git, asserted in milliseconds. A case earns its
-##  place by having been a real bug — ##FROM is the receipt, and several were
+##  past defect, checked into git, asserted in well under a second. A case earns
+##  its place by having been a real bug — ##FROM is the receipt, and several were
 ##  confirmed by running the stored v0.4.1 binary and watching it get them wrong.
 ##
+##  SCOPE. Everything that changes how a log line is normalized, folded, or
+##  rendered — including the flags that change it. Deliberately out of scope,
+##  because no log line can express them: thread-pool sizing (lessence-pwl,
+##  lessence-arch-2026-08-r98.11 — though every case below is also run at
+##  eight threads and required to match), missing input files (lessence-4k6),
+##  stats arithmetic
+##  (lessence-ui0, lessence-nne),
+##  build tooling (lessence-htq and lessence-beads-home-path-leak-sbg), and
+##  the >1000-group cap (lessence-2dr). The text-mode side of r98.9 is pinned
+##  by the README example in tests/doc_contract.rs.
+##  Those keep their own tests. Complexity regressions live in
+##  tests/misc/test_fold_scaling.rs, which is the other half of this file.
+##
 ##  Block format, blank-line separated:
-##    ##CASE <bead-or-commit> <expectation>
-##    ##WHY  <what the case protects, one line>
-##    ##FROM <where the shape came from>
+##    ##CASE  <bead-or-commit> <expectation>
+##    ##WHY   <what the case protects; repeatable>
+##    ##FROM  <where the shape came from>
+##    ##FLAGS <extra CLI flags for this case, optional>
 ##    <input lines>
 ##
 ##  Expectations:
-##    groups=N     the lines must end up in exactly N groups
-##    absent=<TOK> the first line's normalized form must NOT contain <TOK>
-##    present=TEXT the first line's normalized form MUST contain TEXT
+##    groups=N           the lines must produce exactly N groups
+##    template_absent=T  the first group's normalized template must NOT contain T
+##    template_present=T the first group's normalized template MUST contain T
+##    out_absent=T       stdout must NOT contain T
+##    out_present=T      stdout must contain T
+##    err_present=T      stderr must contain T
+##    exit=N             the process must exit with status N
+##  `\e` in an expectation or an input line means the escape byte.
 ##
 ##  Lines are either from an Apache-2.0 licensed corpus, stock upstream product
 ##  text, or reproduce the SHAPE of a private corpus without its content.
@@ -44,21 +63,21 @@
 {"msg":"Reconciliation completed","diff_ms":123,"git_ms":123}
 {"msg":"Reconciliation completed","diff_ms":4567,"git_ms":4567}
 
-##CASE lessence-8jb present=application
+##CASE lessence-8jb template_present=application
 ##WHY a JSON key keeps its name in the template; only the value folds
 ##FROM the one-byte colon lookahead in QuotedStringDetector
 {"application":"redis-sentinel-gitlab","level":"info","msg":"Update successful"}
 
 ##CASE lessence-fo2 groups=1
-##WHY a record past the similarity token cap folds on the same basis as a short one
+##WHY a record past the similarity token cap folds like a short one
 ##FROM gitaly shape, ~1 KB; these used to land in one group each
 {"component":"streamserver","level":"info","state":"ok","f0":"v0" "f1":"v1" "f2":"v2" "f3":"v3" "f4":"v4" "f5":"v5" "f6":"v6" "f7":"v7" "f8":"v8" "f9":"v9" "f10":"v10" "f11":"v11" "f12":"v12" "f13":"v13" "f14":"v14" "f15":"v15" "f16":"v16" "f17":"v17" "f18":"v18" "f19":"v19" "f20":"v20" "f21":"v21" "f22":"v22" "f23":"v23" "f24":"v24" "f25":"v25" "f26":"v26" "f27":"v27" "f28":"v28" "f29":"v29" "f30":"v30" "f31":"v31" "f32":"v32" "f33":"v33" "f34":"v34" "f35":"v35" "f36":"v36" "f37":"v37" "f38":"v38" "f39":"v39" "f40":"v40" "f41":"v41" "f42":"v42" "f43":"v43" "f44":"v44" "f45":"v45" "f46":"v46" "f47":"v47" "f48":"v48" "f49":"v49" "f50":"v50" "f51":"v51" "f52":"v52" "f53":"v53" "f54":"v54" "f55":"v55" "f56":"v56" "f57":"v57" "f58":"v58" "f59":"v59"}
 {"component":"streamserver","level":"info","state":"degraded","f0":"v0" "f1":"v1" "f2":"v2" "f3":"v3" "f4":"v4" "f5":"v5" "f6":"v6" "f7":"v7" "f8":"v8" "f9":"v9" "f10":"v10" "f11":"v11" "f12":"v12" "f13":"v13" "f14":"v14" "f15":"v15" "f16":"v16" "f17":"v17" "f18":"v18" "f19":"v19" "f20":"v20" "f21":"v21" "f22":"v22" "f23":"v23" "f24":"v24" "f25":"v25" "f26":"v26" "f27":"v27" "f28":"v28" "f29":"v29" "f30":"v30" "f31":"v31" "f32":"v32" "f33":"v33" "f34":"v34" "f35":"v35" "f36":"v36" "f37":"v37" "f38":"v38" "f39":"v39" "f40":"v40" "f41":"v41" "f42":"v42" "f43":"v43" "f44":"v44" "f45":"v45" "f46":"v46" "f47":"v47" "f48":"v48" "f49":"v49" "f50":"v50" "f51":"v51" "f52":"v52" "f53":"v53" "f54":"v54" "f55":"v55" "f56":"v56" "f57":"v57" "f58":"v58" "f59":"v59"}
 {"component":"streamserver","level":"info","state":"failed","f0":"v0" "f1":"v1" "f2":"v2" "f3":"v3" "f4":"v4" "f5":"v5" "f6":"v6" "f7":"v7" "f8":"v8" "f9":"v9" "f10":"v10" "f11":"v11" "f12":"v12" "f13":"v13" "f14":"v14" "f15":"v15" "f16":"v16" "f17":"v17" "f18":"v18" "f19":"v19" "f20":"v20" "f21":"v21" "f22":"v22" "f23":"v23" "f24":"v24" "f25":"v25" "f26":"v26" "f27":"v27" "f28":"v28" "f29":"v29" "f30":"v30" "f31":"v31" "f32":"v32" "f33":"v33" "f34":"v34" "f35":"v35" "f36":"v36" "f37":"v37" "f38":"v38" "f39":"v39" "f40":"v40" "f41":"v41" "f42":"v42" "f43":"v43" "f44":"v44" "f45":"v45" "f46":"v46" "f47":"v47" "f48":"v48" "f49":"v49" "f50":"v50" "f51":"v51" "f52":"v52" "f53":"v53" "f54":"v54" "f55":"v55" "f56":"v56" "f57":"v57" "f58":"v58" "f59":"v59"}
 
 ##CASE lessence-fo2 groups=2
-##WHY a large identical payload must not outvote the words naming the event: the two
-##WHY  Updating lines fold together, Active stays out
+##WHY a large identical payload must not outvote the words naming the event:
+##WHY the two Updating lines fold together, Active stays out
 ##FROM rancher TLS shape; a multiset alone merged Updating into Active
 2025/09/14 07:25:53 [INFO] Updating TLS secret for system/serving-cert (count: 407): map[cn-a:1 cn-b:2 cn-c:3]
 2025/09/14 07:25:56 [INFO] Updating TLS secret for system/tls-internal (count: 96): map[cn-a:1 cn-b:2 cn-c:3]
@@ -74,34 +93,46 @@ worker started handling batch alpha beta gamma delta epsilon
 ##CASE lessence-cau groups=1
 ##WHY a non-ASCII line folds without panicking on a byte offset
 ##FROM UTF-8 slicing used to cut mid-character
-INFO anvandaren kunde inte autentiseras mot servern älg
-INFO anvandaren kunde inte autentiseras mot servern björn
-INFO anvandaren kunde inte autentiseras mot servern räv
+INFO anvandaren kunde inte autentiseras mot servern alg
+INFO anvandaren kunde inte autentiseras mot servern bjorn
+INFO anvandaren kunde inte autentiseras mot servern rav
 
-##CASE lessence-s53 absent=<FQDN>
+##CASE lessence-21f51de groups=3
+##WHY structured messages keep their content instead of collapsing into one group
+##FROM cilium logfmt shape; three distinct messages, one component
+level=info msg="starting the scheduler" component=core
+level=info msg="stopping the scheduler" component=core
+level=info msg="reloading the scheduler" component=core
+
+##CASE lessence-s53 template_absent=<FQDN>
 ##WHY a dotted source-file reference is not a hostname
 ##FROM prometheus shape; v0.4.1 normalized caller=checkpoint.go to caller=<FQDN>
 ts=2025-09-19T03:00:27.455Z caller=checkpoint.go:101 level=info component=tsdb msg="Creating checkpoint"
 
-##CASE lessence-s53 absent=<FQDN>
+##CASE lessence-s53 template_absent=<FQDN>
 ##WHY a dotted class identifier is not a hostname
 ##FROM stock Hadoop text; v0.4.1 normalized dfs.DataNode to <FQDN>
 081109 203615 148 INFO dfs.DataNode$PacketResponder: PacketResponder 1 for block blk_38865049064139660 terminating
 
-##CASE lessence-s53 absent=<FQDN>
+##CASE lessence-s53 template_absent=<FQDN>
 ##WHY a dotted method identifier is not a hostname
 ##FROM stock Apache mod_jk text; v0.4.1 normalized workerEnv.init() to <FQDN>()
 [Sun Dec 04 04:47:44 2005] [notice] workerEnv.init() ok /etc/httpd/conf/workers2.properties
 
-##CASE lessence-qkj absent=<UUID>
+##CASE lessence-qkj template_absent=<UUID>
 ##WHY the ordinary English word request is not a request id
 ##FROM stock Kubernetes text; v0.4.1 rewrote it to `cancel request_id=<UUID> for`
 W0909 13:07:12.237366    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
 
-##CASE a585a63 absent=<HASH>
+##CASE a585a63 template_absent=<HASH>
 ##WHY a bracketed pid is a pid, not a hash
 ##FROM examples/openssh_brute_force.log (Apache-2.0, Rootly AI Labs); v0.4.1 said <HASH>
 Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 port 47192
+
+##CASE lessence-zbu template_absent=<PID>
+##WHY a parenthesised count is not a pid
+##FROM the is_likely_pid gate the paren replacement used to skip
+retrying the upload after a short delay (3)
 
 ##CASE lessence-gho groups=2
 ##WHY different request endpoints stay in different groups
@@ -125,3 +156,128 @@ Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 p
 Jan 26 00:00:05 d2-4-bhs5 sshd[3578055]: Invalid user sammy from 35.246.248.48 port 47192
 Jan 26 00:01:11 d2-4-bhs5 sshd[3578112]: Invalid user deploy from 35.246.248.48 port 47444
 Jan 26 00:02:19 d2-4-bhs5 sshd[3578390]: Invalid user oracle from 35.246.248.48 port 48002
+
+##CASE lessence-mxv template_present=<KEY_VALUE>
+##WHY the key-value detector fires by default; paired with the case below,
+##WHY this proves --disable-patterns does something rather than nothing
+##FROM the flag was a silent no-op for several detector names
+level=info msg="a" component=core
+
+##CASE lessence-mxv template_present=level=info
+##WHY --disable-patterns key-value really disables it
+##FROM lessence-9h5 was the same bug in LogWithModuleDetector
+##FLAGS --disable-patterns key-value
+level=info msg="a" component=core
+
+##CASE lessence-arch-2026-08-r98.13 template_present=<EMAIL>
+##WHY --sanitize-pii masks an email address
+##FROM masking used to apply in some output modes and not others
+##FLAGS --sanitize-pii
+user alice@example.com logged in from the console
+
+##CASE lessence-w3k template_present=<SECRET>
+##WHY --sanitize-pii masks a credential-class assignment and terminates
+##FROM the masking loop used to be able to spin forever
+##FLAGS --sanitize-pii
+service token=sk-abcdefghijklmnopqrstuvwx accepted
+
+##CASE lessence-arch-2026-08-r98.8 out_absent=\e[
+##WHY --preflight strips terminal escapes before analysing
+##FROM preflight was the one mode that skipped escape stripping
+##FLAGS --preflight
+INFO \e[31mdisk failure\e[0m on node
+
+##CASE lessence-m2p out_absent=\e[
+##WHY the full terminal escape set is stripped by default, not just CSI
+##FROM a crafted log line could smuggle escapes into a terminal
+INFO \e[31mdisk failure\e[0m on node
+
+##CASE lessence-ino out_present=```
+##WHY --format markdown fences log content so it cannot be interpreted as markup
+##FROM untrusted log content used to be emitted into the document body
+##FLAGS --format markdown
+ERROR **bold** and [link](http://x) and | pipe
+
+##CASE lessence-arch-2026-08-r98.10 err_present=--format markdown supports only the default fold output
+##WHY an unsupported --format combination is refused out loud, not silently
+##WHY  downgraded to text
+##FROM the format flag used to be dropped by --top, --summary and --fit
+##FLAGS --format markdown --top 1
+a 1
+a 2
+a 3
+b 1
+
+##CASE lessence-lst out_absent=(showing top
+##WHY --format json --top N keeps stdout pure JSONL; the human header goes to stderr
+##FROM the header used to be printed to stdout and broke every JSON parser
+##FLAGS --format json --top 1
+a 1
+a 2
+a 3
+b 1
+
+##CASE lessence-748 out_absent=Compression Report
+##WHY the statistics footer never lands on stdout under -q
+##FROM stats used to pollute the piped output
+a 1
+a 2
+a 3
+
+##CASE lessence-7ga out_present=INFO
+##WHY --summary truncates a long non-ASCII line without cutting mid-character
+##FROM the truncation used to slice on a byte offset and panic
+##FLAGS --summary
+INFO anvandaren kunde inte autentiseras mot servern med ett mycket langt meddelande som maste trunkeras nagonstans i mitten av ett tecken aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+
+##CASE lessence-arch-2026-08-r98.10 exit=2
+##WHY refusing an unsupported --format combination also fails the process, so a
+##WHY  pipeline notices
+##FROM paired with the err_present case above; kills a mutant that prints and exits 0
+##FLAGS --format markdown --top 1
+a 1
+a 2
+a 3
+
+##CASE lessence-fiz out_present=# Log Analysis
+##WHY --format md renders markdown rather than silently emitting text
+##FROM the alias used to be accepted and then ignored
+##FLAGS --format md
+a 1
+
+##CASE lessence-fiz out_present="type":"group"
+##WHY --format JSON is case-insensitive and renders JSON, not text
+##FROM the alias used to be accepted and then ignored
+##FLAGS --format JSON
+a 1
+
+##CASE lessence-9h5 template_present=<BRACKET_CONTEXT>
+##WHY the bracket/log-module detectors fire by default; paired with the case
+##WHY  below, this proves --disable-patterns reaches them too
+##FROM LogWithModuleDetector consulted no config at all
+[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] mod_jk child workerEnv in error state 6
+
+##CASE lessence-9h5 template_present=[error]
+##WHY --disable-patterns brackets really leaves the bracketed level alone
+##FROM the flag was accepted and then ignored by this detector
+##FLAGS --disable-patterns brackets
+[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] mod_jk child workerEnv in error state 6
+
+##CASE lessence-arch-2026-08-r98.9 out_present="lines_saved":1
+##WHY lines_saved, output_lines and compression_ratio agree with each other and
+##WHY  with the fold: 4 lines in, one group, one line saved, 25 percent
+##FROM the three used to be computed separately and disagree across modes
+##FLAGS --format json
+req took 111 ms
+req took 222 ms
+req took 333 ms
+req took 444 ms
+
+##CASE lessence-arch-2026-08-r98.9 out_present="compression_ratio":25.0
+##WHY the ratio is derived from the same fold as lines_saved, not recomputed
+##FROM paired with the case above; kills a mutant that fixes one and not the other
+##FLAGS --format json
+req took 111 ms
+req took 222 ms
+req took 333 ms
+req took 444 ms

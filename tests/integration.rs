@@ -15,6 +15,7 @@ mod integration {
     mod test_fail_on_pattern;
     mod test_file_input;
     mod test_fit;
+    mod test_fold_regressions;
     mod test_format_json;
     mod test_format_json_rollups;
     mod test_help_text;

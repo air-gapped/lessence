@@ -31,7 +31,7 @@ fn lines(n: usize, f: impl Fn(usize) -> String) -> String {
 }
 
 #[test]
-fn distinct_lines_scale_linearly() {
+fn distinct_lines_scales_linearly() {
     // lessence-aw4: every line founds its own group, so the group buffer grows
     // with the input. Both the similarity scan and the final drain are on the
     // hook here — this is the shape that made `finish()` quadratic.
@@ -46,7 +46,7 @@ fn distinct_lines_scale_linearly() {
 }
 
 #[test]
-fn repeated_lines_scale_linearly() {
+fn repeated_lines_scales_linearly() {
     // The happy path: one group, every line resolving through the exact-hash
     // index rather than the linear scan.
     let build = |n| {
@@ -60,7 +60,7 @@ fn repeated_lines_scale_linearly() {
 }
 
 #[test]
-fn many_key_value_pairs_on_one_line_scale_linearly() {
+fn many_key_value_pairs_on_one_line_scales_linearly() {
     // lessence-lsu and the long-key=value stall: context decisions used to be
     // recomputed inside the per-match closure, once per pair.
     let build = |pairs| {
@@ -76,7 +76,7 @@ fn many_key_value_pairs_on_one_line_scale_linearly() {
 }
 
 #[test]
-fn many_timestamps_on_one_line_scale_linearly() {
+fn many_timestamps_on_one_line_scales_linearly() {
     // lessence-pow: resolve_overlaps kept a growing interval set per line.
     let build = |stamps| {
         let ts = (0..stamps)
@@ -91,7 +91,7 @@ fn many_timestamps_on_one_line_scale_linearly() {
 }
 
 #[test]
-fn structured_records_scale_linearly_in_field_count() {
+fn structured_records_scales_linearly_in_field_count() {
     // The shape lessence-8jb was measured on: a wide compact-JSON record whose
     // every value is a token. Widening the record must not cost quadratically.
     let build = |fields| {
@@ -107,7 +107,7 @@ fn structured_records_scale_linearly_in_field_count() {
 }
 
 #[test]
-fn long_records_past_the_similarity_cap_scale_linearly() {
+fn long_records_past_the_similarity_cap_scales_linearly() {
     // lessence-fo2 territory: past MAX_SIMILARITY_TOKENS the comparison changes
     // strategy. The multiset path must stay linear in tokens, not quadratic.
     let build = |n| {
@@ -123,7 +123,7 @@ fn long_records_past_the_similarity_cap_scale_linearly() {
 }
 
 #[test]
-fn repeated_quoted_values_scale_linearly() {
+fn repeated_quoted_values_scales_linearly() {
     // The quoted-string cascade is memoized per distinct value; a corpus that
     // repeats a small vocabulary must not pay the cascade every time.
     let build = |n| {
@@ -144,7 +144,7 @@ fn repeated_quoted_values_scale_linearly() {
 /// deliberately quadratic function and assert it fails — otherwise a rewrite
 /// that loosens the threshold would silently disarm every test in this file.
 #[test]
-fn the_scaling_guard_actually_catches_quadratic_work() {
+fn quadratic_work_fails_the_scales_linearly_guard() {
     let quadratic = |input: &str| {
         let bytes = input.as_bytes();
         let mut acc = 0u64;
