@@ -18,6 +18,23 @@ static DECIMAL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d+\.\d+
 // mode rather than tightening this default.
 static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3,}\b").unwrap()); // 3+ digits to avoid matching small numbers like "3 retries"
 
+// An integer standing alone as the whole value of a JSON field: `"diff_ms":82`.
+// The 3-digit floor above exists so prose like "3 retries" survives, but a
+// field value is not prose — and leaving it in place meant a latency crossing
+// 100 ms changed whether its line folded (bead lessence-8jb). Runs after
+// INTEGER_REGEX, on whatever small numbers it left behind; the key is
+// preserved, only the value folds.
+//
+// Deliberately JSON-only. Extending it to bare logfmt (`syscall=42`) was
+// measured and rejected: auditd SYSCALL records have ~40 numeric fields, so
+// folding all of them pushed records for different syscalls over the
+// similarity threshold and merged them (linux_auditd 649 -> 344 output lines).
+// The JSON form carries the whole measured win without that.
+static FIELD_INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"("[A-Za-z_][A-Za-z0-9_.-]*"\s*:\s*)(-?\d+)\b"#)
+        .expect("Failed to compile field integer regex")
+});
+
 // Duration with units (1.234s, 523ms, 2m30s, 1h15m, 15m27.417653609s)
 // Matches various duration formats: Xh, Xm, Xs, Xms, XμS, Xns, combinations like 1h30m, 2m15s
 static DURATION_WITH_UNIT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -63,6 +80,8 @@ impl DurationDetector {
             && !text.contains("bytes")
             && !text.contains("KB")
             && !text.contains("MB")
+            // a JSON field value carries no unit of its own
+            && !text.contains(':')
         {
             return (text.to_string(), Vec::new());
         }
@@ -127,6 +146,14 @@ impl DurationDetector {
             result = regex.replace_all(&result, placeholder).to_string();
         }
 
+        // JSON field values last, on the small numbers INTEGER_REGEX left
+        // behind. Capture-preserving, so the key survives.
+        super::fold_matches(&mut result, &mut tokens, &FIELD_INTEGER_REGEX, |caps| {
+            let key = caps.get(1).unwrap().as_str();
+            let value = caps.get(2).unwrap().as_str();
+            Some((Token::Number(value.to_string()), format!("{key}<NUMBER>")))
+        });
+
         (result, tokens)
     }
 }
@@ -134,6 +161,78 @@ impl DurationDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- structured field values (bead lessence-8jb) ----
+
+    fn fold(text: &str) -> String {
+        DurationDetector::detect_and_replace(text).0
+    }
+
+    #[test]
+    fn field_integer_folds_independently_of_digit_count() {
+        // The bug: a latency crossing 100 ms changed whether its line folded.
+        for value in ["4", "82", "123", "4567"] {
+            assert_eq!(
+                fold(&format!(r#"{{"a":"x","diff_ms":{value}}}"#)),
+                r#"{"a":"x","diff_ms":<NUMBER>}"#,
+                "diff_ms:{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn field_integer_keeps_the_key() {
+        assert_eq!(fold(r#"{"health_ms":1}"#), r#"{"health_ms":<NUMBER>}"#);
+    }
+
+    #[test]
+    fn field_integer_leaves_bare_logfmt_alone() {
+        // Deliberate scope limit, not an oversight: see FIELD_INTEGER_REGEX.
+        assert_eq!(fold("syscall=42 done"), "syscall=42 done");
+    }
+
+    #[test]
+    fn field_integer_folds_zero() {
+        assert_eq!(fold(r#"{"dedup_ms":0}"#), r#"{"dedup_ms":<NUMBER>}"#);
+    }
+
+    #[test]
+    fn field_integer_folds_negative() {
+        assert_eq!(fold(r#"{"exit":-13}"#), r#"{"exit":<NUMBER>}"#);
+    }
+
+    #[test]
+    fn field_integer_leaves_prose_alone() {
+        // The 3-digit floor on INTEGER_REGEX exists for exactly these.
+        assert_eq!(fold("3 retries remaining"), "3 retries remaining");
+        assert_eq!(fold("retry 2 of 5"), "retry 2 of 5");
+    }
+
+    #[test]
+    fn field_integer_requires_a_key() {
+        // A bare colon in prose is not a field.
+        assert_eq!(fold("waited: 7 units"), "waited: 7 units");
+    }
+
+    #[test]
+    fn field_integer_does_not_split_a_decimal() {
+        // The decimal pass runs first; the field pass must not then eat the
+        // integer part of what is left.
+        assert_eq!(fold(r#"{"ratio":1.5}"#), r#"{"ratio":<DECIMAL>}"#);
+    }
+
+    #[test]
+    fn field_integer_emits_a_number_token() {
+        let (_, tokens) = DurationDetector::detect_and_replace(r#"{"n":7}"#);
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0], Token::Number("7".to_string()));
+    }
+
+    #[test]
+    fn fast_path_still_reaches_a_bare_json_field() {
+        // `{"a":1}` carries none of the duration hints the fast path checks.
+        assert_eq!(fold(r#"{"a":1}"#), r#"{"a":<NUMBER>}"#);
+    }
 
     #[test]
     fn test_k8s_duration_detection() {
