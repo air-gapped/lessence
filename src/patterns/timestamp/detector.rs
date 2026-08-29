@@ -407,6 +407,24 @@ impl UnifiedTimestampDetector {
         false
     }
 
+    /// `I0829 `, `W0101 `, `E1231 `: a klog level letter, four digits and a
+    /// space, at the line start or after `] ` (a kubectl prefix).
+    fn has_klog_header(text: &str) -> bool {
+        let b = text.as_bytes();
+        let mut i = 0;
+        while i + 5 < b.len() {
+            if matches!(b[i], b'I' | b'W' | b'E' | b'F')
+                && b[i + 1..i + 5].iter().all(u8::is_ascii_digit)
+                && b[i + 5] == b' '
+                && (i == 0 || b[i - 1] == b' ')
+            {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
     /// Fast pre-filter for timestamp indicators
     fn has_timestamp_indicators(text: &str) -> bool {
         // `@1758304800` carries no colon at all, and neither does a bare
@@ -421,11 +439,10 @@ impl UnifiedTimestampDetector {
             text.contains('-') ||  // Date separators
             text.contains('T') ||  // ISO 8601 separator
             text.contains('[') ||  // Log brackets
-            // Kubernetes/Go log levels
-            text.contains("I09") || text.contains("W09") || text.contains("E09") || text.contains("F09") ||
-            text.contains("I10") || text.contains("W10") || text.contains("E10") || text.contains("F10") ||
-            text.contains("I11") || text.contains("W11") || text.contains("E11") || text.contains("F11") ||
-            text.contains("I12") || text.contains("W12") || text.contains("E12") || text.contains("F12") ||
+            // A klog header, any month: `I0829 01:12:10.311614`. Listing
+            // only I09..I12 left every August line's timestamp to luck — a
+            // capital T elsewhere on the line.
+            Self::has_klog_header(text) ||
             // Month names
             text.contains("Jan") || text.contains("Feb") || text.contains("Mar") ||
             text.contains("Apr") || text.contains("May") || text.contains("Jun") ||
@@ -1120,6 +1137,20 @@ mod shapes_2026_08_29 {
         }
         let (r, _) = UnifiedTimestampDetector::detect_and_replace("at [1539274761] ok: x");
         assert_eq!(r, "at <TIMESTAMP> ok: x");
+    }
+
+    #[test]
+    fn a_klog_header_is_a_timestamp_in_any_month() {
+        for line in [
+            "I0829 01:12:10.311614       1 x.go:1] no capital t here",
+            "W0101 00:00:00.000001       1 x.go:1] y",
+            "[pod/a/b] E1231 23:59:59.999999       1 x.go:1] z",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(r.contains("<TIMESTAMP>"), "{line} -> {r}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
+        assert!(!UnifiedTimestampDetector::has_klog_header("FILE0829 x"));
     }
 
     #[test]

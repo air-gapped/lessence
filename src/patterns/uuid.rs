@@ -15,6 +15,22 @@ static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static ULID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b").unwrap());
 
+// A UUID as systemd escapes it inside a unit name, `-` written `\x2d`:
+// `438a97c2\x2d7b77\x2d466d\x2d964d\x2da94c97935530`.
+static ESCAPED_UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[0-9a-fA-F]{8}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{12}\b").unwrap()
+});
+
+// An id-named JSON field with a short opaque value: `"execID":"003d3"`,
+// `"request_id":"a1b2c3"`. The key says it is an id; left literal, a
+// per-call token fragments one event into singleton chains.
+static JSON_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#""([A-Za-z][A-Za-z0-9]*(?:_id|Id|_ID|ID))"\s*:\s*"([A-Za-z0-9][A-Za-z0-9+/=_-]{2,})""#,
+    )
+    .unwrap()
+});
+
 // Request ID patterns. The prose word "request" must never match on its own:
 // require an explicit `id` suffix, a `=`/`:` separator, or the `req-`/`req_`
 // prefix idiom before capturing a value.
@@ -80,6 +96,15 @@ impl UuidDetector {
         }
 
         // Request IDs
+        if result.contains("\\x2d") {
+            for found in ESCAPED_UUID_REGEX.find_iter(&result) {
+                tokens.push(Token::Uuid(found.as_str().to_string()));
+            }
+            result = ESCAPED_UUID_REGEX
+                .replace_all(&result, "<UUID>")
+                .to_string();
+        }
+
         for cap in REQUEST_ID_REGEX.captures_iter(&result) {
             let req_id = cap.get(1).unwrap().as_str();
             if Self::is_likely_id(req_id) && !Self::is_prose(&cap) {
@@ -129,6 +154,17 @@ impl UuidDetector {
                 .to_string();
         }
 
+        if result.contains("\":") {
+            for caps in JSON_ID_REGEX.captures_iter(&result) {
+                tokens.push(Token::Uuid(caps[2].to_string()));
+            }
+            result = JSON_ID_REGEX
+                .replace_all(&result, |caps: &regex::Captures| {
+                    format!("\"{}\":\"<UUID>\"", &caps[1])
+                })
+                .to_string();
+        }
+
         (result, tokens)
     }
 
@@ -168,7 +204,9 @@ impl UuidDetector {
     fn has_uuid_indicators(text: &str) -> bool {
         // Ultra-fast check for UUID/ID indicators
         text.contains('-') || // Standard UUIDs have hyphens
+        text.contains("\\x2d") || // a UUID as systemd escapes it
         text.contains("id=") || text.contains("Id=") || text.contains("ID=") ||
+        text.contains("id\":") || text.contains("Id\":") || text.contains("ID\":") ||
         text.contains("req") || text.contains("request") ||
         text.contains("trace") || text.contains("session") ||
         (text.len() > 20 && text.chars().any(|c| c.is_ascii_hexdigit())) // Potential hex string
@@ -459,5 +497,25 @@ mod shapes_2026_08_29 {
         assert_eq!(r, "request=<UUID> done");
         let (r, _) = UuidDetector::detect_and_replace("request: 5f3a9c1e done");
         assert_eq!(r, "request: <UUID> done");
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29_ids {
+    use super::*;
+
+    #[test]
+    fn an_escaped_uuid_and_an_id_named_json_field_are_ids() {
+        let (r, t) = UuidDetector::detect_and_replace(
+            r"var-lib-kubelet-pods-438a97c2\x2d7b77\x2d466d\x2d964d\x2da94c97935530-volumes.mount",
+        );
+        assert_eq!(r, "var-lib-kubelet-pods-<UUID>-volumes.mount");
+        assert_eq!(t.len(), 1);
+        let (r, t) =
+            UuidDetector::detect_and_replace(r#"{"dir":"/tmp/x","execID":"003d3","level":"info"}"#);
+        assert_eq!(r, r#"{"dir":"/tmp/x","execID":"<UUID>","level":"info"}"#);
+        assert!(matches!(t[0], Token::Uuid(ref v) if v == "003d3"));
+        let (r, _) = UuidDetector::detect_and_replace(r#"{"grpc.method_type":"unary"}"#);
+        assert_eq!(r, r#"{"grpc.method_type":"unary"}"#, "not an id-named key");
     }
 }

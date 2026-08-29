@@ -884,3 +884,35 @@ Aug 28 10:10:08 Atetaganipo authpriv.info dropbear[4020]: Pubkey auth succeeded 
 ##WHY the syslog facility.level field is a closed set on both sides, not a domain
 ##FROM a switch messages log (scrubbed)
 Aug 29 03:10:07 USW16PoE daemon.err mcad: mcad[459]: ace_reporter.reporter_fail(): inform failed #2 (last inform: 58 seconds ago), rc=3
+
+##CASE lessence-a8t template_present=Consumed <DURATION> CPU time, <SIZE> memory peak, <SIZE> memory swap peak.
+##WHY systemd spells a long duration out (3d 12h 48min 21.967s) and a size with a bare unit letter (775.5M); each is one value
+##FROM the rke2 node journal (scrubbed)
+2026-08-26T12:45:50.289140+00:00 bu systemd[1]: cri-containerd-15c034d674106fde169ebe5758ef0b402f01d9112dfcaf94d8d696c465be6840.scope: Consumed 3d 12h 48min 21.967s CPU time, 775.5M memory peak, 0B memory swap peak.
+2026-08-26T13:39:36.274608+00:00 bu systemd[1]: cri-containerd-15c034d674106fde169ebe5758ef0b402f01d9112dfcaf94d8d696c465be6840.scope: Consumed 3.209s CPU time, 3.7M memory peak, 0B memory swap peak.
+2026-08-27T02:15:01+02:00 bu systemd[1]: cri-containerd-15c034d674106fde169ebe5758ef0b402f01d9112dfcaf94d8d696c465be6840.scope: Consumed 7h 33min 1.865s CPU time, 9.6G memory peak, 246.5M memory swap peak.
+
+##CASE lessence-a8t template_present="took":"<DURATION>","expected-duration":"<DURATION>"
+##WHY a quoted duration keeps its quotes whatever its unit; "took":<DURATION> beside "took":"<DURATION>" split one event in two
+##FROM etcd (scrubbed)
+[pod/etcd-el/etcd] {"level":"warn","ts":"2026-08-29T01:09:42.420924Z","caller":"txn/util.go:93","msg":"apply request took too long","took":"2.000786944s","expected-duration":"100ms","prefix":"read-only range ","request":"key:\"/registry/health\" ","response":"range_response_count:1 size:494"}
+[pod/etcd-el/etcd] {"level":"warn","ts":"2026-08-26T12:00:05.746172Z","caller":"txn/util.go:93","msg":"apply request took too long","took":"119.448684ms","expected-duration":"100ms","prefix":"read-only range ","request":"key:\"/registry/leases/kube-system/x\" limit:1 ","response":"range_response_count:1 size:494"}
+
+##CASE lessence-a8t template_present=var-lib-kubelet-pods-<UUID>-volumes-kubernetes.io
+##WHY a UUID as systemd escapes it in a unit name, `-` written \x2d, is one placeholder
+##FROM the rke2 node journal (scrubbed)
+2026-08-26T12:45:50.626526+00:00 bu systemd[1]: var-lib-kubelet-pods-438a97c2\x2d7b77\x2d466d\x2d964d\x2da94c97935530-volumes-kubernetes.io\x7eprojected-hubble\x2dtls.mount: Deactivated successfully.
+
+##CASE lessence-a8t groups=1
+##WHY an id-named JSON field with a short opaque value is an id; literal, a per-call token fragments one event into singleton chains
+##FROM the argocd repo-server (scrubbed)
+[pod/argocd-repo-server-58644f48f7-65x6t/repo-server] {"dir":"/tmp/_argocd-repo/f4957bc8-a143-4254-1ab5-42e9f4bfcc62","execID":"003d3","level":"info","msg":"git checkout --force 95e66ff726627b3ff1de09a87c50b8c6257c1a12","time":"2026-08-29T04:02:52Z"}
+[pod/argocd-repo-server-58644f48f7-65x6t/repo-server] {"dir":"/tmp/_argocd-repo/f4957bc8-a143-4254-1ab5-42e9f4bfcc62","execID":"59c92","level":"info","msg":"git checkout --force e94d55d7ad4ca15e082479fbec0c40737190c9fe","time":"2026-08-29T04:03:11Z"}
+[pod/argocd-repo-server-58644f48f7-65x6t/repo-server] {"dir":"/tmp/_argocd-repo/f4957bc8-a143-4254-1ab5-42e9f4bfcc62","execID":"93a3c","level":"info","msg":"git checkout --force 95e66ff726627b3ff1de09a87c50b8c6257c1a12","time":"2026-08-29T04:03:30Z"}
+
+##CASE lessence-a8t groups=2
+##WHY the program a record names (exe=, comm=, "binary":) is its identity, as the syslog tag is a syslog line's
+##FROM the auditd corpus and Tetragon (scrubbed)
+type=SYSCALL msg=audit(1481077232.471:485): arch=c000003e syscall=59 success=yes exit=0 a0=1325fc0 a1=133b250 a2=7ffc08f6aa80 a3=0 items=2 ppid=1220 pid=1396 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sudo" exe="/usr/bin/sudo" key=(null)
+type=SYSCALL msg=audit(1481077232.471:486): arch=c000003e syscall=59 success=yes exit=0 a0=1325fc0 a1=133b250 a2=7ffc08f6aa80 a3=0 items=2 ppid=1220 pid=1397 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sshd" exe="/usr/sbin/sshd" key=(null)
+type=SYSCALL msg=audit(1481077299.100:490): arch=c000003e syscall=59 success=yes exit=0 a0=1325fc0 a1=133b250 a2=7ffc08f6aa80 a3=0 items=2 ppid=1220 pid=1401 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sudo" exe="/usr/bin/sudo" key=(null)

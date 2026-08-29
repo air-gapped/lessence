@@ -61,17 +61,14 @@ impl KeyValueDetector {
         (result, tokens)
     }
 
+    // No vetoes on words: `for `, `if ` and `while ` are English, and a
+    // `for ` in "Waiting for caches" switched key-value folding off for
+    // the whole line. A URL veto stays: a bare URL's `?a=b` is not a pair.
     fn has_key_value_indicators(text: &str) -> bool {
-        // Fast byte-level checks for key-value indicators
-        (text.contains('=') || text.contains(':')) &&
-        // Exclude obvious non-key-value patterns
-        !text.contains("if ") &&      // if variable = value
-        !text.contains("for ") &&     // for loop constructs
-        !text.contains("while ") &&   // while loop constructs
-        !text.contains("SELECT ") &&  // SQL queries
-        !text.contains("http://") &&  // URLs
-        !text.contains("https://") && // URLs
-        !text.contains("ftp://") // URLs
+        (text.contains('=') || text.contains(':'))
+            && !text.contains("http://")
+            && !text.contains("https://")
+            && !text.contains("ftp://")
     }
 
     fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {

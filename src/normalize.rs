@@ -130,7 +130,10 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // KEY-VALUE: config=value pairs.
     DetectorEntry {
         enabled: |c| c.normalize_key_value,
-        prefilter: Some(|_, s| s.contains('=')),
+        // An `=` inside a quoted value is not a pair: gated on any `=`,
+        // whether a Tetragon JSON event folded depended on the base64
+        // padding of a field twenty kilobytes into the record.
+        prefilter: Some(|_, s| has_unquoted_eq(s)),
         defers_to_kubernetes: None,
         run: |_, s| KeyValueDetector::detect_and_replace(s),
     },
@@ -182,6 +185,22 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         run: |_, s| QuotedStringDetector::detect_and_replace(s),
     },
 ];
+
+/// Does the line carry an `=` outside quoted strings — a `key=value`
+/// pair rather than a `=` inside a JSON value?
+fn has_unquoted_eq(s: &str) -> bool {
+    let mut quoted = false;
+    let mut prev = 0u8;
+    for &b in s.as_bytes() {
+        match b {
+            b'"' if prev != b'\\' => quoted = !quoted,
+            b'=' if !quoted => return true,
+            _ => {}
+        }
+        prev = b;
+    }
+    false
+}
 
 pub struct Normalizer {
     config: Config,
@@ -276,6 +295,15 @@ static FIELD_STATUS: LazyLock<Regex> = LazyLock::new(|| {
 static FIELD_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)"?[a-z_.]*(?:path|uri|url|route)"?\s*[:=]\s*"([^"]*)""#)
         .expect("field path anchor pattern must compile")
+});
+
+/// The program a record is about — auditd's `exe="/usr/bin/sudo"` and
+/// `comm="sshd"`, Tetragon's `"binary":"/usr/bin/runc"` — is its identity,
+/// as the syslog tag is a syslog line's: a syscall by sudo and one by sshd
+/// are two events however alike the rest of the record reads.
+static PROGRAM_FIELD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:\b(?:exe|comm)=|"(?:binary|exe|comm)"\s*:\s*)"([^"]+)""#)
+        .expect("program field anchor pattern must compile")
 });
 
 /// The prefix `kubectl logs --prefix` writes: `[pod/<pod>/<container>] `.
@@ -407,6 +435,12 @@ fn anchor_hash(original: &str) -> u64 {
     }
     if original.contains("tatus") || original.contains("TATUS") {
         for caps in FIELD_STATUS.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+    if original.contains("exe=") || original.contains("comm=") || original.contains("\"binary\"") {
+        for caps in PROGRAM_FIELD.captures_iter(original) {
             caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
             found = true;
         }
@@ -2564,5 +2598,58 @@ mod anchor_tests_2026_08_29 {
             "I0829 04:27:08.310956       1 reflector.go:397] sigs.k8s.io/sig-storage-lib-external-provisioner/v11/controller/controller.go:872: forcing resync",
         );
         assert_ne!(fourth.anchor, fifth.anchor);
+    }
+}
+
+#[cfg(test)]
+mod key_value_gate_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn key_value_folding_needs_an_unquoted_equals_sign() {
+        assert!(has_unquoted_eq("time=x level=info"));
+        assert!(!has_unquoted_eq(
+            r#"{"exec_id":"Z2Y2M2I6MjI3MDk3MjQ5MzY5NDM3ODoyMTYwMDUz=", "pid":2160053}"#
+        ));
+        assert!(!has_unquoted_eq(r#"{"msg":"a=b inside"}"#));
+        assert!(has_unquoted_eq(r#"msg="quoted" key=value"#));
+    }
+}
+
+#[cfg(test)]
+mod program_anchor_2026_08_29 {
+    use super::*;
+
+    fn normalize(line: &str) -> LogLine {
+        Normalizer::new(Config::default())
+            .normalize_line(line.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn the_program_a_record_names_is_its_identity() {
+        let sudo = normalize(
+            r#"type=SYSCALL msg=audit(1481077232.471:485): arch=c000003e syscall=59 success=yes exit=0 comm="sudo" exe="/usr/bin/sudo" key=(null)"#,
+        );
+        let sshd = normalize(
+            r#"type=SYSCALL msg=audit(1481077232.471:486): arch=c000003e syscall=59 success=yes exit=0 comm="sshd" exe="/usr/sbin/sshd" key=(null)"#,
+        );
+        let sudo2 = normalize(
+            r#"type=SYSCALL msg=audit(1481077299.100:490): arch=c000003e syscall=59 success=yes exit=0 comm="sudo" exe="/usr/bin/sudo" key=(null)"#,
+        );
+        assert_ne!(sudo.anchor, sshd.anchor);
+        assert_eq!(sudo.anchor, sudo2.anchor);
+        let runc = normalize(
+            r#"[pod/tetragon-fbkw6/export-stdout] {"process_exec":{"process":{"exec_id":"Z2Y2M2I6MjI3MDk3MjQ5MzY5NDM3ODoyMTYwMDUz", "pid":2160053, "binary":"/var/lib/rancher/rke2/bin/runc", "arguments":"exec"}}}"#,
+        );
+        let redis = normalize(
+            r#"[pod/tetragon-fbkw6/export-stdout] {"process_exec":{"process":{"exec_id":"Z2Y2M2I6MjI3MDk3MjcwNTgxMDUzNzoyMTYwMDkx", "pid":2160091, "binary":"/usr/bin/redis-cli", "arguments":"ping"}}}"#,
+        );
+        assert_ne!(runc.anchor, redis.anchor);
+        assert!(
+            runc.normalized.contains(r#""exec_id":"<UUID>""#),
+            "{}",
+            runc.normalized
+        );
     }
 }

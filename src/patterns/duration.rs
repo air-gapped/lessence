@@ -42,8 +42,12 @@ static FIELD_INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 // Duration with units (1.234s, 523ms, 2m30s, 1h15m, 15m27.417653609s)
 // Matches various duration formats: Xh, Xm, Xs, Xms, XμS, Xns, combinations like 1h30m, 2m15s
+// systemd spells a long one out — `3d 12h 48min 21.967s`, `7h 33min 1.865s`,
+// `10min 45.033s` — and each part read alone left the line half literal.
+// Both µ (U+00B5, Go) and μ (U+03BC) are microseconds. No quoted form: the
+// quotes around a JSON value belong to the record, not the duration.
 static DURATION_WITH_UNIT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\b(?:\d+h(?:\d+m)?(?:\d+(?:\.\d+)?s)?|\d+m(?:\d+(?:\.\d+)?s)?|\d+(?:\.\d+)?(?:ms|μs|ns|s))\b|"[0-9h]*[0-9m]*[0-9.]+s""#).unwrap()
+    Regex::new(r"\b(?:(?:\d+d )?(?:\d+h )?(?:\d+min )?\d+(?:\.\d+)?s|\d+d \d+h(?: \d+min)?|\d+h \d+min|\d+h(?:\d+m)?(?:\d+(?:\.\d+)?s)?|\d+m(?:\d+(?:\.\d+)?s)?|\d+(?:\.\d+)?(?:ms|µs|μs|ns|s))\b").unwrap()
 });
 
 // Kubernetes duration fields (podStartSLOduration=, podStartE2EDuration=)
@@ -53,8 +57,11 @@ static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 // Memory/file size values (1234567 bytes, 1.2MB, 5.6GB, 128KB)
 // Matches integer or decimal numbers followed by size units: bytes, KB, MB, GB, TB, B
-static SIZE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b\d+(?:\.\d+)?\s*(?:bytes?|[KMGT]?B)\b").unwrap());
+// `775.5M memory peak`, `40K`, `9.6G`, `256Mi`: systemd and Kubernetes
+// write the unit letter alone, glued to the number.
+static SIZE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b\d+(?:\.\d+)?\s*(?:bytes?|[KMGT]?i?B)\b|\b\d+(?:\.\d+)?[KMGT]i?\b").unwrap()
+});
 
 // Memory addresses (0x7fff5fbff8c0): eight or more hex digits. A short
 // `0x22` is a type code, an opcode, a flag — a value, not an address.
@@ -559,5 +566,43 @@ mod tests {
             fold("msg=audit(1481076984.827:1734): x"),
             "msg=audit(<DECIMAL>:<NUMBER>): x"
         );
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn a_spelled_out_duration_and_a_bare_unit_size_are_one_value_each() {
+        for (input, expected) in [
+            (
+                "Consumed 3d 12h 48min 21.967s CPU time, 775.5M memory peak, 0B memory swap peak.",
+                "Consumed <DURATION> CPU time, <SIZE> memory peak, <SIZE> memory swap peak.",
+            ),
+            (
+                "Consumed 7h 33min 1.865s CPU time, 9.6G memory peak",
+                "Consumed <DURATION> CPU time, <SIZE> memory peak",
+            ),
+            (
+                "Consumed 10min 45.033s CPU time, 40K memory swap peak",
+                "Consumed <DURATION> CPU time, <SIZE> memory swap peak",
+            ),
+            (
+                "limits cpu 500m memory 256Mi",
+                "limits cpu <DURATION> memory <SIZE>",
+            ),
+            (
+                r#""took":"2.000786944s","x":"119.448684ms""#,
+                r#""took":"<DURATION>","x":"<DURATION>""#,
+            ),
+            (
+                "waited 3.638µs and 191.38μs",
+                "waited <DURATION> and <DURATION>",
+            ),
+        ] {
+            let (r, _) = DurationDetector::detect_and_replace(input);
+            assert_eq!(r, expected, "{input}");
+        }
     }
 }
