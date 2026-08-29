@@ -16,6 +16,14 @@ static REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
+// Any `*_id=` / `*Id=` field whose value is 8+ chars with a letter in it:
+// `container_id=def456ghi789`, `trace_id=5af93g46...`. A charset the hash
+// detector would refuse is still an id here, because the key says so.
+static GENERIC_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([A-Za-z][A-Za-z0-9]*(?:_id|Id|_ID|ID))=([A-Za-z0-9][A-Za-z0-9-]{7,})\b")
+        .unwrap()
+});
+
 // Trace ID patterns
 static TRACE_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\btrace[=:]([a-zA-Z0-9-_]+)\b").unwrap());
@@ -78,6 +86,25 @@ impl UuidDetector {
             result = regex.replace_all(&result, Self::keep_prefix).to_string();
         }
 
+        if result.contains("id=") || result.contains("Id=") || result.contains("ID=") {
+            for caps in GENERIC_ID_REGEX.captures_iter(&result) {
+                let value = &caps[2];
+                if value.bytes().any(|b| b.is_ascii_alphabetic()) {
+                    tokens.push(Token::Uuid(value.to_string()));
+                }
+            }
+            result = GENERIC_ID_REGEX
+                .replace_all(&result, |caps: &regex::Captures| {
+                    // a purely numeric id (`auid=4294967295`) is a number
+                    if caps[2].bytes().any(|b| b.is_ascii_alphabetic()) {
+                        format!("{}=<UUID>", &caps[1])
+                    } else {
+                        caps[0].to_string()
+                    }
+                })
+                .to_string();
+        }
+
         (result, tokens)
     }
 
@@ -107,6 +134,7 @@ impl UuidDetector {
     fn has_uuid_indicators(text: &str) -> bool {
         // Ultra-fast check for UUID/ID indicators
         text.contains('-') || // Standard UUIDs have hyphens
+        text.contains("id=") || text.contains("Id=") || text.contains("ID=") ||
         text.contains("req") || text.contains("request") ||
         text.contains("trace") || text.contains("session") ||
         (text.len() > 20 && text.chars().any(|c| c.is_ascii_hexdigit())) // Potential hex string
@@ -322,5 +350,19 @@ mod tests {
             r.starts_with("saddr=02000050A9FEA9FE0000000000000000"),
             "{r}"
         );
+    }
+
+    /// An id field's value is an id whatever its charset; a numeric one is
+    /// a number and stays for the number detector.
+    #[test]
+    fn id_field_with_letters_is_an_id_whatever_its_charset() {
+        let (r, t) = UuidDetector::detect_and_replace(
+            "container_id=def456ghi789 trace_id=5af93g46a2b7c8d9 auid=4294967295 node_id=n7",
+        );
+        assert_eq!(
+            r,
+            "container_id=<UUID> trace_id=<UUID> auid=4294967295 node_id=n7"
+        );
+        assert_eq!(t.len(), 2);
     }
 }

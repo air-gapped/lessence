@@ -398,7 +398,7 @@ type=CRED_DISP msg=audit(1481077107.301:433): pid=1310 uid=0 auid=1000 ses=1 sub
 ##FROM examples/linux_auditd.log
 type=USYS_CONFIG msg=audit(1481076993.000:402): pid=1232 uid=0 auid=4294967295 ses=4294967295 msg='changing system time exe="/usr/sbin/hwclock" hostname=? addr=? terminal=? res=success'
 
-##TODO study-auditd-record-id-is-one-token groups=1
+##CASE lessence-k2b groups=1
 ##WHY audit(epoch.ms:seq) is one record id; the seq must not keep 324 boot lines apart
 ##FROM examples/linux_auditd.log — 306 groups from 324 NETFILTER_CFG lines (root cause 5)
 type=NETFILTER_CFG msg=audit(1481076985.580:66): table=mangle family=2 entries=6
@@ -421,6 +421,13 @@ type=NETFILTER_CFG msg=audit(1481076985.583:68): table=mangle family=2 entries=6
 2025-09-14 09:09:14,580 - bootstrapping - INFO - Configuring patroni
 2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring crontab
 2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring wal-e
+
+##CASE lessence-k2b template_present=container_id=<UUID>
+##WHY an id field's value is an id whatever its charset; a non-hex value used to stay literal and split the group (k2b item 6)
+##FROM synthetic container-runtime shape
+2025-01-20 10:15:30 INFO container started container_id=def456ghi789 image=web:1.4
+2025-01-20 10:15:31 INFO container started container_id=abc123jkl456 image=web:1.4
+2025-01-20 10:15:32 INFO container started container_id=zzz999mno000 image=web:1.4
 
 ##TODO study-small-int-in-prose-folds groups=1
 ##WHY a trailing small integer folds the same way whatever its value (root cause 5);

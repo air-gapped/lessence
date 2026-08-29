@@ -308,10 +308,37 @@ impl UnifiedTimestampDetector {
         !(hex_pair_before || hex_pair_after)
     }
 
+    /// A run of exactly ten digits starting with 1, standing alone and
+    /// followed by a fractional part: `1481076984.827`. A bare ten-digit
+    /// integer stays out — it is far more often a size or an id (see the
+    /// module docs) — but with milliseconds attached it is an epoch.
+    fn has_epoch_run(text: &str) -> bool {
+        let b = text.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'1' && (i == 0 || !b[i - 1].is_ascii_digit()) {
+                let mut j = i;
+                while j < b.len() && b[j].is_ascii_digit() {
+                    j += 1;
+                }
+                if j - i == 10 && j + 1 < b.len() && b[j] == b'.' && b[j + 1].is_ascii_digit() {
+                    return true;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        false
+    }
+
     /// Fast pre-filter for timestamp indicators
     fn has_timestamp_indicators(text: &str) -> bool {
-        // `@1758304800` carries no colon at all.
+        // `@1758304800` carries no colon at all, and neither does a bare
+        // epoch: `audit(1481076984.827:17)` was `<TIMESTAMP>` on lines
+        // that happened to contain a `T` and `<DECIMAL>` on the rest.
         text.contains("@1")
+            || Self::has_epoch_run(text)
             || text.contains(':')
                 && (text.contains("20") || // Years 20xx
             text.contains("19") || // Years 19xx
@@ -931,5 +958,18 @@ mod tests {
         assert_eq!(r, "[ns] <TIMESTAMP>: x");
         let (r, _) = UnifiedTimestampDetector::detect_and_replace("@1758304800.311 metric");
         assert_eq!(r, "<TIMESTAMP> metric");
+    }
+
+    /// A bare epoch is seen without a colon or a date hint on the line.
+    #[test]
+    fn a_bare_epoch_needs_no_hint() {
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("msg=audit(1481076984.827:17) cwd=/");
+        assert_eq!(r, "msg=audit(<TIMESTAMP>:17) cwd=/");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("File size 1727676930 bytes");
+        assert_eq!(
+            r, "File size 1727676930 bytes",
+            "a bare ten-digit integer is a size"
+        );
     }
 }

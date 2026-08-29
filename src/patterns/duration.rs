@@ -30,6 +30,11 @@ static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3,}\b
 // folding all of them pushed records for different syscalls over the
 // similarity threshold and merged them (linux_auditd 649 -> 344 output lines).
 // The JSON form carries the whole measured win without that.
+// auditd's record id: `msg=audit(<epoch>:<seq>)`. The sequence counter is
+// a counter whatever its digit count; kept apart 324 boot lines in one corpus.
+static AUDIT_SEQ_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\baudit\([^():\s]+:)(\d+)\)").unwrap());
+
 static FIELD_INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"("[A-Za-z_][A-Za-z0-9_.-]*"\s*:\s*)(-?\d+)\b"#)
         .expect("Failed to compile field integer regex")
@@ -177,6 +182,13 @@ impl DurationDetector {
             let value = caps.get(2).unwrap().as_str();
             Some((Token::Number(value.to_string()), format!("{key}<NUMBER>")))
         });
+        if result.contains("audit(") {
+            super::fold_matches(&mut result, &mut tokens, &AUDIT_SEQ_REGEX, |caps| {
+                let prefix = caps.get(1).unwrap().as_str();
+                let seq = caps.get(2).unwrap().as_str();
+                Some((Token::Number(seq.to_string()), format!("{prefix}<NUMBER>)")))
+            });
+        }
 
         (result, tokens)
     }
@@ -482,6 +494,20 @@ mod tests {
         assert_eq!(
             fold("duration=272.602256ms and duration=2.9s and duration=15"),
             "<DURATION_FIELD> and <DURATION_FIELD> and <DURATION_FIELD>"
+        );
+    }
+
+    /// The sequence counter in an audit record id is a counter whatever
+    /// its digit count.
+    #[test]
+    fn audit_sequence_counter_folds() {
+        assert_eq!(
+            fold("type=NETFILTER_CFG msg=audit(<TIMESTAMP>:17): table=filter"),
+            "type=NETFILTER_CFG msg=audit(<TIMESTAMP>:<NUMBER>): table=filter"
+        );
+        assert_eq!(
+            fold("msg=audit(1481076984.827:1734): x"),
+            "msg=audit(<DECIMAL>:<NUMBER>): x"
         );
     }
 }
