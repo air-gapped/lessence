@@ -5060,7 +5060,7 @@ fn two_small_integers_are_one_shape_and_stay_on_the_line() {
     assert_eq!(f.buffer.len(), 1);
     assert_eq!(
         f.buffer[0].template(),
-        "<TIMESTAMP> gasida chrony-gps-toff[<PID>]: INFO GPS mode <VARIES> -> <VARIES>"
+        "<TIMESTAMP> <HOST> chrony-gps-toff[<PID>]: INFO GPS mode <VARIES> -> <VARIES>"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].counts, Some(vec![3, 2, 1]));

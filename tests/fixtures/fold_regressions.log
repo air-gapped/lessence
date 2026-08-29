@@ -965,3 +965,24 @@ PT03M56S scheduled backup running for job-alpha
 processing record id=1754057127 for batch queue-3
 processing record id=1754748344 for batch queue-3
 processing record id=1755216000 for batch queue-3
+
+##CASE lessence-a8t groups=1
+##WHY a positional syslog host folds across devices reporting the same event, instead of holding the group apart three ways by its literal name
+##FROM examples/usw_messages.log, examples/uap_messages.log study, syslog-host anchor
+Aug 29 08:40:15 usw-core-1 dnsmasq[123]: query[A] example.lan
+Aug 29 08:40:16 usw-core-2 dnsmasq[456]: query[A] example.lan
+Aug 29 08:40:17 ap-hall-3 dnsmasq[789]: query[A] example.lan
+
+##CASE lessence-a8t template_absent=<HOST>
+##WHY an all-caps severity word sitting in the host slot is not read as a host
+##FROM syslog-host anchor, negative regression
+Aug 29 08:40:15 INFO main: starting up
+Aug 29 08:40:16 INFO main: starting up
+Aug 29 08:40:17 INFO main: starting up
+
+##CASE lessence-a8t template_absent=<HOST>
+##WHY a second word with no syslog tag following it is not read as a host
+##FROM syslog-host anchor, negative regression
+Aug 29 08:40:15 gw-core rebooted after power loss
+Aug 29 08:40:16 gw-core rebooted after power loss
+Aug 29 08:40:17 gw-core rebooted after power loss

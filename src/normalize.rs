@@ -102,6 +102,16 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         defers_to_kubernetes: None,
         run: |_, s| ProcessDetector::detect_and_replace(s),
     },
+    // SYSLOG HOST: the positional field between a normalized timestamp and
+    // a program tag. After NETWORK (an already-tokenised <FQDN>/<IP> there
+    // is left alone) and PROCESS (so `prog[123]:` already reads
+    // `prog[<PID>]:`, which the tag alternative matches).
+    DetectorEntry {
+        enabled: |c| c.normalize_fqdns,
+        prefilter: Some(|_, s| s.starts_with("<TIMESTAMP> ")),
+        defers_to_kubernetes: None,
+        run: |_, s| replace_syslog_host(s),
+    },
     // KUBERNETES: before the generic bracket/module/structured detectors,
     // which additionally defer to it on kubernetes-shaped lines (their
     // `defers_to_kubernetes` predicates below).
@@ -318,6 +328,67 @@ static KUBECTL_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
 static AUDIT_RECORD_TYPE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^type=([A-Z_]+) msg=audit\(").expect("audit type anchor pattern must compile")
 });
+
+/// A syslog/journal host: the word between a line-leading normalized
+/// timestamp and the program tag — `<TIMESTAMP> gw-core dnsmasq[<PID>]:`,
+/// `<TIMESTAMP> usw-lab-2 daemon.err syslogd:`. The tag is `word:`
+/// (covers `word[<PID>]:` too, since a trailing `]:` is still non-space) or
+/// a `facility.level` pair.
+static SYSLOG_HOST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^<TIMESTAMP> (\S+) (?:\S+:|[a-z]+\.[a-z]+\b)")
+        .expect("syslog host anchor pattern must compile")
+});
+
+/// Is `word` itself shaped like the `facility.level` tag alternative
+/// (`daemon.info`, `kern.warn`)? Some formats open straight on
+/// `<TIMESTAMP> facility.level tag:` with no host field at all; without this
+/// check the facility would be captured as `<HOST>` and the tag mistaken for
+/// its own trailing `word:`.
+fn is_facility_level_shape(word: &str) -> bool {
+    match word.split_once('.') {
+        Some((facility, level)) => {
+            !facility.is_empty()
+                && !level.is_empty()
+                && !level.contains('.')
+                && facility.bytes().all(|b| b.is_ascii_lowercase())
+                && level.bytes().all(|b| b.is_ascii_lowercase())
+        }
+        None => false,
+    }
+}
+
+/// Is `word` a plausible positional syslog host: has a letter, is not an
+/// all-caps severity token (`INFO`, `WARN`) sitting in the same slot, is not
+/// itself a `facility.level` tag, carries no `=`/`:` of its own, and is not
+/// already a token (`<FQDN>`, `<IP>`)?
+fn is_host_candidate(word: &str) -> bool {
+    if word.starts_with('<') && word.ends_with('>') {
+        return false;
+    }
+    if word.contains('=') || word.contains(':') {
+        return false;
+    }
+    if is_facility_level_shape(word) {
+        return false;
+    }
+    word.chars().any(|c| c.is_ascii_lowercase())
+}
+
+/// Replace a positional syslog host with `<HOST>`. See [`SYSLOG_HOST`].
+fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
+    if let Some(caps) = SYSLOG_HOST.captures(s) {
+        let m = caps.get(1).expect("group 1 always present on a match");
+        let word = m.as_str();
+        if is_host_candidate(word) {
+            let mut result = String::with_capacity(s.len());
+            result.push_str(&s[..m.start()]);
+            result.push_str("<HOST>");
+            result.push_str(&s[m.end()..]);
+            return (result, vec![Token::Host(word.to_string())]);
+        }
+    }
+    (s.to_string(), Vec::new())
+}
 
 /// Hash the fields that must match exactly for two lines to fold together.
 ///
@@ -2651,5 +2722,71 @@ mod program_anchor_2026_08_29 {
             "{}",
             runc.normalized
         );
+    }
+}
+
+#[cfg(test)]
+mod syslog_host_tests_2026_08_29 {
+    use super::*;
+
+    fn normalize(line: &str) -> LogLine {
+        Normalizer::new(Config::default())
+            .normalize_line(line.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_positional_host_folds_across_devices_and_tag_shapes() {
+        let bracket_pid = normalize("Aug 29 08:40:15 usw-core-1 dnsmasq[123]: query[A] x");
+        let bare_tag = normalize("Aug 29 08:40:15 usw-core-2 kernel: link up");
+        let facility_level = normalize("Aug 29 08:40:15 ap-hall-3 daemon.err syslogd: restart");
+        assert_eq!(
+            bracket_pid.normalized,
+            "<TIMESTAMP> <HOST> dnsmasq[<PID>]: query[A] x"
+        );
+        assert_eq!(bare_tag.normalized, "<TIMESTAMP> <HOST> kernel: link up");
+        assert_eq!(
+            facility_level.normalized,
+            "<TIMESTAMP> <HOST> daemon.err syslogd: restart"
+        );
+        assert!(
+            bracket_pid
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::Host(h) if h == "usw-core-1"))
+        );
+    }
+
+    #[test]
+    fn rfc5424_timestamp_hosts_fold_too() {
+        let line = normalize("2026-08-29T08:40:15Z node7 sshd[1]: accepted");
+        assert!(
+            line.normalized
+                .starts_with("<TIMESTAMP> <HOST> sshd[<PID>]:")
+        );
+    }
+
+    #[test]
+    fn a_severity_word_in_the_host_slot_is_left_alone() {
+        let line = normalize("Aug 29 08:40:15 INFO main: starting up");
+        assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
+        assert_eq!(line.normalized, "<TIMESTAMP> INFO main: starting up");
+    }
+
+    #[test]
+    fn a_second_word_with_no_tag_is_left_alone() {
+        let line = normalize("Aug 29 08:40:15 gw-core rebooted after power loss");
+        assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
+    }
+
+    #[test]
+    fn an_already_tokenised_host_is_left_as_is() {
+        let line = normalize("Aug 29 08:40:15 gw-core.example.com kernel: link up");
+        assert!(
+            !line.normalized.contains("<HOST>"),
+            "an FQDN host stays <FQDN>: {}",
+            line.normalized
+        );
+        assert!(line.normalized.contains("<FQDN>"), "{}", line.normalized);
     }
 }

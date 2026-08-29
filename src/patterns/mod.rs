@@ -25,6 +25,9 @@ pub enum Token {
     /// A hardware address, six hex pairs: one atom, whatever its bytes look like.
     Mac(String),
     Fqdn(String),
+    /// A syslog/journal positional host — the field between a normalized
+    /// timestamp and the program tag.
+    Host(String),
     Port(u16),
     Hash(HashType, String),
     Uuid(String),
@@ -153,6 +156,7 @@ impl Token {
             Token::IPv6(_) => facts("IPV6", "IP", StatsBucket::Ips, true),
             Token::Mac(_) => facts("MAC", "mac", StatsBucket::Macs, true),
             Token::Fqdn(_) => facts("FQDN", "FQDN", StatsBucket::Fqdns, true),
+            Token::Host(_) => facts("HOST", "host", StatsBucket::Fqdns, true),
             Token::Port(_) => facts("PORT", "port", StatsBucket::Ports, false),
             Token::Hash(_, _) => facts("HASH", "hash", StatsBucket::Hashes, true),
             Token::Uuid(_) => facts("UUID", "UUID", StatsBucket::Uuids, true),
@@ -224,6 +228,7 @@ impl Token {
             | Token::IPv6(s)
             | Token::Mac(s)
             | Token::Fqdn(s)
+            | Token::Host(s)
             | Token::Uuid(s)
             | Token::Path(s)
             | Token::Json(s)

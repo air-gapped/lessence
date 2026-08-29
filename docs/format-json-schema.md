@@ -140,7 +140,7 @@ beside `Connection … lost.` — is not folded into it at all: one differing
 word is a name or a value, two are another event.
 
 **Sample-worthy** (identity types — samples are useful): `UUID`,
-`IPV4`, `IPV6`, `MAC`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
+`IPV4`, `IPV6`, `MAC`, `HOST`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
 `K8S_PLUGIN`, `K8S_POD`, `QUOTED_STRING`, `NAME`, `HTTP_STATUS`,
 `HTTP_STATUS_CLASS`, `BRACKET_CONTEXT`, `JSON`.
 
