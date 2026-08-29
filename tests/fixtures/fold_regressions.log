@@ -634,3 +634,18 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 [   11.545591] GMAC2(ffffff800a3028c0) Invalid MAC@ - using 86:5a:a5:af:c8:7e
 [   11.536112] GMAC2(ffffff800a3068c0) Invalid MAC@ - using 9a:53:6f:82:32:96
 [   11.659932] GMAC1(ffffff800a3068c0) Invalid MAC@ - using 86:33:d3:49:95:52
+
+##CASE lessence-t8q groups=4
+##WHY a JSON msg string is a sentence: its words are the event identity; 13,590 lines of four tasks used to be one "msg":<KEY_VALUE> group
+##FROM the gateway analytic_report log (scrubbed)
+{"level":"info","msg":"[ workqueue ] [call] run task[conntrackMonitor] with args=&{Threshold:80 rescueQ:0x4000104f90 rqTask:0x400011a980}","time":"2026-08-11T00:31:19+02:00"}
+{"level":"info","msg":"[ workqueue ] [call] run task[memoryMonitor] with args=&{Threshold:90}","time":"2026-08-11T00:31:25+02:00"}
+{"level":"info","msg":"[ workqueue ] [call] run task[varLogMonitor] with args=&{threshold:75 rescueQ:0x4000104f90 rqTask:0x400011a8c0}","time":"2026-08-11T00:36:10+02:00"}
+{"level":"info","msg":"[ workqueue ] [call] run task[highFdMonitor] with args=&{threshold:512}","time":"2026-08-22T01:46:22+02:00"}
+
+##CASE lessence-t8q template_present="msg":"Loading TLS configuration
+##WHY the same rule on a plain JSON logger line: the sentence stays, the one-word level folds
+##FROM the k8s_json corpus shape
+{"level":"info","msg":"Loading TLS configuration","time":"2026-08-27T23:17:24Z"}
+{"level":"info","msg":"Loading TLS configuration","time":"2026-08-27T23:18:24Z"}
+{"level":"info","msg":"Loading TLS configuration","time":"2026-08-27T23:19:24Z"}

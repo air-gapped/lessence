@@ -70,6 +70,16 @@ impl KeyValueDetector {
                 .get(2)
                 .or_else(|| caps.get(3))
                 .map_or("null", |m| m.as_str());
+            // A quoted value with whitespace in it is a sentence: the
+            // event's own words. It keeps them, as an unquoted sentence
+            // would (lessence-7lj); 13,590 gateway lines of five different
+            // tasks were one `"msg":<KEY_VALUE>` group (lessence-t8q).
+            if caps
+                .get(2)
+                .is_some_and(|m| m.as_str().contains(char::is_whitespace))
+            {
+                return None;
+            }
             let (token, _) = Self::pair(key, value);
             // Keep the source's own spacing after the colon — the template
             // must be a template OF the input, not a reformatting of it.
@@ -338,6 +348,19 @@ mod tests {
             "attempt_count is on the allowlist and must fold: {result}"
         );
         assert!(!tokens.is_empty());
+    }
+
+    /// A JSON string value that is a sentence keeps its words; a one-word
+    /// value and a number still fold.
+    #[test]
+    fn json_sentence_value_keeps_its_words() {
+        let (r, _) = KeyValueDetector::detect_and_replace(
+            r#"{"level":"info","msg":"[ workqueue ] [call] run task[memoryMonitor] with args=&{Threshold:90}","n":5}"#,
+        );
+        assert_eq!(
+            r,
+            r#"{"level":<KEY_VALUE>,"msg":"[ workqueue ] [call] run task[memoryMonitor] with args=&{Threshold:90}","n":<KEY_VALUE>}"#
+        );
     }
 
     #[test]

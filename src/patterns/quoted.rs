@@ -175,8 +175,16 @@ impl QuotedStringDetector {
         let (new_normalized, _) = NameDetector::detect_and_replace(&normalized_content);
         normalized_content = new_normalized;
 
-        // Check for escaped JSON FIRST (highest priority)
-        if quoted_content.contains('\\')
+        // Escaped JSON FIRST (highest priority): a blob, not a sentence. A
+        // sentence that merely contains an escape (`args=\u0026{…}`, or a
+        // `[ tag ]` at its start) keeps its words like any other sentence
+        // (lessence-t8q); a blob is content without whitespace, or content
+        // that opens with `{`/`[` and carries escaped quotes of its own.
+        let blob = !quoted_content.contains(char::is_whitespace)
+            || (quoted_content.trim_start().starts_with(['{', '['])
+                && quoted_content.contains("\\\""));
+        if blob
+            && quoted_content.contains('\\')
             && (quoted_content.contains(':')
                 || quoted_content.contains('{')
                 || quoted_content.contains('['))
@@ -389,11 +397,11 @@ mod tests {
                 r#"error "http://192.168.1.1:8080/api/v1 unreachable""#,
                 r#"error "<PATH> unreachable""#,
             ),
-            // Windows paths with backslashes trigger the escaped JSON detection
-            // (content has both '\' and ':' which matches the escaped JSON heuristic)
+            // A sentence with a Windows path in it is a sentence: the path
+            // folds, the words stay (it used to read as escaped JSON)
             (
                 r#"error "path C:\Windows\System32\config invalid""#,
-                r"error <ESCAPED_JSON>",
+                r#"error "path <PATH> invalid""#,
             ),
         ];
 
@@ -569,6 +577,18 @@ mod tests {
             "claimed content must keep its normalized form: {normalized}"
         );
         assert!(normalized.contains("<DECIMAL>"), "{normalized}");
+    }
+
+    /// A sentence that contains an escape sequence is still a sentence.
+    #[test]
+    fn a_sentence_with_an_escape_keeps_its_words() {
+        let (r, _) = QuotedStringDetector::detect_and_replace(
+            r#"x "[ workqueue ] [call] run task[memoryMonitor] with args=\u0026{Threshold:90}" y"#,
+        );
+        assert!(!r.contains("<ESCAPED_JSON>"), "{r}");
+        assert!(r.contains("run task[memoryMonitor] with args="), "{r}");
+        let (r, _) = QuotedStringDetector::detect_and_replace(r#"x "{\"a\": {\"b\": 1}}" y"#);
+        assert_eq!(r, "x <ESCAPED_JSON> y");
     }
 
     #[test]
