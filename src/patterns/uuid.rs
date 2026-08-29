@@ -2,11 +2,18 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// Standard UUID format: 8-4-4-4-12 hex digits
+// Standard UUID format: 8-4-4-4-12 hex digits. No leading `\b`: `_` is a
+// word character, and `user_session_550e8400-…` carries a UUID. The start
+// boundary is checked by hand instead.
 static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
+    Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
         .unwrap()
 });
+
+// A ULID: 26 characters of Crockford base32 (no I, L, O or U), the first
+// one 0–7, in the canonical upper case.
+static ULID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b").unwrap());
 
 // Request ID patterns. The prose word "request" must never match on its own:
 // require an explicit `id` suffix, a `=`/`:` separator, or the `req-`/`req_`
@@ -45,15 +52,32 @@ impl UuidDetector {
             return (text.to_string(), Vec::new());
         }
 
-        let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Standard UUIDs first
-        for cap in UUID_REGEX.find_iter(text) {
-            let uuid_str = cap.as_str();
-            tokens.push(Token::Uuid(uuid_str.to_string()));
+        // Standard UUIDs first. A UUID glued to a longer alphanumeric run is
+        // a slice of something else; one after `_` is a UUID.
+        let mut result = String::with_capacity(text.len());
+        let mut last = 0;
+        for m in UUID_REGEX.find_iter(text) {
+            if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            tokens.push(Token::Uuid(m.as_str().to_string()));
+            result.push_str(&text[last..m.start()]);
+            result.push_str("<UUID>");
+            last = m.end();
         }
-        result = UUID_REGEX.replace_all(&result, "<UUID>").to_string();
+        result.push_str(&text[last..]);
+
+        // A ULID is an id too; 26 digits alone would be a number.
+        if result.len() >= 26 {
+            super::fold_matches(&mut result, &mut tokens, &ULID_REGEX, |caps| {
+                let id = &caps[0];
+                id.bytes()
+                    .any(|b| b.is_ascii_alphabetic())
+                    .then(|| (Token::Uuid(id.to_string()), "<ULID>".to_string()))
+            });
+        }
 
         // Request IDs
         for cap in REQUEST_ID_REGEX.captures_iter(&result) {
@@ -350,6 +374,46 @@ mod tests {
             r.starts_with("saddr=02000050A9FEA9FE0000000000000000"),
             "{r}"
         );
+    }
+
+    /// `_` is a word character, so `\b` used to refuse the UUID after it; a
+    /// UUID glued to a longer hex run is still refused.
+    #[test]
+    fn uuid_after_an_underscore_is_a_uuid() {
+        let (r, t) = UuidDetector::detect_and_replace(
+            "key: user_session_550e8400-e29b-41d4-a716-446655440000 and x550e8400-e29b-41d4-a716-446655440000",
+        );
+        assert_eq!(
+            r,
+            "key: user_session_<UUID> and x550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(t.len(), 1);
+    }
+
+    /// 26 characters of Crockford base32 are a ULID wherever they stand;
+    /// 26 digits are a number.
+    #[test]
+    fn ulid_is_an_id() {
+        let (r, t) = UuidDetector::detect_and_replace(
+            r#"ulid=01K5H2M4N6P8Q0R2S4T6V8W0X2 sources="[01K5H2M4N6P8Q0R2S4T6V8W0X1 01K5H2M4N6P8Q0R2S4T6V8W0X0]" n=01234567890123456789012345"#,
+        );
+        assert_eq!(
+            r,
+            r#"ulid=<ULID> sources="[<ULID> <ULID>]" n=01234567890123456789012345"#
+        );
+        assert_eq!(t.len(), 3);
+        // lower case, a letter outside the alphabet, 27 chars, a first
+        // character past 7: none of them a ULID
+        for s in [
+            "01k5h2m4n6p8q0r2s4t6v8w0x2",
+            "01K5H2M4N6P8Q0R2S4T6V8W0XI",
+            "01K5H2M4N6P8Q0R2S4T6V8W0X22",
+            "81K5H2M4N6P8Q0R2S4T6V8W0X2",
+        ] {
+            let line = format!("id {s} end");
+            let (r, _) = UuidDetector::detect_and_replace(&line);
+            assert_eq!(r, line);
+        }
     }
 
     /// An id field's value is an id whatever its charset; a numeric one is

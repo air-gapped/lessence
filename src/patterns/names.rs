@@ -69,8 +69,16 @@ impl NameDetector {
                 let full_name = caps.get(0).unwrap().as_str();
                 let prev = prefix.rsplit('-').next().unwrap_or("");
 
-                // Check if this looks like a variable suffix (hash-like or random)
-                if Self::is_variable_suffix(prev, suffix) {
+                // A variable suffix: hash-like, or a rand chunk after another
+                // variable segment, or a rand chunk on a family whose names
+                // are always generated (`kube-api-access-jwjsk`).
+                let generated = Self::is_variable_suffix(prev, suffix)
+                    || (suffix.len() == 5
+                        && Self::is_k8s_rand(suffix)
+                        && COMMON_PREFIXES
+                            .iter()
+                            .any(|p| Self::ends_with_segment(prefix, p)));
+                if generated {
                     // Check if the prefix is a known common pattern
                     if Self::is_common_prefix(prefix) {
                         tokens.push(Token::Name(full_name.to_string()));
@@ -134,6 +142,13 @@ impl NameDetector {
 
     fn is_k8s_rand(s: &str) -> bool {
         s.bytes().all(|b| K8S_RAND_ALPHABET.contains(&b))
+    }
+
+    /// `prefix` is `family` or ends with `-family`.
+    fn ends_with_segment(prefix: &str, family: &str) -> bool {
+        prefix
+            .strip_suffix(family)
+            .is_some_and(|head| head.is_empty() || head.ends_with('-'))
     }
 
     fn is_common_prefix(prefix: &str) -> bool {
@@ -215,6 +230,27 @@ mod tests {
         assert_eq!(t.len(), 2);
         let (r, _) = NameDetector::detect_and_replace("mail root@example.com sent");
         assert_eq!(r, "mail root@example.com sent");
+    }
+
+    /// A family whose names are always generated takes an all-letter rand
+    /// suffix; a family that is not stays literal.
+    #[test]
+    fn generated_family_takes_an_all_letter_suffix() {
+        let (r, _) = NameDetector::detect_and_replace(
+            "volume kube-api-access-jwjsk in projected/<UUID>-kube-api-access-hcwqj pod cilium-envoy-vmvkk not osd-prepare-nztxp",
+        );
+        assert_eq!(
+            r,
+            "volume kube-api-access-<SUFFIX> in projected/<UUID>-kube-api-access-<SUFFIX> pod cilium-envoy-<SUFFIX> not osd-prepare-nztxp"
+        );
+        assert!(!NameDetector::ends_with_segment(
+            "mykube-api-access",
+            "kube-api-access"
+        ));
+        assert!(NameDetector::ends_with_segment(
+            "x-kube-api-access",
+            "kube-api-access"
+        ));
     }
 
     /// An all-letter 5-char chunk with nothing variable before it is a word

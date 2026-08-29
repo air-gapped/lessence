@@ -541,3 +541,63 @@ type=SOCKADDR msg=audit(1481077254.276:518): saddr=02000050A9FEA9FE0000000000000
 ##WHY the template must be a template of the input; JSON_KV_REGEX inserts a space (root cause 6)
 ##FROM examples/k8s_json_sample.log
 {"level":"info","msg":"Alloc=503706 TotalAlloc=2674428701 Sys=1185679 NumGC=12520 Goroutines=1606","time":"2026-08-27T23:17:24Z"}
+
+##CASE lessence-27p template_present=ulid=<ULID>
+##WHY a 26-character Crockford base32 id is a ULID; no detector knew the shape
+##FROM the prometheus corpus
+ts=2025-09-19T05:01:06.843Z caller=compact.go:519 level=info component=tsdb msg="compact blocks" count=3 ulid=01K5H2M4N6P8Q0R2S4T6V8W0X2 sources="[01K5H2M4N6P8Q0R2S4T6V8W0X1 01K5H2M4N6P8Q0R2S4T6V8W0X0]" duration=1.2s
+
+##CASE lessence-27p template_present="correlation_id":"<ULID>"
+##WHY a ULID in a JSON string is an id
+##FROM the k8s_json corpus
+{"component":"gitaly","correlation_id":"01M12QA7TN6X7JZWGZEPR5XY2Z","grpc.code":"OK","level":"info","time":"2025-09-20T08:10:11.221Z"}
+
+##CASE lessence-27p template_present=user_session_<UUID>
+##WHY `_` is a word character to \b, so the UUID after it was cut into hex and a number
+##FROM the realistic_repetitive corpus
+2025-01-20 10:15:17.901 [pid=12361] Cache miss for key: user_session_7c9e6679-7425-40de-944b-e07fc1f90ae7
+
+##CASE lessence-27p template_absent=<FQDN>
+##WHY kubernetes.io/cpu-cpuid.X87 is a label key: a dotted name glued to `/` is part of a longer name, not a host
+##FROM the cilium corpus
+time="2025-08-30T14:37:13.629738286Z" level=info msg="Resolving identity labels (blocking)" endpointID=1680 identity=1 identityLabels="k8s:feature.node.kubernetes.io/cpu-cpuid.X87=true,k8s:topology.kubernetes.io/zone=a"
+
+##CASE lessence-27p template_present=<PATH>:45: pulling docker.io/library/nginx:
+##WHY internal/pkg/store/cache.go is a relative path, one token (it used to be cut into `internal<PATH>`); docker.io/library/nginx starts with a DNS name and is an image, not a path
+##FROM any Go application log
+2025/01/20 10:15:17 internal/pkg/store/cache.go:45: pulling docker.io/library/nginx:1.25
+
+##CASE lessence-27p template_absent=<FQDN>
+##WHY kubernetes.io inside a systemd mount unit name is part of the unit name
+##FROM the journalctl corpus
+Sep 14 06:58:42 oryx systemd[1]: var-lib-kubelet-pods-3f1c9a2e\x2d5b7d\x2d4e8f\x2d9a0b\x2d1c2d3e4f5a6b-volumes-kubernetes.io\x7eprojected-kube\x2dapi\x2daccess.mount: Deactivated successfully.
+
+##CASE lessence-27p template_present=GroupVersion <FQDN> v1
+##WHY a dotted name standing alone is a DNS-shaped name whatever its role; an API group folds like a host
+##FROM the apiserver corpus
+I0908 20:33:43.566190       1 handler.go:286] Adding GroupVersion apiextensions.k8s.io v1 to ResourceManager
+
+##CASE lessence-27p template_present=hostname=<FQDN>
+##WHY four octets inside a dotted hostname are its labels, not an address; the whole name is the host
+##FROM the linux_auditd corpus
+type=USER_ACCT msg=audit(1481077043.052:410): pid=1298 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:accounting grantors=pam_unix,pam_localuser acct="some_user" exe="/usr/sbin/sshd" hostname=pool-198.51.100.77.washdc.example.net addr=198.51.100.77 terminal=ssh res=success'
+
+##CASE lessence-27p template_absent=<IP>.
+##WHY a reverse-lookup name is one hostname
+##FROM any resolver log
+2025-01-20 10:15:17 PTR 77.100.51.198.in-addr.arpa resolved for 198.51.100.77
+
+##CASE lessence-27p template_present=resource=<PATH>
+##WHY netpol/argocd/argocd-redis is a relative path; it used to be cut into a word and a path
+##FROM the cilium corpus
+time=2025-08-30T14:36:51Z level=info msg="Upserted policy to repository" module=agent.controlplane.policy resource=netpol/argocd/argocd-redis policyRevision=5 deletedRules=0 identity=[]
+
+##CASE lessence-27p template_present=<GROUP_VERSION>, Kind=
+##WHY management.cattle.io/v3 is a group/version, one name; it used to fold only as <FQDN><PATH>
+##FROM the rancher corpus
+2025/09/14 07:25:54 [INFO] Watching metadata for management.cattle.io/v3, Kind=ClusterCatalog
+
+##CASE lessence-27p template_absent=~projected
+##WHY `~` is a path character; the path used to be cut at kubernetes.io~projected
+##FROM the journalctl corpus
+Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7d\x2d4e8f\x2d9a0b\x2d1c2d3e4f5a6b-volumes-kubernetes.io\x7eprojected-ceph\x2dcsi\x2dconfigs.mount - /var/lib/kubelet/pods/3f1c9a2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b/volumes/kubernetes.io~projected/ceph-csi-configs...

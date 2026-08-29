@@ -454,15 +454,17 @@ pub(crate) fn fold_matches(
     regex: &regex::Regex,
     recognise: impl Fn(&regex::Captures) -> Option<(Token, String)>,
 ) {
-    *text = regex
-        .replace_all(text, |caps: &regex::Captures| match recognise(caps) {
-            Some((token, replacement)) => {
-                tokens.push(token);
-                replacement
-            }
-            None => caps.get(0).unwrap().as_str().to_string(),
-        })
-        .to_string();
+    let folded = regex.replace_all(text, |caps: &regex::Captures| match recognise(caps) {
+        Some((token, replacement)) => {
+            tokens.push(token);
+            replacement
+        }
+        None => caps.get(0).unwrap().as_str().to_string(),
+    });
+    // a line nothing matched in is left as it is, uncopied
+    if let std::borrow::Cow::Owned(s) = folded {
+        *text = s;
+    }
 }
 
 pub(crate) fn has_kubernetes_indicators(text: &str) -> bool {

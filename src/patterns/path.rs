@@ -3,10 +3,20 @@ use std::sync::LazyLock;
 
 use super::Token;
 
-// File system paths (Unix-style) - simplified without character class issues
+// File system paths (Unix-style) - simplified without character class issues.
+// `~` is a path character: `/volumes/kubernetes.io~projected/token`.
 static FILE_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(/[a-zA-Z0-9_.\-/]+(?:\.[a-zA-Z0-9]+)?(?:/[a-zA-Z0-9_.\-]*)*/?)")
+    Regex::new(r"(/[a-zA-Z0-9_.\-~/]+(?:\.[a-zA-Z0-9]+)?(?:/[a-zA-Z0-9_.\-~]*)*/?)")
         .expect("Failed to compile file path regex")
+});
+
+// A relative path: a dot-free first segment, then more segments. Which of
+// these are paths is decided in the closure: `netpol/argocd/argocd-redis`
+// and `internal/pkg/x.go` are, `text/html` and `HTTP/1.1` are not, and
+// `docker.io/library/nginx` starts with a DNS name, not a directory.
+static RELATIVE_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b[a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_.\-~]+)+\b")
+        .expect("Failed to compile relative path regex")
 });
 
 // URL paths (without domain)
@@ -135,7 +145,7 @@ impl PathDetector {
             .replace_all(&result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
                 if Self::is_likely_file_path(path)
-                    && !Self::is_version_after_word(&result, &caps.get(0).unwrap())
+                    && !Self::is_glued_to_word(&result, &caps.get(0).unwrap())
                 {
                     tokens.push(Token::Path(path.to_string()));
                     "<PATH>".to_string()
@@ -144,6 +154,21 @@ impl PathDetector {
                 }
             })
             .to_string();
+
+        if result.contains('/') {
+            let folded = RELATIVE_PATH.replace_all(&result, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap();
+                if Self::is_relative_path(&result, &m) {
+                    tokens.push(Token::Path(m.as_str().to_string()));
+                    "<PATH>".to_string()
+                } else {
+                    m.as_str().to_string()
+                }
+            });
+            if let std::borrow::Cow::Owned(s) = folded {
+                result = s;
+            }
+        }
 
         // Replace Windows paths
         result = WINDOWS_PATH
@@ -159,7 +184,7 @@ impl PathDetector {
             .replace_all(&result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
                 if Self::is_likely_url_path(path)
-                    && !Self::is_version_after_word(&result, &caps.get(0).unwrap())
+                    && !Self::is_glued_to_word(&result, &caps.get(0).unwrap())
                 {
                     let normalized = Self::normalize_url_path(path);
                     tokens.push(Token::Path(path.to_string()));
@@ -199,17 +224,29 @@ impl PathDetector {
         has_extension || has_multiple_segments || has_common_dirs
     }
 
-    #[cfg_attr(test, mutants::skip)]
-    // Equivalent mutant: API patterns (/api/, /v1/, /static/) always imply has_multiple_segments, making || vs && indistinguishable
-    /// `HTTP/1.1`, `curl/7.68.0`, `Mozilla/5.0`, a Postgres LSN `6E/F9009520`:
-    /// a slash glued to a word and followed only by digits, dots and hex is a
-    /// version or an address, not a path.
-    fn is_version_after_word(haystack: &str, m: &regex::Match) -> bool {
-        let glued = m.start() > 0 && haystack.as_bytes()[m.start() - 1].is_ascii_alphanumeric();
-        glued
-            && m.as_str()
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b'/')
+    /// A slash glued to a word continues that word: `HTTP/1.1`, `curl/7.68.0`,
+    /// a Postgres LSN `6E/F9009520`, a label key `kubernetes.io/cpu-cpuid.X87`,
+    /// an image `docker.io/library/nginx`, a source file `internal/pkg/x.go`.
+    /// None of them is a path.
+    fn is_glued_to_word(haystack: &str, m: &regex::Match) -> bool {
+        m.start() > 0 && haystack.as_bytes()[m.start() - 1].is_ascii_alphanumeric()
+    }
+
+    /// A `word/…` run is a path when it has two or more segments after the
+    /// word or ends in a file with an extension — unless it continues a
+    /// dotted name (`docker.io/library/nginx`) or is a version (`HTTP/1.1`,
+    /// `curl/7.68.0`, `Mozilla/5.0`).
+    fn is_relative_path(haystack: &str, m: &regex::Match) -> bool {
+        let continues_a_name =
+            m.start() > 0 && matches!(haystack.as_bytes()[m.start() - 1], b'.' | b'/' | b'\\');
+        let path = m.as_str();
+        let rest = &path[path.find('/').unwrap_or(0)..];
+        let is_version = rest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b'/');
+        let file_like =
+            rest[1..].contains('/') || rest.rsplit('/').next().unwrap_or("").contains('.');
+        !continues_a_name && !is_version && file_like
     }
 
     fn is_likely_url_path(path: &str) -> bool {
@@ -641,23 +678,63 @@ mod tests {
         );
     }
 
-    /// A slash glued to a word and followed by a number is a version, not a
-    /// path; a bare `http://host` is still a URL.
+    /// A slash glued to a word continues the word — a version, a label key,
+    /// an image, a relative source file — and is never a path on its own. A
+    /// bare `http://host` is still a URL, and a path after a separator is
+    /// still a path.
     #[test]
-    fn a_version_after_a_word_is_not_a_path() {
+    fn a_slash_glued_to_a_word_is_not_a_path() {
         for (input, expected) in [
             ("HTTP/1.1 x", "HTTP/1.1 x"),
             ("curl/7.68.0 x", "curl/7.68.0 x"),
             ("LSN 6E/F9009520 x", "LSN 6E/F9009520 x"),
+            (
+                "key feature.node.kubernetes.io/cpu-cpuid.X87=true",
+                "key feature.node.kubernetes.io/cpu-cpuid.X87=true",
+            ),
+            (
+                "image docker.io/library/nginx:1.25 x",
+                "image docker.io/library/nginx:1.25 x",
+            ),
             ("dial http://0.0.0.0 x", "dial <PATH> x"),
+            ("file=/var/log/app.log x", "file=<PATH> x"),
+            ("read /etc/hosts.d/x x", "read <PATH> x"),
         ] {
             let (r, _) = PathDetector::detect_and_replace(input);
             assert_eq!(r, expected, "input: {input}");
         }
-        let (r, _) = PathDetector::detect_and_replace("kubernetes.io/projected/abc x");
-        assert!(
-            r.contains("<PATH>"),
-            "a real path after a word still folds: {r}"
-        );
+    }
+
+    /// A relative path is a path: two segments after a directory, or a
+    /// file with an extension. A MIME type, a version, a `ns/name` pair and
+    /// a DNS-qualified name are not.
+    #[test]
+    fn a_relative_path_is_a_path() {
+        for (input, expected) in [
+            ("at internal/pkg/x.go:45 x", "at <PATH>:45 x"),
+            ("resource=netpol/argocd/argocd-redis x", "resource=<PATH> x"),
+            ("in pkg/x.go x", "in <PATH> x"),
+            ("type text/html x", "type text/html x"),
+            ("agent Mozilla/5.0 x", "agent Mozilla/5.0 x"),
+            (
+                "pod kube-system/coredns-abc x",
+                "pod kube-system/coredns-abc x",
+            ),
+            (
+                "image docker.io/library/nginx x",
+                "image docker.io/library/nginx x",
+            ),
+            (
+                "at github.com/foo/bar/pkg/x.go:12 x",
+                "at github.com/foo/bar/pkg/x.go:12 x",
+            ),
+            (
+                "mount /var/lib/kubelet/pods/abc/volumes/kubernetes.io~projected/token x",
+                "mount <PATH> x",
+            ),
+        ] {
+            let (r, _) = PathDetector::detect_and_replace(input);
+            assert_eq!(r, expected, "input: {input}");
+        }
     }
 }

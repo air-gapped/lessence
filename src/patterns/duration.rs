@@ -75,6 +75,13 @@ static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub struct DurationDetector;
 
 impl DurationDetector {
+    /// Three digits in a row: enough for INTEGER_REGEX to have something to do.
+    fn has_digit_run(text: &str) -> bool {
+        text.as_bytes()
+            .windows(3)
+            .any(|w| w.iter().all(u8::is_ascii_digit))
+    }
+
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         // FAST PATH: Skip if no duration indicators
         if !text.contains('.')
@@ -88,6 +95,8 @@ impl DurationDetector {
             && !text.contains("MB")
             // a JSON field value carries no unit of its own
             && !text.contains(':')
+            // and neither does a bare number: `[Tue <TIMESTAMP> 2024]`
+            && !Self::has_digit_run(text)
         {
             return (text.to_string(), Vec::new());
         }
@@ -404,11 +413,11 @@ mod tests {
                 "POST /login returned <HTTP_STATUS> Unauthorized",
                 true,
             ),
-            // "Error 404 not found on page" is skipped by the fast-path pre-filter (no 's', 'm', 'h', etc.)
+            // a bare number is enough to enter the detector; no `s` needed
             (
                 "Error 404 not found on page",
-                "Error 404 not found on page",
-                false,
+                "Error <HTTP_STATUS> not found on page",
+                true,
             ),
             (
                 "Request completed with status 201",
@@ -422,8 +431,8 @@ mod tests {
             ),
             (
                 "Error code 403 forbidden",
-                "Error code 403 forbidden",
-                false,
+                "Error code <HTTP_STATUS> forbidden",
+                true,
             ),
         ];
 

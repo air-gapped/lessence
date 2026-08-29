@@ -80,6 +80,37 @@ impl NetworkDetector {
         ip.starts_with("0.") && ip != "0.0.0.0"
     }
 
+    /// `216.160.83.61` in `pool-216.160.83.61.washdc.fios.verizon.net` or in
+    /// `61.83.160.216.in-addr.arpa` is a run of hostname labels, not an
+    /// address: the dotted name continues past it.
+    fn in_dotted_name(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let before =
+            m.start() >= 2 && b[m.start() - 1] == b'.' && b[m.start() - 2].is_ascii_alphanumeric();
+        let after =
+            m.end() + 1 < b.len() && b[m.end()] == b'.' && b[m.end() + 1].is_ascii_alphanumeric();
+        before || after
+    }
+
+    fn is_ipv4_address(haystack: &str, m: &regex::Match) -> bool {
+        !Self::is_version_not_address(m.as_str()) && !Self::in_dotted_name(haystack, m)
+    }
+
+    /// A hostname stands on its own. Glued to `-`, `/`, `\` or `~` it is a
+    /// fragment of a longer name — a label key `kubernetes.io/cpu-cpuid.X87`,
+    /// an image `docker.io/library/nginx`, a mount unit
+    /// `…-volumes-kubernetes.io\x7eprojected` — and after a `.` it is the
+    /// tail of a name whose head was already tokenised.
+    fn fqdn_stands_alone(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let before = m.start() > 0 && matches!(b[m.start() - 1], b'-' | b'.' | b'/' | b'\\' | b'~');
+        // `\x2d` is a systemd escape inside a unit name; `\"` closes a quote.
+        let after = m.end() < b.len()
+            && (matches!(b[m.end()], b'-' | b'/' | b'~')
+                || (b[m.end()] == b'\\' && b.get(m.end() + 1) == Some(&b'x')));
+        !(before || after)
+    }
+
     /// How many bytes of a candidate are an IPv6 address: all of it, all
     /// but a trailing `:` that belongs to the sentence (`... 2001:db8::1:
     /// failed`), or none. A candidate glued to a letter (`std::io`) or cut
@@ -174,10 +205,11 @@ impl NetworkDetector {
             result = IPV4_MAPPED_REGEX.replace_all(&result, "<IP>").to_string();
 
             // Handle standalone IPv4 addresses. `0.x.y.z` is never a host —
-            // `(0.8.10.3)` is a package version — except `0.0.0.0` itself.
+            // `(0.8.10.3)` is a package version — except `0.0.0.0` itself,
+            // and four octets inside a longer dotted name are its labels.
             for cap in IPV4_REGEX.find_iter(&result) {
                 let ip_str = cap.as_str();
-                if Self::is_version_not_address(ip_str) {
+                if !Self::is_ipv4_address(&result, &cap) {
                     continue;
                 }
                 if !tokens
@@ -189,11 +221,11 @@ impl NetworkDetector {
             }
             result = IPV4_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
-                    let ip = &caps[0];
-                    if Self::is_version_not_address(ip) {
-                        ip.to_string()
-                    } else {
+                    let m = caps.get(0).unwrap();
+                    if Self::is_ipv4_address(&result, &m) {
                         "<IP>".to_string()
+                    } else {
+                        m.as_str().to_string()
                     }
                 })
                 .to_string();
@@ -279,17 +311,17 @@ impl NetworkDetector {
             // is_likely_fqdn so a rejected match is left untouched.
             for cap in FQDN_REGEX.find_iter(&result) {
                 let fqdn_str = cap.as_str();
-                if Self::is_likely_fqdn(fqdn_str) {
+                if Self::is_likely_fqdn(fqdn_str) && Self::fqdn_stands_alone(&result, &cap) {
                     tokens.push(Token::Fqdn(fqdn_str.to_string()));
                 }
             }
             result = FQDN_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap().as_str();
-                    if Self::is_likely_fqdn(m) {
+                    let m = caps.get(0).unwrap();
+                    if Self::is_likely_fqdn(m.as_str()) && Self::fqdn_stands_alone(&result, &m) {
                         "<FQDN>".to_string()
                     } else {
-                        m.to_string()
+                        m.as_str().to_string()
                     }
                 })
                 .to_string();
@@ -1069,6 +1101,57 @@ mod tests {
                 .any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
             "trailing dot FQDN should not produce token: {tokens:?}"
         );
+    }
+
+    /// An IPv4 run inside a dotted hostname is a run of labels, not an
+    /// address; the whole name is the host. An address range stays two.
+    #[test]
+    fn ipv4_inside_a_hostname_is_part_of_the_name() {
+        let (r, t) = NetworkDetector::detect_and_replace(
+            "hostname=pool-198.51.100.77.washdc.example.net rev 77.100.51.198.in-addr.arpa addr=198.51.100.77 range 10.0.0.1-10.0.0.9",
+            true,
+            false,
+            true,
+        );
+        assert_eq!(r, "hostname=<FQDN> rev <FQDN> addr=<IP> range <IP>-<IP>");
+        assert_eq!(t.iter().filter(|t| matches!(t, Token::IPv4(_))).count(), 3);
+        assert_eq!(t.iter().filter(|t| matches!(t, Token::Fqdn(_))).count(), 2);
+    }
+
+    /// A dotted name glued to `/`, `\`, `~` or `-`, or continuing a name to
+    /// its left, is a fragment of a longer identifier, not a host. Standing
+    /// alone it is a host whatever its role.
+    #[test]
+    fn fqdn_glued_to_a_longer_name_stays_literal() {
+        for line in [
+            "key feature.node.kubernetes.io/cpu-cpuid.X87=true",
+            "image docker.io/library/nginx:1.25",
+            r"unit pods-abc\x2ddef-volumes-kubernetes.io\x7eprojected.mount",
+            "svc <UUID>.svc.cluster.local up",
+            "api coordination.k8s.io/v1beta1 skipped",
+        ] {
+            let (r, t) = NetworkDetector::detect_and_replace(line, true, true, true);
+            assert_eq!(r, line);
+            assert!(
+                !t.iter().any(|t| matches!(t, Token::Fqdn(_))),
+                "{line}: {t:?}"
+            );
+        }
+        let (r, _) = NetworkDetector::detect_and_replace(
+            "GroupVersion apiextensions.k8s.io v1",
+            true,
+            true,
+            true,
+        );
+        assert_eq!(r, "GroupVersion <FQDN> v1");
+        // an escaped quote after the name is not glue
+        let (r, _) = NetworkDetector::detect_and_replace(
+            r#"msg="loading \"io.containerd.store.v1.local\"...""#,
+            true,
+            true,
+            true,
+        );
+        assert_eq!(r, r#"msg="loading \"<FQDN>\"...""#);
     }
 
     /// Every IPv6 compression form is one address; what does not parse as

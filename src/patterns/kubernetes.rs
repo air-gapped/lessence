@@ -47,12 +47,28 @@ static POD_REGEXES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
     ]
 });
 
+// A Kubernetes group/version: `apps/v1`, `management.cattle.io/v3`,
+// `cdi.kubevirt.io/v1beta1`, the core group's `/v1`. The version suffix is
+// the shape. A `/v1` inside a longer path (`k8s.io/api/apps/v1`) is not one.
+static GROUP_VERSION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\b[a-z0-9]+(?:[.-][a-z0-9]+)*)?/v\d+(?:(?:alpha|beta)\d+)?\b").unwrap()
+});
+
 static NAME_FIELD_REGEXES: LazyLock<[Regex; 4]> = LazyLock::new(|| {
     [
         Regex::new(r#"([a-zA-Z]*[Nn]ame): "([^"]+)""#).unwrap(),
         Regex::new(r#"([a-zA-Z]*[Nn]ame)="([^"]+)""#).unwrap(),
-        Regex::new(r"([a-zA-Z]*[Nn]ame):([a-zA-Z0-9-]+)\b").unwrap(),
-        Regex::new(r"([a-zA-Z]*[Nn]ame)=([a-zA-Z0-9-]+)\b").unwrap(),
+        // An unquoted value runs to the next separator, so
+        // `volumeName:kubernetes.io/projected/<UUID>-kube-api-access-<SUFFIX>`
+        // is one value. A value that is already a placeholder is left alone.
+        Regex::new(
+            r#"([a-zA-Z]*[Nn]ame):([A-Za-z0-9](?:[^\s,"'()\[\]{};:=]*[^\s,"'()\[\]{};:=.])?)"#,
+        )
+        .unwrap(),
+        Regex::new(
+            r#"([a-zA-Z]*[Nn]ame)=([A-Za-z0-9](?:[^\s,"'()\[\]{};:=]*[^\s,"'()\[\]{};:=.])?)"#,
+        )
+        .unwrap(),
     ]
 });
 
@@ -65,12 +81,13 @@ impl KubernetesDetector {
             && !text.contains("namespace")
             && !text.contains("pod")
             && !text.contains("volume")
+            && !text.contains("/v")
         {
             return (text.to_string(), Vec::new());
         }
 
-        let result = text.to_string();
         let mut tokens = Vec::new();
+        let result = Self::normalize_group_versions(text, &mut tokens);
 
         // Apply all Kubernetes patterns in order (only if kubernetes content detected).
         // Pods first: the namespace regexes then see `pod ns/<POD_NAME>`.
@@ -91,6 +108,28 @@ impl KubernetesDetector {
         tokens.extend(name_field_tokens);
 
         (result, tokens)
+    }
+
+    /// `group/version` is one name. Not preceded by a path or name
+    /// character: `k8s.io/api/apps/v1` is a Go import path.
+    fn normalize_group_versions(text: &str, tokens: &mut Vec<Token>) -> String {
+        let mut result = text.to_string();
+        if text.contains("/v") {
+            super::fold_matches(&mut result, tokens, &GROUP_VERSION_REGEX, |caps| {
+                let m = caps.get(0).unwrap();
+                let prev = m.start().checked_sub(1).map(|i| text.as_bytes()[i]);
+                let continues = prev.is_some_and(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_')
+                });
+                (!continues).then(|| {
+                    (
+                        Token::Name(m.as_str().to_string()),
+                        "<GROUP_VERSION>".to_string(),
+                    )
+                })
+            });
+        }
+        result
     }
 
     /// Normalize Kubernetes namespaces
@@ -206,11 +245,12 @@ impl KubernetesDetector {
                             format!("{field_name}=<K8S_NAME>")
                         }
                     } else {
-                        // Handle Name: pattern
+                        // Handle Name: pattern; the placeholder replaces
+                        // the value and nothing else, so no space is added
                         if full_match.contains('"') {
                             format!("{field_name}: \"<K8S_NAME>\"")
                         } else {
-                            format!("{field_name}: <K8S_NAME>")
+                            format!("{field_name}:<K8S_NAME>")
                         }
                     }
                 })
@@ -224,6 +264,42 @@ impl KubernetesDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `group/version` folds as one name whichever group it is, including
+    /// the core group's bare `/v1`; a version inside a longer path does not.
+    #[test]
+    fn group_version_is_one_name() {
+        let (r, t) = KubernetesDetector::detect_and_replace(
+            "Watching management.cattle.io/v3, Kind=Cluster and apps/v1 and cdi.kubevirt.io/v1beta1 and /v1, Kind=Service",
+        );
+        assert_eq!(
+            r,
+            "Watching <GROUP_VERSION>, Kind=Cluster and <GROUP_VERSION> and <GROUP_VERSION> and <GROUP_VERSION>, Kind=Service"
+        );
+        assert_eq!(t.len(), 4);
+        for line in [
+            "at k8s.io/api/apps/v1 x",
+            "in github.com/foo/bar/v2 x",
+            "SomeType/v1 x",
+            "v1 to ResourceManager",
+        ] {
+            let (r, _) = KubernetesDetector::detect_and_replace(line);
+            assert_eq!(r, line);
+        }
+    }
+
+    /// A name field's value is the whole token, dots and slashes included,
+    /// and the placeholder adds nothing the input did not have.
+    #[test]
+    fn name_field_value_is_the_whole_token() {
+        let (r, _) = KubernetesDetector::detect_and_replace(
+            "volumeName:kubernetes.io/projected/<UUID>-kube-api-access-<SUFFIX> podName:<UUID> nodeName:} filename=app.log. hostname=? hostname=<FQDN> port=x:80",
+        );
+        assert_eq!(
+            r,
+            "volumeName:<K8S_NAME> podName:<UUID> nodeName:} filename=<K8S_NAME>. hostname=? hostname=<FQDN> port=x:80"
+        );
+    }
 
     #[test]
     fn test_namespace_normalization() {
