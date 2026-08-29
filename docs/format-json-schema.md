@@ -121,16 +121,23 @@ Each value records both the bounded data and how to interpret its counts:
 
 ### Sample-worthy vs count-only token types
 
-**`VARIES`** is not a token type. It reports words that differ between a
-group's members which no detector tokenised — `Unreachable` folded with
-`Timeout` on similarity — and the group's `normalized` template shows
-`<VARIES>` at that position, so the shown line never claims a word half the
-members lack. Every member's word is counted (`sample_counts`), and the
-samples are the most frequent ones plus the rarest: `Server Busy` ×7,164 with
-one `Server Reject` is visible as `["Busy","Reject"]` / `[7164, 1]`, not as
-"distinct_count 2". Computed positionally against the representative, so
-members with a different word count contribute nothing rather than
-misattribute a shifted tail. Absent when nothing untokenised varied.
+**`VARIES`** is not a token type. It reports where a group's members
+disagree in something no detector tokenised — `Unreachable` folded with
+`Timeout` on similarity, a bare `board` folded with `<FQDN>`, `+sdown` with
+`<FLAG>` — and the group's `normalized` template shows `<VARIES>` there, so
+the shown line never claims a word half the members lack. A placeholder on
+one side is a claim the other side breaks, so it varies too. A shared field
+name stays in front of the slot (`msg=<VARIES>`, `"NodeName":<VARIES>`), and
+a quoted value with spaces in it is one slot (`controller=<VARIES>`). Every
+member's value is counted (`sample_counts`), and the samples are the most
+frequent ones plus the rarest: `Server Busy` ×7,164 with one `Server Reject`
+is visible as `["Busy","Reject"]` / `[7164, 1]`, not as "distinct_count 2".
+Members with a different word count are aligned by longest common
+subsequence; a template word a member has no counterpart for varies and is
+counted as `∅`. A line that disagrees with a group's founder in two or more
+words of the sentence — the verb and the outcome, `Synchronization … succeeded`
+beside `Connection … lost.` — is not folded into it at all: one differing
+word is a name or a value, two are another event.
 
 **Sample-worthy** (identity types — samples are useful): `UUID`,
 `IPV4`, `IPV6`, `MAC`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,

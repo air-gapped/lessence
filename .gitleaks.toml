@@ -1,0 +1,16 @@
+# gitleaks configuration: the default rules, plus one allowance.
+#
+# Rendered examples (README `gen:` regions) and the committed fixtures carry
+# Kubernetes pod UIDs — `1f4fdc9d-12d9-451b-9456-110b32706d57` — which the
+# generic-api-key rule reads as a high-entropy secret next to the word
+# `kube-api-access`. A pod UID is not a credential. Scoped to those files
+# only; a UUID anywhere else is still reported.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+[rules.allowlist]
+paths = ['''^README\.md$''', '''^tests/fixtures/''', '''^docs/''']
+regexTarget = "secret"
+regexes = ['''^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$''']

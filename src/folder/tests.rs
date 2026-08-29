@@ -4872,3 +4872,165 @@ fn variation_types_presence_only_kinds_compare_fixed() {
         "presence-only kinds must not vary by payload"
     );
 }
+
+// ---- template honesty (hosts/k8s study 2026-08-29) ----
+
+#[test]
+fn a_placeholder_against_a_plain_word_varies_too() {
+    // usw_dmesg: `creating proc entry for system.info` founded the group and
+    // ten bare words joined it; the template said <FQDN> for all eleven.
+    let mut f = make_folder();
+    for l in [
+        "[    5.450000] creating proc entry for system.info",
+        "[    5.450000] creating proc entry for board",
+        "[    5.460000] creating proc entry for IsDefault",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    assert_eq!(
+        f.buffer[0].template(),
+        "[    <DECIMAL>] creating proc entry for <VARIES>"
+    );
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
+    assert!(r[VARIES].samples.contains(&"<FQDN>".to_string()));
+}
+
+#[test]
+fn a_shared_field_name_stays_in_front_of_varies() {
+    // hubble: `msg=Connecting` beside `msg=Connected` used to become a bare
+    // <VARIES> that swallowed the key; the JSON form the same.
+    let mut f = make_folder();
+    for l in [
+        "time=2026-08-26T12:46:24.203681666Z level=info msg=Connecting subsys=hubble-relay address=10.59.151.22:4244 tls=true peer=lupah/ik",
+        "time=2026-08-26T12:46:24.203767141Z level=info msg=Connected subsys=hubble-relay address=10.59.151.22:4244 tls=true peer=lupah/ik",
+        "time=2026-08-26T12:46:25.203767141Z level=info msg=Connected subsys=hubble-relay address=10.59.151.22:4244 tls=true peer=lupah/ik",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    assert!(
+        f.buffer[0].template().contains(" msg=<VARIES> subsys="),
+        "{}",
+        f.buffer[0].template()
+    );
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].samples, vec!["Connected", "Connecting"]);
+    assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
+
+    let mut f = make_folder();
+    for host in ["icip", "gifob", "ugiz"] {
+        f.process_line(&format!(
+            r#"{{"level":"info","ts":1787965945.3273559,"logger":"controllers.ClusterPolicy","msg":"GPU workload configuration","NodeName":"{host}","GpuWorkloadConfig":"container"}}"#
+        ))
+        .unwrap();
+    }
+    assert_eq!(
+        f.buffer.len(),
+        1,
+        "one differing field in a spaceless record folds"
+    );
+    assert!(
+        f.buffer[0].template().contains(r#""NodeName":<VARIES>,"#),
+        "{}",
+        f.buffer[0].template()
+    );
+}
+
+#[test]
+fn a_member_with_fewer_words_marks_the_words_it_lacks() {
+    // cloudflared: a box title row folded with the blank spacer rows; the
+    // template showed the title for members that had none. Refused now (two
+    // sentence words) — and where a shorter member does join, the missing
+    // words vary and count as absent.
+    assert_eq!(
+        varying_spans("alpha beta gamma delta", "alpha gamma delta"),
+        vec![(6, 4)]
+    );
+    assert_eq!(
+        varying_spans("alpha beta gamma", "alpha zeta gamma extra"),
+        vec![(6, 4)]
+    );
+    let mut f = make_folder();
+    for l in [
+        "2026-08-29T01:12:10Z INF | request served 8 |",
+        "2026-08-29T01:12:11Z INF | request served |",
+        "2026-08-29T01:12:12Z INF | request served |",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    assert_eq!(
+        f.buffer[0].template(),
+        "<TIMESTAMP> INF | request served <VARIES> |"
+    );
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].samples, vec!["∅", "8"]);
+    assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
+}
+
+#[test]
+fn two_sentence_words_apart_is_another_event() {
+    // oauth2-proxy redis: `Synchronization … succeeded` folded with
+    // `Connection … lost.`; k8s events: SuccessfulCreate with
+    // SuccessfulDelete; sentinel: +sdown with +reboot. One differing word
+    // is a name and folds; two are a different sentence.
+    assert_eq!(
+        plain_word_diffs(
+            "1:S 28 Aug <NUMBER> <TIMESTAMP> * Synchronization with replica <FQDN>:<PORT> succeeded",
+            "1:S 28 Aug <NUMBER> <TIMESTAMP> * Connection with replica <FQDN>:<PORT> lost."
+        ),
+        2
+    );
+    assert_eq!(
+        plain_word_diffs("user alice from <IP>", "user bob from <IP>"),
+        1
+    );
+    assert_eq!(
+        plain_word_diffs(
+            "Fork CoW for RDB: current <SIZE>",
+            "Fork CoW for AOF rewrite: current <SIZE>"
+        ),
+        3
+    );
+    // Values are not sentence words: quoted, typed, keyed with structure,
+    // numbers, placeholders.
+    assert_eq!(
+        plain_word_diffs(
+            r#"Failed to watch *v1.Node: nodes is forbidden: cannot list resource "nodes""#,
+            r#"Failed to watch *v1.Pod: pods is forbidden: cannot list resource "pods""#
+        ),
+        1
+    );
+    assert_eq!(
+        plain_word_diffs(
+            r#"{"controller": "triggerauthentication", "controllerKind": "TriggerAuthentication"}"#,
+            r#"{"controller": "scaledjob", "controllerKind": "ScaledJob"}"#
+        ),
+        0
+    );
+    assert_eq!(plain_word_diffs("GPS mode 3 -> 2", "GPS mode 2 -> 3"), 0);
+    assert_eq!(
+        plain_word_diffs("x k8s:app=virt-handler y", "x k8s:app=traefik y"),
+        0
+    );
+    // A JSON sentence's words are sentence words: the key goes, the word stays.
+    assert_eq!(
+        plain_word_diffs(
+            r#"{"msg":"finished scheduled compaction"}"#,
+            r#"{"msg":"storing new hash"}"#
+        ),
+        3
+    );
+
+    let mut f = make_folder();
+    for l in [
+        "1:S 28 Aug 2026 01:22:07.429 * Synchronization with replica redis-node-1.svc.cluster.local:6379 succeeded",
+        "1:S 28 Aug 2026 01:24:07.931 * Connection with replica redis-node-1.svc.cluster.local:6379 lost.",
+        "1:S 28 Aug 2026 01:26:07.931 * Connection with replica redis-node-0.svc.cluster.local:6379 lost.",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2, "success and loss are two events");
+}

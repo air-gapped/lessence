@@ -348,6 +348,50 @@ impl SimTokens {
     }
 }
 
+/// A word separator as every reader of a normalized line sees it: the
+/// similarity metric, the group template and the rollup all split here.
+/// Whitespace, plus `,` `{` `}` so a compact JSON record (`{"a":1,"b":"x"}`)
+/// is its fields rather than one word — one differing value in a spaceless
+/// record used to make the whole line one unmatched token.
+#[inline]
+pub(crate) fn is_word_sep(b: u8) -> bool {
+    b.is_ascii_whitespace() || matches!(b, b',' | b'{' | b'}')
+}
+
+/// Byte spans `(start, len)` of the words of `s`, in order. Separators are
+/// ASCII, so every span starts and ends on a char boundary. Inside a quoted
+/// string only whitespace separates: a JSON `msg` sentence that names
+/// `task[x] with args=&{Threshold:80}` keeps the words it had before, and
+/// only the record around it is split at its fields.
+pub(crate) fn word_spans(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
+    let b = s.as_bytes();
+    let mut i = 0;
+    let mut quoted = false;
+    std::iter::from_fn(move || {
+        let sep =
+            |i: usize, quoted: bool| b[i].is_ascii_whitespace() || (!quoted && is_word_sep(b[i]));
+        while i < b.len() && sep(i, quoted) {
+            i += 1;
+        }
+        if i >= b.len() {
+            return None;
+        }
+        let start = i;
+        while i < b.len() && !sep(i, quoted) {
+            if b[i] == b'"' && (i == 0 || b[i - 1] != b'\\') {
+                quoted = !quoted;
+            }
+            i += 1;
+        }
+        Some((start, i - start))
+    })
+}
+
+/// The words of `s`.
+pub(crate) fn words(s: &str) -> impl Iterator<Item = &str> + '_ {
+    word_spans(s).map(move |(at, len)| &s[at..at + len])
+}
+
 impl SimTokens {
     fn from_normalized(s: &str) -> Self {
         use std::hash::{Hash, Hasher};
@@ -355,19 +399,17 @@ impl SimTokens {
             return SimTokens::Unbounded;
         }
         let mut toks = Vec::with_capacity(16);
-        for tok in s.split_whitespace() {
+        for (start, len) in word_spans(s) {
             if toks.len() == MAX_SIMILARITY_TOKENS {
                 return Self::overflow_from(s);
             }
-            // split_whitespace yields subslices of `s`, so the offset is
-            // recoverable from pointer distance.
-            let start = tok.as_ptr() as usize - s.as_ptr() as usize;
+            let tok = &s[start..start + len];
             let mut hasher = ahash::AHasher::default();
             tok.hash(&mut hasher);
             toks.push(SimTok {
                 hash: hasher.finish(),
                 start: start as u32,
-                end: (start + tok.len()) as u32,
+                end: (start + len) as u32,
             });
         }
         let mut sorted_hashes: Vec<u64> = toks.iter().map(|t| t.hash).collect();
@@ -385,7 +427,7 @@ impl SimTokens {
         use std::hash::{Hash, Hasher};
         let mut sorted_hashes: Vec<u64> = Vec::with_capacity(MAX_SIMILARITY_TOKENS * 2);
         let mut lead = [0u64; MULTISET_LEAD];
-        for tok in s.split_whitespace() {
+        for tok in words(s) {
             if sorted_hashes.len() == MAX_MULTISET_TOKENS {
                 return SimTokens::Unbounded;
             }

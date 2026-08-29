@@ -230,6 +230,61 @@ static SYSTEMD_UNIT_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
     .expect("systemd unit anchor pattern must compile")
 });
 
+/// A structured logger's call site, `"caller":"mvcc/hash.go:157"` (zap) or
+/// `caller=/go/pkg/mod/.../reflector.go:205` (logfmt): the event identity of
+/// a JSON record, as the klog header's is of a klog line. Without it two
+/// records that share every field but `msg` read alike enough to fold.
+static STRUCTURED_CALLER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:"caller"\s*:\s*"|\bcaller=)([A-Za-z0-9_./@+-]+\.[a-z]{1,4}:\d+)"#)
+        .expect("structured caller anchor pattern must compile")
+});
+
+/// A call site a klog message itself opens with — `reflector.go:397]
+/// k8s.io/client-go/informers/factory.go:160: forcing resync`. The header's
+/// site is the logging shim; the message's is the code that spoke.
+static MESSAGE_CALL_SITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.go:\d+\] ([A-Za-z0-9_./@+-]+\.go:\d+): ")
+        .expect("message call-site anchor pattern must compile")
+});
+
+/// A Python traceback frame, `File "resources.py", line 418, in
+/// _watch_resource_loop`: the frame is the (file, line, function) triple.
+static TRACEBACK_FRAME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"File "([^"]+)", line (\d+), in (\S+)"#)
+        .expect("traceback frame anchor pattern must compile")
+});
+
+/// A method in a structured record: `"RequestMethod":"POST"`, `method=GET`,
+/// `"grpc.method":"GenerateManifest"`. A field named `…method` names what
+/// was called — the access-log request line's counterpart in JSON/logfmt,
+/// and an RPC's route.
+static FIELD_METHOD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)"?[a-z_.]*method"?\s*[:=]\s*"?([A-Za-z][A-Za-z0-9_./-]*)"#)
+        .expect("field method anchor pattern must compile")
+});
+
+/// An HTTP status in a structured record: `"DownstreamStatus":500`,
+/// `status=404`, `"status_code": 302`. The capture is the class digit.
+static FIELD_STATUS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])\d\d\b"#)
+        .expect("field status anchor pattern must compile")
+});
+
+/// The request path of a structured HTTP record — only read when the record
+/// also names a method, so a file path in some other record is not mistaken
+/// for a route.
+static FIELD_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)"?[a-z_.]*(?:path|uri|url|route)"?\s*[:=]\s*"([^"]*)""#)
+        .expect("field path anchor pattern must compile")
+});
+
+/// The prefix `kubectl logs --prefix` writes: `[pod/<pod>/<container>] `.
+/// The container is an identity; the pod is one up to its generated suffix,
+/// so replicas of one workload fold and different workloads do not.
+static KUBECTL_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\[pod/([^/\]]+)/([^\]]+)\]").expect("kubectl prefix anchor pattern must compile")
+});
+
 /// An audit record's type, `type=SYSCALL msg=audit(...)`. The capture is the
 /// type — auditd's only discriminator between record kinds.
 static AUDIT_RECORD_TYPE: LazyLock<Regex> = LazyLock::new(|| {
@@ -310,8 +365,88 @@ fn anchor_hash(original: &str) -> u64 {
             found = true;
         }
     }
+    if original.contains("caller") {
+        for caps in STRUCTURED_CALLER.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+    if original.contains(".go:") {
+        for caps in MESSAGE_CALL_SITE.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+    if original.contains("File \"") {
+        for caps in TRACEBACK_FRAME.captures_iter(original) {
+            for i in 1..=3 {
+                caps.get(i).map_or("", |m| m.as_str()).hash(&mut hasher);
+            }
+            found = true;
+        }
+    }
+    // A structured HTTP record: method and status class are matched like
+    // the access-log request line's, and with a method present the request
+    // path is its route.
+    if original.contains("ethod") || original.contains("ETHOD") {
+        let mut method = false;
+        for caps in FIELD_METHOD.captures_iter(original) {
+            let m = caps.get(1).map_or("", |m| m.as_str());
+            m.hash(&mut hasher);
+            method |= matches!(
+                m.to_ascii_uppercase().as_str(),
+                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+            );
+            found = true;
+        }
+        if method {
+            for caps in FIELD_PATH.captures_iter(original) {
+                hash_route(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
+            }
+        }
+    }
+    if original.contains("tatus") || original.contains("TATUS") {
+        for caps in FIELD_STATUS.captures_iter(original) {
+            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+    if original.starts_with("[pod/") {
+        for caps in KUBECTL_PREFIX.captures_iter(original) {
+            hash_pod_skeleton(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
+            caps.get(2).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
 
     if found { hasher.finish() } else { 0 }
+}
+
+/// Hash a pod name up to its instance suffixes: `web-7d9f8b6c5-xk2lp` and
+/// `web-7d9f8b6c5-q8zmt` are one workload, `gitaly-0` and `gitaly-1` too,
+/// and so are `rook-ceph-osd-0-56d5fdf8f8-ltzv5` and `rook-ceph-osd-1-…`
+/// or `rook-ceph-mon-bp-…` and `rook-ceph-mon-cc-…`: the same daemon on
+/// another instance. A trailing segment goes when it is an ordinal, an
+/// instance letter or two, a 5-char chunk of the generated-name alphabet,
+/// or an 8–10 char pod-template hash.
+fn hash_pod_skeleton(pod: &str, hasher: &mut AHasher) {
+    const RAND: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
+    let generated = |seg: &str| {
+        let b = seg.as_bytes();
+        (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
+            || (b.len() <= 2 && b.iter().all(u8::is_ascii_lowercase))
+            || (b.len() == 5 && b.iter().all(|c| RAND.contains(c)))
+            || ((8..=10).contains(&b.len())
+                && b.iter().all(|c| RAND.contains(c) || c.is_ascii_digit()))
+    };
+    let mut keep = pod;
+    for _ in 0..3 {
+        match keep.rsplit_once('-') {
+            Some((head, tail)) if generated(tail) => keep = head,
+            _ => break,
+        }
+    }
+    keep.hash(hasher);
 }
 
 /// Hash a name with its instance ids removed: a run holding 8+ hex digits
@@ -369,9 +504,14 @@ fn hash_route(target: &str, hasher: &mut AHasher) {
             continue;
         }
         // A long hex-ish run is an opaque id (uuid, digest, slug), whatever
-        // letters it happens to contain.
-        if segment.len() >= 8
-            && segment
+        // letters it happens to contain; `sha256:<hex>` is one with its
+        // algorithm in front.
+        let body = segment
+            .split_once(':')
+            .filter(|(algo, _)| !algo.is_empty() && algo.bytes().all(|b| b.is_ascii_alphanumeric()))
+            .map_or(segment, |(_, rest)| rest);
+        if body.len() >= 8
+            && body
                 .bytes()
                 .all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'_')
         {
@@ -2302,5 +2442,118 @@ mod tests {
             line.sim().sorted_hashes().is_empty(),
             "a line past the bound carries no hashes"
         );
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests_2026_08_29 {
+    use super::*;
+
+    fn normalize(line: &str) -> LogLine {
+        Normalizer::new(Config::default())
+            .normalize_line(line.to_string())
+            .unwrap()
+    }
+
+    #[test]
+    fn a_structured_caller_is_a_call_site() {
+        let first = normalize(
+            r#"{"level":"info","caller":"mvcc/kvstore_compaction.go:70","msg":"finished scheduled compaction"}"#,
+        );
+        let second =
+            normalize(r#"{"level":"info","caller":"mvcc/hash.go:157","msg":"storing new hash"}"#);
+        let third =
+            normalize(r#"{"level":"info","caller":"mvcc/hash.go:157","msg":"storing new hash"}"#);
+        assert_ne!(first.anchor, second.anchor);
+        assert_eq!(second.anchor, third.anchor);
+        let fourth = normalize(
+            "ts=2026-08-29T01:10:53Z level=error caller=/go/pkg/mod/k8s.io/client-go@v0.34.2/tools/cache/reflector.go:205 msg=\"Failed to watch\"",
+        );
+        assert_ne!(fourth.anchor, 0);
+    }
+
+    #[test]
+    fn the_kubectl_prefix_is_container_and_workload() {
+        let first = normalize("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render] GET /health");
+        let second = normalize("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render] GET /health");
+        let third = normalize("[pod/render-twin-5c9c5df548-dxqmk/vllm-render] GET /health");
+        let fourth = normalize("[pod/llm-d-sim-67cb674c47-d6ms5/other] GET /health");
+        assert_eq!(first.anchor, second.anchor, "replicas of one workload");
+        assert_ne!(
+            first.anchor, third.anchor,
+            "another workload, same container name"
+        );
+        assert_ne!(first.anchor, fourth.anchor, "another container");
+        let ord0 = normalize("[pod/gitaly-0/gitaly] x");
+        let ord1 = normalize("[pod/gitaly-1/gitaly] x");
+        assert_eq!(ord0.anchor, ord1.anchor, "statefulset ordinals");
+        let osd0 = normalize("[pod/rook-ceph-osd-0-56d5fdf8f8-ltzv5/osd] x");
+        let osd1 = normalize("[pod/rook-ceph-osd-1-6bb486f64d-njdks/osd] x");
+        let mon_bp = normalize("[pod/rook-ceph-mon-bp-74f99bc8b4-v8d9g/mon] x");
+        let mon_cc = normalize("[pod/rook-ceph-mon-cc-69db7dc6fc-72pbb/mon] x");
+        assert_eq!(
+            osd0.anchor, osd1.anchor,
+            "the same daemon on another instance"
+        );
+        assert_eq!(mon_bp.anchor, mon_cc.anchor, "instance letters");
+        assert_ne!(osd0.anchor, mon_bp.anchor, "osd is not mon");
+    }
+
+    #[test]
+    fn a_status_field_is_matched_by_class() {
+        let first = normalize(
+            r#"{"DownstreamStatus":500,"RequestMethod":"POST","RequestPath":"/api/v4/jobs/request"}"#,
+        );
+        let second = normalize(
+            r#"{"DownstreamStatus":204,"RequestMethod":"POST","RequestPath":"/api/v4/jobs/request"}"#,
+        );
+        let third = normalize(
+            r#"{"DownstreamStatus":200,"RequestMethod":"POST","RequestPath":"/api/v4/jobs/request"}"#,
+        );
+        let fourth = normalize(
+            r#"{"DownstreamStatus":200,"RequestMethod":"GET","RequestPath":"/api/v4/jobs/request"}"#,
+        );
+        let fifth = normalize(
+            r#"{"DownstreamStatus":200,"RequestMethod":"POST","RequestPath":"/api/v4/runners/verify"}"#,
+        );
+        assert_ne!(first.anchor, second.anchor, "5xx against 2xx");
+        assert_eq!(second.anchor, third.anchor, "one class");
+        assert_ne!(third.anchor, fourth.anchor, "method");
+        assert_ne!(third.anchor, fifth.anchor, "route");
+        let sixth = normalize("time=x level=info status=302 method=GET path=\"/oauth2/start\"");
+        assert_ne!(sixth.anchor, 0);
+    }
+
+    #[test]
+    fn a_digest_segment_is_one_route() {
+        let first = normalize(
+            r#"10.1.1.1 - - [29/Aug/2026:00:00:03 +0000] "GET /v2/projects/tups/manifests/sha256:25fef6f1f6fe9f1e4bd6fbfc6b173cc2867c9f0da03e6aa1df030d2a7a049a4c HTTP/1.1" 200 2936 "" "x""#,
+        );
+        let second = normalize(
+            r#"10.1.1.1 - - [29/Aug/2026:00:00:13 +0000] "GET /v2/projects/tups/manifests/sha256:8bd94c55d8e8710e5631589640219a2a4016c99a4d7189aca62b98bb087a7161 HTTP/1.1" 200 2936 "" "x""#,
+        );
+        assert_eq!(first.anchor, second.anchor);
+    }
+
+    #[test]
+    fn a_traceback_frame_and_a_message_call_site_anchor() {
+        let first = normalize(
+            r#"  File "/usr/lib/python3.11/site-packages/urllib3/response.py", line 779, in _error_catcher"#,
+        );
+        let second = normalize(
+            r#"  File "/usr/share/k8s-sidecar/resources.py", line 418, in _watch_resource_loop"#,
+        );
+        let third = normalize(
+            r#"  File "/usr/lib/python3.11/site-packages/urllib3/response.py", line 779, in _error_catcher"#,
+        );
+        assert_ne!(first.anchor, second.anchor);
+        assert_eq!(first.anchor, third.anchor);
+        let fourth = normalize(
+            "I0829 04:26:56.231168       1 reflector.go:397] k8s.io/client-go/informers/factory.go:160: forcing resync",
+        );
+        let fifth = normalize(
+            "I0829 04:27:08.310956       1 reflector.go:397] sigs.k8s.io/sig-storage-lib-external-provisioner/v11/controller/controller.go:872: forcing resync",
+        );
+        assert_ne!(fourth.anchor, fifth.anchor);
     }
 }

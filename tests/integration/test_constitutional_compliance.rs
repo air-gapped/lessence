@@ -157,6 +157,13 @@ fn test_constitutional_compliance_kubelet() {
             "\\\"<W>\\\"",
             "distinct container, by design (lessence-t8q)",
         ),
+        // A quoted error sentence whose words differ in two places — the
+        // verb and the cause — no longer folds into a group founded on
+        // another sentence (lessence-a8t): `"<W>` opens one, `<W>"` closes
+        // one, `<W>=[<NAME>],` is a struct field naming a different volume.
+        ("\"<W>", "another sentence, by design (lessence-a8t)"),
+        ("<W>\"", "another sentence, by design (lessence-a8t)"),
+        ("<W>=[<NAME>],", "another volume, by design (lessence-a8t)"),
         // `err="container &Container{Name:litellm,Image:…}`: a Go struct
         // dump names its container and image. Distinct, by design (t8q).
         (

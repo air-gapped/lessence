@@ -710,3 +710,99 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 ##WHY a dash-encoded subnet id is one identifier, not 192-<NUMBER>-7-0-24
 ##FROM the gateway messages log (scrubbed)
 2026-08-28T09:33:27+02:00 UXG Max ubios-udapi-server[1377]: svc-dhcp-server-service:        +(services):    Keep running service dhcpServers-net_Default_7_br0_192-168-7-0-24
+
+##CASE lessence-a8t template_present=creating proc entry for <VARIES>
+##WHY a template must hold for every member: <FQDN> was shown for ten bare words
+##FROM a switch dmesg (scrubbed)
+[    5.450000] creating proc entry for system.info
+[    5.450000] creating proc entry for board
+[    5.460000] creating proc entry for IsDefault
+[    5.460000] creating proc entry for IsLocated
+
+##CASE lessence-a8t template_present=PVC=<VARIES>
+##WHY one PVC's name must not stand for twenty-eight
+##FROM the openebs csi-resizer (scrubbed)
+[pod/lvm-controller-95d4c9856-vbr64/csi-resizer] I0827 03:39:10.204696       1 controller.go:332] "No need to resize PVC" PVC="grafana/grafana"
+[pod/lvm-controller-95d4c9856-vbr64/csi-resizer] I0829 07:21:56.828596       1 controller.go:332] "No need to resize PVC" PVC="litellm/pgdata-litellm-pg-0"
+[pod/lvm-controller-95d4c9856-vbr64/csi-resizer] I0827 03:40:10.204696       1 controller.go:332] "No need to resize PVC" PVC="harbor/pgdata-harbor-postgres-cluster-1"
+
+##CASE lessence-a8t template_present="NodeName":<VARIES>
+##WHY one differing field in a spaceless JSON record folds, and keeps its key
+##FROM the gpu-operator (scrubbed)
+{"level":"info","ts":1787965945.3273559,"logger":"controllers.ClusterPolicy","msg":"GPU workload configuration","NodeName":"icip","GpuWorkloadConfig":"container"}
+{"level":"info","ts":1787965945.3276134,"logger":"controllers.ClusterPolicy","msg":"GPU workload configuration","NodeName":"gifob","GpuWorkloadConfig":"container"}
+{"level":"info","ts":1787965945.327807,"logger":"controllers.ClusterPolicy","msg":"GPU workload configuration","NodeName":"ugiz","GpuWorkloadConfig":"container"}
+
+##CASE lessence-a8t groups=2
+##WHY a success and a connection loss are two events however alike they read
+##FROM a redis replica log (scrubbed)
+1:S 28 Aug 2026 01:22:07.429 * Synchronization with replica redis-node-1.svc.cluster.local:6379 succeeded
+1:S 28 Aug 2026 01:24:07.931 * Connection with replica redis-node-1.svc.cluster.local:6379 lost.
+1:S 28 Aug 2026 01:26:07.931 * Connection with replica redis-node-0.svc.cluster.local:6379 lost.
+
+##CASE lessence-a8t groups=2
+##WHY "cannot watch" and "cannot list" are two verbs; a shorter member never hid behind a longer template
+##FROM the kube-scheduler (scrubbed)
+[pod/kube-scheduler-pa/kube-scheduler] E0829 01:11:27.855339       1 reflector.go:205] "Failed to watch" err="configmaps \"extension-apiserver-authentication\" is forbidden: User \"system:kube-scheduler\" cannot watch resource \"configmaps\" in API group \"\" in the namespace \"kube-system\"" reflector="k8s.io/apiserver/pkg/server/dynamiccertificates/configmap_cafile_content.go:209" type="*v1.ConfigMap"
+[pod/kube-scheduler-pa/kube-scheduler] E0829 01:11:29.870044       1 reflector.go:205] "Failed to watch" err="failed to list *v1.ConfigMap: configmaps \"extension-apiserver-authentication\" is forbidden: User \"system:kube-scheduler\" cannot list resource \"configmaps\" in API group \"\" in the namespace \"kube-system\"" reflector="k8s.io/apiserver/pkg/server/dynamiccertificates/configmap_cafile_content.go:209" type="*v1.ConfigMap"
+
+##CASE lessence-a8t groups=2
+##WHY a REASON is an event row's identity; SuccessfulCreate and SuccessfulDelete never share a line
+##FROM kubectl get events (scrubbed)
+ifodes-volef   31m         Normal    SuccessfulDelete               statefulset/gitlab-gitaly                              delete Pod gitlab-gitaly-0 in StatefulSet gitlab-gitaly successful
+ifodes-volef   31m         Normal    SuccessfulCreate               statefulset/gitlab-gitaly                              create Pod gitlab-gitaly-0 in StatefulSet gitlab-gitaly successful
+
+##CASE lessence-a8t groups=2
+##WHY a structured logger's caller is its call site; two records that share every field but msg are two events
+##FROM etcd (scrubbed)
+[pod/etcd-de/etcd] {"level":"info","ts":"2026-08-26T07:59:01.801651Z","caller":"mvcc/kvstore_compaction.go:70","msg":"finished scheduled compaction","compact-revision":2360572085,"took":"250.1ms"}
+[pod/etcd-de/etcd] {"level":"info","ts":"2026-08-26T07:59:01.801716Z","caller":"mvcc/hash.go:157","msg":"storing new hash","hash":1649613443,"revision":2360572085,"compact-revision":2360566}
+
+##CASE lessence-a8t groups=2
+##WHY an HTTP status class in a JSON access log is matched, never scored: a 500 is not a 204
+##FROM traefik (scrubbed)
+[pod/traefik-67zzm/traefik] {"ClientAddr":"10.53.18.6:43478","DownstreamStatus":500,"RequestMethod":"POST","RequestPath":"/api/v4/jobs/request","RouterName":"gitlab@kubernetes"}
+[pod/traefik-67zzm/traefik] {"ClientAddr":"10.53.18.6:40304","DownstreamStatus":204,"RequestMethod":"POST","RequestPath":"/api/v4/jobs/request","RouterName":"gitlab@kubernetes"}
+[pod/traefik-bbfg7/traefik] {"ClientAddr":"10.53.18.7:40305","DownstreamStatus":204,"RequestMethod":"POST","RequestPath":"/api/v4/jobs/request","RouterName":"gitlab@kubernetes"}
+
+##CASE lessence-a8t groups=2
+##WHY the kubectl prefix is an anchor: replicas of one workload fold, different workloads with the same container name do not
+##FROM vllm (scrubbed)
+[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render] INFO:     10.100.192.128:53146 - "GET /health HTTP/1.1" 200 OK
+[pod/llm-d-sim-67cb674c47-f86lm/vllm-render] INFO:     10.100.192.129:53147 - "GET /health HTTP/1.1" 200 OK
+[pod/render-twin-gemma4-5c9c5df548-dxqmk/vllm-render] INFO:     10.72.178.55:35848 - "GET /health HTTP/1.1" 200 OK
+[pod/render-twin-gemma4-5c9c5df548-sprtr/vllm-render] INFO:     10.72.178.55:52368 - "GET /health HTTP/1.1" 200 OK
+
+##CASE lessence-a8t groups=2
+##WHY blank stdout from two containers is two groups; the prefix alone tells them apart, and two mons are one daemon
+##FROM rook-ceph (scrubbed)
+[pod/rook-ceph-mgr-a-645c7c5d95-gd5pj/log-collector] 
+[pod/rook-ceph-mon-bp-74f99bc8b4-v8d9g/mon] 
+[pod/rook-ceph-mon-cc-69db7dc6fc-72pbb/mon] 
+
+##CASE lessence-a8t groups=1
+##WHY a content-addressed sha256 path segment is one route id, so identical requests fold across digests
+##FROM the harbor registry (scrubbed)
+[pod/harbor-registry-67777d78c9-b2k6b/registry] 10.195.145.142 - - [29/Aug/2026:00:00:03 +0000] "GET /v2/projects/tups/manifests/sha256:25fef6f1f6fe9f1e4bd6fbfc6b173cc2867c9f0da03e6aa1df030d2a7a049a4c HTTP/1.1" 200 2936 "" "go-containerregistry/v0.14.0"
+[pod/harbor-registry-67777d78c9-b2k6b/registry] 10.195.145.142 - - [29/Aug/2026:00:00:13 +0000] "GET /v2/projects/tups/manifests/sha256:8bd94c55d8e8710e5631589640219a2a4016c99a4d7189aca62b98bb087a7161 HTTP/1.1" 200 2936 "" "go-containerregistry/v0.14.0"
+[pod/harbor-registry-67777d78c9-b2k6b/registry] 10.195.145.142 - - [29/Aug/2026:00:00:23 +0000] "GET /v2/projects/tups/manifests/sha256:9cd94c55d8e8710e5631589640219a2a4016c99a4d7189aca62b98bb087a7162 HTTP/1.1" 200 2936 "" "go-containerregistry/v0.14.0"
+
+##CASE lessence-a8t groups=2
+##WHY the call site a klog message opens with is the code that spoke; the header's is the shim
+##FROM the openebs csi-provisioner (scrubbed)
+[pod/lvm-controller-95d4c9856-vbr64/csi-provisioner] I0829 04:26:56.231168       1 reflector.go:397] k8s.io/client-go/informers/factory.go:160: forcing resync
+[pod/lvm-controller-95d4c9856-vbr64/csi-provisioner] I0829 04:27:08.310956       1 reflector.go:397] sigs.k8s.io/sig-storage-lib-external-provisioner/v11/controller/controller.go:872: forcing resync
+
+##CASE lessence-a8t groups=2
+##WHY a traceback frame is its (file, line, function); frames of one exception do not fold together
+##FROM the grafana sidecar (scrubbed)
+[pod/grafana-7dbb9cd4c-5wqcg/grafana-sc-dashboard]   File "/usr/lib/python3.11/site-packages/urllib3/response.py", line 779, in _error_catcher
+[pod/grafana-7dbb9cd4c-5wqcg/grafana-sc-dashboard]   File "/usr/share/k8s-sidecar/resources.py", line 418, in _watch_resource_loop
+[pod/grafana-7dbb9cd4c-5wqcg/grafana-sc-dashboard]   File "/usr/lib/python3.11/site-packages/urllib3/response.py", line 779, in _error_catcher
+
+##CASE lessence-a8t template_absent=<PORT>
+##WHY a bare word before a colon and a number is a field, not a host: count:26, size:107, Threshold:80
+##FROM cert-manager, etcd and the gateway analytic report (scrubbed)
+Trace[1310679091]: ---"Objects streamed" count:26 30030ms (01:12:26.302)
+{"level":"warn","ts":"2026-08-29T01:11:50.015766Z","caller":"txn/util.go:93","msg":"apply request took too long","took":"4.933661554s","expected-duration":"100ms","prefix":"read-only range ","request":"key:\"rke2/apiaddresses\" ","response":"range_response_count:1 size:107"}
+{"level":"info","msg":"[ workqueue ] [call] run task[memoryMonitor] with args=&{Threshold:90}","time":"2026-08-11T00:31:25+02:00"}

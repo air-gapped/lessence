@@ -11,7 +11,7 @@ use std::time::Duration;
 use crate::config::Config;
 use crate::ingest::IngestReport;
 use crate::normalize::Normalizer;
-use crate::patterns::{LogLine, StatsBucket, Token};
+use crate::patterns::{LogLine, StatsBucket, Token, word_spans};
 
 /// Apply PII masking to original text: email addresses (from detected
 /// tokens) become `<EMAIL>`, then credential-class values (assignments,
@@ -223,32 +223,17 @@ impl PatternGroup {
         self.last_source_id = location.source_id;
     }
 
-    /// A member that differs from the template in a plain word at some
-    /// position — `Timeout` where the first line said `Unreachable` — makes
-    /// that position `<VARIES>`. Placeholders on either side already vary;
-    /// a member with a different word count is skipped, as the rollup's
-    /// VARIES pass skips it, because positions no longer pair up.
+    /// A member that differs from the template at some word — `Timeout`
+    /// where the first line said `Unreachable`, a bare `board` where it said
+    /// `<FQDN>`, `-sdown` read as `<FLAG>` where it said `+sdown` — makes
+    /// that word `<VARIES>`: the template must hold for every member, and a
+    /// placeholder on one side is a claim the other side breaks. A shared
+    /// `key=` / `"key":` prefix is kept (`msg=<VARIES>`), so the field name
+    /// stays on the line. Members with a different word count are aligned
+    /// by longest common subsequence; template words the member lacks vary
+    /// too, since the template cannot show an absence any other way.
     fn mark_varying_words(&mut self, member: &str) {
-        let base = self.template.as_ptr() as usize;
-        let rep: Vec<(usize, usize)> = self
-            .template
-            .split_whitespace()
-            .map(|w| (w.as_ptr() as usize - base, w.len()))
-            .collect();
-        let words: Vec<&str> = member.split_whitespace().collect();
-        if words.len() != rep.len() {
-            return;
-        }
-        let edits: Vec<(usize, usize)> = rep
-            .iter()
-            .zip(&words)
-            .filter(|(span, w)| {
-                let (at, len) = **span;
-                let r = &self.template[at..at + len];
-                r != **w && !r.contains('<') && !w.contains('<')
-            })
-            .map(|(span, _)| *span)
-            .collect();
+        let edits = varying_spans(&self.template, member);
         for (at, len) in edits.into_iter().rev() {
             self.template.replace_range(at..at + len, "<VARIES>");
         }
@@ -923,6 +908,243 @@ fn hash_token_value(token: &Token) -> u64 {
 /// Rollup key for words that differ between members of a group without any
 /// detector having tokenised them. Sample-worthy: the values are the point.
 pub(super) const VARIES: &str = "VARIES";
+/// The placeholder a template shows where its members disagree.
+pub(super) const VARIES_MARK: &str = "<VARIES>";
+
+/// A line may join a group whose founder it disagrees with in at most this
+/// many plain words.
+const MAX_PLAIN_WORD_DIFFS: usize = 1;
+
+/// Word alignment is exact up to this many words a side; past it a member
+/// is aligned positionally when the counts agree and skipped otherwise.
+const MAX_ALIGN_WORDS: usize = 256;
+
+/// For each word of `a`, the index of the word of `b` it pairs with, by
+/// longest common subsequence (positional when the counts agree, which is
+/// the common case and needs no DP). `None` when the lines are too long to
+/// align exactly and differ in word count.
+pub(super) fn align_words(left: &[&str], right: &[&str]) -> Option<Vec<Option<usize>>> {
+    if left.len() == right.len() {
+        return Some((0..left.len()).map(Some).collect());
+    }
+    if left.len() > MAX_ALIGN_WORDS || right.len() > MAX_ALIGN_WORDS {
+        return None;
+    }
+    // lcs[i][j] = LCS length of left[i..] and right[j..]
+    let (rows, cols) = (left.len(), right.len());
+    let mut lcs = vec![0u16; (rows + 1) * (cols + 1)];
+    let idx = |i: usize, j: usize| i * (cols + 1) + j;
+    for i in (0..rows).rev() {
+        for j in (0..cols).rev() {
+            lcs[idx(i, j)] = if left[i] == right[j] {
+                lcs[idx(i + 1, j + 1)] + 1
+            } else {
+                lcs[idx(i + 1, j)].max(lcs[idx(i, j + 1)])
+            };
+        }
+    }
+    let mut out = vec![None; rows];
+    let (mut i, mut j) = (0, 0);
+    while i < rows && j < cols {
+        if left[i] == right[j] {
+            out[i] = Some(j);
+            i += 1;
+            j += 1;
+        } else if lcs[idx(i + 1, j)] >= lcs[idx(i, j + 1)] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+    Some(out)
+}
+
+/// Where a template word and the member's aligned word share a field name —
+/// `msg=Connecting` / `msg=Connected`, `"NodeName":"a"` / `"NodeName":"b"` —
+/// the length of that `key=` / `"key":` prefix, so only the value varies.
+fn shared_key_prefix(r: &str, w: &str) -> usize {
+    let common = r.bytes().zip(w.bytes()).take_while(|(x, y)| x == y).count();
+    let common = common.min(r.len() - 1).min(w.len() - 1);
+    r.as_bytes()[..common]
+        .iter()
+        .rposition(|&b| b == b'=' || b == b':')
+        .map_or(0, |i| i + 1)
+}
+
+/// The template spans a member turns into `<VARIES>`: every aligned pair
+/// that differs (unless the template already varies there), minus a shared
+/// field prefix, plus every template word the member has no counterpart for.
+fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
+    let spans = unit_spans(template);
+    let tmpl: Vec<&str> = spans
+        .iter()
+        .map(|&(at, len)| &template[at..at + len])
+        .collect();
+    let mem: Vec<&str> = unit_spans(member)
+        .into_iter()
+        .map(|(at, len)| &member[at..at + len])
+        .collect();
+    let Some(aligned) = align_words(&tmpl, &mem) else {
+        return Vec::new();
+    };
+    let mut edits = Vec::new();
+    for (i, &(at, len)) in spans.iter().enumerate() {
+        let r = tmpl[i];
+        if r.contains(VARIES_MARK) {
+            continue;
+        }
+        match aligned[i] {
+            Some(j) if mem[j] == r => {}
+            Some(j) => {
+                let k = shared_key_prefix(r, mem[j]);
+                edits.push((at + k, len - k));
+            }
+            None => edits.push((at, len)),
+        }
+    }
+    edits
+}
+
+/// The letters of a word, in order: what the sentence says once digits
+/// and punctuation — the values — are set aside. `slot[2]` and `slot[1]`
+/// read the same; `create` and `delete` do not.
+fn letters(w: &str) -> impl Iterator<Item = u8> + '_ {
+    w.bytes().filter(u8::is_ascii_alphabetic)
+}
+
+/// The value of a `key=value` / `key:value` / `"key":value` word when its
+/// key is a plain identifier; `None` for a structured key such as
+/// `k8s:app` or `1:S`, whose whole word is data.
+fn field_value(w: &str) -> Option<&str> {
+    let plain = |k: &str| {
+        k.bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+            && k.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    };
+    if let Some(rest) = w.strip_prefix('"')
+        && let Some(i) = rest.find("\":")
+    {
+        return plain(&rest[..i]).then(|| &rest[i + 2..]);
+    }
+    match w.find(['=', ':']) {
+        Some(i) => plain(&w[..i]).then(|| &w[i + 1..]),
+        None => Some(w),
+    }
+}
+
+/// A word that is data, not sentence: a whole quoted value (`"icip"`), a
+/// placeholder, a dotted or slashed name, a URL, a structured key. Two data
+/// words may differ freely — a line may vary in as many values as it
+/// likes. Everything else is a word of the sentence.
+fn data_shaped(w: &str) -> bool {
+    let w = w
+        .trim_start_matches(['+', '-', '(', '['])
+        .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']']);
+    let Some(v) = field_value(w) else {
+        return true;
+    };
+    (v.len() >= 2 && v.starts_with('"') && v.ends_with('"'))
+        || v.bytes()
+            .any(|b| matches!(b, b'/' | b'.' | b'*' | b'<' | b'>' | b'\\' | b'@' | b'='))
+}
+
+/// The units of a line: its words, except that a quoted string with spaces
+/// in it — `controller="crt configmap"`, `err="context deadline exceeded"`
+/// — is one unit, because a value with spaces is still one value. Byte
+/// spans into `s`, each covering the words of the unit and the spaces
+/// between them.
+pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
+    let mut units: Vec<(usize, usize)> = Vec::with_capacity(16);
+    let mut open: Option<usize> = None;
+    for (at, len) in word_spans(s) {
+        let quotes = s[at..at + len].bytes().filter(|&b| b == b'"').count();
+        match open {
+            Some(start) => {
+                if quotes % 2 == 1 {
+                    units.push((start, at + len - start));
+                    open = None;
+                }
+            }
+            None => {
+                if quotes % 2 == 1 {
+                    open = Some(at);
+                } else {
+                    units.push((at, len));
+                }
+            }
+        }
+    }
+    if let Some(start) = open
+        && let Some(&(at, len)) = word_spans(s).collect::<Vec<_>>().last()
+    {
+        units.push((start, at + len - start));
+    }
+    units
+}
+
+/// How many words two lines disagree in where the disagreement is one of
+/// sentence, not of value: the letters differ and at least one side is not
+/// data. `Fork CoW for RDB` against `Fork CoW for AOF rewrite` is three,
+/// `user alice` against `user bob` is one, and `Failed to watch *v1.Node:
+/// nodes … "nodes"` against the same for pods is one (`nodes`; the typed
+/// and quoted forms are values). A quoted value with spaces is one unit:
+/// `"crt configmap"` against `"token_cleaner"` is one, while a quoted
+/// sentence still counts each word that changed.
+pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
+    let differs =
+        |x: &str, y: &str| !(letters(x).eq(letters(y)) || (data_shaped(x) && data_shaped(y)));
+    let lone = |x: &str| letters(x).next().is_some() && !data_shaped(x);
+    let ua: Vec<&str> = unit_spans(a)
+        .into_iter()
+        .map(|(at, len)| &a[at..at + len])
+        .collect();
+    let ub: Vec<&str> = unit_spans(b)
+        .into_iter()
+        .map(|(at, len)| &b[at..at + len])
+        .collect();
+    let Some(aligned) = align_words(&ua, &ub) else {
+        return 0;
+    };
+    // Two units that differ: word by word, for single words and quoted
+    // sentences alike; a unit shorter than its counterpart is at most one
+    // further disagreement — a value that gained a word is still one value.
+    let unit_diffs = |x: &str, y: &str| -> usize {
+        let xs: Vec<&str> = x.split_whitespace().collect();
+        let ys: Vec<&str> = y.split_whitespace().collect();
+        let n = xs.len().min(ys.len());
+        let mut d = xs
+            .iter()
+            .zip(&ys)
+            .filter(|(p, q)| p != q && differs(p, q))
+            .count();
+        if xs.len() != ys.len() {
+            d += usize::from(xs[n..].iter().chain(&ys[n..]).any(|w| lone(w)));
+        }
+        d
+    };
+    let lone_unit = |u: &str| u.split_whitespace().any(lone);
+    let mut matched_b = vec![false; ub.len()];
+    let mut diffs = 0;
+    for (i, &x) in ua.iter().enumerate() {
+        match aligned[i] {
+            Some(j) => {
+                matched_b[j] = true;
+                if x != ub[j] {
+                    diffs += unit_diffs(x, ub[j]);
+                }
+            }
+            None if lone_unit(x) => diffs += 1,
+            None => {}
+        }
+    }
+    diffs
+        + ub.iter()
+            .zip(&matched_b)
+            .filter(|(u, m)| !**m && lone_unit(u))
+            .count()
+}
 
 fn seed_for_group(normalized: &str) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
@@ -1164,35 +1386,44 @@ impl RollupComputer {
         // Every word is counted, the representative's included, because an
         // agent reading `Server Busy` needs to know that one member in 7,165
         // said `Server Reject` — the count is what makes rare visible.
-        let rep: Vec<&str> = group.first().normalized.split_whitespace().collect();
-        let mut varying: Vec<usize> = Vec::new();
-        for line in group.lines.iter().skip(1) {
-            let words: Vec<&str> = line.normalized.split_whitespace().collect();
-            // A different word count means the lines differ in structure,
-            // which the similarity metric already tolerated; positional
-            // pairing would misattribute every word after the gap.
-            if words.len() != rep.len() {
-                continue;
-            }
-            for (i, (r, w)) in rep.iter().zip(&words).enumerate() {
-                if r != w && !w.contains('<') && !r.contains('<') && !varying.contains(&i) {
-                    varying.push(i);
-                }
-            }
-        }
+        // The template is authoritative: every `<VARIES>` it carries is a
+        // slot, and each member's word aligned to that slot is counted —
+        // minus the `key=` prefix the slot kept. A member that has no word
+        // there (a shorter line) counts as `∅`, so an absence is visible.
+        let template = group.template();
+        let tmpl_words: Vec<&str> = unit_spans(template)
+            .into_iter()
+            .map(|(at, len)| &template[at..at + len])
+            .collect();
+        let slots: Vec<(usize, usize)> = tmpl_words
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| w.find(VARIES_MARK).map(|k| (i, k)))
+            .collect();
         let mut varies: HashMap<String, usize> = HashMap::new();
         let mut varies_capped = false;
-        if !varying.is_empty() {
+        if !slots.is_empty() {
             for line in &group.lines {
-                let words: Vec<&str> = line.normalized.split_whitespace().collect();
-                if words.len() != rep.len() {
+                let member: Vec<&str> = unit_spans(&line.normalized)
+                    .into_iter()
+                    .map(|(at, len)| &line.normalized[at..at + len])
+                    .collect();
+                let Some(aligned) = align_words(&tmpl_words, &member) else {
                     continue;
-                }
-                for &i in &varying {
-                    if let Some(n) = varies.get_mut(words[i]) {
+                };
+                for &(i, k) in &slots {
+                    let value = match aligned[i] {
+                        Some(j) => {
+                            let w = member[j];
+                            let prefix = &tmpl_words[i][..k];
+                            w.strip_prefix(prefix).unwrap_or(w)
+                        }
+                        None => "∅",
+                    };
+                    if let Some(n) = varies.get_mut(value) {
                         *n += 1;
                     } else if varies.len() < self.distinct_cap {
-                        varies.insert(words[i].to_string(), 1);
+                        varies.insert(value.to_string(), 1);
                     } else {
                         varies_capped = true;
                     }
@@ -1468,9 +1699,18 @@ impl PatternFolder {
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
-            self.buffer
-                .iter()
-                .position(|group| self.normalizer.are_similar(&normalized_line, group.first()))
+            // Similar is not the same: a line that agrees with a group's
+            // founder in shape but disagrees in two plain words — the verb
+            // and the outcome, the subsystem and the state — is another
+            // event that happens to read alike (`Synchronization … succeeded`
+            // beside `Connection … lost.`). One differing word is a name or
+            // a value and folds; two are a different sentence.
+            self.buffer.iter().position(|group| {
+                let first = group.first();
+                self.normalizer.are_similar(&normalized_line, first)
+                    && plain_word_diffs(&normalized_line.normalized, &first.normalized)
+                        <= MAX_PLAIN_WORD_DIFFS
+            })
         };
 
         if let Some(index) = match_index {

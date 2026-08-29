@@ -47,8 +47,14 @@ static IPV6_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
 // Port numbers - only after hostnames, not in time formats or source file:line patterns
 // Matches hostname:port but avoids HH:MM:SS patterns and file.go:1234] patterns
 // Note: We'll filter out file:line patterns in the detection logic
-static PORT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9.-]*):([1-9]\d{1,4})\b").unwrap());
+// `host:port` where the host is a dotted name or `localhost`. A bare word
+// before a colon and a number is a field — `count:26`, `size:107`,
+// `Threshold:80`, `vid:1044` — and read as a port it became a false claim
+// on every line that carried one; `harbor-core:80` pays for that by staying
+// literal, which loses nothing an agent needs.
+static PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"((?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+|localhost):([1-9]\d{1,4})\b").unwrap()
+});
 
 // IPv4:Port combinations
 static IPV4_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -1164,6 +1170,28 @@ mod tests {
 
     /// A port sits after a whole word; a number after a word fragment or
     /// before another colon is something else.
+    #[test]
+    fn a_bare_word_before_a_colon_is_a_field_not_a_host() {
+        for (input, expected) in [
+            ("count:26 objects", "count:26 objects"),
+            ("size:107 bytes", "size:107 bytes"),
+            ("args=&{Threshold:80}", "args=&{Threshold:80}"),
+            ("CacheBlockSize:1600 x", "CacheBlockSize:1600 x"),
+            ("dial harbor-core:80 ok", "dial harbor-core:80 ok"),
+            (
+                "dial redis.svc.cluster.local:6379",
+                "dial redis.svc.cluster.local:<PORT>",
+            ),
+        ] {
+            let (r, t) = NetworkDetector::detect_and_replace(input, false, true, false);
+            assert_eq!(r, expected, "input: {input}");
+            assert_eq!(
+                t.iter().any(|t| matches!(t, Token::Port(_))),
+                expected.contains("<PORT>")
+            );
+        }
+    }
+
     #[test]
     fn a_port_stands_alone() {
         for (input, expected) in [
