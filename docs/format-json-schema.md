@@ -113,20 +113,24 @@ Each value records both the bounded data and how to interpret its counts:
 |---|---|---|
 | `distinct_count` | integer | Number of distinct values seen for this token type across the group's lines. When `capped: true`, this is a lower bound (`≥ ROLLUP_DISTINCT_CAP`). |
 | `distinct_count_kind` | `"exact"` \| `"lower_bound"` | Explicit interpretation of `distinct_count`. |
-| `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically. Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>`, email values embedded in other types' samples are masked as well, and credential-class values in samples are masked (`<SECRET>`/`<JWT>`/`<KEY>`). |
+| `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically (`VARIES`: by count, most frequent first, rarest last). Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>`, email values embedded in other types' samples are masked as well, and credential-class values in samples are masked (`<SECRET>`/`<JWT>`/`<KEY>`). |
 | `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation and further distinct values were dropped. `false` means `distinct_count` is exact. |
+| `sample_counts` | array of integers | `VARIES` only: how many of the group's lines carried each entry of `samples`, same order. Absent on every other type. |
 | `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
 | `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |
 
 ### Sample-worthy vs count-only token types
 
 **`VARIES`** is not a token type. It reports words that differ between a
-group's members which no detector tokenised — `Configuring patroni` folded
-with `Configuring crontab` on similarity, and without this entry the rollup
-would claim one distinct value over ten. Sample-worthy; the values are the
-point. Computed positionally against the representative, so members with a
-different word count contribute nothing rather than misattribute a shifted
-tail. Absent when nothing untokenised varied.
+group's members which no detector tokenised — `Unreachable` folded with
+`Timeout` on similarity — and the group's `normalized` template shows
+`<VARIES>` at that position, so the shown line never claims a word half the
+members lack. Every member's word is counted (`sample_counts`), and the
+samples are the most frequent ones plus the rarest: `Server Busy` ×7,164 with
+one `Server Reject` is visible as `["Busy","Reject"]` / `[7164, 1]`, not as
+"distinct_count 2". Computed positionally against the representative, so
+members with a different word count contribute nothing rather than
+misattribute a shifted tail. Absent when nothing untokenised varied.
 
 **Sample-worthy** (identity types — samples are useful): `UUID`,
 `IPV4`, `IPV6`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,

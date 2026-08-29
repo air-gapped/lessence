@@ -124,6 +124,7 @@ is a `"summary"` with aggregate statistics. Key fields per group:
 
 - **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation. Hostnames appear under their own `FQDN` key since 0.4.4 (older versions mislabeled them `IPV4`).
 - **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION).
+- **`VARIES`** — words no detector tokenised that differ inside the group (`Unreachable` vs `Timeout`, `Busy` vs `Reject`); the group's `normalized` shows `<VARIES>` at that position. Its `samples` are ordered by `sample_counts` (most frequent first, the rarest last), so a 1-in-7,000 outcome is visible without reading the raw lines. Text mode shows the same as `varies×N {word×count, …}`.
 - **`capped: true`** — distinct_count is a lower bound (at least 64 and possibly more).
 - **`normalized`** — the template with `<TOKEN>` placeholders; this is what lessence groups by.
 

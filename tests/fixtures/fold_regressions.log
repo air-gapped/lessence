@@ -405,7 +405,7 @@ type=NETFILTER_CFG msg=audit(1481076985.580:66): table=mangle family=2 entries=6
 type=NETFILTER_CFG msg=audit(1481076985.582:67): table=mangle family=2 entries=6
 type=NETFILTER_CFG msg=audit(1481076985.583:68): table=mangle family=2 entries=6
 
-##CASE lessence-w1p out_present=varies×2 {6, 7}
+##CASE lessence-w1p out_present=varies×2 {6×2, 7×1}
 ##WHY two lines that fold on similarity but differ in an untokenised word must report
 ##WHY  that word in the rollup — the invariant "zero data loss" held only for tokens
 ##FROM examples/apache_sample.log — 29 lines said "state 6" for 7 that said "state 7"
@@ -601,3 +601,17 @@ time=2025-08-30T14:36:51Z level=info msg="Upserted policy to repository" module=
 ##WHY `~` is a path character; the path used to be cut at kubernetes.io~projected
 ##FROM the journalctl corpus
 Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7d\x2d4e8f\x2d9a0b\x2d1c2d3e4f5a6b-volumes-kubernetes.io\x7eprojected-ceph\x2dcsi\x2dconfigs.mount - /var/lib/kubelet/pods/3f1c9a2e-5b7d-4e8f-9a0b-1c2d3e4f5a6b/volumes/kubernetes.io~projected/ceph-csi-configs...
+
+##CASE lessence-098 template_present=reporter_fail(): <VARIES> (<PATH>
+##WHY the shown line must hold for every member: 16,846 Unreachable, 3,002 Timeout and 42 Unknown[13] used to fold under a line that said Unreachable
+##FROM the gateway error log (scrubbed)
+2025-06-26T00:45:25+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Unreachable (http://unifi:8080/inform)
+2025-10-03T05:11:57+02:00 UXG Max mcad[2872]: ace_reporter.reporter_fail(): Timeout (http://unifi:8080/inform)
+2025-09-22T03:38:42+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Unknown[13] (http://10.59.118.9:8080/inform)
+
+##CASE lessence-098 out_present=varies×2 {Busy×2, Reject×1}
+##WHY the one Server Reject among the Server Busy lines is visible on the marker, with its count
+##FROM the gateway error log (scrubbed)
+2025-09-15T03:35:29+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Server Busy (http://10.59.118.9:8080/inform)
+2025-09-14T15:05:19+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Server Reject (http://10.59.118.9:8080/inform)
+2025-09-15T03:36:29+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Server Busy (http://10.59.118.9:8080/inform)

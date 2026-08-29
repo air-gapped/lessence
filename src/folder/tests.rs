@@ -935,6 +935,7 @@ fn marker_inline_samples_below_threshold() {
             distinct_count: 2,
             samples: vec!["/var/a".into(), "/var/b".into()],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3, false);
@@ -956,6 +957,7 @@ fn marker_count_only_above_threshold() {
                 "/e".into(),
             ],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3, false);
@@ -972,6 +974,7 @@ fn marker_capped_entry_has_plus_suffix() {
             distinct_count: 64,
             samples: vec!["abc".into(), "def".into()],
             capped: true,
+            counts: None,
         },
     );
     let result = render_compact_marker(100, &rollup, None, None, 3, false);
@@ -1026,6 +1029,7 @@ fn marker_sample_truncation_at_50_chars() {
             distinct_count: 2,
             samples: vec![exact_value.clone(), long_value],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3, false);
@@ -1051,6 +1055,7 @@ fn marker_multiple_entries_comma_separated() {
             distinct_count: 4,
             samples: vec!["10.0.0.1".into(), "10.0.0.2".into()],
             capped: false,
+            counts: None,
         },
     );
     rollup.insert(
@@ -1059,6 +1064,7 @@ fn marker_multiple_entries_comma_separated() {
             distinct_count: 7,
             samples: vec!["aaa".into(), "bbb".into()],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3, false);
@@ -1080,6 +1086,7 @@ fn marker_count_only_types_filtered_out() {
             distinct_count: 500,
             samples: vec![],
             capped: false,
+            counts: None,
         },
     );
     rollup.insert(
@@ -1088,6 +1095,7 @@ fn marker_count_only_types_filtered_out() {
             distinct_count: 3,
             samples: vec!["a".into(), "b".into(), "c".into()],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3, false);
@@ -1116,6 +1124,7 @@ fn marker_zero_distinct_count_filtered_out() {
             distinct_count: 0,
             samples: vec![],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3, false);
@@ -1137,6 +1146,7 @@ fn marker_truncation_exact_length() {
             distinct_count: 1,
             samples: vec![long_value],
             capped: false,
+            counts: None,
         },
     );
     let result = render_compact_marker(5, &rollup, None, None, 3, false);
@@ -1356,6 +1366,70 @@ fn varies_reports_words_no_detector_tokenised() {
     assert_eq!(v.distinct_count, 3);
     assert_eq!(v.samples, vec!["bootstrap", "crontab", "patroni"]);
     assert!(!v.capped);
+}
+
+#[test]
+fn the_template_says_varies_where_members_disagree() {
+    // lessence-098: 16,846 `Unreachable`, 3,002 `Timeout` and 42
+    // `Unknown[13]` folded under a line that said `Unreachable`. The shown
+    // template must hold for every member, so the word becomes <VARIES>
+    // and the rollup carries each word with its count, rarest included.
+    let mut f = make_folder();
+    for l in [
+        "2025-06-26T00:45:25+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Unreachable (http://unifi:8080/inform)",
+        "2025-06-26T00:45:26+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Unreachable (http://unifi:8080/inform)",
+        "2025-06-26T00:45:27+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Timeout (http://unifi:8080/inform)",
+        "2025-06-26T00:45:28+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Unreachable (http://unifi:8080/inform)",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1, "the score still folds them");
+    assert_eq!(
+        f.buffer[0].template(),
+        "<TIMESTAMP> UXG Max mcad[<PID>]: ace_reporter.reporter_fail(): <VARIES> (<PATH>"
+    );
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].samples, vec!["Unreachable", "Timeout"]);
+    assert_eq!(r[VARIES].counts, Some(vec![3, 1]));
+    assert!(
+        r.iter().all(|(k, e)| (*k == VARIES) == e.counts.is_some()),
+        "counts are for words only: {r:?}"
+    );
+}
+
+#[test]
+fn varies_samples_are_the_most_frequent_and_the_rarest() {
+    // Nine distinct words, K is 7: the six most frequent, then the one
+    // that appeared once — the rare value is the one an agent must see.
+    let mut lines: Vec<String> = Vec::new();
+    for (word, n) in [
+        ("alpha", 9),
+        ("bravo", 8),
+        ("charlie", 7),
+        ("delta", 6),
+        ("echo", 5),
+        ("foxtrot", 4),
+        ("golf", 3),
+        ("hotel", 2),
+        ("india", 1),
+    ] {
+        for _ in 0..n {
+            lines.push(format!(
+                "worker finished the nightly batch job with status {word} ok"
+            ));
+        }
+    }
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let r = rollup_of(&refs);
+    let v = &r[VARIES];
+    assert_eq!(v.distinct_count, 9);
+    assert_eq!(
+        v.samples,
+        vec![
+            "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "india"
+        ]
+    );
+    assert_eq!(v.counts, Some(vec![9, 8, 7, 6, 5, 4, 1]));
 }
 
 #[test]

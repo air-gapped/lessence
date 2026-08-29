@@ -107,6 +107,11 @@ fn mask_credentials(text: &str) -> String {
 #[derive(Debug)]
 struct PatternGroup {
     lines: Vec<LogLine>,
+    /// What is shown for the group. Starts as the first line's normalized
+    /// form; a merged member that differs in a plain word turns that word
+    /// into `<VARIES>`, so the template never claims a word half the
+    /// members lack (lessence-098).
+    template: String,
     position: usize, // Position when first line was encountered
     /// Input line number of the first line in this group (1-indexed).
     /// Used by the JSON output path; ignored by text/markdown formatting.
@@ -194,6 +199,7 @@ impl PatternGroup {
 
     fn new_at(line: LogLine, position: usize, location: LineLocation) -> Self {
         Self {
+            template: line.normalized.clone(),
             lines: vec![line],
             position,
             first_line_no: location.line_no,
@@ -209,9 +215,49 @@ impl PatternGroup {
     }
 
     fn add_line_at(&mut self, line: LogLine, location: LineLocation) {
+        if line.hash != self.lines[0].hash {
+            self.mark_varying_words(&line.normalized);
+        }
         self.lines.push(line);
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
+    }
+
+    /// A member that differs from the template in a plain word at some
+    /// position — `Timeout` where the first line said `Unreachable` — makes
+    /// that position `<VARIES>`. Placeholders on either side already vary;
+    /// a member with a different word count is skipped, as the rollup's
+    /// VARIES pass skips it, because positions no longer pair up.
+    fn mark_varying_words(&mut self, member: &str) {
+        let base = self.template.as_ptr() as usize;
+        let rep: Vec<(usize, usize)> = self
+            .template
+            .split_whitespace()
+            .map(|w| (w.as_ptr() as usize - base, w.len()))
+            .collect();
+        let words: Vec<&str> = member.split_whitespace().collect();
+        if words.len() != rep.len() {
+            return;
+        }
+        let edits: Vec<(usize, usize)> = rep
+            .iter()
+            .zip(&words)
+            .filter(|(span, w)| {
+                let (at, len) = **span;
+                let r = &self.template[at..at + len];
+                r != **w && !r.contains('<') && !w.contains('<')
+            })
+            .map(|(span, _)| *span)
+            .collect();
+        for (at, len) in edits.into_iter().rev() {
+            self.template.replace_range(at..at + len, "<VARIES>");
+        }
+    }
+
+    /// The shown form of the group: the first line's template with
+    /// `<VARIES>` wherever members disagreed in a plain word.
+    pub(super) fn template(&self) -> &str {
+        &self.template
     }
 
     fn should_collapse(&self, min_collapse: usize) -> bool {
@@ -771,6 +817,8 @@ struct VariationEntry {
     pub distinct_count: usize,
     pub samples: Vec<String>,
     pub capped: bool,
+    /// VARIES only: how many members carried each sample, same order.
+    pub counts: Option<Vec<usize>>,
 }
 
 #[derive(Serialize)]
@@ -778,6 +826,8 @@ struct JsonVariationEntry {
     distinct_count: usize,
     distinct_count_kind: &'static str,
     samples: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sample_counts: Option<Vec<usize>>,
     capped: bool,
     samples_complete: bool,
     omitted_sample_values: Count,
@@ -796,6 +846,7 @@ impl From<VariationEntry> for JsonVariationEntry {
                 Count::exact(omitted)
             },
             samples: entry.samples,
+            sample_counts: entry.counts,
             capped: entry.capped,
         }
     }
@@ -958,8 +1009,23 @@ fn render_compact_marker(
             if entry.capped {
                 out.push('+');
             }
-            // Inline samples when the full distinct set fits.
-            if entry.distinct_count <= inline_threshold
+            // Inline samples when the full distinct set fits. Words no
+            // detector claimed are shown with their counts whatever the
+            // set size: the distribution is the point.
+            if let Some(counts) = &entry.counts {
+                out.push_str(" {");
+                let shown: Vec<String> = entry
+                    .samples
+                    .iter()
+                    .zip(counts)
+                    .map(|(s, n)| format!("{}×{n}", truncate_sample(s)))
+                    .collect();
+                out.push_str(&shown.join(", "));
+                if entry.distinct_count > entry.samples.len() {
+                    out.push_str(", …");
+                }
+                out.push('}');
+            } else if entry.distinct_count <= inline_threshold
                 && !entry.capped
                 && !entry.samples.is_empty()
             {
@@ -984,6 +1050,9 @@ enum Accumulator {
     Values(HashSet<String>),
     /// Count-only: retain only hashes so memory stays bounded.
     Hashes(HashSet<u64>),
+    /// Words no detector claimed, with how many members carried each: the
+    /// samples are the most frequent plus the rarest, never a random draw.
+    Counted(HashMap<String, usize>),
 }
 
 impl Accumulator {
@@ -991,6 +1060,7 @@ impl Accumulator {
         match self {
             Self::Values(s) => s.len(),
             Self::Hashes(s) => s.len(),
+            Self::Counted(m) => m.len(),
         }
     }
 }
@@ -1068,6 +1138,8 @@ impl RollupComputer {
                             s.insert(hash_token_value(token));
                         }
                     }
+                    // words are counted in their own pass below
+                    Accumulator::Counted(_) => {}
                 }
             }
         }
@@ -1080,9 +1152,11 @@ impl RollupComputer {
         // for tokenised variation (lessence-w1p). Compare each member to the
         // representative word by word; a differing word that is not a
         // placeholder is reported under VARIES like any other type.
+        // Every word is counted, the representative's included, because an
+        // agent reading `Server Busy` needs to know that one member in 7,165
+        // said `Server Reject` — the count is what makes rare visible.
         let rep: Vec<&str> = group.first().normalized.split_whitespace().collect();
-        let mut varies: HashSet<String> = HashSet::new();
-        let mut varies_capped = false;
+        let mut varying: Vec<usize> = Vec::new();
         for line in group.lines.iter().skip(1) {
             let words: Vec<&str> = line.normalized.split_whitespace().collect();
             // A different word count means the lines differ in structure,
@@ -1091,22 +1165,31 @@ impl RollupComputer {
             if words.len() != rep.len() {
                 continue;
             }
-            for (r, w) in rep.iter().zip(&words) {
-                if r == w || w.contains('<') || r.contains('<') {
-                    continue;
-                }
-                if varies.len() >= self.distinct_cap {
-                    varies_capped = true;
-                    break;
-                }
-                varies.insert((*w).to_string());
-                if !varies.contains(*r) && varies.len() < self.distinct_cap {
-                    varies.insert((*r).to_string());
+            for (i, (r, w)) in rep.iter().zip(&words).enumerate() {
+                if r != w && !w.contains('<') && !r.contains('<') && !varying.contains(&i) {
+                    varying.push(i);
                 }
             }
         }
-        if !varies.is_empty() {
-            per_type.insert(VARIES, (Accumulator::Values(varies), varies_capped));
+        let mut varies: HashMap<String, usize> = HashMap::new();
+        let mut varies_capped = false;
+        if !varying.is_empty() {
+            for line in &group.lines {
+                let words: Vec<&str> = line.normalized.split_whitespace().collect();
+                if words.len() != rep.len() {
+                    continue;
+                }
+                for &i in &varying {
+                    if let Some(n) = varies.get_mut(words[i]) {
+                        *n += 1;
+                    } else if varies.len() < self.distinct_cap {
+                        varies.insert(words[i].to_string(), 1);
+                    } else {
+                        varies_capped = true;
+                    }
+                }
+            }
+            per_type.insert(VARIES, (Accumulator::Counted(varies), varies_capped));
         }
 
         // Finalise: draw samples deterministically from each Accumulator.
@@ -1135,6 +1218,31 @@ impl RollupComputer {
                     drawn
                 }
                 Accumulator::Hashes(_) => Vec::new(),
+                Accumulator::Counted(m) => {
+                    let mut by_count: Vec<(String, usize)> = m.into_iter().collect();
+                    by_count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                    let mut picked: Vec<(String, usize)> = if by_count.len() > self.k {
+                        // the top k-1, and the rarest: rare is signal
+                        let rarest = by_count.pop().unwrap();
+                        by_count.truncate(self.k - 1);
+                        by_count.push(rarest);
+                        by_count
+                    } else {
+                        by_count
+                    };
+                    let counts: Vec<usize> = picked.iter().map(|(_, n)| *n).collect();
+                    let samples: Vec<String> = picked.drain(..).map(|(w, _)| w).collect();
+                    out.insert(
+                        name,
+                        VariationEntry {
+                            distinct_count,
+                            samples,
+                            capped,
+                            counts: Some(counts),
+                        },
+                    );
+                    continue;
+                }
             };
             out.insert(
                 name,
@@ -1142,6 +1250,7 @@ impl RollupComputer {
                     distinct_count,
                     samples,
                     capped,
+                    counts: None,
                 },
             );
         }
@@ -1460,7 +1569,7 @@ impl PatternFolder {
         // separate for chronological ordering, but summary wants global counts)
         let mut merged: HashMap<String, (usize, String)> = HashMap::new();
         for group in &self.buffer {
-            let key = group.first().normalized.clone();
+            let key = group.template().to_string();
             let count = group.count();
             // The summary shows original lines, so --sanitize-pii masks
             // the representative here, before any renderer sees it.
@@ -1595,7 +1704,7 @@ impl PatternFolder {
         // iteration order shuffles tied entries past the cap).
         groups_with_counts.sort_by(|a, b| {
             b.0.cmp(&a.0)
-                .then_with(|| a.1.first().normalized.cmp(&b.1.first().normalized))
+                .then_with(|| a.1.template().cmp(b.1.template()))
         });
 
         let total_groups = groups_with_counts.len();

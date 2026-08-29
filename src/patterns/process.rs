@@ -22,12 +22,28 @@ static THREAD_NAME_REGEX: LazyLock<Regex> =
 // Generic numeric ID in various contexts
 static NUMERIC_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bid=(\d+)\b").unwrap());
 
+// The klog header's pid column: `E0910 00:02:39.914326       1 status.go:71]`.
+// By the time this runs the timestamp and the call site are placeholders;
+// the number between them is a pid whatever its digit count (`1` in a
+// container, `114343` on a node), so the slot says so.
+static KLOG_PID_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(<TIMESTAMP>\s+)(\d+)( [A-Za-z0-9_]+\.go:<LINE>\])").unwrap());
+
 pub struct ProcessDetector;
 
 impl ProcessDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
+
+        if result.contains(".go:<LINE>]") {
+            super::fold_matches(&mut result, &mut tokens, &KLOG_PID_REGEX, |caps| {
+                Some((
+                    Token::Pid(caps[2].parse().unwrap_or(0)),
+                    format!("{}<PID>{}", &caps[1], &caps[3]),
+                ))
+            });
+        }
 
         // PID in brackets like [pid=12345] or [12345]
         for cap in PID_BRACKET_REGEX.captures_iter(text) {
@@ -145,6 +161,23 @@ impl ProcessDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The klog pid column is a pid whether it reads `1` or `114343`.
+    #[test]
+    fn klog_pid_column_is_a_pid_whatever_its_digits() {
+        for n in ["1", "114343"] {
+            let (r, t) = ProcessDetector::detect_and_replace(&format!(
+                "<TIMESTAMP>       {n} status.go:<LINE>] \"Unhandled Error\""
+            ));
+            assert_eq!(
+                r,
+                "<TIMESTAMP>       <PID> status.go:<LINE>] \"Unhandled Error\""
+            );
+            assert!(t.iter().any(|t| matches!(t, Token::Pid(_))));
+        }
+        let (r, _) = ProcessDetector::detect_and_replace("<TIMESTAMP> 1 status.go:<LINE>] x 1 y");
+        assert_eq!(r, "<TIMESTAMP> <PID> status.go:<LINE>] x 1 y");
+    }
 
     #[test]
     fn test_pid_bracket_detection() {

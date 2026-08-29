@@ -97,6 +97,11 @@ fn variation_samples_are_sorted_lexicographically() {
     for rec in records.iter().filter(|r| r["type"] == "group") {
         let variation = rec["variation"].as_object().unwrap();
         for (key, entry) in variation {
+            if key == "VARIES" {
+                // words are ordered by count, most frequent first, the
+                // rarest last — the distribution is the point there
+                continue;
+            }
             let samples: Vec<&str> = entry["samples"]
                 .as_array()
                 .unwrap()

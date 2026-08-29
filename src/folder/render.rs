@@ -118,7 +118,7 @@ impl PatternFolder {
             // Detectors tokenize emails out of the normalized text, but
             // credential values they don't tokenize survive in it — mask
             // this field like first/last, not just the raw lines.
-            normalized: self.maybe_mask_pii(&group.first().normalized, &group.first().tokens),
+            normalized: self.maybe_mask_pii(group.template(), &group.first().tokens),
             first: LineRef {
                 source: self.source_name(group.first_source_id),
                 line: self.maybe_mask_pii(&group.first().original, &group.first().tokens),
@@ -181,9 +181,9 @@ impl PatternFolder {
 
             // Format output: first line, collapsed summary, last line
             let mut result = String::new();
-            let first_line = if self.config.essence_mode {
-                // Constitutional essence mode: use timestamp-removed text
-                &group.first().normalized
+            let first_line: &str = if self.config.essence_mode {
+                // Constitutional essence mode: the group's template
+                group.template()
             } else {
                 // Standard mode: use original text (with optional PII masking)
                 &group.first().original
@@ -196,7 +196,7 @@ impl PatternFolder {
 
             // Only add last line if it's different from first
             if group.count() > 1 {
-                let last_line = if self.config.essence_mode {
+                let last_line: &str = if self.config.essence_mode {
                     // Constitutional essence mode: use timestamp-removed text
                     &group.last().normalized
                 } else {
@@ -221,8 +221,7 @@ impl PatternFolder {
 
             if self.config.essence_mode {
                 // In essence mode, show only the first occurrence of each unique pattern
-                let line_text =
-                    self.maybe_mask_pii(&group.first().normalized, &group.first().tokens);
+                let line_text = self.maybe_mask_pii(group.template(), &group.first().tokens);
                 result.push_str(&line_text);
                 // Track lines saved (all duplicate lines in the group)
                 if group.count() > 1 {
