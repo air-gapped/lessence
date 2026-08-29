@@ -168,6 +168,18 @@ impl NetworkDetector {
         false
     }
 
+    /// A `word:port` match that starts inside a longer word
+    /// (`utm_cloud_is_alive:46` matched from `alive`) or whose number is
+    /// followed by another colon (`alive:46:` is a source line reference)
+    /// is not a host and port.
+    fn port_stands_alone(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let glued =
+            m.start() > 0 && (b[m.start() - 1].is_ascii_alphanumeric() || b[m.start() - 1] == b'_');
+        let line_ref = m.end() < b.len() && b[m.end()] == b':';
+        !glued && !line_ref
+    }
+
     /// The match continues as `:hh` on either side: part of a longer chain.
     fn in_longer_colon_chain(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
@@ -303,6 +315,7 @@ impl NetworkDetector {
                 // Skip if this looks like a source file:line pattern (ends with ])
                 // or two groups of a colon-hex chain (`b3:20` in a fingerprint)
                 if Self::in_longer_colon_chain(&result, &cap.get(0).unwrap())
+                    || !Self::port_stands_alone(&result, &cap.get(0).unwrap())
                     || full_match.ends_with(']')
                     || hostname.ends_with(".go")
                     || hostname.ends_with(".rs")
@@ -333,6 +346,7 @@ impl NetworkDetector {
 
                     // Skip if this looks like a source file:line pattern
                     if Self::in_longer_colon_chain(&result, &caps.get(0).unwrap())
+                        || !Self::port_stands_alone(&result, &caps.get(0).unwrap())
                         || full_match.ends_with(']')
                         || hostname.ends_with(".go")
                         || hostname.ends_with(".rs")
@@ -1146,6 +1160,26 @@ mod tests {
                 .any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
             "trailing dot FQDN should not produce token: {tokens:?}"
         );
+    }
+
+    /// A port sits after a whole word; a number after a word fragment or
+    /// before another colon is something else.
+    #[test]
+    fn a_port_stands_alone() {
+        for (input, expected) in [
+            (
+                "[ERROR] utm_cloud_is_alive:46: UTM Cloud x",
+                "[ERROR] utm_cloud_is_alive:46: UTM Cloud x",
+            ),
+            ("dial localhost:8080 ok", "dial localhost:<PORT> ok"),
+            (
+                "at db.example.com:5432, done",
+                "at db.example.com:<PORT>, done",
+            ),
+        ] {
+            let (r, _) = NetworkDetector::detect_and_replace(input, false, true, false);
+            assert_eq!(r, expected, "input: {input}");
+        }
     }
 
     /// A MAC is one atom whatever its bytes look like; a longer colon chain

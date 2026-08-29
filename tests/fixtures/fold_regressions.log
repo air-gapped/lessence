@@ -677,3 +677,36 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 2025-10-30T16:53:44+01:00 UXG Max systemd-timesyncd[1004]: System clock time unset or jumped backwards, restoring from recorded timestamp: Thu 2025-10-30 16:53:44 CET
 2026-01-10T03:01:37+01:00 UXG Max systemd-timesyncd[1035]: System clock time unset or jumped backwards, restoring from recorded timestamp: Sat 2026-01-10 03:01:37 CET
 2026-05-09T23:28:08+02:00 UXG Max systemd-timesyncd[671]: System clock time unset or jumped backwards, restoring from recorded timestamp: Sat 2026-05-09 23:28:08 CEST
+
+##CASE lessence-6cb template_absent=<PORT>
+##WHY utm_cloud_is_alive:46: is a source line reference inside a word, not a host and port
+##FROM the gateway error log (scrubbed)
+2025-06-26T00:45:26+00:00 UXG Max utmdaemon[2138]: [ERROR] utm_cloud_is_alive:46: UTM Cloud Service: error mbedtls_net_connect [-82]
+2025-09-14T14:37:07+00:00 UXG Max utmdaemon[2596]: [ERROR] utm_cloud_is_alive:49: UTM Cloud Service: error mbedtls_net_connect [-82]
+
+##CASE lessence-6cb template_present=type:0x22
+##WHY a two-digit hex literal is a type code, not a memory address
+##FROM the gateway error log (scrubbed)
+2025-06-26T00:45:39+00:00 UXG Max snoopd[1878]: [IGMP] Failed to find 66:87:D9:ED:7D:04 vid:1044 type:0x22
+2025-09-14T14:59:20+00:00 UXG Max snoopd[2249]: [IGMP] Failed to find 76:F9:83:DE:C5:77 vid:11 type:0x22
+
+##CASE lessence-6cb template_present=ssh2: ED25519 SHA256:<HASH>
+##WHY ED25519 is an algorithm name; a short sha is lower case
+##FROM the gateway auth log (scrubbed)
+2026-05-09T23:41:59+02:00 UXG Max sshd[7395]: Accepted publickey for upomag from 10.224.169.194 port 47670 ssh2: ED25519 SHA256:Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE
+
+##CASE lessence-6cb template_present=<BRACKET_CONTEXT> OK (DoH)
+##WHY the space after a bracket chain belongs to the sentence
+##FROM the gateway dnscrypt-proxy log (scrubbed)
+[2026-02-15 03:08:42] [NOTICE] [cloudflare] OK (DoH) - rtt: 4ms
+[2026-02-15 03:08:55] [NOTICE] [cloudflare] OK (DoH) - rtt: 5ms
+
+##CASE lessence-6cb template_present=(<PATH>)
+##WHY the bracket that closes a parenthesised URL survives
+##FROM the gateway journal (scrubbed)
+2026-08-26T04:57:55+0200 UXG Max mcad[2907]: ace_reporter.reporter_fail(): Unreachable (http://10.32.220.9:8080/inform)
+
+##CASE lessence-6cb template_present=192-168-7-0-24
+##WHY a dash-encoded subnet id is one identifier, not 192-<NUMBER>-7-0-24
+##FROM the gateway messages log (scrubbed)
+2026-08-28T09:33:27+02:00 UXG Max ubios-udapi-server[1377]: svc-dhcp-server-service:        +(services):    Keep running service dhcpServers-net_Default_7_br0_192-168-7-0-24

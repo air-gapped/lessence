@@ -1386,7 +1386,7 @@ fn the_template_says_varies_where_members_disagree() {
     assert_eq!(f.buffer.len(), 1, "the score still folds them");
     assert_eq!(
         f.buffer[0].template(),
-        "<TIMESTAMP> UXG Max mcad[<PID>]: ace_reporter.reporter_fail(): <VARIES> (<PATH>"
+        "<TIMESTAMP> UXG Max mcad[<PID>]: ace_reporter.reporter_fail(): <VARIES> (<PATH>)"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].samples, vec!["Unreachable", "Timeout"]);

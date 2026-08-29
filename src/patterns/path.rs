@@ -134,9 +134,12 @@ impl PathDetector {
         // Otherwise the /path part gets detected as a file path
         result = FULL_URL
             .replace_all(&result, |caps: &regex::Captures| {
-                let full_url = caps.get(0).unwrap().as_str();
-                tokens.push(Token::Path(full_url.to_string()));
-                "<PATH>".to_string()
+                // `(http://host/inform)` — the closing bracket, comma or
+                // full stop after a URL is the sentence's, not the URL's.
+                let whole = caps.get(0).unwrap().as_str();
+                let url = whole.trim_end_matches([')', ']', ',', '.', ';', '\'']);
+                tokens.push(Token::Path(url.to_string()));
+                format!("<PATH>{}", &whole[url.len()..])
             })
             .to_string();
 
@@ -703,6 +706,16 @@ mod tests {
             let (r, _) = PathDetector::detect_and_replace(input);
             assert_eq!(r, expected, "input: {input}");
         }
+    }
+
+    /// The bracket that closes a parenthesised URL survives.
+    #[test]
+    fn a_url_does_not_swallow_the_closing_bracket() {
+        let (r, _) =
+            PathDetector::detect_and_replace("Unreachable (http://unifi:8080/inform) rc=3");
+        assert_eq!(r, "Unreachable (<PATH>) rc=3");
+        let (r, _) = PathDetector::detect_and_replace("see https://example.com/a/b. Then");
+        assert_eq!(r, "see <PATH>. Then");
     }
 
     /// A relative path is a path: two segments after a directory, or a

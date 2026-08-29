@@ -56,9 +56,10 @@ static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static SIZE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d+(?:\.\d+)?\s*(?:bytes?|[KMGT]?B)\b").unwrap());
 
-// Memory addresses (0x7fff5fbff8c0)
+// Memory addresses (0x7fff5fbff8c0): eight or more hex digits. A short
+// `0x22` is a type code, an opcode, a flag — a value, not an address.
 static MEMORY_ADDR_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b0x[a-fA-F0-9]+\b").unwrap());
+    LazyLock::new(|| Regex::new(r"\b0x[a-fA-F0-9]{8,}\b").unwrap());
 
 // Percentages (87.3%, CPU: 45%, memory: 78%)
 // Matches both integer and decimal percentages: 45%, 87.3%
@@ -75,6 +76,15 @@ static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub struct DurationDetector;
 
 impl DurationDetector {
+    /// `\d-` before the run or `-\d` after it: a dashed numeric tuple.
+    fn in_dashed_tuple(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let before =
+            m.start() >= 2 && b[m.start() - 1] == b'-' && b[m.start() - 2].is_ascii_digit();
+        let after = m.end() + 1 < b.len() && b[m.end()] == b'-' && b[m.end() + 1].is_ascii_digit();
+        before || after
+    }
+
     /// Three digits in a row: enough for INTEGER_REGEX to have something to do.
     fn has_digit_run(text: &str) -> bool {
         text.as_bytes()
@@ -179,10 +189,24 @@ impl DurationDetector {
             })
             .to_string();
 
+        // `192-168-7-0-24` is one identifier: a digit run joined to more
+        // digits by dashes on either side is not a number of its own.
         for found in INTEGER_REGEX.find_iter(&result) {
-            tokens.push(Token::Number(found.as_str().to_string()));
+            if !Self::in_dashed_tuple(&result, &found) {
+                tokens.push(Token::Number(found.as_str().to_string()));
+            }
         }
-        result = INTEGER_REGEX.replace_all(&result, "<NUMBER>").to_string();
+        let folded = INTEGER_REGEX.replace_all(&result, |caps: &Captures| {
+            let m = caps.get(0).unwrap();
+            if Self::in_dashed_tuple(&result, &m) {
+                m.as_str().to_string()
+            } else {
+                "<NUMBER>".to_string()
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            result = s;
+        }
 
         // JSON field values last, on the small numbers INTEGER_REGEX left
         // behind. Capture-preserving, so the key survives.
@@ -403,6 +427,23 @@ mod tests {
                 assert!(!tokens.is_empty(), "No tokens detected for: {input}");
             }
         }
+    }
+
+    /// A short hex literal is a value, an address has eight hex digits or
+    /// more; a digit run inside a dashed tuple is not a number of its own.
+    #[test]
+    fn short_hex_and_dashed_tuples_stay_literal() {
+        let (r, _) = DurationDetector::detect_and_replace(
+            "vid:1044 type:0x22 at 0x4000104f90 seed 0x51af8014",
+        );
+        assert_eq!(r, "vid:<NUMBER> type:0x22 at <ADDR> seed <ADDR>");
+        let (r, _) = DurationDetector::detect_and_replace(
+            "svc net_Default_7_br0_192-168-7-0-24 took 4500 items range 100-200",
+        );
+        assert_eq!(
+            r,
+            "svc net_Default_7_br0_192-168-7-0-24 took <NUMBER> items range 100-200"
+        );
     }
 
     #[test]

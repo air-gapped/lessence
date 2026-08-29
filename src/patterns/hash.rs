@@ -45,7 +45,16 @@ impl HashDetector {
     /// digits and letters — pure digits are numbers, pure letters are
     /// usually ordinary words.
     fn looks_like_hash(s: &str) -> bool {
-        s.bytes().any(|b| b.is_ascii_digit()) && s.bytes().any(|b| b.is_ascii_alphabetic())
+        let has_digit = s.bytes().any(|b| b.is_ascii_digit());
+        let has_letter = s.bytes().any(|b| b.is_ascii_alphabetic());
+        // Letters then digits and nothing else — `ED25519`, `AES128` — is a
+        // designator, not a hash; a hash interleaves them (`F9009C60`).
+        let designator = s.len() < 12 && {
+            let letters = s.bytes().take_while(u8::is_ascii_alphabetic).count();
+            // two letters at least: `c420064480` is a Go pointer
+            letters >= 2 && s.bytes().skip(letters).all(|b| b.is_ascii_digit())
+        };
+        has_digit && has_letter && !designator
     }
 
     /// Quick check: does the text contain a run of 7+ hex characters?
@@ -157,6 +166,24 @@ impl HashDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Letters followed by digits is a designator (ED25519), not a short sha;
+    /// an interleaved run (F9009C60, an LSN) still is one.
+    #[test]
+    fn upper_case_short_hex_is_a_word() {
+        assert!(!HashDetector::looks_like_hash("ED25519"));
+        assert!(!HashDetector::looks_like_hash("AES128"));
+        assert!(HashDetector::looks_like_hash("F9009C60"));
+        assert!(HashDetector::looks_like_hash("c420064480"));
+        assert!(HashDetector::looks_like_hash("3d7d8da"));
+        assert!(HashDetector::looks_like_hash(
+            "CE6BAEEF29234910A836A8567DB18141"
+        ));
+        let (r, _) = HashDetector::detect_and_replace(
+            "ssh2: ED25519 SHA256:Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE",
+        );
+        assert_eq!(r, "ssh2: ED25519 SHA256:<HASH>");
+    }
 
     #[test]
     fn test_md5_detection() {

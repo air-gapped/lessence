@@ -63,9 +63,12 @@ impl BracketContextDetector {
         if !processed_indices.is_empty() {
             *text = CHAINED_BRACKET_REGEX
                 .replace_all(text, |caps: &regex::Captures| {
-                    let contexts = Self::extract_contexts_from_chain(caps.get(0).unwrap().as_str());
+                    let whole = caps.get(0).unwrap().as_str();
+                    let contexts = Self::extract_contexts_from_chain(whole);
                     if contexts.len() >= 2 && Self::are_logging_contexts(&contexts) {
-                        "<BRACKET_CONTEXT>".to_string()
+                        // the placeholder replaces the brackets, not the
+                        // space after them
+                        format!("<BRACKET_CONTEXT>{}", &whole[whole.trim_end().len()..])
                     } else {
                         caps.get(0).unwrap().as_str().to_string()
                     }
@@ -194,6 +197,15 @@ impl BracketContextDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chain of contexts folds to one placeholder; the space after the
+    /// last bracket belongs to the sentence.
+    #[test]
+    fn chained_brackets_keep_the_space_after_them() {
+        let (r, _) =
+            BracketContextDetector::detect_and_replace("[NOTICE] [cloudflare] OK (DoH) - rtt: 4ms");
+        assert!(r.starts_with("<BRACKET_CONTEXT> OK"), "{r}");
+    }
 
     #[test]
     fn test_apache_mod_jk_detection() {
