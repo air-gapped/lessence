@@ -12,6 +12,18 @@ static KEY_VALUE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 static CONFIG_KV_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*=\s*([^\s,;|]+)").unwrap());
 
+// A metrics run: three or more `key=number` pairs in a row
+// (`Alloc=25451 TotalAlloc=99852 Sys=81560 NumGC=10 Goroutines=154`). The
+// run is the shape — no single pair says whether its number is a count or an
+// identity, but three consecutive numeric pairs are a measurement dump, and
+// every value in it folds whatever its digit count. The key stays: it is
+// what the template claims about the value.
+static METRICS_RUN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:\b[A-Za-z_][A-Za-z0-9_]*=-?\d+(?:\.\d+)?\b[ \t]*){3,}").unwrap()
+});
+static NUMERIC_PAIR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)=(-?\d+(?:\.\d+)?)\b").unwrap());
+
 // JSON-style key-value: "key": "value" or "key":123
 static JSON_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#""([a-zA-Z][a-zA-Z0-9_.-]*)"\s*:\s*(?:"([^"]+)"|(\d+(?:\.\d+)?)|true|false|null)"#)
@@ -39,6 +51,7 @@ impl KeyValueDetector {
         // (lessence-moq). The general pass already covers every pair those
         // two accepted that was worth folding.
         Self::apply_json_pattern(&mut result, &mut tokens);
+        Self::apply_metrics_runs(&mut result, &mut tokens);
         // `=` pairs before `[=:]` pairs: on `config: host=localhost` the
         // looser regex would otherwise match `config: host` first and eat
         // the key of the real pair.
@@ -90,6 +103,41 @@ impl KeyValueDetector {
                 .map_or(whole.len(), |i| colon + 1 + i);
             Some((token, format!("{}<KEY_VALUE>", &whole[..value_start])))
         });
+    }
+
+    /// Every `key=number` inside a run of three or more folds to
+    /// `key=<KEY_VALUE>` (lessence-ssz: 899 argocd memory-stats lines split
+    /// on `NumGC=10` because the key was not on a list).
+    fn apply_metrics_runs(text: &mut String, tokens: &mut Vec<Token>) {
+        if !text.contains('=') {
+            return;
+        }
+        let folded = METRICS_RUN_REGEX.replace_all(text, |run: &regex::Captures| {
+            // The run must be the whole message — bounded by a quote, a
+            // bracket, a `:` or the line ends. Three numeric pairs inside a
+            // larger record (`pid=<PID> uid=1000 auid=1000 ses=3 subj=…`,
+            // `endpointID=1680 identity=1 …`) are that record's identities.
+            let m = run.get(0).unwrap();
+            let before = text[..m.start()].trim_end().chars().next_back();
+            let after = text[m.end()..].trim_start().chars().next();
+            let opens = matches!(before, None | Some('"' | '\'' | ':' | '[' | '('));
+            let closes = matches!(after, None | Some('"' | '\'' | ']' | ')' | ','));
+            if !(opens && closes) {
+                return run[0].to_string();
+            }
+            NUMERIC_PAIR_REGEX
+                .replace_all(&run[0], |caps: &regex::Captures| {
+                    tokens.push(Token::KeyValuePair {
+                        key: caps[1].to_lowercase(),
+                        value_type: Self::classify_value_type(&caps[2]),
+                    });
+                    format!("{}=<KEY_VALUE>", &caps[1])
+                })
+                .into_owned()
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *text = s;
+        }
     }
 
     fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
@@ -348,6 +396,42 @@ mod tests {
             "attempt_count is on the allowlist and must fold: {result}"
         );
         assert!(!tokens.is_empty());
+    }
+
+    /// Three or more `key=number` pairs in a row are a measurement dump:
+    /// every value folds, whatever its digits, and the key stays. Two
+    /// pairs, or a run broken by a placeholder, are left to the other
+    /// passes.
+    #[test]
+    fn a_run_of_numeric_pairs_is_a_metrics_dump() {
+        let (r, t) = KeyValueDetector::detect_and_replace(
+            r#"{"level":"info","msg":"Alloc=25451 TotalAlloc=99852 Sys=81560 NumGC=10 Goroutines=154","time":"x"}"#,
+        );
+        assert_eq!(
+            r,
+            r#"{"level":<KEY_VALUE>,"msg":"Alloc=<KEY_VALUE> TotalAlloc=<KEY_VALUE> Sys=<KEY_VALUE> NumGC=<KEY_VALUE> Goroutines=<KEY_VALUE>","time":<KEY_VALUE>}"#
+        );
+        assert_eq!(
+            t.iter()
+                .filter(|t| matches!(t, Token::KeyValuePair { .. }))
+                .count(),
+            7
+        );
+        for line in [
+            "type=CRED_ACQ pid=<PID> uid=1000 auid=1000 ses=3 subj=x",
+            "level=info endpointID=1680 identity=1 datapathPolicyRevision=22 desiredPolicyRevision=22 subsys=endpoint",
+            "retry a=1 b=2 done",
+            "took ms=12 count=3 items=4x",
+        ] {
+            let (r, _) = KeyValueDetector::detect_and_replace(line);
+            assert!(!r.contains("=<KEY_VALUE>"), "{line} -> {r}");
+        }
+        let (r, _) =
+            KeyValueDetector::detect_and_replace("stats: Alloc=25451 TotalAlloc=99852 NumGC=10");
+        assert_eq!(
+            r,
+            "stats: Alloc=<KEY_VALUE> TotalAlloc=<KEY_VALUE> NumGC=<KEY_VALUE>"
+        );
     }
 
     /// A JSON string value that is a sentence keeps its words; a one-word

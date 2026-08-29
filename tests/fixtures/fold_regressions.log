@@ -649,3 +649,17 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 {"level":"info","msg":"Loading TLS configuration","time":"2026-08-27T23:17:24Z"}
 {"level":"info","msg":"Loading TLS configuration","time":"2026-08-27T23:18:24Z"}
 {"level":"info","msg":"Loading TLS configuration","time":"2026-08-27T23:19:24Z"}
+
+##CASE lessence-ssz groups=1
+##WHY a run of key=number pairs is a metrics dump: NumGC=10 and NumGC=15 are measurements, not two events
+##FROM the argocd_server shape (Go runtime memory stats)
+{"level":"info","msg":"Alloc=25451 TotalAlloc=99852 Sys=81560 NumGC=10 Goroutines=154","time":"2025-09-14T09:18:46Z"}
+{"level":"info","msg":"Alloc=23650 TotalAlloc=121125 Sys=81816 NumGC=15 Goroutines=154","time":"2025-09-14T09:28:46Z"}
+{"level":"info","msg":"Alloc=25311 TotalAlloc=145133 Sys=82072 NumGC=20 Goroutines=154","time":"2025-09-14T09:38:46Z"}
+
+##CASE lessence-ssz template_present=reporter_save_config(): <VARIES> true
+##WHY a "key: value" dump folds across keys on similarity; the template must say so and the rollup counts each key
+##FROM the gateway messages log (scrubbed)
+2026-08-22T05:14:35+02:00 UXG Max mcad[2907]: ace_reporter.reporter_save_config(): led_enabled: true
+2026-08-22T05:14:35+02:00 UXG Max mcad[2907]: ace_reporter.reporter_save_config(): report_crash: true
+2026-08-22T05:14:35+02:00 UXG Max mcad[2907]: ace_reporter.reporter_save_config(): use_aes_gcm: true
