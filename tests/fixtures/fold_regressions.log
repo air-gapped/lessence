@@ -806,3 +806,36 @@ ifodes-volef   31m         Normal    SuccessfulCreate               statefulset/
 Trace[1310679091]: ---"Objects streamed" count:26 30030ms (01:12:26.302)
 {"level":"warn","ts":"2026-08-29T01:11:50.015766Z","caller":"txn/util.go:93","msg":"apply request took too long","took":"4.933661554s","expected-duration":"100ms","prefix":"read-only range ","request":"key:\"rke2/apiaddresses\" ","response":"range_response_count:1 size:107"}
 {"level":"info","msg":"[ workqueue ] [call] run task[memoryMonitor] with args=&{Threshold:90}","time":"2026-08-11T00:31:25+02:00"}
+
+##CASE lessence-a8t template_present=<TIMESTAMP> <FQDN> hostapd[<PID>]:
+##WHY asctime (weekday, month, day, time, year) is one timestamp; the weekday used to stay literal and every event split by day
+##FROM an access point's messages log (scrubbed)
+Sat Aug 29 08:40:15 2026 daemon.info hostapd[10691]: wifi0ap1: STA ca:bc:5a:b3:2e:b8 IEEE 802.11: disassociated
+Fri Aug 28 09:39:16 2026 daemon.info hostapd[24915]: wifi0ap1: STA 62:1d:9c:95:54:ab IEEE 802.11: disassociated
+Thu Aug 27 05:04:52 2026 daemon.info hostapd[24917]: wifi0ap1: STA 9e:84:ae:a1:89:85 IEEE 802.11: disassociated
+
+##CASE lessence-a8t groups=1
+##WHY the kernel uptime stamp is one shape whatever its digit count; bracket padding used to split a group in two
+##FROM the NAS dmesg (scrubbed)
+[  3054.599909] BTRFS notice (device dm-4): Drop snapshot finished [fs_id=eacd56f8-28b6-1988-5bbf-1b4cbca123d7] [subvol_id=592] [free_extent_called_cnt=1000] [reclaimed_extent_cnt=12] [reclaimed_bytes=200704]
+[4324019.474441] BTRFS notice (device dm-4): Drop snapshot finished [fs_id=eacd56f8-28b6-1988-5bbf-1b4cbca123d7] [subvol_id=592] [free_extent_called_cnt=1000] [reclaimed_extent_cnt=12] [reclaimed_bytes=200704]
+[4324119.474441] BTRFS notice (device dm-4): Drop snapshot finished [fs_id=eacd56f8-28b6-1988-5bbf-1b4cbca123d7] [subvol_id=593] [free_extent_called_cnt=1000] [reclaimed_extent_cnt=12] [reclaimed_bytes=200704]
+
+##CASE lessence-a8t template_absent=trace<TIMESTAMP>
+##WHY a bracket glued to a word is an index whatever the number inside would parse as
+##FROM etcd (scrubbed)
+[pod/etcd-el/etcd] {"level":"info","ts":"2026-08-27T06:03:56.565819Z","caller":"traceutil/trace.go:172","msg":"trace[1539274761] transaction","detail":"{read_only:false; response_revision:2362020446; number_of_response:1; }","duration":"271.147901ms","start":"2026-08-27T06:03:56.294660Z","end":"2026-08-27T06:03:56.565808Z","steps":["trace[1539274761] 'process raft request'  (duration: 271.09322ms)"],"step_count":1}
+[pod/etcd-el/etcd] {"level":"info","ts":"2026-08-26T12:00:05.746262Z","caller":"traceutil/trace.go:172","msg":"trace[1684406610] transaction","detail":"{read_only:false; response_revision:2360839343; number_of_response:1; }","duration":"119.556039ms","start":"2026-08-26T12:00:05.626683Z","end":"2026-08-26T12:00:05.746239Z","steps":["trace[1684406610] 'process raft request'  (duration: 117.491268ms)"],"step_count":1}
+
+##CASE lessence-a8t template_present="time_micros": <TIMESTAMP>
+##WHY a 16-digit decimal starting with 1 is an epoch in microseconds, not a hash
+##FROM rook-ceph rocksdb (scrubbed)
+[pod/rook-ceph-mon-bp-74f99bc8b4-v8d9g/mon] debug 2026-08-29T02:03:38.584+0000 7fa8be34d640  4 rocksdb: EVENT_LOG_v1 {"time_micros": 1787969018585092, "job": 22162, "event": "flush_started", "num_memtables": 1, "num_entries": 2078, "num_deletes": 475, "total_data_size": 3209698, "memory_usage": 3297504, "flush_reason": "Manual Compaction"}
+
+##CASE lessence-a8t groups=1
+##WHY two small integers are one shape to the similarity metric; the line keeps them literal via <VARIES> with counts
+##FROM the Raspberry Pi journal (scrubbed)
+Aug 26 09:24:57 gasida chrony-gps-toff[5097]: 2026-08-26 09:24:57,058 INFO GPS mode 3 -> 2
+Aug 26 09:24:59 gasida chrony-gps-toff[5097]: 2026-08-26 09:24:59,071 INFO GPS mode 2 -> 3
+Aug 26 11:39:28 gasida chrony-gps-toff[5097]: 2026-08-26 11:39:28,040 INFO GPS mode 3 -> 1
+Aug 26 11:39:30 gasida chrony-gps-toff[5097]: 2026-08-26 11:39:30,065 INFO GPS mode 1 -> 3

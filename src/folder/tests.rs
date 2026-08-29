@@ -4890,7 +4890,7 @@ fn a_placeholder_against_a_plain_word_varies_too() {
     assert_eq!(f.buffer.len(), 1);
     assert_eq!(
         f.buffer[0].template(),
-        "[    <DECIMAL>] creating proc entry for <VARIES>"
+        "<TIMESTAMP> creating proc entry for <VARIES>"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
@@ -5033,4 +5033,51 @@ fn two_sentence_words_apart_is_another_event() {
         f.process_line(l).unwrap();
     }
     assert_eq!(f.buffer.len(), 2, "success and loss are two events");
+}
+
+#[test]
+fn two_small_integers_are_one_shape_and_stay_on_the_line() {
+    // Pi journal: `GPS mode 3 -> 2` and `GPS mode 2 -> 3` were two groups
+    // with identical templates; `Aircraft: 4 of 7 Mode S, 18 of 19 ADS-B
+    // used` was twenty-five. The digits stay literal by design (k2b); they
+    // just no longer keep a short line from folding.
+    let mut f = make_folder();
+    for l in [
+        "Aug 26 09:24:57 gasida chrony-gps-toff[5097]: INFO GPS mode 3 -> 2",
+        "Aug 26 09:24:59 gasida chrony-gps-toff[5097]: INFO GPS mode 2 -> 3",
+        "Aug 26 11:39:28 gasida chrony-gps-toff[5097]: INFO GPS mode 3 -> 1",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    assert_eq!(
+        f.buffer[0].template(),
+        "<TIMESTAMP> gasida chrony-gps-toff[<PID>]: INFO GPS mode <VARIES> -> <VARIES>"
+    );
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].counts, Some(vec![3, 2, 1]));
+}
+
+#[test]
+fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
+    // The slot dropped the `password=` the credential mask keys on, so the
+    // raw values reached the rollup once short lines started folding.
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        sanitize_pii: true,
+        ..Config::default()
+    });
+    for l in [
+        "auth user a@x.io password=FIXVALUEA1 req 1",
+        "auth user a@x.io password=FIXVALUEA2 req 2",
+        "auth user a@x.io password=FIXVALUEA3 req 3",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    let joined = format!("{:?}", r[VARIES].samples);
+    assert!(!joined.contains("FIXVALUE"), "{joined}");
+    assert!(joined.contains("<SECRET>"), "{joined}");
 }

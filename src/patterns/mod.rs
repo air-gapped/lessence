@@ -387,6 +387,22 @@ pub(crate) fn word_spans(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
     })
 }
 
+/// A small integer left literal by design (`Port 5`, `GPS mode 3 -> 2`,
+/// `rc=3`): one or two digits and nothing else.
+#[inline]
+pub(crate) fn is_small_int(tok: &str) -> bool {
+    (1..=2).contains(&tok.len()) && tok.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// What the similarity metric hashes for a token. Two small integers hash
+/// alike: `Port 5 link up` and `Port 6 link up` are one shape, and the
+/// shown line says so with `<VARIES>` and the counts of each — the digits
+/// stay literal on the line, they just do not keep it from folding.
+#[inline]
+fn sim_key(tok: &str) -> &str {
+    if is_small_int(tok) { "<d>" } else { tok }
+}
+
 /// The words of `s`.
 pub(crate) fn words(s: &str) -> impl Iterator<Item = &str> + '_ {
     word_spans(s).map(move |(at, len)| &s[at..at + len])
@@ -405,7 +421,7 @@ impl SimTokens {
             }
             let tok = &s[start..start + len];
             let mut hasher = ahash::AHasher::default();
-            tok.hash(&mut hasher);
+            sim_key(tok).hash(&mut hasher);
             toks.push(SimTok {
                 hash: hasher.finish(),
                 start: start as u32,
@@ -432,7 +448,7 @@ impl SimTokens {
                 return SimTokens::Unbounded;
             }
             let mut hasher = ahash::AHasher::default();
-            tok.hash(&mut hasher);
+            sim_key(tok).hash(&mut hasher);
             let h = hasher.finish();
             if sorted_hashes.len() < MULTISET_LEAD {
                 lead[sorted_hashes.len()] = h;

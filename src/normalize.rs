@@ -8,7 +8,7 @@ use crate::config::Config;
 use crate::patterns::{
     LogLine, MAX_SIMILARITY_TOKENS, SimTok, SimTokens, Token,
     bracket_context::BracketContextDetector, duration::DurationDetector,
-    email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector,
+    email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector, is_small_int,
     json::JsonDetector, key_value::KeyValueDetector, kubernetes::KubernetesDetector,
     log_module::LogWithModuleDetector, names::NameDetector, network::NetworkDetector,
     path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector,
@@ -651,11 +651,18 @@ impl Normalizer {
 
     /// Token equality via cached per-token hashes: hash inequality proves the
     /// tokens differ; on hash equality the bytes are compared to rule out
-    /// collisions, so the result is exactly string equality.
+    /// collisions, so the result is exactly string equality — except that
+    /// two small integers are equal to each other (see `sim_key`).
     #[inline]
     fn tok_eq(s1: &str, t1: SimTok, s2: &str, t2: SimTok) -> bool {
-        t1.hash == t2.hash
-            && s1[t1.start as usize..t1.end as usize] == s2[t2.start as usize..t2.end as usize]
+        if t1.hash != t2.hash {
+            return false;
+        }
+        let (a, b) = (
+            &s1[t1.start as usize..t1.end as usize],
+            &s2[t2.start as usize..t2.end as usize],
+        );
+        a == b || (is_small_int(a) && is_small_int(b))
     }
 
     /// Size of the multiset intersection of two ascending-sorted hash

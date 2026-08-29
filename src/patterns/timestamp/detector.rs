@@ -101,6 +101,11 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         ),
         // ---- application ----
         p("kubernetes-log", r"[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+", 0),
+        // The kernel ring buffer's uptime stamp, brackets and padding
+        // included: `[    0.028586]` and `[4324019.474441]` are one shape,
+        // where `[ <DECIMAL>]` against `[<DECIMAL>]` split a group in two
+        // the moment the counter grew a digit.
+        p("kernel-uptime", r"\[ *\d{1,7}\.\d{6}\]", 0),
         p(
             "docker-log",
             r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z\b",
@@ -184,6 +189,21 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             240,
         ),
         // ---- legacy ----
+        // asctime — `Sat Aug 29 08:40:15 2026`, Apache's `[Sat Aug 29
+        // 08:40:15.123456 2026]`, git's `Aug 29 08:40:15 2026` — must
+        // outrank syslog-bsd, which matches its middle: left to the bsd form
+        // the weekday and the year stayed literal and every event on the
+        // access points split three ways by day.
+        p(
+            "ansic",
+            r"\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
+            340,
+        ),
+        p(
+            "git-commit",
+            r"\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
+            340,
+        ),
         p("compact", r"\b20\d{12}\b", 350),
         p(
             "syslog-bsd",
@@ -206,16 +226,6 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             r"\bP(?:\d+Y)?(?:\d+M)?(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?\b",
             360,
         ),
-        p(
-            "git-commit",
-            r"\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}",
-            360,
-        ),
-        p(
-            "ansic",
-            r"\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}",
-            360,
-        ),
         // ---- unix epochs ----
         p("unix-prefixed", r"@1[0-9]{9,10}(?:\.\d{1,9})?\b", 1480),
         p("unix-bracketed", r"\[1[0-9]{9,10}(?:\.\d{1,9})?\]", 1480),
@@ -224,6 +234,7 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         // date between 2001 and 2033; a 19-digit block id or database system
         // identifier that starts with anything else is a number.
         p("unix-timestamp-ms", r"\b1[0-9]{12}\b", 1490),
+        p("unix-timestamp-us", r"\b1[0-9]{15}\b", 1490),
         p("unix-timestamp-ns", r"\b1[0-9]{18}\b", 1490),
     ]
 });
@@ -314,6 +325,19 @@ impl UnifiedTimestampDetector {
         if m.iter().all(u8::is_ascii_digit) && start > 0 && matches!(b[start - 1], b'-' | b'_') {
             return false;
         }
+        // `trace[1539274761]`, `Trace[1310679091]:` — a bracket glued to a
+        // word is an index, whatever the number inside would parse as,
+        // whether the candidate carries the bracket or sits inside it.
+        if m.first() == Some(&b'[') && start > 0 && b[start - 1].is_ascii_alphanumeric() {
+            return false;
+        }
+        if m.first().is_some_and(u8::is_ascii_digit)
+            && start >= 2
+            && b[start - 1] == b'['
+            && b[start - 2].is_ascii_alphanumeric()
+        {
+            return false;
+        }
         let hex_pair_before = start >= 3
             && b[start - 1] == b':'
             && b[start - 2].is_ascii_hexdigit()
@@ -342,10 +366,43 @@ impl UnifiedTimestampDetector {
                 if j - i == 10 && j + 1 < b.len() && b[j] == b'.' && b[j + 1].is_ascii_digit() {
                     return true;
                 }
+                // ms, µs and ns epochs carry their precision as digits.
+                if matches!(j - i, 13 | 16 | 19) && (j == b.len() || !b[j].is_ascii_alphanumeric())
+                {
+                    return true;
+                }
                 i = j;
             } else {
                 i += 1;
             }
+        }
+        false
+    }
+
+    /// `[    0.028586]` / `[4324019.474441]`: a bracket, padding, digits, a
+    /// dot and six more digits, then the closing bracket — carries no colon
+    /// and no year, so the general indicators miss it.
+    fn has_kernel_uptime(text: &str) -> bool {
+        let b = text.as_bytes();
+        let mut i = 0;
+        while let Some(off) = b[i..].iter().position(|&c| c == b'[') {
+            let mut j = i + off + 1;
+            while j < b.len() && b[j] == b' ' {
+                j += 1;
+            }
+            let d0 = j;
+            while j < b.len() && b[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > d0
+                && j + 7 < b.len()
+                && b[j] == b'.'
+                && b[j + 1..j + 7].iter().all(u8::is_ascii_digit)
+                && b[j + 7] == b']'
+            {
+                return true;
+            }
+            i = i + off + 1;
         }
         false
     }
@@ -357,6 +414,7 @@ impl UnifiedTimestampDetector {
         // that happened to contain a `T` and `<DECIMAL>` on the rest.
         text.contains("@1")
             || Self::has_epoch_run(text)
+            || Self::has_kernel_uptime(text)
             || text.contains(':')
                 && (text.contains("20") || // Years 20xx
             text.contains("19") || // Years 19xx
@@ -1012,5 +1070,62 @@ mod tests {
             r, "File size 1727676930 bytes",
             "a bare ten-digit integer is a size"
         );
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::UnifiedTimestampDetector;
+
+    #[test]
+    fn asctime_is_one_timestamp_weekday_and_year_included() {
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "Sat Aug 29 08:40:15 2026 daemon.info hostapd[10691]: x",
+        );
+        assert_eq!(r, "<TIMESTAMP> daemon.info hostapd[10691]: x");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "[Sat Aug 29 08:40:15.123456 2026] [error] mod_jk",
+        );
+        assert_eq!(r, "[<TIMESTAMP>] [error] mod_jk");
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("Date:   Aug 29 08:40:15 2026 +0200");
+        assert_eq!(r, "Date:   <TIMESTAMP> +0200");
+    }
+
+    #[test]
+    fn the_kernel_uptime_stamp_is_one_shape_at_any_width() {
+        for line in [
+            "[    0.028586] x",
+            "[  3054.599909] x",
+            "[4324019.474441] x",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, "<TIMESTAMP> x", "{line}");
+            assert_eq!(t.len(), 1);
+        }
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("[abc] 1.5 x");
+        assert_eq!(r, "[abc] 1.5 x");
+    }
+
+    #[test]
+    fn a_bracket_glued_to_a_word_is_an_index() {
+        for line in [
+            "trace[1539274761] transaction",
+            "Trace[1310679091]: end",
+            "trace[1539274761.5] x",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, line, "{line}");
+            assert!(t.is_empty());
+        }
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("at [1539274761] ok: x");
+        assert_eq!(r, "at <TIMESTAMP> ok: x");
+    }
+
+    #[test]
+    fn an_epoch_in_microseconds_is_a_timestamp() {
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace(r#"{"time_micros": 1787969018585092}"#);
+        assert_eq!(r, r#"{"time_micros": <TIMESTAMP>}"#);
     }
 }

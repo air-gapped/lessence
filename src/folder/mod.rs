@@ -1302,15 +1302,28 @@ impl Accumulator {
 struct RollupComputer {
     k: usize,
     distinct_cap: usize,
+    /// `--sanitize-pii`: a VARIES value is counted in its masked form, so
+    /// `password=FIXVALUEA1` lands in the rollup as `<SECRET>` — the slot
+    /// has already dropped the `password=` that the credential mask keys on.
+    sanitize_pii: bool,
 }
 
 impl RollupComputer {
     fn new(k: usize, distinct_cap: usize) -> Self {
-        Self { k, distinct_cap }
+        Self {
+            k,
+            distinct_cap,
+            sanitize_pii: false,
+        }
     }
 
     fn with_defaults() -> Self {
         Self::new(ROLLUP_K, ROLLUP_DISTINCT_CAP)
+    }
+
+    fn sanitized(mut self, sanitize_pii: bool) -> Self {
+        self.sanitize_pii = sanitize_pii;
+        self
     }
 
     /// Compute the rollup for one group. Iterates the group's lines
@@ -1412,9 +1425,15 @@ impl RollupComputer {
                     continue;
                 };
                 for &(i, k) in &slots {
+                    let masked;
                     let value = match aligned[i] {
                         Some(j) => {
-                            let w = member[j];
+                            let w = if self.sanitize_pii {
+                                masked = mask_credentials(member[j]);
+                                masked.as_str()
+                            } else {
+                                member[j]
+                            };
                             let prefix = &tmpl_words[i][..k];
                             w.strip_prefix(prefix).unwrap_or(w)
                         }
@@ -1500,6 +1519,7 @@ impl RollupComputer {
 
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
+        let sanitize_pii = config.sanitize_pii;
         let normalizer = Normalizer::new(config.clone());
         let thread_pool = match config.thread_count {
             Some(requested) if requested > 1 => {
@@ -1553,7 +1573,7 @@ impl PatternFolder {
             json_uncomputed_variation_groups: 0,
             json_sampled_entries: 0,
             json_omitted_values_lower_bound: 0,
-            rollup_computer: RollupComputer::with_defaults(),
+            rollup_computer: RollupComputer::with_defaults().sanitized(sanitize_pii),
         }
     }
 

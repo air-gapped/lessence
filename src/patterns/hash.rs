@@ -128,10 +128,24 @@ impl HashDetector {
             (&*HEX_24_REGEX, HashType::Generic(24)),
             (&*HEX_16_REGEX, HashType::Generic(16)),
         ] {
+            // A run of the right width made of digits alone is a number —
+            // `time_micros: 1787969018585092` is an epoch, not a hash.
+            let is_number = |m: &str| m.bytes().all(|b| b.is_ascii_digit());
             for found in regex.find_iter(&result) {
-                tokens.push(Token::Hash(hash_type.clone(), found.as_str().to_string()));
+                if !is_number(found.as_str()) {
+                    tokens.push(Token::Hash(hash_type.clone(), found.as_str().to_string()));
+                }
             }
-            result = regex.replace_all(&result, "<HASH>").to_string();
+            result = regex
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let m = caps.get(0).unwrap().as_str();
+                    if is_number(m) {
+                        m.to_string()
+                    } else {
+                        "<HASH>".to_string()
+                    }
+                })
+                .to_string();
         }
 
         // Git commit hashes (7-39 chars, after longer ones are processed).
