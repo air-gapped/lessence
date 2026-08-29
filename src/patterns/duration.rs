@@ -42,8 +42,9 @@ static DURATION_WITH_UNIT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 // Kubernetes duration fields (podStartSLOduration=, podStartE2EDuration=)
-static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\w*[Dd]uration=\d+\.\d+").unwrap());
+static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\w*[Dd]uration=\d+(?:\.\d+)?(?:ms|µs|μs|ns|us|s|m|h)?\b").unwrap()
+});
 
 // Memory/file size values (1234567 bytes, 1.2MB, 5.6GB, 128KB)
 // Matches integer or decimal numbers followed by size units: bytes, KB, MB, GB, TB, B
@@ -108,11 +109,14 @@ impl DurationDetector {
             result = regex.replace_all(&result, placeholder).to_string();
         }
 
-        // HTTP status codes
+        // HTTP status codes in prose: only a code the registry knows.
+        // `exit status 128` is an exit status.
         for cap in HTTP_STATUS_REGEX.captures_iter(&result) {
             if let Some(status_match) = cap.get(1) {
                 let status_str = status_match.as_str();
-                if let Ok(status_code) = status_str.parse::<u16>() {
+                if let Ok(status_code) = status_str.parse::<u16>()
+                    && Self::is_registered_http_status(status_code)
+                {
                     tokens.push(Token::HttpStatus(status_code));
                 }
             }
@@ -125,26 +129,46 @@ impl DurationDetector {
             .replace_all(&result, |caps: &Captures| {
                 let full = caps.get(0).unwrap();
                 let code = caps.get(1).unwrap();
+                if !code
+                    .as_str()
+                    .parse::<u16>()
+                    .is_ok_and(Self::is_registered_http_status)
+                {
+                    return full.as_str().to_string();
+                }
                 let context = &full.as_str()[..code.start() - full.start()];
                 format!("{context}<HTTP_STATUS>")
             })
             .to_string();
 
         // Loosest passes last, on whatever text the placeholders left behind.
-        for (regex, placeholder, token) in [
-            (
-                &*PERCENTAGE_REGEX,
-                "<PCT>",
-                Token::Number as fn(String) -> Token,
-            ),
-            (&*DECIMAL_REGEX, "<DECIMAL>", Token::Duration),
-            (&*INTEGER_REGEX, "<NUMBER>", Token::Number),
-        ] {
-            for found in regex.find_iter(&result) {
-                tokens.push(token(found.as_str().to_string()));
-            }
-            result = regex.replace_all(&result, placeholder).to_string();
+        for found in PERCENTAGE_REGEX.find_iter(&result) {
+            tokens.push(Token::Number(found.as_str().to_string()));
         }
+        result = PERCENTAGE_REGEX.replace_all(&result, "<PCT>").to_string();
+
+        // A decimal with another dotted number attached (`3.3.4`) is a
+        // version, kept whole.
+        for found in DECIMAL_REGEX.find_iter(&result) {
+            if !Self::is_dotted_version(&result, &found) {
+                tokens.push(Token::Duration(found.as_str().to_string()));
+            }
+        }
+        result = DECIMAL_REGEX
+            .replace_all(&result, |caps: &Captures| {
+                let m = caps.get(0).unwrap();
+                if Self::is_dotted_version(&result, &m) {
+                    m.as_str().to_string()
+                } else {
+                    "<DECIMAL>".to_string()
+                }
+            })
+            .to_string();
+
+        for found in INTEGER_REGEX.find_iter(&result) {
+            tokens.push(Token::Number(found.as_str().to_string()));
+        }
+        result = INTEGER_REGEX.replace_all(&result, "<NUMBER>").to_string();
 
         // JSON field values last, on the small numbers INTEGER_REGEX left
         // behind. Capture-preserving, so the key survives.
@@ -155,6 +179,36 @@ impl DurationDetector {
         });
 
         (result, tokens)
+    }
+
+    /// IANA-registered HTTP status codes; anything else after "status" or
+    /// "code" in prose is some other kind of number.
+    fn is_registered_http_status(code: u16) -> bool {
+        matches!(
+            code,
+            100..=103
+                | 200..=208
+                | 226
+                | 300..=308
+                | 400..=418
+                | 421..=426
+                | 428
+                | 429
+                | 431
+                | 451
+                | 500..=508
+                | 510
+                | 511
+        )
+    }
+
+    /// `3.3` inside `3.3.4`: preceded by `.digit` or followed by `.digit`.
+    fn is_dotted_version(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let before =
+            m.start() >= 2 && b[m.start() - 1] == b'.' && b[m.start() - 2].is_ascii_digit();
+        let after = m.end() + 1 < b.len() && b[m.end()] == b'.' && b[m.end() + 1].is_ascii_digit();
+        before || after
     }
 }
 
@@ -401,5 +455,33 @@ mod tests {
             DurationDetector::detect_and_replace("запрос к api.host returned 404 — повтор");
         assert_eq!(result, "запрос к api.host returned <HTTP_STATUS> — повтор");
         assert!(tokens.iter().any(|t| matches!(t, Token::HttpStatus(404))));
+    }
+
+    /// `exit status 128` is an exit status: only a registered HTTP code
+    /// after "status"/"returned" in prose is an HTTP status.
+    #[test]
+    fn prose_status_must_be_a_registered_http_code() {
+        assert_eq!(
+            fold("exit status 128 and returned 404"),
+            "exit status <NUMBER> and returned <HTTP_STATUS>"
+        );
+    }
+
+    #[test]
+    fn a_dotted_version_is_not_a_decimal() {
+        assert_eq!(
+            fold("version 3.3.4 took 1.5 seconds"),
+            "version 3.3.4 took <DECIMAL> seconds"
+        );
+    }
+
+    /// The unit is part of the field: `duration=272ms` and `duration=2.9s`
+    /// fold alike, and nothing of the unit is left behind the placeholder.
+    #[test]
+    fn duration_field_takes_its_unit() {
+        assert_eq!(
+            fold("duration=272.602256ms and duration=2.9s and duration=15"),
+            "<DURATION_FIELD> and <DURATION_FIELD> and <DURATION_FIELD>"
+        );
     }
 }

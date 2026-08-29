@@ -30,6 +30,14 @@ static HEX_48_REGEX: LazyLock<Regex> =
 static HEX_56_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{56}\b").unwrap());
 
+// MD5 fingerprint as ssh prints it: 16 colon-separated hex pairs.
+static MD5_COLON_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:[a-fA-F0-9]{2}:){15}[a-fA-F0-9]{2}\b").unwrap());
+
+// SHA256 fingerprint as ssh prints it: the label and 43 base64 characters.
+static SHA256_B64_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bSHA256:[A-Za-z0-9+/]{43}=?").unwrap());
+
 pub struct HashDetector;
 
 impl HashDetector {
@@ -57,18 +65,51 @@ impl HashDetector {
         false
     }
 
+    /// Four `hh:` groups in a row: a colon-separated fingerprint (or a MAC).
+    fn has_colon_hex_chain(text: &str) -> bool {
+        let b = text.as_bytes();
+        let mut groups = 0;
+        let mut i = 0;
+        while i + 2 < b.len() {
+            if b[i].is_ascii_hexdigit() && b[i + 1].is_ascii_hexdigit() && b[i + 2] == b':' {
+                groups += 1;
+                if groups >= 4 {
+                    return true;
+                }
+                i += 3;
+            } else {
+                groups = 0;
+                i += 1;
+            }
+        }
+        false
+    }
+
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        if !Self::has_hex_run(text) {
+        if !Self::has_hex_run(text) && !Self::has_colon_hex_chain(text) && !text.contains("SHA256:")
+        {
             return (text.to_string(), Vec::new());
         }
 
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
+        // ssh fingerprints: the label is the input's, the digest is the token.
+        for found in SHA256_B64_REGEX.find_iter(&result) {
+            tokens.push(Token::Hash(
+                HashType::SHA256,
+                found.as_str()["SHA256:".len()..].to_string(),
+            ));
+        }
+        result = SHA256_B64_REGEX
+            .replace_all(&result, "SHA256:<HASH>")
+            .to_string();
+
         // Fixed-width hex runs, longest first so a SHA-512 is not eaten as
         // eight 16-char generics. Each regex scans for tokens, then folds its
         // own matches away before the next, shorter one runs.
         for (regex, hash_type) in [
+            (&*MD5_COLON_REGEX, HashType::MD5),
             (&*SHA512_REGEX, HashType::SHA512),
             (&*SHA256_REGEX, HashType::SHA256),
             (&*HEX_56_REGEX, HashType::Generic(56)),
@@ -253,5 +294,22 @@ mod tests {
         let (result, tokens) = HashDetector::detect_and_replace("commit a3f8b2c deployed");
         assert_eq!(result, "commit <HASH> deployed");
         assert_eq!(tokens.len(), 1);
+    }
+
+    /// An ssh fingerprint is one digest, whichever way ssh prints it.
+    #[test]
+    fn ssh_fingerprints_are_one_hash() {
+        let (r, t) =
+            HashDetector::detect_and_replace("RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e");
+        assert_eq!(r, "RSA <HASH>");
+        assert!(matches!(t[0], Token::Hash(HashType::MD5, _)));
+        let (r, t) = HashDetector::detect_and_replace(
+            "host SHA256:Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE",
+        );
+        assert_eq!(r, "host SHA256:<HASH>");
+        assert!(matches!(t[0], Token::Hash(HashType::SHA256, _)));
+        // a MAC is six groups, not sixteen
+        let (r, _) = HashDetector::detect_and_replace("mac 00:11:22:33:44:55");
+        assert_eq!(r, "mac 00:11:22:33:44:55");
     }
 }

@@ -17,7 +17,7 @@ static URL_PATH: LazyLock<Regex> = LazyLock::new(|| {
 
 // Full URLs with schemes (https://host/path) - capture the entire URL
 static FULL_URL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"https?://[^/\s]+(?:/[^\s"]*)"#).expect("Failed to compile full URL regex")
+    Regex::new(r#"https?://[^/\s"]+(?:/[^\s"]*)?"#).expect("Failed to compile full URL regex")
 });
 
 // Windows paths
@@ -134,7 +134,9 @@ impl PathDetector {
         result = FILE_PATH
             .replace_all(&result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
-                if Self::is_likely_file_path(path) {
+                if Self::is_likely_file_path(path)
+                    && !Self::is_version_after_word(&result, &caps.get(0).unwrap())
+                {
                     tokens.push(Token::Path(path.to_string()));
                     "<PATH>".to_string()
                 } else {
@@ -156,7 +158,9 @@ impl PathDetector {
         result = URL_PATH
             .replace_all(&result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
-                if Self::is_likely_url_path(path) {
+                if Self::is_likely_url_path(path)
+                    && !Self::is_version_after_word(&result, &caps.get(0).unwrap())
+                {
                     let normalized = Self::normalize_url_path(path);
                     tokens.push(Token::Path(path.to_string()));
                     normalized
@@ -195,7 +199,19 @@ impl PathDetector {
         has_extension || has_multiple_segments || has_common_dirs
     }
 
-    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: API patterns (/api/, /v1/, /static/) always imply has_multiple_segments, making || vs && indistinguishable
+    #[cfg_attr(test, mutants::skip)]
+    // Equivalent mutant: API patterns (/api/, /v1/, /static/) always imply has_multiple_segments, making || vs && indistinguishable
+    /// `HTTP/1.1`, `curl/7.68.0`, `Mozilla/5.0`, a Postgres LSN `6E/F9009520`:
+    /// a slash glued to a word and followed only by digits, dots and hex is a
+    /// version or an address, not a path.
+    fn is_version_after_word(haystack: &str, m: &regex::Match) -> bool {
+        let glued = m.start() > 0 && haystack.as_bytes()[m.start() - 1].is_ascii_alphanumeric();
+        glued
+            && m.as_str()
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b'/')
+    }
+
     fn is_likely_url_path(path: &str) -> bool {
         // Must start with /
         if !path.starts_with('/') {
@@ -622,6 +638,26 @@ mod tests {
         assert!(
             result.contains("/health"),
             "health should be preserved, got: {result}"
+        );
+    }
+
+    /// A slash glued to a word and followed by a number is a version, not a
+    /// path; a bare `http://host` is still a URL.
+    #[test]
+    fn a_version_after_a_word_is_not_a_path() {
+        for (input, expected) in [
+            ("HTTP/1.1 x", "HTTP/1.1 x"),
+            ("curl/7.68.0 x", "curl/7.68.0 x"),
+            ("LSN 6E/F9009520 x", "LSN 6E/F9009520 x"),
+            ("dial http://0.0.0.0 x", "dial <PATH> x"),
+        ] {
+            let (r, _) = PathDetector::detect_and_replace(input);
+            assert_eq!(r, expected, "input: {input}");
+        }
+        let (r, _) = PathDetector::detect_and_replace("kubernetes.io/projected/abc x");
+        assert!(
+            r.contains("<PATH>"),
+            "a real path after a word still folds: {r}"
         );
     }
 }

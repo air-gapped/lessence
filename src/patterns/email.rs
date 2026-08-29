@@ -72,6 +72,26 @@ impl EmailPatternDetector {
             return false;
         }
 
+        // `modprobe@configfs.service` is a systemd instance unit, not a mailbox.
+        if domain.rsplit('.').next().is_some_and(|tld| {
+            matches!(
+                tld,
+                "service"
+                    | "socket"
+                    | "timer"
+                    | "mount"
+                    | "automount"
+                    | "target"
+                    | "slice"
+                    | "scope"
+                    | "path"
+                    | "device"
+                    | "swap"
+            )
+        }) {
+            return false;
+        }
+
         // Non-empty local and domain parts
         if local.is_empty() || domain.is_empty() {
             return false;
@@ -276,5 +296,15 @@ mod tests {
             !detector.validate_email(&email),
             "321-char email should be rejected"
         );
+    }
+
+    /// `modprobe@configfs.service` is a systemd instance unit, not a mailbox.
+    #[test]
+    fn systemd_instance_unit_is_not_an_email() {
+        let d = EmailPatternDetector::new().unwrap();
+        let (r, t) =
+            d.detect_and_replace("modprobe@configfs.service: Deactivated; mail root@example.com");
+        assert_eq!(r, "modprobe@configfs.service: Deactivated; mail <EMAIL>");
+        assert_eq!(t.len(), 1);
     }
 }

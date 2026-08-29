@@ -35,11 +35,13 @@ static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
-// IPv6 address - RFC 4291 compliant (supports all compression forms)
-static IPV6_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:(?:[0-9a-f]{1,4}:){7}[0-9a-f]{1,4}|::(?:[0-9a-f]{1,4}:){0,6}[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,7}:|(?:[0-9a-f]{1,4}:){1,6}:[0-9a-f]{1,4}|(?:[0-9a-f]{1,4}:){1,5}(?::[0-9a-f]{1,4}){1,2}|(?:[0-9a-f]{1,4}:){1,4}(?::[0-9a-f]{1,4}){1,3}|(?:[0-9a-f]{1,4}:){1,3}(?::[0-9a-f]{1,4}){1,4}|(?:[0-9a-f]{1,4}:){1,2}(?::[0-9a-f]{1,4}){1,5}|[0-9a-f]{1,4}:(?::[0-9a-f]{1,4}){1,6}|::(?:ffff(?::0{1,4})?:)?(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])|(?:[0-9a-f]{1,4}:){6}(?:(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])\.){3}(?:25[0-5]|(?:2[0-4]|1?[0-9])?[0-9])|::)"
-    ).unwrap()
+// IPv6 candidate: hex groups and colons, greedy, with an optional zone. The
+// candidate is then parsed by `std::net::Ipv6Addr`, which knows every
+// compression form; a regex alternation cannot, because the regex engine
+// takes the first alternative that matches, not the longest, and
+// `2001:db8::1` used to come out as `<IP>1`.
+static IPV6_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:%[a-z0-9]+)?").unwrap()
 });
 
 // Port numbers - only after hostnames, not in time formats or source file:line patterns
@@ -55,9 +57,14 @@ static IPV4_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
-// IPv6:Port combinations in brackets: [2001:db8::1]:8080
+// IPv6:Port combinations in brackets: [2001:db8::1]:8080, [::ffff:10.0.0.1]:8080
 static IPV6_PORT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:]+(?:%\w+)?)\]:(\d{1,5})\b").unwrap());
+    LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:.]+(?:%\w+)?)\]:(\d{1,5})\b").unwrap());
+
+// An IPv4-mapped IPv6 address is one address; matched before the IPv4 pass
+// would take its tail.
+static IPV4_MAPPED_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)::ffff:(?:\d{1,3}\.){3}\d{1,3}\b").unwrap());
 
 // FQDN (experimental, be careful not to match code like module.function.method)
 static FQDN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -67,6 +74,49 @@ static FQDN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub struct NetworkDetector;
+
+impl NetworkDetector {
+    fn is_version_not_address(ip: &str) -> bool {
+        ip.starts_with("0.") && ip != "0.0.0.0"
+    }
+
+    /// How many bytes of a candidate are an IPv6 address: all of it, all
+    /// but a trailing `:` that belongs to the sentence (`... 2001:db8::1:
+    /// failed`), or none. A candidate glued to a letter (`std::io`) or cut
+    /// out of a longer colon-hex chain (an ssh fingerprint) is not one.
+    fn ipv6_len(haystack: &str, m: &regex::Match) -> Option<usize> {
+        let b = haystack.as_bytes();
+        let glued = (m.start() > 0 && b[m.start() - 1].is_ascii_alphanumeric())
+            || (m.end() < b.len() && b[m.end()].is_ascii_alphanumeric());
+        if glued || Self::in_longer_colon_chain(haystack, m) {
+            return None;
+        }
+        let text = m.as_str();
+        let parses = |s: &str| {
+            let core = s.split('%').next().unwrap_or("");
+            Self::is_plausible_ipv6(core).is_plausible && core.parse::<std::net::Ipv6Addr>().is_ok()
+        };
+        if parses(text) {
+            Some(text.len())
+        } else if let Some(shorter) = text.strip_suffix(':')
+            && parses(shorter)
+        {
+            Some(shorter.len())
+        } else {
+            None
+        }
+    }
+
+    /// The match continues as `:hh` on either side: part of a longer chain.
+    fn in_longer_colon_chain(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let before =
+            m.start() >= 2 && b[m.start() - 1] == b':' && b[m.start() - 2].is_ascii_hexdigit();
+        let after =
+            m.end() + 1 < b.len() && b[m.end()] == b':' && b[m.end() + 1].is_ascii_hexdigit();
+        before || after
+    }
+}
 
 impl NetworkDetector {
     pub fn detect_and_replace(
@@ -118,9 +168,18 @@ impl NetworkDetector {
                 .replace_all(&result, "[<IP>]:<PORT>")
                 .to_string();
 
-            // Handle standalone IPv4 addresses
+            for cap in IPV4_MAPPED_REGEX.find_iter(&result) {
+                tokens.push(Token::IPv6(cap.as_str().to_string()));
+            }
+            result = IPV4_MAPPED_REGEX.replace_all(&result, "<IP>").to_string();
+
+            // Handle standalone IPv4 addresses. `0.x.y.z` is never a host —
+            // `(0.8.10.3)` is a package version — except `0.0.0.0` itself.
             for cap in IPV4_REGEX.find_iter(&result) {
                 let ip_str = cap.as_str();
+                if Self::is_version_not_address(ip_str) {
+                    continue;
+                }
                 if !tokens
                     .iter()
                     .any(|t| matches!(t, Token::IPv4(s) if s == ip_str))
@@ -128,20 +187,33 @@ impl NetworkDetector {
                     tokens.push(Token::IPv4(ip_str.to_string()));
                 }
             }
-            result = IPV4_REGEX.replace_all(&result, "<IP>").to_string();
+            result = IPV4_REGEX
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let ip = &caps[0];
+                    if Self::is_version_not_address(ip) {
+                        ip.to_string()
+                    } else {
+                        "<IP>".to_string()
+                    }
+                })
+                .to_string();
 
-            // Handle IPv6 addresses with pre-filter protection
-            for cap in IPV6_REGEX.find_iter(&result) {
-                let ip_str = cap.as_str();
-
-                let check = Self::is_plausible_ipv6(ip_str);
-                if !check.is_plausible {
-                    continue;
+            // Handle IPv6 addresses: a candidate is an address only if it
+            // parses as one and stands alone.
+            for m in IPV6_CANDIDATE.find_iter(&result) {
+                if let Some(len) = Self::ipv6_len(&result, &m) {
+                    tokens.push(Token::IPv6(m.as_str()[..len].to_string()));
                 }
-
-                tokens.push(Token::IPv6(ip_str.to_string()));
             }
-            result = IPV6_REGEX.replace_all(&result, "<IP>").to_string();
+            result = IPV6_CANDIDATE
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let m = caps.get(0).unwrap();
+                    match Self::ipv6_len(&result, &m) {
+                        Some(len) => format!("<IP>{}", &m.as_str()[len..]),
+                        None => m.as_str().to_string(),
+                    }
+                })
+                .to_string();
         }
 
         if normalize_ports {
@@ -152,7 +224,9 @@ impl NetworkDetector {
                 let port_str = cap.get(2).unwrap().as_str();
 
                 // Skip if this looks like a source file:line pattern (ends with ])
-                if full_match.ends_with(']')
+                // or two groups of a colon-hex chain (`b3:20` in a fingerprint)
+                if Self::in_longer_colon_chain(&result, &cap.get(0).unwrap())
+                    || full_match.ends_with(']')
                     || hostname.ends_with(".go")
                     || hostname.ends_with(".rs")
                     || hostname.ends_with(".py")
@@ -181,7 +255,8 @@ impl NetworkDetector {
                     let hostname = caps.get(1).unwrap().as_str();
 
                     // Skip if this looks like a source file:line pattern
-                    if full_match.ends_with(']')
+                    if Self::in_longer_colon_chain(&result, &caps.get(0).unwrap())
+                        || full_match.ends_with(']')
                         || hostname.ends_with(".go")
                         || hostname.ends_with(".rs")
                         || hostname.ends_with(".py")
@@ -994,5 +1069,42 @@ mod tests {
                 .any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
             "trailing dot FQDN should not produce token: {tokens:?}"
         );
+    }
+
+    /// Every IPv6 compression form is one address; what does not parse as
+    /// one — a Rust path, a MAC, a fingerprint — is left alone.
+    #[test]
+    fn ipv6_forms_are_whole_addresses() {
+        for (input, expected) in [
+            ("at 2001:db8::1 x", "at <IP> x"),
+            ("at 2001:db8:85a3::8a2e:370:7334 x", "at <IP> x"),
+            ("at fe80::1%eth0 x", "at <IP> x"),
+            ("at ::1 x", "at <IP> x"),
+            ("at 2001:db8::1: failed", "at <IP>: failed"),
+            ("std::io::Error x", "std::io::Error x"),
+            ("mac 00:11:22:33:44:55 x", "mac 00:11:22:33:44:55 x"),
+            (
+                "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",
+                "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",
+            ),
+            ("to [::ffff:172.26.1.74]:60835 x", "to [<IP>]:<PORT> x"),
+            ("to ::ffff:10.0.0.1 x", "to <IP> x"),
+        ] {
+            let (r, _) = NetworkDetector::detect_and_replace(input, true, true, false);
+            assert_eq!(r, expected, "input: {input}");
+        }
+    }
+
+    /// `0.x.y.z` is never a host; `(0.8.10.3)` is a package version.
+    #[test]
+    fn a_zero_led_dotted_quad_is_a_version() {
+        let (r, t) = NetworkDetector::detect_and_replace(
+            "package (0.8.10.3) at 0.0.0.0 and 10.0.0.1",
+            true,
+            false,
+            false,
+        );
+        assert_eq!(r, "package (0.8.10.3) at <IP> and <IP>");
+        assert_eq!(t.len(), 2);
     }
 }

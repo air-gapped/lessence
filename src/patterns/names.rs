@@ -8,6 +8,14 @@ use super::Token;
 // word, a digit-led chunk (`v2`, `1`, a pod-template hash) or a placeholder
 // an earlier detector left behind (`<HASH>`, `<NUMBER>`), so a generated
 // Kubernetes name such as `web-v2-<HASH>-7j5z7` is seen as one name.
+// A systemd template unit instance: `modprobe@configfs.service`,
+// `user@1000.service`, `getty@tty1.service`. The template is the name, the
+// instance is the variable.
+static TEMPLATE_UNIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([a-z][a-z0-9-]*)@([a-z0-9][a-z0-9._:-]*)\.(service|socket|timer|mount|target|slice|scope|path|device|swap)\b")
+        .expect("Failed to compile template unit regex")
+});
+
 static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b([a-z][a-z0-9]*(?:-(?:[a-z0-9]+|<[A-Z_]+>))*)-([a-z0-9]{5,})\b")
         .expect("Failed to compile hyphenated names regex")
@@ -37,12 +45,21 @@ pub struct NameDetector;
 impl NameDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         // FAST PATH: Skip if no hyphens (most lines won't have hyphenated names)
-        if !text.contains('-') {
+        if !text.contains('-') && !text.contains('@') {
             return (text.to_string(), Vec::new());
         }
 
         let mut result = text.to_string();
         let mut tokens = Vec::new();
+
+        if result.contains('@') {
+            result = TEMPLATE_UNIT
+                .replace_all(&result, |caps: &regex::Captures| {
+                    tokens.push(Token::Name(caps[0].to_string()));
+                    format!("{}@<INSTANCE>.{}", &caps[1], &caps[3])
+                })
+                .to_string();
+        }
 
         // Replace hyphenated names with variable suffixes
         result = HYPHENATED_NAMES
@@ -184,6 +201,20 @@ mod tests {
                 "no Name token for {input}"
             );
         }
+    }
+
+    #[test]
+    fn systemd_template_unit_instance_is_the_variable() {
+        let (r, t) = NameDetector::detect_and_replace(
+            "Starting modprobe@configfs.service - Load Kernel Module configfs; user@1000.service up",
+        );
+        assert_eq!(
+            r,
+            "Starting modprobe@<INSTANCE>.service - Load Kernel Module configfs; user@<INSTANCE>.service up"
+        );
+        assert_eq!(t.len(), 2);
+        let (r, _) = NameDetector::detect_and_replace("mail root@example.com sent");
+        assert_eq!(r, "mail root@example.com sent");
     }
 
     /// An all-letter 5-char chunk with nothing variable before it is a word

@@ -152,6 +152,12 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             160,
         ),
         p("windows-iis", r"\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}", 160),
+        // glog / rancher / norman: 2025/09/14 07:25:28
+        p(
+            "slash-date",
+            r"\b\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            160,
+        ),
         // ---- database ----
         p("mysql-timestamp", r"\b\d{6}\s+\d{2}:\d{2}:\d{2}\b", 240),
         p(
@@ -196,8 +202,11 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         p("unix-prefixed", r"@1[0-9]{9,10}(?:\.\d{1,9})?\b", 1480),
         p("unix-bracketed", r"\[1[0-9]{9,10}(?:\.\d{1,9})?\]", 1480),
         p("unix-timestamp", r"\b1[0-9]{9,10}(?:\.\d{1,9})?\b", 1490),
-        p("unix-timestamp-ms", r"\b\d{13}\b", 1490),
-        p("unix-timestamp-ns", r"\b\d{19}\b", 1490),
+        // Like the seconds form, an epoch in ms or ns starts with 1 for every
+        // date between 2001 and 2033; a 19-digit block id or database system
+        // identifier that starts with anything else is a number.
+        p("unix-timestamp-ms", r"\b1[0-9]{12}\b", 1490),
+        p("unix-timestamp-ns", r"\b1[0-9]{18}\b", 1490),
     ]
 });
 
@@ -248,6 +257,9 @@ impl UnifiedTimestampDetector {
         // Find all possible matches
         for pattern in patterns() {
             for regex_match in pattern.regex.find_iter(text) {
+                if !Self::is_plausible(text, regex_match.start(), regex_match.end()) {
+                    continue;
+                }
                 all_matches.push(TimestampMatch {
                     original: regex_match.as_str().to_string(),
                     start_pos: regex_match.start(),
@@ -272,10 +284,36 @@ impl UnifiedTimestampDetector {
         }
     }
 
+    /// A `hh:mm:ss` sitting inside a longer colon-hex chain
+    /// (`01:67:32:d9:b3:...`, an ssh fingerprint) is two bytes of a digest,
+    /// not a clock. A bare epoch glued to `-` or `_` (`blk_-6952...`,
+    /// `blk_1234...`) is a negative number or an identifier, not a time.
+    /// The clock's own digits are not range-checked: a malformed timestamp
+    /// still folds as one, by long-standing contract.
+    fn is_plausible(text: &str, start: usize, end: usize) -> bool {
+        let b = text.as_bytes();
+        let m = &b[start..end];
+        if m.iter().all(u8::is_ascii_digit) && start > 0 && matches!(b[start - 1], b'-' | b'_') {
+            return false;
+        }
+        let hex_pair_before = start >= 3
+            && b[start - 1] == b':'
+            && b[start - 2].is_ascii_hexdigit()
+            && b[start - 3].is_ascii_hexdigit();
+        let hex_pair_after = end + 3 < b.len()
+            && b[end] == b':'
+            && b[end + 1].is_ascii_hexdigit()
+            && b[end + 2].is_ascii_hexdigit()
+            && b[end + 3] == b':';
+        !(hex_pair_before || hex_pair_after)
+    }
+
     /// Fast pre-filter for timestamp indicators
     fn has_timestamp_indicators(text: &str) -> bool {
-        text.contains(':')
-            && (text.contains("20") || // Years 20xx
+        // `@1758304800` carries no colon at all.
+        text.contains("@1")
+            || text.contains(':')
+                && (text.contains("20") || // Years 20xx
             text.contains("19") || // Years 19xx
             text.contains('-') ||  // Date separators
             text.contains('T') ||  // ISO 8601 separator
@@ -848,5 +886,50 @@ mod tests {
         );
         assert_eq!(result[0].start_pos, 10);
         assert_eq!(result[0].score, -10);
+    }
+
+    /// `hh:mm:ss` inside a colon-hex chain is two bytes of a digest; a real
+    /// clock, and a malformed one, still fold.
+    #[test]
+    fn a_clock_inside_a_hex_chain_is_not_one() {
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",
+        );
+        assert!(!r.contains("<TIMESTAMP>"), "{r}");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "RSA ab:12:34:56:cd:ef:01:23:45:67:89:ab:cd:ef:01:23",
+        );
+        assert!(!r.contains("<TIMESTAMP>"), "{r}");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("[at] 12:34:56 done");
+        assert_eq!(r, "[at] <TIMESTAMP> done");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("[20/Jan/2025:10:21:18 +0000] x");
+        assert_eq!(r, "<TIMESTAMP> x");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("[at] 25:99:99 done");
+        assert_eq!(r, "[at] <TIMESTAMP> done", "malformed still folds");
+    }
+
+    #[test]
+    fn slash_date_is_a_timestamp() {
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("2025/09/14 07:25:28 [INFO] x");
+        assert_eq!(r, "<TIMESTAMP> [INFO] x");
+    }
+
+    /// An epoch in ms or ns starts with 1, like the seconds form already
+    /// required; and `@epoch` needs no colon to be looked at.
+    #[test]
+    fn an_epoch_starts_with_one() {
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("block blk_-6952295868487656571: x");
+        assert!(!r.contains("<TIMESTAMP>"), "{r}");
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("block blk_1234567890123456789: x");
+        assert!(
+            !r.contains("<TIMESTAMP>"),
+            "a block id is glued to an underscore: {r}"
+        );
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("[ns] 1758304800311000000: x");
+        assert_eq!(r, "[ns] <TIMESTAMP>: x");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("@1758304800.311 metric");
+        assert_eq!(r, "<TIMESTAMP> metric");
     }
 }

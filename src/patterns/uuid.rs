@@ -8,10 +8,6 @@ static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-// UUID without hyphens (sometimes used)
-static UUID_NO_HYPHENS_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[0-9a-fA-F]{32}\b").unwrap());
-
 // Request ID patterns. The prose word "request" must never match on its own:
 // require an explicit `id` suffix, a `=`/`:` separator, or the `req-`/`req_`
 // prefix idiom before capturing a value.
@@ -61,7 +57,7 @@ impl UuidDetector {
         result = REQUEST_ID_REGEX
             .replace_all(&result, |caps: &regex::Captures| {
                 if Self::is_likely_id(&caps[1]) {
-                    "request_id=<UUID>".to_string()
+                    Self::keep_prefix(caps)
                 } else {
                     caps[0].to_string()
                 }
@@ -70,11 +66,7 @@ impl UuidDetector {
 
         // Trace, session and correlation ids all carry the value in group 1
         // and fold to a keyword-prefixed placeholder.
-        for (regex, replacement) in [
-            (&*TRACE_ID_REGEX, "trace=<UUID>"),
-            (&*SESSION_ID_REGEX, "session=<UUID>"),
-            (&*CORRELATION_ID_REGEX, "correlation_id=<UUID>"),
-        ] {
+        for regex in [&*TRACE_ID_REGEX, &*SESSION_ID_REGEX, &*CORRELATION_ID_REGEX] {
             for caps in regex.captures_iter(&result) {
                 let id = caps.get(1).unwrap().as_str();
                 if Self::is_likely_id(id) {
@@ -83,20 +75,8 @@ impl UuidDetector {
             }
             // Folded whether or not the value looked like an id: the
             // surrounding keyword is evidence enough that the field is one.
-            result = regex.replace_all(&result, replacement).to_string();
+            result = regex.replace_all(&result, Self::keep_prefix).to_string();
         }
-
-        // UUIDs without hyphens (but avoid overlap with other hash patterns)
-        for cap in UUID_NO_HYPHENS_REGEX.find_iter(&result) {
-            let uuid_str = cap.as_str();
-            // Only treat as UUID if it has mixed letters and numbers (not pure hex hash)
-            if Self::looks_like_uuid_no_hyphens(uuid_str) {
-                tokens.push(Token::Uuid(uuid_str.to_string()));
-            }
-        }
-        result = UUID_NO_HYPHENS_REGEX
-            .replace_all(&result, "<UUID>")
-            .to_string();
 
         (result, tokens)
     }
@@ -114,20 +94,16 @@ impl UuidDetector {
         has_letters || has_numbers
     }
 
-    fn looks_like_uuid_no_hyphens(text: &str) -> bool {
-        if text.len() != 32 {
-            return false;
-        }
-
-        // Check if it has a good mix of letters and numbers
-        let letter_count = text.chars().filter(|c| c.is_alphabetic()).count();
-        let number_count = text.chars().filter(|c| c.is_numeric()).count();
-
-        // UUIDs typically have a good mix, whereas pure hashes might be more uniform
-        letter_count > 4 && number_count > 4
+    #[inline]
+    /// The placeholder replaces the id and nothing else: `req-abc123` becomes
+    /// `req-<UUID>`, `trace:abc` becomes `trace:<UUID>`. The value is the
+    /// last capture group and ends the match.
+    fn keep_prefix(caps: &regex::Captures) -> String {
+        let whole = &caps[0];
+        let id = &caps[1];
+        format!("{}<UUID>", &whole[..whole.len() - id.len()])
     }
 
-    #[inline]
     fn has_uuid_indicators(text: &str) -> bool {
         // Ultra-fast check for UUID/ID indicators
         text.contains('-') || // Standard UUIDs have hyphens
@@ -166,7 +142,7 @@ mod tests {
         assert_eq!(tokens.len(), 1);
 
         let (result, _) = UuidDetector::detect_and_replace("request: abc123 done");
-        assert_eq!(result, "request_id=<UUID> done");
+        assert_eq!(result, "request: <UUID> done");
     }
 
     #[test]
@@ -181,7 +157,7 @@ mod tests {
     fn test_request_id_detection() {
         let text = "req-abc123 started processing";
         let (result, tokens) = UuidDetector::detect_and_replace(text);
-        assert_eq!(result, "request_id=<UUID> started processing");
+        assert_eq!(result, "req-<UUID> started processing");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::Uuid(_)));
     }
@@ -190,7 +166,7 @@ mod tests {
     fn test_trace_id_detection() {
         let text = "trace:abc123def456 span completed";
         let (result, tokens) = UuidDetector::detect_and_replace(text);
-        assert_eq!(result, "trace=<UUID> span completed");
+        assert_eq!(result, "trace:<UUID> span completed");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::Uuid(_)));
     }
@@ -208,7 +184,7 @@ mod tests {
     fn test_multiple_ids() {
         let text = "req-abc123 trace:def456 session=ghi789";
         let (result, tokens) = UuidDetector::detect_and_replace(text);
-        assert_eq!(result, "request_id=<UUID> trace=<UUID> session=<UUID>");
+        assert_eq!(result, "req-<UUID> trace:<UUID> session=<UUID>");
         assert_eq!(tokens.len(), 3);
     }
 
@@ -286,36 +262,6 @@ mod tests {
         assert!(!UuidDetector::has_uuid_indicators(&s));
     }
 
-    // ---- looks_like_uuid_no_hyphens: per-condition tests ----
-
-    #[test]
-    fn uuid_no_hyphens_wrong_len() {
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens("abc123"));
-    }
-
-    #[test]
-    fn uuid_no_hyphens_insufficient_letters() {
-        // 32 chars but only 4 letters
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens(
-            "12345678901234567890123456789012"
-        ));
-    }
-
-    #[test]
-    fn uuid_no_hyphens_insufficient_numbers() {
-        // 32 chars but only 4 numbers
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens(
-            "abcdefabcdefabcdefabcdefabcdefab"
-        ));
-    }
-
-    #[test]
-    fn uuid_no_hyphens_good_mix() {
-        assert!(UuidDetector::looks_like_uuid_no_hyphens(
-            "550e8400e29b41d4a716446655440000"
-        ));
-    }
-
     // ---- is_likely_id: per-condition tests ----
 
     #[test]
@@ -367,41 +313,14 @@ mod tests {
         assert!(!UuidDetector::is_likely_id(&"a".repeat(65))); // len=65 > 64 → false
     }
 
-    // ---- Mutant-killing: looks_like_uuid_no_hyphens boundary tests ----
-
+    /// 32 hex digits with no hyphens are an MD5, the hash detector's.
     #[test]
-    fn uuid_no_hyphens_exactly_5_letters_passes() {
-        // Kills mutant: `letter_count > 4` → `letter_count >= 4` (line 133)
-        // 5 letters + 27 digits = 32 chars → letter_count=5 > 4 ✓
-        let s = "abcde012345678901234567890123456"; // 5 letters + 27 digits = 32 chars
-        assert_eq!(s.len(), 32);
-        assert!(UuidDetector::looks_like_uuid_no_hyphens(s));
-    }
-
-    #[test]
-    fn uuid_no_hyphens_exactly_4_letters_fails() {
-        // 4 letters + 28 digits = 32 chars → letter_count=4, NOT > 4
-        let s: String = "abcd".chars().chain(std::iter::repeat_n('0', 28)).collect();
-        assert_eq!(s.len(), 32);
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens(&s));
-    }
-
-    #[test]
-    fn uuid_no_hyphens_exactly_5_numbers_passes() {
-        // Kills mutant: `number_count > 4` → `number_count >= 4` (line 133)
-        // 27 letters + 5 digits = 32 chars
-        let s: String = std::iter::repeat_n('a', 27)
-            .chain("01234".chars())
-            .collect();
-        assert_eq!(s.len(), 32);
-        assert!(UuidDetector::looks_like_uuid_no_hyphens(&s));
-    }
-
-    #[test]
-    fn uuid_no_hyphens_exactly_4_numbers_fails() {
-        // 28 letters + 4 digits = 32 chars → number_count=4, NOT > 4
-        let s: String = std::iter::repeat_n('a', 28).chain("0123".chars()).collect();
-        assert_eq!(s.len(), 32);
-        assert!(!UuidDetector::looks_like_uuid_no_hyphens(&s));
+    fn thirty_two_hex_digits_are_not_a_uuid() {
+        let (r, _) =
+            UuidDetector::detect_and_replace("saddr=02000050A9FEA9FE0000000000000000 req-x");
+        assert!(
+            r.starts_with("saddr=02000050A9FEA9FE0000000000000000"),
+            "{r}"
+        );
     }
 }

@@ -563,7 +563,7 @@ mod tests {
     fn claimed_content_beats_the_shape_rule() {
         // The inner cascade already recognised something here; the shape rule
         // must not run ahead of it and throw that away.
-        let normalized = fold_value("v1.31.4");
+        let normalized = fold_value("build 1.5");
         assert!(
             !normalized.contains("<QUOTED_STRING>"),
             "claimed content must keep its normalized form: {normalized}"

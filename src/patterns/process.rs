@@ -40,8 +40,17 @@ impl ProcessDetector {
                 }
             }
         }
+        // A placeholder replaces the number and nothing else: `[1234]` becomes
+        // `[<PID>]`; only an input that said `pid=` keeps saying it.
         result = PID_BRACKET_REGEX
-            .replace_all(&result, "[pid=<PID>]")
+            .replace_all(&result, |caps: &regex::Captures| {
+                if caps.get(1).is_some() {
+                    "[pid=<PID>]"
+                } else {
+                    "[<PID>]"
+                }
+                .to_string()
+            })
             .to_string();
 
         // PID with equals like pid=12345
@@ -150,7 +159,7 @@ mod tests {
     fn test_pid_simple_bracket_detection() {
         let text = "[12345] Error occurred";
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
-        assert_eq!(result, "[pid=<PID>] Error occurred");
+        assert_eq!(result, "[<PID>] Error occurred");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::Pid(12345)));
     }

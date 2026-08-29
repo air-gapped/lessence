@@ -356,7 +356,7 @@ Jan 26 07:11:02 d2-4-bhs5 sshd[3582011]: Invalid user deploy from 45.148.10.72 p
 ##FROM examples/cilium_full.log
 time="2025-08-30T14:36:55.873925586Z" level=info msg="regenerating all endpoints" reason="Configuration or devices changed" subsys=endpoint-manager
 
-##TODO study-epoch-at-prefix-without-colon template_present=<TIMESTAMP>
+##CASE lessence-27p template_present=<TIMESTAMP>
 ##WHY the @epoch pattern exists but is unreachable because the pre-filter wants a colon
 ##FROM examples/enhanced_timestamps.log
 @1758304800.311 Prometheus metric collected value=45.67
@@ -459,40 +459,76 @@ I0918 19:48:33.672316 1119763 reconciler_common.go:245] "operationExecutor.Verif
 I0918 19:48:41.118204 1119763 reconciler_common.go:245] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-prmm6\" (UniqueName: \"kubernetes.io/projected/6e2d8f1a-7b3c-4d5e-8f9a-0b1c2d3e4f5a-kube-api-access-prmm6\") pod \"nightly-backup-wiki-db-29304410-77kp4\" (UID: \"6e2d8f1a-7b3c-4d5e-8f9a-0b1c2d3e4f5a\") " pod="wiki-db/nightly-backup-wiki-db-29304410-77kp4"
 I0918 19:48:52.905117 1119763 reconciler_common.go:245] "operationExecutor.VerifyControllerAttachedVolume started for volume \"kube-api-access-55h7w\" (UniqueName: \"kubernetes.io/projected/9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d-kube-api-access-55h7w\") pod \"cache-redis-2\" (UID: \"9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d\") " pod="cache/cache-redis-2"
 
-##TODO study-http-version-is-not-a-path template_absent=HTTP<PATH>
+##CASE lessence-27p template_absent=HTTP<PATH>
 ##WHY HTTP/1.1 is a protocol version; found in 7 of 25 corpora (root cause 6)
 ##FROM examples/nginx_sample.log
 93.180.71.3 - - [17/May/2015:08:05:32 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)"
 
-##TODO study-no-fabricated-pid-label template_absent=pid=
+##CASE lessence-27p template_absent=pid=
 ##WHY a placeholder must not add text the input never had; found in 6 corpora (root cause 6)
 ##FROM examples/realistic_repetitive.log
 Jan 20 10:15:00 server01 disk-monitor[1234]: /var/log disk usage: 85% (warning threshold: 80%)
 
-##TODO study-ssh-fingerprint-is-one-atom template_absent=RSA <TIMESTAMP>
+##CASE lessence-27p template_present=RSA <HASH>
 ##WHY a 16-group colon-hex fingerprint must not be carved up by 4 detectors (root cause 6)
 ##FROM examples/linux_auth_secure.log
 Feb 22 16:48:04 slave22 sshd[2805]: Accepted publickey for drewr from 69.245.39.97 port 34202 ssh2: RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e
 
-##TODO study-19-digit-id-is-not-a-timestamp template_absent=<TIMESTAMP>
+##CASE lessence-27p template_absent=<TIMESTAMP>
 ##WHY a negative 19-digit id is not an epoch; it also fabricates time_range (root cause 6)
 ##FROM examples/hdfs_sample.log
 081109 203807 222 INFO dfs.DataNode$PacketResponder: PacketResponder 0 for block blk_-6952295868487656571 terminating
 
-##TODO study-systemd-instance-unit-is-not-email template_absent=<EMAIL>
+##CASE lessence-27p template_absent=<EMAIL>
 ##WHY name@instance.service is a systemd unit (root cause 6)
 ##FROM the journalctl corpus
 Sep 14 06:58:42 oryx systemd[1]: modprobe@configfs.service: Deactivated successfully.
 
-##TODO study-ipv4-mapped-ipv6-is-one-token template_absent=<IP>:<IP>
+##CASE lessence-27p template_absent=<IP>:<IP>
 ##WHY [::ffff:172.26.1.74] is one address (root cause 6)
 ##FROM examples/vllm_embedding_production.log
 [W920 01:39:36.529051908 socket.cpp:755] [c10d] The client socket cannot be initialized to connect to [::ffff:172.26.1.74]:60835 (errno: 97 - Address family not supported by protocol).
 
-##TODO study-duration-unit-does-not-change-detector template_present=<DURATION_FIELD>
+##CASE lessence-27p template_present=<DURATION_FIELD>
 ##WHY duration=272ms and duration=2.9s are the same field; detector order must not differ by unit
 ##FROM examples/prometheus.log
 ts=2025-09-19T05:00:28.582Z caller=head.go:1360 level=info component=tsdb msg="Head GC completed" caller=truncateMemory duration=272.602256ms
+
+##CASE lessence-27p template_present=req-<UUID>
+##WHY a placeholder replaces the id and nothing else; `req-abc` used to come out as `request_id=<UUID>` (root cause 6)
+##FROM the request-id idiom in application logs
+2025-01-20 10:15:30 INFO handler req-7f3a9c2e1b done in 12ms
+2025-01-20 10:15:31 INFO handler req-b4d81e0c77 done in 9ms
+
+##CASE lessence-27p template_present=saddr=<HASH>
+##WHY 32 hex digits with no hyphens are an MD5-length digest, not a UUID (root cause 6)
+##FROM linux_auditd shape
+type=SOCKADDR msg=audit(1481077254.276:518): saddr=02000050A9FEA9FE0000000000000000
+
+##CASE lessence-27p template_absent=<HTTP_STATUS>
+##WHY `exit status 128` is an exit status; only a registered HTTP code in prose is an HTTP status (root cause 6)
+##FROM the `exit status N` idiom in Go and shell wrappers
+2025-01-20 10:15:30 ERROR job failed: exit status 128
+
+##CASE lessence-27p template_absent=<IP>
+##WHY a dotted quad starting with 0 is a version, never a host (root cause 6)
+##FROM the dpkg status shape
+2025-01-20 10:15:30 status installed apt-transport-https:amd64 (0.8.10.3)
+
+##CASE lessence-27p template_present=3.3.4
+##WHY a dotted version is kept whole, not `<DECIMAL>.4` (root cause 6)
+##FROM the `version X.Y.Z` banner most daemons print
+2025-01-20 10:15:30 INFO server version 3.3.4 starting
+
+##CASE lessence-27p template_present=to <IP> failed
+##WHY a compressed IPv6 address is one address; `2001:db8::1` used to come out as `<IP>1` (found while fixing the mapped form)
+##FROM any IPv6 connect error
+2025-01-20 10:15:30 WARN connect to 2001:db8::1 failed
+
+##CASE lessence-27p template_present=std::io::Error
+##WHY a Rust path is not an IPv6 address; `std::io::Error` used to come out as `st<IP>io<IP>rror`
+##FROM any Rust error line
+2025-01-20 10:15:30 ERROR std::io::Error: connection reset by peer
 
 ##CASE study-keyvalue-does-not-insert-a-space template_absent="level": <KEY_VALUE>
 ##WHY the template must be a template of the input; JSON_KV_REGEX inserts a space (root cause 6)

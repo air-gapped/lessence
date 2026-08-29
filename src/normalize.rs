@@ -866,7 +866,7 @@ mod tests {
         // (durations, names, etc.) still normalize numbers and decimals
         assert_eq!(
             line.normalized,
-            "<NUMBER>-01-20 10:15:30 Connection to <DECIMAL>.<DECIMAL> failed"
+            "<NUMBER>-01-20 10:15:30 Connection to <NUMBER>.<NUMBER>.1.<NUMBER> failed"
         );
     }
 

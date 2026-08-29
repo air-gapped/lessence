@@ -87,6 +87,11 @@ impl KeyValueDetector {
         super::fold_matches(text, tokens, regex, |caps| {
             let key = caps.get(1).unwrap().as_str();
             let value = caps.get(2).unwrap().as_str();
+            // A duration is the duration detector's whatever its unit:
+            // `duration=272ms` and `duration=2.9s` must fold alike.
+            if Self::classify_value_type(value) == "duration" {
+                return None;
+            }
             (line_allows && Self::is_valid_key_value_pair(key, value))
                 .then(|| Self::pair(key, value))
         });
@@ -987,5 +992,13 @@ mod tests {
             "30",
             "timeout=30"
         ));
+    }
+
+    /// A duration-shaped value belongs to the duration detector whatever
+    /// its key, so `latency=5ms` and `latency=2.9s` fold alike.
+    #[test]
+    fn a_duration_value_is_left_to_the_duration_detector() {
+        let (r, _) = KeyValueDetector::detect_and_replace("latency=5ms timeout=30");
+        assert_eq!(r, "latency=5ms <KEY_VALUE>");
     }
 }
