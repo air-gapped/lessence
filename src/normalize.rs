@@ -642,17 +642,35 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
     // too, where the digit *is* the identity — but an API version is
     // normally its own segment, and fragmenting every object id is the
     // worse error.
+    //
+    // Except a digit with a letter on both sides, which is a letter of the
+    // word: `k8s` is not a numbered `ks`, and nothing about it varies.
+    // Collapsing it made every Kubernetes route read `k<N>s`, and
+    // `authorization.k8s.io` read `authorization.k<N>s.io` — harder to read
+    // and a claim that two spellings were seen, when only one ever is.
+    // A leading or trailing run is still a number: `v1` varies, `v1beta1`
+    // keeps the `1` that names the family and varies the one that counts.
+    let b = segment.as_bytes();
     let mut out = String::with_capacity(segment.len());
-    let mut in_digits = false;
-    for byte in segment.bytes() {
-        if byte.is_ascii_digit() {
-            if !in_digits {
-                out.push_str("<N>");
-                in_digits = true;
-            }
+    let mut i = 0;
+    while i < b.len() {
+        if !b[i].is_ascii_digit() {
+            out.push(b[i] as char);
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        let inside_a_word = start > 0
+            && b[start - 1].is_ascii_alphabetic()
+            && i < b.len()
+            && b[i].is_ascii_alphabetic();
+        if inside_a_word {
+            out.push_str(&segment[start..i]);
         } else {
-            in_digits = false;
-            out.push(byte as char);
+            out.push_str("<N>");
         }
     }
     RouteSegment::Skeleton(out)
@@ -1117,6 +1135,29 @@ mod tests {
             render_route("/objects/550e8400-e29b-41d4-a716-446655440000"),
             "/objects/<ID>"
         );
+    }
+
+    /// `k8s` is a word with an 8 in it. Collapsing that digit made every
+    /// Kubernetes route read `k<N>s` and claimed a spelling varied that
+    /// never does; a leading or trailing run is still a number.
+    #[test]
+    fn a_digit_between_letters_is_part_of_the_word() {
+        assert_eq!(
+            render_route("/k8s/apis/authorization.k8s.io/v1beta1/pods/42"),
+            "/k8s/apis/authorization.k8s.io/v1beta<N>/pods/<N>"
+        );
+        // The identity moves with the rendering: two spellings of the word
+        // are two routes, while the object id folds.
+        let mut a = AHasher::default();
+        let mut b = AHasher::default();
+        hash_route("/k8s/pods/42", &mut a);
+        hash_route("/k9s/pods/99", &mut b);
+        assert_ne!(a.finish(), b.finish(), "k8s and k9s are different routes");
+        let mut c = AHasher::default();
+        let mut d = AHasher::default();
+        hash_route("/k8s/pods/42", &mut c);
+        hash_route("/k8s/pods/99", &mut d);
+        assert_eq!(c.finish(), d.finish(), "the object id still folds");
     }
 
     #[test]
