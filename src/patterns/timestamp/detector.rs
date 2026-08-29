@@ -65,6 +65,15 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             r"\b(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})? (?:UTC|GMT|[ECMP][SD]T|CES?T|EES?T|WES?T|BST|IST|JST|KST|AE[SD]T|A[CW][SD]T|NZ[SD]T|MSK|HKT|SGT|PHT|WIB|WITA|WIT|HST|AK[SD]T|A[SD]T|N[SD]T)\b",
             -95,
         ),
+        // A 12-hour clock's meridiem is part of the timestamp. Scored
+        // with the regional forms, `iso8601-full` took the date and time
+        // and left ` AM` outside: five lines of one event read
+        // `<TIMESTAMP> <VARIES>` for AM against PM.
+        p(
+            "us-date-12h",
+            r"\b\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}:\d{2}(?:\.\d{1,9})?\s*(?:AM|PM|am|pm)\b",
+            -91,
+        ),
         // The gateway's network-init script joins date and time with a
         // dash: `2025-06-26-00:45:05.454`. Unrecognised, the year folded as
         // a number and the time as a timestamp, and every calendar date was
@@ -141,11 +150,6 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         p("gcp", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z", 60),
         p("azure", r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z", 60),
         // ---- regional ----
-        p(
-            "us-date-12h",
-            r"\b\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}:\d{2}(?:\.\d{1,9})?\s*(?:AM|PM|am|pm)\b",
-            140,
-        ),
         // Order matters against `european-date` below: both match
         // `01/02/2024 10:00:00 AM` from the same offset, but only this one
         // swallows the meridiem.
@@ -204,7 +208,8 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             r"\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
             340,
         ),
-        p("compact", r"\b20\d{12}\b", 350),
+        // `20260801142207`: year, a month 01–12, then day and clock.
+        p("compact", r"\b20\d{2}(?:0[1-9]|1[0-2])\d{8}\b", 350),
         p(
             "syslog-bsd",
             r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
@@ -219,11 +224,6 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         p(
             "time-only",
             r"\b\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?\b",
-            360,
-        ),
-        p(
-            "duration",
-            r"\bP(?:\d+Y)?(?:\d+M)?(?:\d+D)?(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?\b",
             360,
         ),
         // ---- unix epochs ----
@@ -319,10 +319,20 @@ impl UnifiedTimestampDetector {
     /// `blk_1234...`) is a negative number or an identifier, not a time.
     /// The clock's own digits are not range-checked: a malformed timestamp
     /// still folds as one, by long-standing contract.
+    /// A bare epoch in seconds — ten digits, no fraction, plain or in
+    /// brackets — is a timestamp only as the line's first token: anywhere
+    /// else (`id=1700000000`, `size 1727676930 bytes`) it is a number.
     fn is_plausible(text: &str, start: usize, end: usize) -> bool {
         let b = text.as_bytes();
         let m = &b[start..end];
         if m.iter().all(u8::is_ascii_digit) && start > 0 && matches!(b[start - 1], b'-' | b'_') {
+            return false;
+        }
+        let inner = match (m.first(), m.last()) {
+            (Some(b'['), Some(b']')) => &m[1..m.len() - 1],
+            _ => m,
+        };
+        if inner.len() <= 11 && inner.iter().all(u8::is_ascii_digit) && start > 0 {
             return false;
         }
         // `trace[1539274761]`, `Trace[1310679091]:` — a bracket glued to a
@@ -353,7 +363,8 @@ impl UnifiedTimestampDetector {
     /// A run of exactly ten digits starting with 1, standing alone and
     /// followed by a fractional part: `1481076984.827`. A bare ten-digit
     /// integer stays out — it is far more often a size or an id (see the
-    /// module docs) — but with milliseconds attached it is an epoch.
+    /// module docs) — unless it opens the line, plain or bracketed
+    /// (`1754057127 …`, `[1754057127] …`), where it is the line's stamp.
     fn has_epoch_run(text: &str) -> bool {
         let b = text.as_bytes();
         let mut i = 0;
@@ -364,6 +375,10 @@ impl UnifiedTimestampDetector {
                     j += 1;
                 }
                 if j - i == 10 && j + 1 < b.len() && b[j] == b'.' && b[j + 1].is_ascii_digit() {
+                    return true;
+                }
+                let opens_line = i == 0 || (i == 1 && b[0] == b'[');
+                if j - i == 10 && opens_line && (j == b.len() || !b[j].is_ascii_alphanumeric()) {
                     return true;
                 }
                 // ms, µs and ns epochs carry their precision as digits.
@@ -425,6 +440,51 @@ impl UnifiedTimestampDetector {
         false
     }
 
+    /// `20260801142207`: fourteen digits standing alone, `20` then a
+    /// month 01–12 — the `compact` shape, which carries no colon.
+    fn has_compact_stamp(text: &str) -> bool {
+        let b = text.as_bytes();
+        text.match_indices("20").any(|(i, _)| {
+            i + 14 <= b.len()
+                && (i == 0 || !b[i - 1].is_ascii_alphanumeric())
+                && b[i + 2..i + 14].iter().all(u8::is_ascii_digit)
+                && (i + 14 == b.len() || !b[i + 14].is_ascii_alphanumeric())
+                && matches!(
+                    (b[i + 4], b[i + 5]),
+                    (b'0', b'1'..=b'9') | (b'1', b'0'..=b'2')
+                )
+        })
+    }
+
+    /// `26.213 14:22:07`: two digits, a dot, three digits, whitespace and a
+    /// clock — the `ibm-format` shape, which carries none of the general
+    /// indicators.
+    fn has_ibm_stamp(text: &str) -> bool {
+        let b = text.as_bytes();
+        text.match_indices('.').any(|(dot, _)| {
+            let Some(i) = dot.checked_sub(2) else {
+                return false;
+            };
+            if i + 10 > b.len()
+                || (i > 0 && b[i - 1].is_ascii_alphanumeric())
+                || !b[i].is_ascii_digit()
+                || !b[i + 1].is_ascii_digit()
+                || !b[i + 3..i + 6].iter().all(u8::is_ascii_digit)
+                || !b[i + 6].is_ascii_whitespace()
+            {
+                return false;
+            }
+            let mut j = i + 7;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            j + 3 <= b.len()
+                && b[j].is_ascii_digit()
+                && b[j + 1].is_ascii_digit()
+                && b[j + 2] == b':'
+        })
+    }
+
     /// Fast pre-filter for timestamp indicators
     fn has_timestamp_indicators(text: &str) -> bool {
         // `@1758304800` carries no colon at all, and neither does a bare
@@ -447,7 +507,9 @@ impl UnifiedTimestampDetector {
             text.contains("Jan") || text.contains("Feb") || text.contains("Mar") ||
             text.contains("Apr") || text.contains("May") || text.contains("Jun") ||
             text.contains("Jul") || text.contains("Aug") || text.contains("Sep") ||
-            text.contains("Oct") || text.contains("Nov") || text.contains("Dec"))
+            text.contains("Oct") || text.contains("Nov") || text.contains("Dec") ||
+            Self::has_ibm_stamp(text))
+            || Self::has_compact_stamp(text)
     }
 
     /// Resolve overlapping matches using longest-match-first rule
@@ -1135,8 +1197,8 @@ mod shapes_2026_08_29 {
             assert_eq!(r, line, "{line}");
             assert!(t.is_empty());
         }
-        let (r, _) = UnifiedTimestampDetector::detect_and_replace("at [1539274761] ok: x");
-        assert_eq!(r, "at <TIMESTAMP> ok: x");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace("[1539274761] ok: x");
+        assert_eq!(r, "<TIMESTAMP> ok: x");
     }
 
     #[test]
@@ -1151,6 +1213,89 @@ mod shapes_2026_08_29 {
             assert_eq!(t.len(), 1, "{line}");
         }
         assert!(!UnifiedTimestampDetector::has_klog_header("FILE0829 x"));
+    }
+
+    #[test]
+    fn a_meridiem_is_part_of_its_timestamp() {
+        for line in [
+            "2026-08-01 08:22:07 AM backup verification passed",
+            "2026-08-09 11:47:33 PM backup verification passed",
+            "2026-08-15 2:05:19.250 am backup verification passed",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, "<TIMESTAMP> backup verification passed", "{line}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("2026-08-01 14:22:07 AMQP link up");
+        assert_eq!(
+            r, "<TIMESTAMP> AMQP link up",
+            "a word starting AM is a word"
+        );
+    }
+
+    #[test]
+    fn a_compact_stamp_and_an_ibm_stamp_need_no_other_hint() {
+        for line in [
+            "20260801142207 checkpoint written to disk",
+            "20260815000000 checkpoint written to disk",
+            "26.213 14:22:07 CICS transaction ABCD completed",
+            "26.241\t00:00:00 CICS transaction ABCD completed",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(r.starts_with("<TIMESTAMP> "), "{line} -> {r}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
+        for line in [
+            "20261301000000 is no date, month 13",
+            "seq 20260801142207x glued",
+            "26.2134 14:22:07 four digits",
+        ] {
+            let (r, _) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(!r.starts_with("<TIMESTAMP>"), "{line} -> {r}");
+        }
+    }
+
+    #[test]
+    fn a_bare_epoch_is_a_timestamp_only_as_the_first_token() {
+        for line in [
+            "1754057127 heartbeat received from node-05",
+            "[1754057127] audit event logged for user svc-ci",
+            "[1756463415] audit event logged for user svc-ci",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(r.starts_with("<TIMESTAMP> "), "{line} -> {r}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
+        for line in [
+            "event id=1754057127 processed successfully by worker-3",
+            "processing record id=1700000000 for batch queue-3",
+            "2026-08-01 14:22:07 size 1727676930 bytes written",
+            "at [1539274761] ok: x",
+            "1754057127x glued",
+        ] {
+            let (r, _) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(
+                r.matches("<TIMESTAMP>").count(),
+                usize::from(line.starts_with("2026")),
+                "{line} -> {r}"
+            );
+        }
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("msg=audit(1481076984.827:17) cwd=/");
+        assert_eq!(
+            r, "msg=audit(<TIMESTAMP>:17) cwd=/",
+            "a fraction still marks an epoch anywhere"
+        );
+    }
+
+    #[test]
+    fn an_iso_duration_is_not_a_timestamp() {
+        let (r, t) =
+            UnifiedTimestampDetector::detect_and_replace("PT30M15S scheduled backup running");
+        assert_eq!(r, "PT30M15S scheduled backup running");
+        assert!(t.is_empty());
+        assert!(super::patterns().iter().all(|p| p.name != "duration"));
     }
 
     #[test]

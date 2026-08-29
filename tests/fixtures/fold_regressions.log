@@ -916,3 +916,52 @@ Aug 29 03:10:07 USW16PoE daemon.err mcad: mcad[459]: ace_reporter.reporter_fail(
 type=SYSCALL msg=audit(1481077232.471:485): arch=c000003e syscall=59 success=yes exit=0 a0=1325fc0 a1=133b250 a2=7ffc08f6aa80 a3=0 items=2 ppid=1220 pid=1396 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sudo" exe="/usr/bin/sudo" key=(null)
 type=SYSCALL msg=audit(1481077232.471:486): arch=c000003e syscall=59 success=yes exit=0 a0=1325fc0 a1=133b250 a2=7ffc08f6aa80 a3=0 items=2 ppid=1220 pid=1397 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sshd" exe="/usr/sbin/sshd" key=(null)
 type=SYSCALL msg=audit(1481077299.100:490): arch=c000003e syscall=59 success=yes exit=0 a0=1325fc0 a1=133b250 a2=7ffc08f6aa80 a3=0 items=2 ppid=1220 pid=1401 auid=4294967295 uid=0 gid=0 euid=0 suid=0 fsuid=0 egid=0 sgid=0 fsgid=0 tty=(none) ses=4294967295 comm="sudo" exe="/usr/bin/sudo" key=(null)
+
+##CASE lessence-a8t groups=1
+##WHY a 12-hour clock's AM/PM is part of the timestamp, not a trailing word that varies beside it
+##FROM examples/timestamps_40.log study, format: us-date-12h
+2026-08-01 08:22:07 AM backup verification passed for db-primary
+2026-08-09 11:47:33 PM backup verification passed for db-primary
+2026-08-15 02:05:19 AM backup verification passed for db-primary
+
+##CASE lessence-a8t template_present=<TIMESTAMP> checkpoint written to disk
+##WHY a 14-digit compact YYYYMMDDHHMMSS stamp is a timestamp whether or not the rest of the line has a colon
+##FROM examples/timestamps_40.log study, format: compact
+20260801142207 checkpoint written to disk
+20260809090544 checkpoint written to disk
+20260815000000 checkpoint written to disk
+
+##CASE lessence-a8t template_present=<TIMESTAMP> CICS transaction ABCD completed
+##WHY an IBM day-in-year clock stamp is a timestamp although its own shape supplies none of the prefilter's other markers
+##FROM examples/timestamps_40.log study, format: ibm-format
+26.213 14:22:07 CICS transaction ABCD completed
+26.221 09:05:44 CICS transaction ABCD completed
+26.227 00:00:00 CICS transaction ABCD completed
+
+##CASE lessence-a8t template_present=<DURATION> scheduled backup running for job-alpha
+##WHY an ISO-8601 duration is a duration, not a timestamp, whether or not the line has a colon
+##FROM examples/timestamps_40.log study, format: duration
+PT30M15S scheduled backup running for job-alpha
+PT45M02S scheduled backup running for job-alpha
+PT03M56S scheduled backup running for job-alpha
+
+##CASE lessence-a8t template_present=<TIMESTAMP> audit event logged for user svc-ci
+##WHY a bracketed bare epoch opening the line is the line's stamp even with no fractional part
+##FROM examples/timestamps_40.log study, format: unix-bracketed
+[1754057127] audit event logged for user svc-ci
+[1754748344] audit event logged for user svc-ci
+[1755216000] audit event logged for user svc-ci
+
+##CASE lessence-a8t template_present=<TIMESTAMP> heartbeat processed by worker-3
+##WHY a bare epoch is a timestamp as the line's first token only; behind id= or a size word it is a number
+##FROM examples/timestamps_40.log study, format: unix-timestamp
+1754057127 heartbeat processed by worker-3
+1754748344 heartbeat processed by worker-3
+1755216000 heartbeat processed by worker-3
+
+##CASE lessence-a8t template_absent=<TIMESTAMP>
+##WHY a bare ten-digit number that does not open the line is an id or a size, not a time
+##FROM examples/timestamps_40.log study, not-a-timestamp block
+processing record id=1754057127 for batch queue-3
+processing record id=1754748344 for batch queue-3
+processing record id=1755216000 for batch queue-3

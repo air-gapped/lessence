@@ -50,6 +50,12 @@ static DURATION_WITH_UNIT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:(?:\d+d )?(?:\d+h )?(?:\d+min )?\d+(?:\.\d+)?s|\d+d \d+h(?: \d+min)?|\d+h \d+min|\d+h(?:\d+m)?(?:\d+(?:\.\d+)?s)?|\d+m(?:\d+(?:\.\d+)?s)?|\d+(?:\.\d+)?(?:ms|µs|μs|ns|s))\b").unwrap()
 });
 
+// An ISO-8601 duration: `PT30M15S`, `P1DT2H`, `PT0.5S`. At least one
+// component is required — a bare `P` or `PT` is a word (a time zone).
+static ISO_DURATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bP(?:(?:\d+Y(?:\d+M)?(?:\d+D)?|\d+M(?:\d+D)?|\d+D)(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?|T(?:\d+H(?:\d+M)?(?:\d+(?:\.\d+)?S)?|\d+M(?:\d+(?:\.\d+)?S)?|\d+(?:\.\d+)?S))\b").unwrap()
+});
+
 // Kubernetes duration fields (podStartSLOduration=, podStartE2EDuration=)
 static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\w*[Dd]uration=\d+(?:\.\d+)?(?:ms|µs|μs|ns|us|s|m|h)?\b").unwrap()
@@ -92,6 +98,17 @@ impl DurationDetector {
         before || after
     }
 
+    /// `P` then a digit, or `PT` then a digit: the only way an ISO-8601
+    /// duration can start. A line without one skips ISO_DURATION_REGEX,
+    /// which would otherwise scan every capital P on every line.
+    fn has_iso_duration_indicators(text: &str) -> bool {
+        let b = text.as_bytes();
+        text.match_indices('P').any(|(i, _)| {
+            b.get(i + 1).is_some_and(u8::is_ascii_digit)
+                || (b.get(i + 1) == Some(&b'T') && b.get(i + 2).is_some_and(u8::is_ascii_digit))
+        })
+    }
+
     /// Three digits in a row: enough for INTEGER_REGEX to have something to do.
     fn has_digit_run(text: &str) -> bool {
         text.as_bytes()
@@ -110,6 +127,8 @@ impl DurationDetector {
             && !text.contains("bytes")
             && !text.contains("KB")
             && !text.contains("MB")
+            // an ISO-8601 duration carries its units in capitals
+            && !Self::has_iso_duration_indicators(text)
             // a JSON field value carries no unit of its own
             && !text.contains(':')
             // and neither does a bare number: `[Tue <TIMESTAMP> 2024]`
@@ -120,6 +139,15 @@ impl DurationDetector {
 
         let mut result = text.to_string();
         let mut tokens = Vec::new();
+
+        if Self::has_iso_duration_indicators(&result) {
+            for found in ISO_DURATION_REGEX.find_iter(&result) {
+                tokens.push(Token::Duration(found.as_str().to_string()));
+            }
+            result = ISO_DURATION_REGEX
+                .replace_all(&result, "<DURATION>")
+                .to_string();
+        }
 
         // Process in order of specificity: each pass folds its own matches
         // away before the next, looser one runs, so `<SIZE>` can never be
@@ -599,6 +627,15 @@ mod shapes_2026_08_29 {
             (
                 "waited 3.638µs and 191.38μs",
                 "waited <DURATION> and <DURATION>",
+            ),
+            (
+                "PT30M15S scheduled backup running for job-alpha",
+                "<DURATION> scheduled backup running for job-alpha",
+            ),
+            ("retention P1Y2M10DT2H30M ends", "retention <DURATION> ends"),
+            (
+                "timeout PT0.5S, zone PT, P and PT stay",
+                "timeout <DURATION>, zone PT, P and PT stay",
             ),
         ] {
             let (r, _) = DurationDetector::detect_and_replace(input);
