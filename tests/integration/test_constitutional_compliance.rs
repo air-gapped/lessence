@@ -1,6 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::str;
+use std::sync::LazyLock;
 
 #[path = "../fixtures/log_generator.rs"]
 mod log_generator;
@@ -285,4 +286,187 @@ fn test_processing_speed_requirement() {
         "SPEED VIOLATION: {:.2}s > 30s",
         duration.as_secs_f64()
     );
+}
+
+// An anchor (`normalize::anchor_hash`) is matched, never scored: two lines
+// whose anchor differs are forced into different groups however alike they
+// read otherwise. That split is only honest when it is VISIBLE on the shown
+// line (CLAUDE.local.md principle 1/2/3) — an anchor that separates groups
+// while normalization erases the very field that separated them produces two
+// groups printing the identical template, which reads as one event silently
+// repeated rather than the distinct endpoints/devices it actually is.
+//
+// `nearest.anchor_mismatch == true` on a group whose `normalized` matches
+// another group's `normalized` is exactly that: an anchor split with nothing
+// on the line to show for it. A group re-founded after a flush window
+// legitimately repeats a template with no anchor involved — that case has
+// `anchor_mismatch == false` (or no `nearest` at all) and is not a
+// violation.
+//
+// Runs `lessence --explain` on one corpus and returns every offending
+// template (printed by more than one anchor-mismatched group) as
+// (template, how many groups share it), worst offender first.
+fn anchor_split_offenders(corpus: &std::path::Path) -> Vec<(String, usize)> {
+    offender_groups(corpus)
+        .into_iter()
+        .map(|(template, lines)| (template, lines.len()))
+        .collect()
+}
+
+/// Same offenders, but with each group's sample raw line kept alongside —
+/// `a_route_split_is_visible` needs the raw text to tell a route split from
+/// a status-class split; `anchor_split_offenders` above throws it away for
+/// callers that only want the count.
+fn offender_groups(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--explain", "--threads", "1"])
+        .stdin(std::fs::File::open(corpus).expect("corpus just listed by caller"))
+        .output()
+        .expect("Failed to execute lessence");
+    assert!(
+        output.status.success(),
+        "lessence execution failed on {}",
+        corpus.display()
+    );
+    let stdout = str::from_utf8(&output.stdout).expect("Invalid UTF-8");
+
+    // normalized -> (sample lines of groups sharing it, saw an anchor_mismatch)
+    let mut by_template: std::collections::HashMap<String, (Vec<String>, bool)> =
+        std::collections::HashMap::new();
+    for record in stdout.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(record) else {
+            continue;
+        };
+        if v["type"] != "group" {
+            continue;
+        }
+        let normalized = v["normalized"].as_str().unwrap_or("").to_string();
+        let anchor_mismatch = v["nearest"]["anchor_mismatch"] == true;
+        let sample = v["first"]["line"].as_str().unwrap_or("").to_string();
+        let entry = by_template.entry(normalized).or_insert((Vec::new(), false));
+        entry.0.push(sample);
+        entry.1 |= anchor_mismatch;
+    }
+
+    let mut offenders: Vec<(String, Vec<String>)> = by_template
+        .into_iter()
+        .filter(|(_, (lines, saw_mismatch))| lines.len() > 1 && *saw_mismatch)
+        .map(|(template, (lines, _))| (template, lines))
+        .collect();
+    offenders.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    offenders
+}
+
+/// Sweeps every distilled corpus and reports invisible-anchor-splits still
+/// open. This is the full-repo picture, not a gate — kubectl `[pod/x/y]`
+/// prefixes, PCI addresses, klog call sites, systemd units, program fields
+/// and status fields are anchor classes the route fix did not touch, and
+/// each becomes a `##CASE` (and moves out of this report) as it is fixed.
+/// `a_route_split_is_visible` below carries the one class already fixed.
+///
+///     cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture
+#[test]
+#[ignore = "documents open invisible-anchor splits; each class becomes a ##CASE as it is fixed"]
+fn invisible_anchor_splits() {
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir); // require_example only proves the directory exists here.
+
+    let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
+        .expect("examples/distilled must be readable once require_example confirmed it exists")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|p| p.extension().is_some_and(|ext| ext == "log"))
+        .collect();
+    corpora.sort();
+    assert!(
+        !corpora.is_empty(),
+        "examples/distilled/*.log must be non-empty — a gate fails loudly on an absent corpus, never passes by omission"
+    );
+
+    let mut total = 0usize;
+    for corpus in &corpora {
+        let offenders = anchor_split_offenders(corpus);
+        if offenders.is_empty() {
+            continue;
+        }
+        total += offenders.len();
+        let (example, count) = &offenders[0];
+        let cut: String = example.chars().take(160).collect();
+        eprintln!(
+            "{}: {} template(s) printed by >1 anchor-mismatched group; worst shared by {count}: {cut}",
+            corpus.display(),
+            offenders.len(),
+        );
+    }
+    eprintln!(
+        "\n{total} invisible anchor split(s) total across {} corpora\n",
+        corpora.len()
+    );
+    // Deliberately no assert: this test reports, it does not gate.
+}
+
+/// An HTTP status class (2xx/4xx/5xx) is matched, never scored — the same
+/// mechanism as a route (`normalize::FIELD_STATUS`, `REQUEST_STATUS_CLASS`),
+/// deliberately so a 200 and a 500 for the same route are two events. It
+/// renders as `<NUMBER>`, which is the "status fields" class
+/// `invisible_anchor_splits` already carries and this fix did not touch;
+/// finding it here would fail the route gate for a defect that is not the
+/// route's.
+fn status_class(line: &str) -> std::collections::BTreeSet<char> {
+    static STATUS_CLASS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])\d\d\b"#)
+            .expect("status-class regex must compile")
+    });
+    STATUS_CLASS
+        .captures_iter(line)
+        .filter_map(|c| c.get(1))
+        .map(|m| m.as_str().chars().next().expect("regex captured one digit"))
+        .collect()
+}
+
+/// The route-anchor fix's gate: on the two HTTP access-log corpora whose
+/// anchor is the request route (`normalize::anchor_hash`'s route-skeleton
+/// arm), an anchor split must never print the same template twice. This is
+/// the one anchor class this fix closed; `invisible_anchor_splits` above
+/// carries every class not yet fixed. No allow-list of tolerated shapes —
+/// the only exclusion is the status-class mechanism above, which is a
+/// different, already-catalogued anchor, not a shape this test looks away
+/// from; any offender not fully explained by it is a real failure.
+#[test]
+fn a_route_split_is_visible() {
+    for name in ["k8s_traefik.log", "nginx_sample.log"] {
+        let path = std::path::Path::new("examples/distilled").join(name);
+        let Some(dir) = crate::common::require_example("examples/distilled") else {
+            return;
+        };
+        drop(dir);
+        if !path.exists() {
+            continue;
+        }
+        let offenders: Vec<(String, Vec<String>)> = offender_groups(&path)
+            .into_iter()
+            .filter(|(_, lines)| {
+                let classes: std::collections::BTreeSet<char> =
+                    lines.iter().flat_map(|l| status_class(l)).collect();
+                classes.len() <= 1
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{}: {} route-anchor split(s) invisible on the shown line: {:?}",
+            path.display(),
+            offenders.len(),
+            offenders
+                .iter()
+                .take(5)
+                .map(|(t, lines)| format!(
+                    "{}x {}",
+                    lines.len(),
+                    t.chars().take(160).collect::<String>()
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
 }

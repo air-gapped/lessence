@@ -600,55 +600,156 @@ fn hash_skeleton(text: &str, hasher: &mut AHasher) {
     }
 }
 
-/// Hash a request target as its route — the part that says *what was asked
-/// for*, with the part that says *which one* removed.
+/// A route segment's identity — shared by `hash_route` (matched exactly)
+/// and `render_route` (rendered as the visible skeleton text), so the two
+/// can never disagree about what a segment is.
 ///
 /// A segment's identity is its non-numeric skeleton, so `/downloads/product_1`
 /// and `/downloads/product_2` are one route, as are `/api/devices/42/` and
 /// `/api/devices/99/`. `/login/` and `/metrics` are not. Getting this wrong in
 /// either direction is expensive: too strict and every web log fragments per
 /// object id, too loose and the anchor stops separating endpoints at all.
+enum RouteSegment {
+    /// The empty segment a leading, trailing or doubled slash produces.
+    Slash,
+    /// A long hex-ish run: a uuid, digest or slug — opaque, never shown.
+    Id,
+    /// Any other segment, with each digit run collapsed to one marker.
+    Skeleton(String),
+}
+
+/// Classify one `/`-delimited route segment. See [`RouteSegment`].
+fn classify_route_segment(segment: &str) -> RouteSegment {
+    if segment.is_empty() {
+        return RouteSegment::Slash;
+    }
+    // A long hex-ish run is an opaque id (uuid, digest, slug), whatever
+    // letters it happens to contain; `sha256:<hex>` is one with its
+    // algorithm in front.
+    let body = segment
+        .split_once(':')
+        .filter(|(algo, _)| !algo.is_empty() && algo.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .map_or(segment, |(_, rest)| rest);
+    if body.len() >= 8
+        && body
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'_')
+    {
+        return RouteSegment::Id;
+    }
+    // Otherwise keep the skeleton and collapse each digit run, so
+    // `product_1` and `product_2` are one segment. `v1` and `v2` collapse
+    // too, where the digit *is* the identity — but an API version is
+    // normally its own segment, and fragmenting every object id is the
+    // worse error.
+    let mut out = String::with_capacity(segment.len());
+    let mut in_digits = false;
+    for byte in segment.bytes() {
+        if byte.is_ascii_digit() {
+            if !in_digits {
+                out.push_str("<N>");
+                in_digits = true;
+            }
+        } else {
+            in_digits = false;
+            out.push(byte as char);
+        }
+    }
+    RouteSegment::Skeleton(out)
+}
+
+/// Hash a request target as its route — the part that says *what was asked
+/// for*, with the part that says *which one* removed. See [`RouteSegment`].
 fn hash_route(target: &str, hasher: &mut AHasher) {
     // A query string is per-request data, not route identity.
     let path = target.split(['?', '#']).next().unwrap_or(target);
     for segment in path.split('/') {
-        if segment.is_empty() {
-            "/".hash(hasher);
-            continue;
-        }
-        // A long hex-ish run is an opaque id (uuid, digest, slug), whatever
-        // letters it happens to contain; `sha256:<hex>` is one with its
-        // algorithm in front.
-        let body = segment
-            .split_once(':')
-            .filter(|(algo, _)| !algo.is_empty() && algo.bytes().all(|b| b.is_ascii_alphanumeric()))
-            .map_or(segment, |(_, rest)| rest);
-        if body.len() >= 8
-            && body
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'_')
-        {
-            "<id>".hash(hasher);
-            continue;
-        }
-        // Otherwise keep the skeleton and collapse each digit run, so
-        // `product_1` and `product_2` hash alike. `v1` and `v2` collapse too,
-        // where the digit *is* the identity — but an API version is normally
-        // its own segment, and fragmenting every object id is the worse error.
-        let mut in_digits = false;
-        for byte in segment.bytes() {
-            if byte.is_ascii_digit() {
-                if !in_digits {
-                    "<d>".hash(hasher);
-                    in_digits = true;
-                }
-            } else {
-                in_digits = false;
-                byte.hash(hasher);
-            }
+        match classify_route_segment(segment) {
+            RouteSegment::Slash => "/".hash(hasher),
+            RouteSegment::Id => "<id>".hash(hasher),
+            RouteSegment::Skeleton(s) => s.hash(hasher),
         }
         "|".hash(hasher);
     }
+}
+
+/// Render a request target as its route skeleton — the same identity
+/// `hash_route` hashes, as readable text, so a template that separates two
+/// groups by route is a claim that holds for every member of each group
+/// (CLAUDE.local.md: nothing hidden, templates are claims).
+fn render_route(target: &str) -> String {
+    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let mut out = String::with_capacity(path.len());
+    for (i, segment) in path.split('/').enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        match classify_route_segment(segment) {
+            RouteSegment::Slash => {}
+            RouteSegment::Id => out.push_str("<ID>"),
+            RouteSegment::Skeleton(s) => out.push_str(&s),
+        }
+    }
+    out
+}
+
+/// Sentinel-protect every anchored route's exact byte span in `original` so
+/// no detector — `PathDetector` in particular — can swallow it before the
+/// route can be rendered as its skeleton. Mirrors exactly what `anchor_hash`
+/// reads: a request target on an `HTTP/` line, and a `FIELD_PATH` value on a
+/// record that also names a method. A file path elsewhere is untouched.
+///
+/// Returns the sentinel-substituted line plus the (sentinel, rendered route)
+/// pairs to splice back in once every detector has run.
+fn protect_anchored_routes(original: &str) -> (String, Vec<(String, String)>) {
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+
+    if original.contains("HTTP/") {
+        for caps in REQUEST_TARGET.captures_iter(original) {
+            if let Some(m) = caps.get(1) {
+                spans.push((m.start(), m.end()));
+            }
+        }
+    }
+
+    if original.contains("ethod") || original.contains("ETHOD") {
+        let has_method = FIELD_METHOD.captures_iter(original).any(|caps| {
+            caps.get(1).is_some_and(|m| {
+                matches!(
+                    m.as_str().to_ascii_uppercase().as_str(),
+                    "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+                )
+            })
+        });
+        if has_method {
+            for caps in FIELD_PATH.captures_iter(original) {
+                if let Some(m) = caps.get(1) {
+                    spans.push((m.start(), m.end()));
+                }
+            }
+        }
+    }
+
+    if spans.is_empty() {
+        return (original.to_string(), Vec::new());
+    }
+
+    spans.sort_unstable();
+    let mut result = String::with_capacity(original.len());
+    let mut renders = Vec::with_capacity(spans.len());
+    let mut cursor = 0;
+    for (i, (start, end)) in spans.into_iter().enumerate() {
+        if start < cursor {
+            continue; // overlapping match — already covered
+        }
+        result.push_str(&original[cursor..start]);
+        let sentinel = format!("\u{0}ROUTE{i}\u{0}");
+        renders.push((sentinel.clone(), render_route(&original[start..end])));
+        result.push_str(&sentinel);
+        cursor = end;
+    }
+    result.push_str(&original[cursor..]);
+    (result, renders)
 }
 
 impl Normalizer {
@@ -660,7 +761,10 @@ impl Normalizer {
     }
 
     pub fn normalize_line(&self, original: String) -> Result<LogLine> {
-        let mut normalized = original.clone();
+        // An anchored route (see `anchor_hash`) must render as its skeleton,
+        // not `<PATH>` — otherwise the split it forces is invisible in the
+        // shown line. Protect its exact span before any detector runs...
+        let (mut normalized, route_renders) = protect_anchored_routes(&original);
         let mut tokens = Vec::with_capacity(8);
 
         // Walk the detector ordering table; each enabled detector replaces
@@ -682,6 +786,14 @@ impl Normalizer {
             let (new_normalized, mut new_tokens) = (entry.run)(self, &normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
+        }
+
+        // ...then splice the rendered skeleton back in, now that no detector
+        // can consume it.
+        for (sentinel, rendered) in &route_renders {
+            if normalized.contains(sentinel.as_str()) {
+                normalized = normalized.replace(sentinel.as_str(), rendered);
+            }
         }
 
         // Anchors come from the raw line: normalization has just erased the
@@ -966,6 +1078,62 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- route hashing/rendering: hash_route and render_route must agree ----
+
+    #[test]
+    fn route_ids_hash_and_render_alike() {
+        let mut h1 = AHasher::default();
+        let mut h2 = AHasher::default();
+        hash_route("/api/devices/42/", &mut h1);
+        hash_route("/api/devices/99/", &mut h2);
+        assert_eq!(h1.finish(), h2.finish());
+        assert_eq!(
+            render_route("/api/devices/42/"),
+            render_route("/api/devices/99/")
+        );
+        assert_eq!(render_route("/api/devices/42/"), "/api/devices/<N>/");
+    }
+
+    #[test]
+    fn route_different_endpoints_hash_and_render_differently() {
+        let mut h1 = AHasher::default();
+        let mut h2 = AHasher::default();
+        hash_route("/login/", &mut h1);
+        hash_route("/metrics", &mut h2);
+        assert_ne!(h1.finish(), h2.finish());
+        assert_ne!(render_route("/login/"), render_route("/metrics"));
+    }
+
+    #[test]
+    fn route_opaque_ids_render_as_id() {
+        assert_eq!(
+            render_route(
+                "/blobs/sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b85"
+            ),
+            "/blobs/<ID>"
+        );
+        assert_eq!(
+            render_route("/objects/550e8400-e29b-41d4-a716-446655440000"),
+            "/objects/<ID>"
+        );
+    }
+
+    #[test]
+    fn file_path_in_non_http_line_stays_path() {
+        // Guard against scope creep: a file path (no HTTP/, no method field)
+        // must keep the ordinary `<PATH>` treatment, not the route skeleton.
+        let normalizer = Normalizer::new(Config::default());
+        let line = normalizer
+            .normalize_line(r#"exe="/usr/bin/sudo""#.to_string())
+            .unwrap();
+        assert_eq!(line.normalized, r#"exe="<PATH>""#);
+
+        let line = normalizer
+            .normalize_line("workerEnv.init() ok /var/log/app/42/status".to_string())
+            .unwrap();
+        assert_eq!(line.normalized, "workerEnv.init() ok <PATH>");
+    }
 
     // ---- detector ordering table: kubernetes deference ----
     // The table's `defers_to_kubernetes` predicates skip the bracket,
@@ -2476,9 +2644,9 @@ mod tests {
         let admin = normalize(
             r#"[2026-08-16 14:08:34 +0200] ::ffff - "GET /admin/ HTTP/1.1" 200 17450.949"#,
         );
-        assert_eq!(
+        assert_ne!(
             login.normalized, admin.normalized,
-            "normalization erases both paths identically — that is the trap"
+            "an anchored route renders as its skeleton, so a split it forces is visible on the line"
         );
         assert_ne!(
             login.hash, admin.hash,

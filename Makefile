@@ -81,6 +81,11 @@ coverage:
 # Override defaults: make fuzz FUZZ_TIME=600 FUZZ_WORKERS=4
 #---------------------------------------------------------------------------
 
+# Every binary `make install` puts on PATH is kept here, so a later
+# before/after comparison has the real baseline instead of a guess at which
+# commit was installed. Outside the tree: binaries are not repo content.
+INSTALL_ARCHIVE ?= $(HOME)/.local/share/lessence/installed
+
 FUZZ_TIME ?= 300
 FUZZ_WORKERS ?= 1
 
@@ -146,8 +151,15 @@ mutants-full: check-mutants-prereqs
 # Install
 #---------------------------------------------------------------------------
 
-## install: Build and install to ~/.cargo/bin
+## install: Build and install to ~/.cargo/bin, keeping a copy of every build installed
 install: build
+	@mkdir -p $(INSTALL_ARCHIVE)
+	@v=$$(./target/release/lessence --version | awk '{print $$2}'); \
+	 sha=$$(git rev-parse --short=9 HEAD); \
+	 dirty=$$(git diff --quiet HEAD 2>/dev/null || echo -dirty); \
+	 dest=$(INSTALL_ARCHIVE)/lessence-$$v-$$sha$$dirty; \
+	 cp -f ./target/release/lessence $$dest; \
+	 echo "archived $$dest"
 	cp ./target/release/lessence ~/.cargo/bin/lessence
 	@lessence --version
 

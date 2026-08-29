@@ -218,7 +218,13 @@ recounted = [
     for t in sorted(old)
     if t in new and old[t] != new[t]
 ]
-print(json.dumps({"added": added, "removed": removed, "recounted": recounted}))
+# The row and its counts on two lines: the caller reads files, never argv.
+# A golden diff runs to hundreds of KB and a single argv argument is capped
+# near 128 KB, so passing the diff back in as an argument crashes the gate
+# exactly when the change is large enough to matter.
+print(json.dumps({"corpus": sys.argv[3], "added": added,
+                  "removed": removed, "recounted": recounted}))
+print(len(added), len(removed), len(recounted))
 '
 
 golden_json_rows=()
@@ -228,15 +234,9 @@ for name in "${distilled_corpora[@]}"; do
     golden_of "examples/distilled/${name}.log" > "$fresh"
     golden_file="examples/distilled/${name}.golden"
 
-    diff_result="$(python3 -c "$golden_diff_py" "$golden_file" "$fresh")"
-    added_json="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["added"]))' "$diff_result")"
-    removed_json="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["removed"]))' "$diff_result")"
-    recounted_json="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["recounted"]))' "$diff_result")"
-    n_added="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["added"]))' "$diff_result")"
-    n_removed="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["removed"]))' "$diff_result")"
-    n_recounted="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])["recounted"]))' "$diff_result")"
-
-    golden_json_rows+=("{\"corpus\":\"${name}\",\"added\":${added_json},\"removed\":${removed_json},\"recounted\":${recounted_json}}")
+    diff_result="$(python3 -c "$golden_diff_py" "$golden_file" "$fresh" "$name")"
+    golden_json_rows+=("$(printf '%s' "$diff_result" | head -1)")
+    read -r n_added n_removed n_recounted <<< "$(printf '%s' "$diff_result" | tail -1)"
 
     if [ "$n_added" -gt 0 ] || [ "$n_removed" -gt 0 ] || [ "$n_recounted" -gt 0 ]; then
         golden_table_rows+=("$(printf '%-24s added=%s removed=%s recounted=%s' "$name" "$n_added" "$n_removed" "$n_recounted")")

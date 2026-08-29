@@ -1022,3 +1022,11 @@ level=info msg="  --bpf-ct-global-tcp-max='524288'" subsys=daemon
 level=info msg="  --agent-health-port='9879'" subsys=daemon
 level=info msg="  --bpf-ct-global-any-max='262144'" subsys=daemon
 level=info msg="  --bpf-ct-global-tcp-max='524288'" subsys=daemon
+
+##CASE lessence-a8t template_absent=<PATH>
+##WHY a structured HTTP record's route is the anchor (normalize::FIELD_PATH):
+##WHY  two carts and products are different endpoints, and the route must be
+##WHY  on the line — printing <PATH> for both hides that they split at all
+##FROM a traefik-shaped structured access record (shape only, values invented)
+{"ClientAddr":"172.20.5.11:53211","ClientHost":"172.20.5.11","ClientPort":"53211","DownstreamStatus":200,"Duration":18422,"RequestHost":"shop.example.test","RequestMethod":"GET","RequestPath":"/api/v1/carts/9931","RequestProtocol":"HTTP/1.1","RouterName":"shop-web@kubernetes","level":"info","msg":"","time":"2026-08-29T10:15:02Z"}
+{"ClientAddr":"172.20.5.11:53212","ClientHost":"172.20.5.11","ClientPort":"53212","DownstreamStatus":200,"Duration":18511,"RequestHost":"shop.example.test","RequestMethod":"GET","RequestPath":"/api/v1/products/4420","RequestProtocol":"HTTP/1.1","RouterName":"shop-web@kubernetes","level":"info","msg":"","time":"2026-08-29T10:15:03Z"}
