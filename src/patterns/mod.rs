@@ -554,13 +554,25 @@ pub(crate) fn fold_matches(
     regex: &regex::Regex,
     recognise: impl Fn(&regex::Captures) -> Option<(Token, String)>,
 ) {
-    let folded = regex.replace_all(text, |caps: &regex::Captures| match recognise(caps) {
-        Some((token, replacement)) => {
-            tokens.push(token);
-            replacement
+    // A `Replacer` rather than a closure: a match the recogniser declines
+    // is appended straight from the haystack, not copied into a String
+    // first — on a kubelet line seven prose colons in eight are declined.
+    struct Fold<'t, F> {
+        tokens: &'t mut Vec<Token>,
+        recognise: F,
+    }
+    impl<F: Fn(&regex::Captures) -> Option<(Token, String)>> regex::Replacer for Fold<'_, F> {
+        fn replace_append(&mut self, caps: &regex::Captures<'_>, dst: &mut String) {
+            match (self.recognise)(caps) {
+                Some((token, replacement)) => {
+                    self.tokens.push(token);
+                    dst.push_str(&replacement);
+                }
+                None => dst.push_str(&caps[0]),
+            }
         }
-        None => caps.get(0).unwrap().as_str().to_string(),
-    });
+    }
+    let folded = regex.replace_all(text, Fold { tokens, recognise });
     // a line nothing matched in is left as it is, uncopied
     if let std::borrow::Cow::Owned(s) = folded {
         *text = s;

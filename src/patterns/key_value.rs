@@ -2,11 +2,11 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// Key-value pairs with various separators: key=value, key:value, key value
-static KEY_VALUE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*[=:]\s*([^\s,;|]+(?:%|ms|s|MB|GB|KB|bytes?)?)")
-        .unwrap()
-});
+// Key-value pairs with either separator: key=value, key:value. No unit
+// suffix alternation after the value: the greedy value class already
+// takes `%`, `ms`, `MB`, so the suffix never matched a byte.
+static KEY_VALUE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*[=:]\s*([^\s,;|]+)").unwrap());
 
 // `=`-only pairs; runs before the `[=:]` regex (see detect_and_replace)
 static CONFIG_KV_REGEX: LazyLock<Regex> =
@@ -28,6 +28,49 @@ static NUMERIC_PAIR_REGEX: LazyLock<Regex> =
 static JSON_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#""([a-zA-Z][a-zA-Z0-9_.-]*)"\s*:\s*(?:"([^"]+)"|(\d+(?:\.\d+)?)|true|false|null)"#)
         .unwrap()
+});
+
+// What the general passes accept: a key on this list, a key with one of
+// these suffixes or prefixes, or a value with one of these suffixes.
+const VALID_KEYS: [&str; 21] = [
+    "timeout",
+    "retries",
+    "max_connections",
+    "port",
+    "host",
+    "ssl",
+    "debug",
+    "verbose",
+    "level",
+    "user_id",
+    "session_id",
+    "request_id",
+    "attempt_count",
+    "failure_rate",
+    "success_rate",
+    "response_time",
+    "cpu_usage",
+    "memory_usage",
+    "disk_usage",
+    "queue_size",
+    "buffer_size",
+];
+const KEY_SUFFIXES: [&str; 6] = ["_timeout", "_limit", "_size", "_count", "_rate", "_usage"];
+const KEY_PREFIXES: [&str; 2] = ["max_", "min_"];
+const VALUE_SUFFIXES: [&str; 5] = ["ms", "%", "MB", "KB", "GB"];
+
+// Built from the lists above, so it cannot drift from them: a line with
+// none of these substrings has no pair the general passes would accept.
+static ACCEPT_GATE: LazyLock<Regex> = LazyLock::new(|| {
+    let alternation = VALID_KEYS
+        .iter()
+        .chain(&KEY_SUFFIXES)
+        .chain(&KEY_PREFIXES)
+        .chain(&VALUE_SUFFIXES)
+        .map(|s| regex::escape(s))
+        .collect::<Vec<_>>()
+        .join("|");
+    Regex::new(&alternation).unwrap()
 });
 
 pub struct KeyValueDetector;
@@ -138,18 +181,52 @@ impl KeyValueDetector {
     }
 
     fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
-        let line_allows = Self::line_allows_key_value(text);
-        super::fold_matches(text, tokens, regex, |caps| {
-            let key = caps.get(1).unwrap().as_str();
-            let value = caps.get(2).unwrap().as_str();
+        // A pair is accepted only by key or value shape (`is_valid_key_value_pair`);
+        // a line carrying none of those shapes anywhere cannot yield one, and
+        // the regex — seven prose colons per kubelet line — is not run on it.
+        if !ACCEPT_GATE.is_match(text) || !Self::line_allows_key_value(text) {
+            return;
+        }
+        // `find_iter`, not `captures_iter`: the value class is a Unicode
+        // negation, which puts capture extraction on the backtracker at
+        // three times the cost of the search. Key and value are read off
+        // the match span instead (`split_pair`).
+        let mut out = String::new();
+        let mut last = 0;
+        for m in regex.find_iter(text) {
+            let (key, value) = Self::split_pair(m.as_str());
             // A duration is the duration detector's whatever its unit:
             // `duration=272ms` and `duration=2.9s` must fold alike.
-            if Self::classify_value_type(value) == "duration" {
-                return None;
+            if !Self::is_valid_key_value_pair(key, value)
+                || Self::classify_value_type(value) == "duration"
+            {
+                continue;
             }
-            (line_allows && Self::is_valid_key_value_pair(key, value))
-                .then(|| Self::pair(key, value))
-        });
+            let (token, replacement) = Self::pair(key, value);
+            tokens.push(token);
+            out.push_str(&text[last..m.start()]);
+            out.push_str(&replacement);
+            last = m.end();
+        }
+        if last > 0 {
+            out.push_str(&text[last..]);
+            *text = out;
+        }
+    }
+
+    /// The key and value of a `key\s*[=:]\s*value` match. The key is the
+    /// maximal run of key characters at the start — the regex's greedy
+    /// `[a-zA-Z][a-zA-Z0-9_.-]*` can end nowhere else, the separator not
+    /// being a key character — and the value is everything past the
+    /// separator and its whitespace.
+    fn split_pair(m: &str) -> (&str, &str) {
+        let key_end = m
+            .bytes()
+            .position(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')))
+            .unwrap_or(m.len());
+        let rest = m[key_end..].trim_start();
+        let value = rest.get(1..).unwrap_or("").trim_start();
+        (&m[..key_end], value)
     }
 
     /// The token and placeholder every key-value pass folds to.
@@ -260,57 +337,20 @@ impl KeyValueDetector {
             || upper.contains("DELETE "))
     }
 
-    #[cfg_attr(test, mutants::skip)] // "if"/"for"/"while"/"switch" not in valid_keys — exclusion is redundant with the positive check
+    #[cfg_attr(test, mutants::skip)] // "if"/"for"/"while"/"switch" not in VALID_KEYS — exclusion is redundant with the positive check
     fn is_valid_key_value_pair(key: &str, value: &str) -> bool {
         // Exclude programming constructs
         if key == "if" || key == "for" || key == "while" || key == "switch" {
             return false;
         }
 
-        // Include common configuration/logging keys
-        let valid_keys = [
-            "timeout",
-            "retries",
-            "max_connections",
-            "port",
-            "host",
-            "ssl",
-            "debug",
-            "verbose",
-            "level",
-            "user_id",
-            "session_id",
-            "request_id",
-            "attempt_count",
-            "failure_rate",
-            "success_rate",
-            "response_time",
-            "cpu_usage",
-            "memory_usage",
-            "disk_usage",
-            "queue_size",
-            "buffer_size",
-        ];
-
-        valid_keys.contains(&key) || Self::is_common_config_pattern(key, value)
+        VALID_KEYS.contains(&key) || Self::is_common_config_pattern(key, value)
     }
 
     fn is_common_config_pattern(key: &str, value: &str) -> bool {
-        // Common configuration patterns
-        key.ends_with("_timeout") ||
-        key.ends_with("_limit") ||
-        key.ends_with("_size") ||
-        key.ends_with("_count") ||
-        key.ends_with("_rate") ||
-        key.ends_with("_usage") ||
-        key.starts_with("max_") ||
-        key.starts_with("min_") ||
-        // Value patterns that suggest configuration
-        value.ends_with("ms") ||
-        value.ends_with('%') ||
-        value.ends_with("MB") ||
-        value.ends_with("KB") ||
-        value.ends_with("GB")
+        KEY_SUFFIXES.iter().any(|s| key.ends_with(s))
+            || KEY_PREFIXES.iter().any(|p| key.starts_with(p))
+            || VALUE_SUFFIXES.iter().any(|s| value.ends_with(s))
     }
 
     fn is_ip_address(value: &str) -> bool {
@@ -1104,5 +1144,44 @@ mod tests {
     fn a_duration_value_is_left_to_the_duration_detector() {
         let (r, _) = KeyValueDetector::detect_and_replace("latency=5ms timeout=30");
         assert_eq!(r, "latency=5ms <KEY_VALUE>");
+    }
+}
+
+#[cfg(test)]
+mod gate_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn the_gate_admits_every_shape_the_passes_accept() {
+        let lines = VALID_KEYS
+            .iter()
+            .map(|k| format!("{k}=1"))
+            .chain(KEY_SUFFIXES.iter().map(|s| format!("x{s}=1")))
+            .chain(KEY_PREFIXES.iter().map(|p| format!("{p}x=1")))
+            .chain(VALUE_SUFFIXES.iter().map(|s| format!("k=1{s}")));
+        for line in lines {
+            assert!(ACCEPT_GATE.is_match(&line), "{line}");
+            let (r, t) = KeyValueDetector::detect_and_replace(&line);
+            assert!(
+                r.contains("<KEY_VALUE>") || line.ends_with("ms"),
+                "{line} -> {r}"
+            );
+            assert_eq!(t.is_empty(), line.ends_with("ms"), "{line}");
+        }
+        let prose = r#"Operation for "{volumeName:a podName:b}" failed. Error: timed out"#;
+        assert!(!ACCEPT_GATE.is_match(prose));
+        assert_eq!(KeyValueDetector::detect_and_replace(prose).0, prose);
+    }
+
+    #[test]
+    fn a_pair_is_read_off_its_match() {
+        assert_eq!(
+            KeyValueDetector::split_pair("timeout : 30"),
+            ("timeout", "30")
+        );
+        assert_eq!(KeyValueDetector::split_pair("a.b-c=x:y"), ("a.b-c", "x:y"));
+        let (r, t) = KeyValueDetector::detect_and_replace("Waiting for caches port=8080 host: db");
+        assert_eq!(r, "Waiting for caches <KEY_VALUE> <KEY_VALUE>");
+        assert_eq!(t.len(), 2);
     }
 }
