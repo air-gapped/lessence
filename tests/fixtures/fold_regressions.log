@@ -663,3 +663,17 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 2026-08-22T05:14:35+02:00 UXG Max mcad[2907]: ace_reporter.reporter_save_config(): led_enabled: true
 2026-08-22T05:14:35+02:00 UXG Max mcad[2907]: ace_reporter.reporter_save_config(): report_crash: true
 2026-08-22T05:14:35+02:00 UXG Max mcad[2907]: ace_reporter.reporter_save_config(): use_aes_gcm: true
+
+##CASE lessence-v18 groups=1
+##WHY the dash-joined YYYY-MM-DD-HH:MM:SS.mmm timestamp must fold across calendar dates, not only across times of day
+##FROM the gateway network-init log (scrubbed)
+<6> 2025-06-26-00:45:05.454: network-init start
+<6> 2025-10-03-03:01:29.942: network-init start
+<6> 2026-08-22-01:46:22.909: network-init start
+
+##CASE lessence-v18 template_absent=Thu
+##WHY the weekday and zone abbreviation around a datetime are part of it; the group used to read "Thu <TIMESTAMP> CET" for Fri/Sat/CEST members
+##FROM the gateway cron log (scrubbed)
+2025-10-30T16:53:44+01:00 UXG Max systemd-timesyncd[1004]: System clock time unset or jumped backwards, restoring from recorded timestamp: Thu 2025-10-30 16:53:44 CET
+2026-01-10T03:01:37+01:00 UXG Max systemd-timesyncd[1035]: System clock time unset or jumped backwards, restoring from recorded timestamp: Sat 2026-01-10 03:01:37 CET
+2026-05-09T23:28:08+02:00 UXG Max systemd-timesyncd[671]: System clock time unset or jumped backwards, restoring from recorded timestamp: Sat 2026-05-09 23:28:08 CEST

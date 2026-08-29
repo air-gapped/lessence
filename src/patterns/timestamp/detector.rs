@@ -56,6 +56,24 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)\b",
             -100,
         ),
+        // A datetime with the weekday in front and the zone abbreviation
+        // behind, as systemd-timesyncd writes it: `Thu 2025-10-30 16:53:44
+        // CET`. Both are part of the timestamp; left outside it they made a
+        // seven-line group read `Thu <TIMESTAMP> CET` for Fri/Sat/CEST members.
+        p(
+            "weekday-datetime-zone",
+            r"\b(?:(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) )?\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})? (?:UTC|GMT|[ECMP][SD]T|CES?T|EES?T|WES?T|BST|IST|JST|KST|AE[SD]T|A[CW][SD]T|NZ[SD]T|MSK|HKT|SGT|PHT|WIB|WITA|WIT|HST|AK[SD]T|A[SD]T|N[SD]T)\b",
+            -95,
+        ),
+        // The gateway's network-init script joins date and time with a
+        // dash: `2025-06-26-00:45:05.454`. Unrecognised, the year folded as
+        // a number and the time as a timestamp, and every calendar date was
+        // its own group.
+        p(
+            "dash-joined-datetime",
+            r"\b\d{4}-\d{2}-\d{2}-\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\b",
+            -90,
+        ),
         p(
             "week-date",
             r"\b\d{4}-W\d{2}-\d(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
@@ -507,6 +525,29 @@ mod tests {
             "constitutional requirement: 30+ timestamp formats, got {}",
             patterns().len()
         );
+    }
+
+    /// systemd-timesyncd's `Thu 2025-10-30 16:53:44 CET` is one timestamp,
+    /// weekday and zone included; a level word after a datetime is not a
+    /// zone; network-init's dash-joined `2025-06-26-00:45:05.454` is one
+    /// timestamp too.
+    #[test]
+    fn weekday_zone_and_dash_joined_datetimes_are_one_timestamp() {
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "restoring from recorded timestamp: Thu 2025-10-30 16:53:44 CET",
+        );
+        assert_eq!(r, "restoring from recorded timestamp: <TIMESTAMP>");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "restoring from recorded timestamp: Sat 2026-05-09 23:28:08 CEST",
+        );
+        assert_eq!(r, "restoring from recorded timestamp: <TIMESTAMP>");
+        let (r, _) =
+            UnifiedTimestampDetector::detect_and_replace("2025-10-30 16:53:44 EXIT code 1 WARN x");
+        assert_eq!(r, "<TIMESTAMP> EXIT code 1 WARN x");
+        let (r, _) = UnifiedTimestampDetector::detect_and_replace(
+            "<6> 2025-06-26-00:45:05.454: network-init start",
+        );
+        assert_eq!(r, "<6> <TIMESTAMP>: network-init start");
     }
 
     #[test]
