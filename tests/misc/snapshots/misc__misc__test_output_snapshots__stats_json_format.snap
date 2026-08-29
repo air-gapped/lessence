@@ -1,5 +1,6 @@
 ---
 source: tests/misc/test_output_snapshots.rs
+assertion_line: 65
 expression: normalized
 ---
 {
@@ -21,6 +22,7 @@ expression: normalized
     "key_values": 0,
     "kubernetes": 0,
     "log_modules": 0,
+    "macs": 0,
     "names": 0,
     "paths": 0,
     "percentages": 0,

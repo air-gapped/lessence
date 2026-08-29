@@ -147,10 +147,22 @@ fn test_constitutional_compliance_kubelet() {
         // first word of a quoted error sentence differs. Different causes;
         // correctly apart. Sits here only because the score is high.
         ("<W>=\"<W>", "distinct error cause, by design"),
-        // `EOF"` vs `read`: last word of two different error sentences.
-        ("<W>\"", "distinct error cause, by design"),
         // `unexpected` (EOF) vs `read` (connection reset): two error tails.
         ("<W>", "distinct error cause, by design"),
+        // `for \"config\"` vs `for \"litellm\"`: the container named inside
+        // a quoted error sentence. Since lessence-t8q the sentence keeps its
+        // words, so which container crash-looped is visible — distinct
+        // containers, by design.
+        (
+            "\\\"<W>\\\"",
+            "distinct container, by design (lessence-t8q)",
+        ),
+        // `err="container &Container{Name:litellm,Image:…}`: a Go struct
+        // dump names its container and image. Distinct, by design (t8q).
+        (
+            "<W>=\"<NAME>,<W>:<W>{<W>:<W>,<W>:<NAME>,<W>:<NAME>,<W>:<NAME>,<W>:<W>,<W>:<NAME>,<W>:<W>{<NAME>},},<W>:<W>,<W>:<W>",
+            "distinct container and image, by design (lessence-t8q)",
+        ),
     ];
     let unexplained: Vec<_> = near_misses
         .keys()
