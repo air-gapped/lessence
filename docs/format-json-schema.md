@@ -133,7 +133,7 @@ members with a different word count contribute nothing rather than
 misattribute a shifted tail. Absent when nothing untokenised varied.
 
 **Sample-worthy** (identity types — samples are useful): `UUID`,
-`IPV4`, `IPV6`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
+`IPV4`, `IPV6`, `MAC`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
 `K8S_PLUGIN`, `K8S_POD`, `QUOTED_STRING`, `NAME`, `HTTP_STATUS`,
 `HTTP_STATUS_CLASS`, `BRACKET_CONTEXT`, `JSON`.
 
@@ -178,7 +178,8 @@ Exactly one, at the end of the stream.
     "log_modules": 14,
     "structured": 7,
     "kubernetes": 312,
-    "emails": 0
+    "emails": 0,
+    "macs": 0
   },
   "completeness": {
     "complete": false,

@@ -615,3 +615,22 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 2025-09-15T03:35:29+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Server Busy (http://10.59.118.9:8080/inform)
 2025-09-14T15:05:19+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Server Reject (http://10.59.118.9:8080/inform)
 2025-09-15T03:36:29+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Server Busy (http://10.59.118.9:8080/inform)
+
+##CASE lessence-pdr template_present=DHCPREQUEST(br0) <IP> <MAC>
+##WHY a MAC is one atom; its last byte used to be read as a port (f2:ff:9b:f1:5f:<PORT>)
+##FROM the gateway daemon log (scrubbed)
+2026-08-25T21:38:33+02:00 UXG Max dnsmasq-dhcp[4893]: DHCPREQUEST(br0) 10.63.37.193 f2:ff:9b:f1:5f:29
+2026-08-25T21:38:34+02:00 UXG Max dnsmasq-dhcp[4893]: DHCPREQUEST(br0) 10.63.37.194 be:44:07:5f:1e:78
+2026-08-25T21:38:35+02:00 UXG Max dnsmasq-dhcp[4893]: DHCPREQUEST(br0) 10.63.37.195 a6:84:24:4f:8b:66
+
+##CASE lessence-pdr template_present=Failed to find <MAC> vid:
+##WHY the same MAC was cut twice (<SIZE>, <PORT>) in an IGMP line
+##FROM the gateway daemon log (scrubbed)
+2026-08-29T03:11:33+02:00 UXG Max ubios-udapi-server[2332]: [IGMP] Failed to find 6A:D1:EA:BB:8B:14 vid:1 type:0x16
+
+##CASE lessence-pdr template_present=Invalid MAC@ - using <MAC>
+##WHY a MAC that varies every boot is a token, not the first boot's literal
+##FROM the gateway dmesg log (scrubbed)
+[   11.545591] GMAC2(ffffff800a3028c0) Invalid MAC@ - using 86:5a:a5:af:c8:7e
+[   11.536112] GMAC2(ffffff800a3068c0) Invalid MAC@ - using 9a:53:6f:82:32:96
+[   11.659932] GMAC1(ffffff800a3068c0) Invalid MAC@ - using 86:33:d3:49:95:52

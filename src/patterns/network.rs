@@ -66,6 +66,14 @@ static IPV6_PORT_REGEX: LazyLock<Regex> =
 static IPV4_MAPPED_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)::ffff:(?:\d{1,3}\.){3}\d{1,3}\b").unwrap());
 
+// A MAC address: six hex pairs joined by `:`. One atom — its last
+// byte read as a port (`8a:83` → `8a:<PORT>`) or a size (`8B`) cut it in
+// two, which is why this runs before the port and size passes. A pair that
+// continues as `:hh` on either side is part of a longer chain (an ssh
+// fingerprint, an IPv6 address) and is left to those detectors.
+static MAC_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b").unwrap());
+
 // FQDN (experimental, be careful not to match code like module.function.method)
 static FQDN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -138,6 +146,28 @@ impl NetworkDetector {
         }
     }
 
+    /// Five colons exactly three bytes apart: cheap enough to run on
+    /// every line so the regex only sees candidates.
+    fn has_mac_shape(text: &str) -> bool {
+        let b = text.as_bytes();
+        let mut seps = 0;
+        let mut last = usize::MAX;
+        for (i, c) in b.iter().enumerate() {
+            if *c == b':' {
+                if last != usize::MAX && i == last + 3 {
+                    seps += 1;
+                    if seps >= 5 {
+                        return true;
+                    }
+                } else {
+                    seps = 1;
+                }
+                last = i;
+            }
+        }
+        false
+    }
+
     /// The match continues as `:hh` on either side: part of a longer chain.
     fn in_longer_colon_chain(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
@@ -163,6 +193,21 @@ impl NetworkDetector {
 
         let mut result = text.to_string();
         let mut tokens = Vec::new();
+
+        if normalize_ips && Self::has_mac_shape(text) {
+            let folded = MAC_REGEX.replace_all(&result, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap();
+                if Self::in_longer_colon_chain(&result, &m) {
+                    m.as_str().to_string()
+                } else {
+                    tokens.push(Token::Mac(m.as_str().to_string()));
+                    "<MAC>".to_string()
+                }
+            });
+            if let std::borrow::Cow::Owned(s) = folded {
+                result = s;
+            }
+        }
 
         if normalize_ips {
             // Handle IPv4:Port combinations first
@@ -1103,6 +1148,42 @@ mod tests {
         );
     }
 
+    /// A MAC is one atom whatever its bytes look like; a longer colon chain
+    /// (a fingerprint, an IPv6 address) is not six MACs.
+    #[test]
+    fn a_mac_is_one_atom() {
+        for (input, expected) in [
+            (
+                "DHCPREQUEST(br0) 10.63.37.193 f2:ff:9b:f1:5f:29",
+                "DHCPREQUEST(br0) <IP> <MAC>",
+            ),
+            (
+                "[IGMP] Failed to find 6A:D1:EA:BB:8B:14 vid:1",
+                "[IGMP] Failed to find <MAC> vid:1",
+            ),
+            ("using 86:5a:a5:af:c8:7e now", "using <MAC> now"),
+            (
+                "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",
+                "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",
+            ),
+            ("addr 2001:db8:12:34:56:78:9a:bc x", "addr <IP> x"),
+            ("at 12:34:56 today", "at 12:34:56 today"),
+        ] {
+            let (r, _) = NetworkDetector::detect_and_replace(input, true, true, false);
+            assert_eq!(r, expected, "input: {input}");
+        }
+        let (_, t) =
+            NetworkDetector::detect_and_replace("mac 6A:D1:EA:BB:8B:14", true, true, false);
+        assert!(
+            t.iter()
+                .any(|t| matches!(t, Token::Mac(s) if s == "6A:D1:EA:BB:8B:14"))
+        );
+        assert!(NetworkDetector::has_mac_shape("x aa:bb:cc:dd:ee:ff"));
+        assert!(!NetworkDetector::has_mac_shape(
+            "2025-01-20 10:15:30 a:b:c:d"
+        ));
+    }
+
     /// An IPv4 run inside a dotted hostname is a run of labels, not an
     /// address; the whole name is the host. An address range stays two.
     #[test]
@@ -1165,7 +1246,7 @@ mod tests {
             ("at ::1 x", "at <IP> x"),
             ("at 2001:db8::1: failed", "at <IP>: failed"),
             ("std::io::Error x", "std::io::Error x"),
-            ("mac 00:11:22:33:44:55 x", "mac 00:11:22:33:44:55 x"),
+            ("mac 00:11:22:33:44:55 x", "mac <MAC> x"),
             (
                 "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",
                 "RSA 01:67:32:d9:b3:20:5d:2d:5f:b4:35:c5:a5:8b:0a:5e",

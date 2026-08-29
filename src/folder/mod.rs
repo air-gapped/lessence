@@ -382,6 +382,7 @@ pub struct FoldingStats {
     pub structured: usize,
     pub kubernetes: usize,
     pub emails: usize,
+    pub macs: usize,
 }
 
 impl FoldingStats {
@@ -411,6 +412,7 @@ impl FoldingStats {
             StatsBucket::Structured => self.structured += 1,
             StatsBucket::Kubernetes => self.kubernetes += 1,
             StatsBucket::Emails => self.emails += 1,
+            StatsBucket::Macs => self.macs += 1,
         }
     }
 
@@ -418,7 +420,7 @@ impl FoldingStats {
     /// Single source of truth for the Pattern Distribution table and the
     /// active-category count, so a new counter cannot be forgotten in one
     /// place but not the other.
-    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 21] {
+    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 22] {
         [
             (
                 "Timestamps",
@@ -501,6 +503,11 @@ impl FoldingStats {
                 self.emails,
                 "RFC 5322 email addresses, user accounts",
             ),
+            (
+                "MAC Addresses",
+                self.macs,
+                "Hardware addresses, six hex pairs",
+            ),
         ]
     }
 
@@ -527,6 +534,7 @@ impl FoldingStats {
             structured: self.structured,
             kubernetes: self.kubernetes,
             emails: self.emails,
+            macs: self.macs,
         }
     }
 }
@@ -566,6 +574,7 @@ struct PatternHits {
     structured: usize,
     kubernetes: usize,
     emails: usize,
+    macs: usize,
 }
 
 // -------------------------------------------------------------------------

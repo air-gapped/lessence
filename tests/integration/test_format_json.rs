@@ -226,6 +226,7 @@ fn json_summary_record_has_required_fields() {
         "paths",
         "kubernetes",
         "emails",
+        "macs",
     ] {
         assert!(
             hits.get(field).is_some(),

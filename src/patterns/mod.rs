@@ -22,6 +22,8 @@ pub enum Token {
     Timestamp(String),
     IPv4(String),
     IPv6(String),
+    /// A hardware address, six hex pairs: one atom, whatever its bytes look like.
+    Mac(String),
     Fqdn(String),
     Port(u16),
     Hash(HashType, String),
@@ -43,9 +45,18 @@ pub enum Token {
     // New patterns from 001-read-the-current
     HttpStatusClass(String),
     BracketContext(Vec<String>),
-    KeyValuePair { key: String, value_type: String },
-    LogWithModule { level: String, module: String },
-    StructuredMessage { component: String, level: String },
+    KeyValuePair {
+        key: String,
+        value_type: String,
+    },
+    LogWithModule {
+        level: String,
+        module: String,
+    },
+    StructuredMessage {
+        component: String,
+        level: String,
+    },
 
     // Email pattern
     Email(String),
@@ -68,6 +79,7 @@ pub enum HashType {
 pub(crate) enum StatsBucket {
     Timestamps,
     Ips,
+    Macs,
     Ports,
     Fqdns,
     Hashes,
@@ -139,6 +151,7 @@ impl Token {
             Token::Timestamp(_) => facts("TIMESTAMP", "timestamp", StatsBucket::Timestamps, false),
             Token::IPv4(_) => facts("IPV4", "IP", StatsBucket::Ips, true),
             Token::IPv6(_) => facts("IPV6", "IP", StatsBucket::Ips, true),
+            Token::Mac(_) => facts("MAC", "mac", StatsBucket::Macs, true),
             Token::Fqdn(_) => facts("FQDN", "FQDN", StatsBucket::Fqdns, true),
             Token::Port(_) => facts("PORT", "port", StatsBucket::Ports, false),
             Token::Hash(_, _) => facts("HASH", "hash", StatsBucket::Hashes, true),
@@ -209,6 +222,7 @@ impl Token {
             Token::Timestamp(s)
             | Token::IPv4(s)
             | Token::IPv6(s)
+            | Token::Mac(s)
             | Token::Fqdn(s)
             | Token::Uuid(s)
             | Token::Path(s)

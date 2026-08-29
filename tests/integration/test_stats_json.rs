@@ -200,6 +200,7 @@ fn test_stats_json_contains_all_required_fields() {
         "paths",
         "kubernetes",
         "emails",
+        "macs",
     ] {
         assert!(hits[field].is_number(), "Missing pattern_hits.{field}");
     }
