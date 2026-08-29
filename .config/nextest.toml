@@ -15,3 +15,13 @@ max-threads = 1
 filter = 'test(redos) | test(scales_linearly) | test(performance) | test(timeout) | test(allocation_consistency) | test(backward_compatibility) | test(unix_timestamp_penalty)'
 test-group = 'serial-timing'
 retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s" }
+
+# The wall-clock tests — every `*scales_linearly*` test and the kubelet speed
+# requirement — assert a duration. A duration is not evidence (CLAUDE.md) and
+# flakes under load, so they leave the default profile for `slow`, which
+# `make release-check` runs alone:   cargo nextest run --release --profile slow
+[profile.default]
+default-filter = 'not (test(scales_linearly) | test(test_processing_speed_requirement))'
+
+[profile.slow]
+default-filter = 'test(scales_linearly) | test(test_processing_speed_requirement)'

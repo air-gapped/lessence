@@ -973,16 +973,52 @@ Aug 29 08:40:15 usw-core-1 dnsmasq[123]: query[A] example.lan
 Aug 29 08:40:16 usw-core-2 dnsmasq[456]: query[A] example.lan
 Aug 29 08:40:17 ap-hall-3 dnsmasq[789]: query[A] example.lan
 
-##CASE lessence-a8t template_absent=<HOST>
+##CASE lessence-a8t template_absent=<HOST> holds-on-base
 ##WHY an all-caps severity word sitting in the host slot is not read as a host
 ##FROM syslog-host anchor, negative regression
 Aug 29 08:40:15 INFO main: starting up
 Aug 29 08:40:16 INFO main: starting up
 Aug 29 08:40:17 INFO main: starting up
 
-##CASE lessence-a8t template_absent=<HOST>
+##CASE lessence-a8t template_absent=<HOST> holds-on-base
 ##WHY a second word with no syslog tag following it is not read as a host
 ##FROM syslog-host anchor, negative regression
 Aug 29 08:40:15 gw-core rebooted after power loss
 Aug 29 08:40:16 gw-core rebooted after power loss
 Aug 29 08:40:17 gw-core rebooted after power loss
+
+##CASE lessence-a8t template_absent=<HOST>
+##WHY a syslog program tag opens on a letter or `/`: `1-1.2:` is a USB port, not a tag
+##FROM a kernel ring buffer (shape invented); `usb` was read as the host
+[    3.054599] usb 1-1.2: new high-speed USB device number 4 using dwc_otg
+[    3.181402] usb 1-1.3: new high-speed USB device number 5 using dwc_otg
+[    3.302914] usb 1-1.4: new high-speed USB device number 6 using dwc_otg
+
+##CASE lessence-a8t template_absent=<HOST>
+##WHY a kernel-uptime stamp carries no host field, so the word after it is a driver
+##FROM a wireless driver ring buffer (shape invented, names invented)
+[   12.345678] flomp_map_event (pdev:807e0000): peer_id 181, vdev_id 0
+[   12.345901] flomp_map_event (pdev:807e0000): peer_id 182, vdev_id 0
+[   12.346120] flomp_map_event (pdev:807e0000): peer_id 183, vdev_id 0
+
+##CASE lessence-a8t template_present=<HOST> kernel: usb holds-on-base
+##WHY a dated stamp does carry a host: `gw-core` folds, the driver after `kernel:` does not
+##FROM the same kernel line as forwarded by syslog (shape invented)
+Aug 29 08:40:15 gw-core kernel: usb 1-1.2: new high-speed USB device number 4
+Aug 29 08:40:16 gw-core kernel: usb 1-1.3: new high-speed USB device number 5
+Aug 29 08:40:17 gw-core kernel: usb 1-1.4: new high-speed USB device number 6
+
+##TODO distill-flag-name-is-identity groups=3
+##WHY a daemon's startup flag dump folds by value class: `<FLAG>='<NUMBER>'` stands for 37
+##WHY  different flags, `<FLAG>='false'` for 102 — the flag name is the event, and it is
+##WHY  the one thing the shown line erases (principle 1: nothing hidden; a flag is a key)
+##FROM examples/cilium_full.log — 466 flag lines in 61 groups keyed on the value's shape
+level=info msg="  --agent-health-port='9879'" subsys=daemon
+level=info msg="  --bpf-ct-global-any-max='262144'" subsys=daemon
+level=info msg="  --bpf-ct-global-tcp-max='524288'" subsys=daemon
+level=info msg="  --agent-health-port='9879'" subsys=daemon
+level=info msg="  --bpf-ct-global-any-max='262144'" subsys=daemon
+level=info msg="  --bpf-ct-global-tcp-max='524288'" subsys=daemon
+level=info msg="  --agent-health-port='9879'" subsys=daemon
+level=info msg="  --bpf-ct-global-any-max='262144'" subsys=daemon
+level=info msg="  --bpf-ct-global-tcp-max='524288'" subsys=daemon

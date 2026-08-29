@@ -138,14 +138,17 @@ impl UuidDetector {
         if result.contains("id=") || result.contains("Id=") || result.contains("ID=") {
             for caps in GENERIC_ID_REGEX.captures_iter(&result) {
                 let value = &caps[2];
-                if value.bytes().any(|b| b.is_ascii_alphabetic()) {
+                if Self::is_likely_id(value) {
                     tokens.push(Token::Uuid(value.to_string()));
                 }
             }
             result = GENERIC_ID_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
-                    // a purely numeric id (`auid=4294967295`) is a number
-                    if caps[2].bytes().any(|b| b.is_ascii_alphabetic()) {
+                    // A purely numeric id (`auid=4294967295`) is a number, and
+                    // a purely alphabetic value (`action_id=readiness`) is a
+                    // word, never an opaque id — `is_likely_id` requires a
+                    // digit for exactly that reason.
+                    if Self::is_likely_id(&caps[2]) {
                         format!("{}=<UUID>", &caps[1])
                     } else {
                         caps[0].to_string()
@@ -156,11 +159,17 @@ impl UuidDetector {
 
         if result.contains("\":") {
             for caps in JSON_ID_REGEX.captures_iter(&result) {
-                tokens.push(Token::Uuid(caps[2].to_string()));
+                if Self::is_likely_id(&caps[2]) {
+                    tokens.push(Token::Uuid(caps[2].to_string()));
+                }
             }
             result = JSON_ID_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
-                    format!("\"{}\":\"<UUID>\"", &caps[1])
+                    if Self::is_likely_id(&caps[2]) {
+                        format!("\"{}\":\"<UUID>\"", &caps[1])
+                    } else {
+                        caps[0].to_string()
+                    }
                 })
                 .to_string();
         }
@@ -174,11 +183,12 @@ impl UuidDetector {
             return false;
         }
 
-        // Should contain at least some letters and/or numbers
-        let has_letters = text.chars().any(char::is_alphabetic);
-        let has_numbers = text.chars().any(char::is_numeric);
-
-        has_letters || has_numbers
+        // A word of letters only is never an opaque id: `liveness`,
+        // `readiness`, `inform` are English, not hex or a generated token.
+        // An id carries at least one digit — a git hash, a request id, a
+        // trace id all do; a plain word never does. Numeric-only stays
+        // accepted (a numeric request id is still an id).
+        text.chars().any(char::is_numeric)
     }
 
     /// `request: tokenreviews` — the word `request` followed by a colon, a
@@ -375,8 +385,8 @@ mod tests {
     }
 
     #[test]
-    fn likely_id_just_letters() {
-        assert!(UuidDetector::is_likely_id("abcdef"));
+    fn likely_id_just_letters_is_a_word_not_an_id() {
+        assert!(!UuidDetector::is_likely_id("abcdef"));
     }
 
     #[test]
@@ -394,23 +404,25 @@ mod tests {
     #[test]
     fn likely_id_exactly_4_chars() {
         // Kills mutant: `< 4` → `<= 4` (line 112)
-        assert!(UuidDetector::is_likely_id("abcd")); // len=4, has letters → true
+        assert!(UuidDetector::is_likely_id("abc1")); // len=4, has a digit → true
     }
 
     #[test]
     fn likely_id_exactly_3_chars_rejected() {
-        assert!(!UuidDetector::is_likely_id("abc")); // len=3 < 4 → false
+        assert!(!UuidDetector::is_likely_id("ab1")); // len=3 < 4 → false
     }
 
     #[test]
     fn likely_id_exactly_64_chars() {
         // Kills mutant: `> 64` → `>= 64` (line 112)
-        assert!(UuidDetector::is_likely_id(&"a".repeat(64))); // len=64, has letters → true
+        let s = format!("1{}", "a".repeat(63));
+        assert!(UuidDetector::is_likely_id(&s)); // len=64, has a digit → true
     }
 
     #[test]
     fn likely_id_exactly_65_chars_rejected() {
-        assert!(!UuidDetector::is_likely_id(&"a".repeat(65))); // len=65 > 64 → false
+        let s = format!("1{}", "a".repeat(64));
+        assert!(!UuidDetector::is_likely_id(&s)); // len=65 > 64 → false
     }
 
     /// 32 hex digits with no hyphens are an MD5, the hash detector's.
@@ -517,5 +529,33 @@ mod shapes_2026_08_29_ids {
         assert!(matches!(t[0], Token::Uuid(ref v) if v == "003d3"));
         let (r, _) = UuidDetector::detect_and_replace(r#"{"grpc.method_type":"unary"}"#);
         assert_eq!(r, r#"{"grpc.method_type":"unary"}"#, "not an id-named key");
+    }
+
+    /// lessence-defect: `"route_id":"liveness"` was invented into an 8-hex
+    /// id (`5f21025e`), and the same "liveness" then got rewritten wherever
+    /// else it appeared (`"action":"liveness"`) — a word of letters only
+    /// is never a hex id. `req-inform` had the same failure through
+    /// `REQUEST_ID_REGEX`. A real digit-bearing id (`route_id":"a1b2c3d4"`,
+    /// `req-abc123`) must still be recognised.
+    #[test]
+    fn an_id_named_field_holding_a_plain_word_is_not_an_id() {
+        let (r, t) = UuidDetector::detect_and_replace(r#""route_id":"liveness""#);
+        assert_eq!(r, r#""route_id":"liveness""#, "a word is left alone: {r}");
+        assert!(t.is_empty(), "no token for a plain word: {t:?}");
+
+        let (r, t) = UuidDetector::detect_and_replace(r#""route_id":"a1b2c3d4""#);
+        assert_eq!(r, r#""route_id":"<UUID>""#, "a real digit-bearing id: {r}");
+        assert!(matches!(&t[..], [Token::Uuid(v)] if v == "a1b2c3d4"));
+    }
+
+    #[test]
+    fn req_dash_prefixed_plain_word_is_not_an_id() {
+        let (r, t) = UuidDetector::detect_and_replace("req-inform failed");
+        assert_eq!(r, "req-inform failed", "a word is left alone: {r}");
+        assert!(t.is_empty(), "no token for a plain word: {t:?}");
+
+        let (r, t) = UuidDetector::detect_and_replace("req-inform42 failed");
+        assert_eq!(r, "req-<UUID> failed");
+        assert!(matches!(&t[..], [Token::Uuid(v)] if v == "inform42"));
     }
 }

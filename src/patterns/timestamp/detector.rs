@@ -394,6 +394,18 @@ impl UnifiedTimestampDetector {
         false
     }
 
+    /// Does the line *open* on a kernel-uptime stamp? Only a date-bearing
+    /// stamp is followed by a syslog host field; a dmesg line's first word
+    /// is a driver (`usb`, `mem`, `hub`), never a host. A kernel stamp
+    /// further along the line (`Aug 29 08:40:15 gw-core kernel: [ 1.2] …`)
+    /// is not this: there the host field is real.
+    pub(crate) fn opens_with_kernel_uptime(text: &str) -> bool {
+        match text.find(']') {
+            Some(end) if text.starts_with('[') => Self::has_kernel_uptime(&text[..=end]),
+            _ => false,
+        }
+    }
+
     /// `[    0.028586]` / `[4324019.474441]`: a bracket, padding, digits, a
     /// dot and six more digits, then the closing bracket — carries no colon
     /// and no year, so the general indicators miss it.
@@ -587,6 +599,21 @@ impl UnifiedTimestampDetector {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn kernel_uptime_only_opens_a_line_when_it_is_the_first_field() {
+        assert!(UnifiedTimestampDetector::opens_with_kernel_uptime(
+            "[   12.345678] flomp 1-1.2: attached"
+        ));
+        // Forwarded by syslog: the host field before `kernel:` is real, so
+        // this line does carry a host and must not be gated out.
+        assert!(!UnifiedTimestampDetector::opens_with_kernel_uptime(
+            "Aug 29 08:40:15 gw-core kernel: [   12.345678] flomp 1-1.2: attached"
+        ));
+        assert!(!UnifiedTimestampDetector::opens_with_kernel_uptime(
+            "[pod/blorb/frobnicator] starting"
+        ));
+    }
     use super::*;
 
     // ---- the table itself ----

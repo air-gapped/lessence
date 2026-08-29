@@ -1,8 +1,10 @@
 //! lessence - Intelligent log compression via pattern-based folding
 
+pub mod anonymize;
 pub mod cli;
 pub mod config;
 pub mod diff;
+pub mod distill;
 pub mod folder;
 pub mod ingest;
 pub mod normalize;

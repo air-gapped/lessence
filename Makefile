@@ -2,7 +2,8 @@
 # Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
 .PHONY: ci fmt clippy doc build test deny check docs install setup clean help \
-       coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs
+       coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
+       gate release-check distill
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -35,6 +36,22 @@ test:
 ## deny: Check dependencies (advisories, licenses, bans)
 deny:
 	cargo deny check
+
+#---------------------------------------------------------------------------
+# Verification gates (docs/verification.md)
+#---------------------------------------------------------------------------
+
+## gate: Baseline diff + perf check before committing src/ changes (~2 min)
+gate:
+	./scripts/gate.sh
+
+## release-check: Full-corpus diff + mutants + thread scaling before a release (~30 min)
+release-check:
+	./scripts/release-check.sh
+
+## distill: Regenerate examples/distilled/*.log + .golden from examples/*.log
+distill:
+	./scripts/distill.sh
 
 #---------------------------------------------------------------------------
 # Quick checks

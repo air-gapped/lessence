@@ -219,3 +219,7 @@ Tests in that group also retry up to 2 times with exponential backoff
 pass on retry; genuine regressions (e.g. quadratic scaling) fail all
 three attempts. If a test is intermittently failing but always passing
 on retry, that's noise — leave it. If it fails all three runs, investigate.
+
+The `slow` profile (wall-clock tests) is excluded from `cargo nextest run`
+by `default-filter`; run it with `cargo nextest run --release --profile
+slow`; `make release-check` does.

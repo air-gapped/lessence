@@ -40,6 +40,12 @@ impl PatternFolder {
     /// remains present (as an empty `{}`) so the schema shape is
     /// unchanged; only the compute cost is skipped.
     pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
+        // --distill emits input lines, not rendered groups: record which
+        // members the distillation keeps and skip formatting entirely.
+        if let Some(members) = self.config.distill {
+            self.distill_take(group, members);
+            return Ok(String::new());
+        }
         let mut rollup = if group.count() >= self.config.min_collapse {
             self.rollup_computer.compute(group)
         } else {

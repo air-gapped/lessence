@@ -10,9 +10,25 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::LazyLock;
 
-const CORPUS: &str = include_str!("../fixtures/fold_regressions.log");
-const BIN: &str = env!("CARGO_BIN_EXE_lessence");
+const DEFAULT_CORPUS: &str = include_str!("../fixtures/fold_regressions.log");
+
+/// `LESSENCE_FIXTURE` overrides the corpus file (gate.sh points this at a
+/// throwaway fixture holding only the new blocks); unset, the compiled-in
+/// corpus is unchanged.
+static CORPUS: LazyLock<String> = LazyLock::new(|| match std::env::var("LESSENCE_FIXTURE") {
+    Ok(path) => {
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("LESSENCE_FIXTURE={path}: {e}"))
+    }
+    Err(_) => DEFAULT_CORPUS.to_string(),
+});
+
+/// `LESSENCE_BIN` overrides which binary the harness drives (gate.sh points
+/// this at the baseline build); unset, the cargo-built binary is unchanged.
+static BIN: LazyLock<String> = LazyLock::new(|| {
+    std::env::var("LESSENCE_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_lessence").to_string())
+});
 
 #[derive(Debug, PartialEq)]
 enum Expect {
@@ -71,6 +87,9 @@ fn parse(corpus: &str) -> Vec<Case> {
             let (bead, spec) = rest
                 .split_once(' ')
                 .unwrap_or_else(|| bad("##CASE needs a bead and an expectation"));
+            // `holds-on-base` is a marker gate.sh reads from the raw header
+            // text; the harness itself ignores it.
+            let spec = spec.strip_suffix(" holds-on-base").unwrap_or(spec);
             let (kind, value) = spec
                 .split_once('=')
                 .unwrap_or_else(|| bad("expectation must be key=value"));
@@ -155,7 +174,7 @@ fn run(case: &Case, threads: &str) -> Run {
         args.push("json".into());
     }
 
-    let mut child = Command::new(BIN)
+    let mut child = Command::new(&*BIN)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -237,10 +256,26 @@ fn count_groups(stdout: &str) -> usize {
         .count()
 }
 
+/// Run `f` over every case on all cores, keeping the cases' order. Each case
+/// spawns the binary; 150 spawns in series is the suite's longest test.
+fn par_map<T: Send>(cases: &[Case], f: impl Fn(&Case) -> Option<T> + Sync) -> Vec<T> {
+    let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
+    let chunk = cases.len().div_ceil(workers).max(1);
+    std::thread::scope(|s| {
+        let handles: Vec<_> = cases
+            .chunks(chunk)
+            .map(|c| s.spawn(|| c.iter().filter_map(&f).collect::<Vec<T>>()))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("case thread panicked"))
+            .collect()
+    })
+}
+
 /// Run every case in `cases`, returning one complaint per failure.
 fn check(cases: &[Case]) -> Vec<String> {
-    let mut failures = Vec::new();
-    for case in cases {
+    par_map(cases, |case| {
         let got = run(case, "1");
         let stdout = got.stdout.as_str();
         let complaint = match &case.expect {
@@ -277,19 +312,18 @@ fn check(cases: &[Case]) -> Vec<String> {
             Expect::Exit(want) => (got.status != *want)
                 .then(|| format!("want exit {want}, got {}\n     {}", got.status, got.stderr)),
         };
-        if let Some(detail) = complaint {
-            failures.push(format!(
+        complaint.map(|detail| {
+            format!(
                 "{}\n     {}\n     from: {}\n     flags: {:?}\n     {detail}",
                 case.bead, case.why, case.from, case.flags
-            ));
-        }
-    }
-    failures
+            )
+        })
+    })
 }
 
 #[test]
 fn known_fold_regressions() {
-    let cases: Vec<Case> = parse(CORPUS).into_iter().filter(|c| !c.todo).collect();
+    let cases: Vec<Case> = parse(&CORPUS).into_iter().filter(|c| !c.todo).collect();
     let failures = check(&cases);
     assert!(
         failures.is_empty(),
@@ -308,7 +342,7 @@ fn known_fold_regressions() {
 #[test]
 #[ignore = "documents open defects; promote each ##TODO to ##CASE as it is fixed"]
 fn known_open_defects() {
-    let cases: Vec<Case> = parse(CORPUS).into_iter().filter(|c| c.todo).collect();
+    let cases: Vec<Case> = parse(&CORPUS).into_iter().filter(|c| c.todo).collect();
     let failures = check(&cases);
     let fixed = cases.len() - failures.len();
     eprintln!(
@@ -337,13 +371,16 @@ fn unescape(text: &str) -> String {
 /// same fold wrong.
 #[test]
 fn every_case_is_identical_at_any_thread_count() {
-    for case in parse(CORPUS) {
-        assert_eq!(
-            without_timing(&run(&case, "1").stdout),
-            without_timing(&run(&case, "8").stdout),
-            "{} — {} differs at 8 threads",
-            case.bead,
-            case.why
-        );
-    }
+    let cases = parse(&CORPUS);
+    let diffs = par_map(&cases, |case| {
+        let a = without_timing(&run(case, "1").stdout);
+        let b = without_timing(&run(case, "8").stdout);
+        (a != b).then(|| format!("{} — {} differs at 8 threads", case.bead, case.why))
+    });
+    assert!(
+        diffs.is_empty(),
+        "{} case(s) differ at 8 threads:\n{}",
+        diffs.len(),
+        diffs.join("\n")
+    );
 }

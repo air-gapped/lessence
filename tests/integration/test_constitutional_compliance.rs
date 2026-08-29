@@ -72,8 +72,7 @@ fn test_constitutional_compliance_kubelet() {
         return;
     }
 
-    let Ok(file) = std::fs::File::open("examples/kubelet.log") else {
-        eprintln!("Skipping: examples/kubelet.log not available");
+    let Some(file) = crate::common::require_example("examples/distilled/kubelet.log") else {
         return;
     };
 
@@ -89,7 +88,7 @@ fn test_constitutional_compliance_kubelet() {
     // set of such near-miss shapes may only shrink, and every shape still
     // present must name the bead that owns it.
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--explain", "--threads", "1", "-q"])
+        .args(["--explain", "--threads", "1"])
         .stdin(file)
         .output()
         .expect("Failed to execute lessence");
@@ -97,7 +96,7 @@ fn test_constitutional_compliance_kubelet() {
     let stdout = str::from_utf8(&output.stdout).expect("Invalid UTF-8");
 
     let mut groups = 0usize;
-    let mut lines = 0usize;
+    let mut inventory: Vec<String> = Vec::new();
     let mut near_misses: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::default();
     for record in stdout.lines() {
@@ -109,7 +108,10 @@ fn test_constitutional_compliance_kubelet() {
         }
         groups += 1;
         let count = v["count"].as_u64().unwrap_or(0) as usize;
-        lines += count;
+        inventory.push(format!(
+            "{count}\t{}",
+            v["normalized"].as_str().unwrap_or("")
+        ));
         let nearest = &v["nearest"];
         if count != 1 || nearest.is_null() {
             continue;
@@ -130,7 +132,36 @@ fn test_constitutional_compliance_kubelet() {
         let ours = nearest["first_diff"]["ours"].as_str().unwrap_or("");
         *near_misses.entry(shape_of(ours)).or_default() += 1;
     }
-    assert_eq!(lines, 70_548, "every input line lands in exactly one group");
+    // The golden inventory is the volume property of the corpus: every
+    // template with its count. A line count of the corpus is a
+    // distillation choice, not a test property.
+    let golden_text = std::fs::read_to_string("examples/distilled/kubelet.golden")
+        .expect("Failed to read examples/distilled/kubelet.golden");
+    let mut golden: Vec<String> = golden_text.lines().map(str::to_string).collect();
+    inventory.sort();
+    golden.sort();
+    if inventory != golden {
+        let inv_set: std::collections::BTreeSet<&String> = inventory.iter().collect();
+        let gold_set: std::collections::BTreeSet<&String> = golden.iter().collect();
+        let extra: Vec<_> = inv_set.difference(&gold_set).take(20).collect();
+        let missing: Vec<_> = gold_set.difference(&inv_set).take(20).collect();
+        panic!(
+            "kubelet.log fold does not match examples/distilled/kubelet.golden\n\
+             + in fold, not in golden\n{}\n\
+             - in golden, not in fold\n{}\n\
+             run: make distill   (BLESS=1 make distill to re-bless after an intended change)",
+            extra
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            missing
+                .iter()
+                .map(|s| format!("  {s}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
     println!(
         "Constitutional compliance (kubelet.log): {groups} groups, {} near-miss shapes",
         near_misses.len()
@@ -234,8 +265,7 @@ fn test_processing_speed_requirement() {
 
     use std::time::Instant;
 
-    let Ok(file) = std::fs::File::open("examples/kubelet.log") else {
-        eprintln!("Skipping: examples/kubelet.log not available");
+    let Some(file) = crate::common::require_example("examples/distilled/kubelet.log") else {
         return;
     };
 

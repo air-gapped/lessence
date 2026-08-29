@@ -2,8 +2,14 @@
 
 Lessence uses [criterion.rs](https://github.com/bheisler/criterion.rs)
 for performance benchmarks. The bench suite is designed as a **local
-perf gate**, not a CI gate — `examples/` (the bench corpus) is
+perf gate**, not a CI gate — `examples/distilled/` (the bench corpus) is
 gitignored, so CI has no corpus to run against.
+
+The per-commit perf gate is not this suite: `make gate` counts
+instructions on one sentinel corpus (see `docs/verification.md`), which
+is repeatable to ~0.1% and needs no quiet machine. The criterion suite
+below is the release-time wall-clock view — thread scaling, throughput
+per corpus — and is run by `make release-check`.
 
 When you change hot-path or flush-path code, record a baseline
 before the change and compare after. Any regression above **3%** on
@@ -12,8 +18,9 @@ is **0%**.
 
 ## Prerequisites
 
-- The `examples/` directory must contain the six Tier 1 corpus files
-  (see below). They are gitignored and distributed separately.
+- The `examples/distilled/` directory must contain the six Tier 1 corpus
+  files (see below). They are gitignored, produced from
+  `examples/originals/` by `make distill`.
 - For lowest-noise measurements, run on a quiet machine: close
   browsers, pause background builds, plug in power (disable battery
   throttling), and avoid thermal throttling if possible.
@@ -31,16 +38,16 @@ All four share the same Tier 1 corpus for apples-to-apples comparison.
 
 ## Tier 1 corpus
 
-Six files under `examples/`. Each exercises a different pattern mix:
+Six files under `examples/distilled/`. Each exercises a different pattern mix:
 
 | File | Size | Coverage |
 |---|---|---|
-| `kubelet.log` | 20 MB | K8s: UUIDs, paths, kubernetes tokens, high volume |
-| `argocd_controller_production.log` | 4 MB | Structured app logs, high token density |
-| `harbor_postgres_primary.log` | 7.5 MB | Postgres: duration/timestamp/number-heavy (count-only dominant) |
-| `openssh_brute_force.log` | 4 MB | One-template pathological case — stress-tests single-group flush |
-| `apache_error_production.log` | 1.9 MB | Apache: brackets, quoted strings |
-| `nginx_sample.log` | 6.5 KB | Tiny — fixed-overhead floor |
+| `kubelet.log` | 1.2 MB | K8s: UUIDs, paths, kubernetes tokens, high volume |
+| `argocd_controller_production.log` | 20 KB | Structured app logs, high token density |
+| `harbor_postgres_primary.log` | 8 KB | Postgres: duration/timestamp/number-heavy (count-only dominant) |
+| `openssh_brute_force.log` | 396 KB | One-template pathological case — stress-tests single-group flush |
+| `apache_error_production.log` | 192 KB | Apache: brackets, quoted strings |
+| `nginx_sample.log` | 4 KB | Tiny — fixed-overhead floor |
 
 `epyc_7days_journalctl.log` is **not** in the Tier 1 gate. Its pattern
 density (1000+ distinct templates in the first 5k lines) trips the

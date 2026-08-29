@@ -21,6 +21,87 @@ set -e
 msg_file="$1"
 first_line=$(sed -n '1p' "$msg_file")
 
+# ── Truth-layer check (docs/verification.md "Hooks") ────────────────────
+#
+# The fixture and the `known` tables are the record of correct behaviour;
+# CLAUDE.md says "add to them; never weaken them". A header removed or
+# edited away, a ##CASE demoted to ##TODO, or a `known` table that grew all
+# shrink the record silently unless the commit says why —
+# `Truth-Layer-Change: <bead> <reason>`.
+truth_layer_reasons=()
+
+count_entries() {
+    # `known: &[(&str, &str)] = &[ ... ];` tuple entries: a single-line
+    # entry `("...` or a multi-line entry opener `(` alone.
+    awk '/let known: &\[/,/^[[:space:]]*\];/' "$1" 2>/dev/null \
+        | grep -cE '^[[:space:]]*\("|^[[:space:]]*\($' || true
+}
+
+if git rev-parse --verify -q HEAD >/dev/null; then
+    fixture="tests/fixtures/fold_regressions.log"
+    ccfile="tests/integration/test_constitutional_compliance.rs"
+
+    head_fixture="$(git show "HEAD:${fixture}" 2>/dev/null || true)"
+    index_fixture="$(git show ":${fixture}" 2>/dev/null || true)"
+
+    if [ "$head_fixture" != "$index_fixture" ]; then
+        head_cases="$(grep '^##CASE ' <<<"$head_fixture" | sort || true)"
+        index_cases="$(grep '^##CASE ' <<<"$index_fixture" | sort || true)"
+        head_todos="$(grep '^##TODO ' <<<"$head_fixture" | sort || true)"
+        index_todos="$(grep '^##TODO ' <<<"$index_fixture" | sort || true)"
+
+        # Multiset subtraction via comm on sorted lines (duplicates
+        # preserved, so this is a multiset — not just a set — comparison).
+        missing_cases="$(comm -23 <(echo "$head_cases") <(echo "$index_cases") | sed '/^$/d' || true)"
+        added_todos="$(comm -13 <(echo "$head_todos") <(echo "$index_todos") | sed '/^$/d' || true)"
+
+        if [ -n "$missing_cases" ]; then
+            demoted=0
+            removed=0
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                rest="${line#\#\#CASE }"
+                if grep -qxF "##TODO ${rest}" <<<"$added_todos"; then
+                    demoted=$((demoted + 1))
+                else
+                    removed=$((removed + 1))
+                fi
+            done <<<"$missing_cases"
+            [ "$demoted" -gt 0 ] && truth_layer_reasons+=("$demoted ##CASE block(s) demoted to ##TODO")
+            [ "$removed" -gt 0 ] && truth_layer_reasons+=("$removed ##CASE header(s) removed or altered")
+        fi
+    fi
+
+    head_cc="$(git show "HEAD:${ccfile}" 2>/dev/null || true)"
+    index_cc="$(git show ":${ccfile}" 2>/dev/null || true)"
+    if [ "$head_cc" != "$index_cc" ]; then
+        head_known_tmp="$(mktemp)"; index_known_tmp="$(mktemp)"
+        printf '%s\n' "$head_cc" > "$head_known_tmp"
+        printf '%s\n' "$index_cc" > "$index_known_tmp"
+        head_known="$(count_entries "$head_known_tmp")"
+        index_known="$(count_entries "$index_known_tmp")"
+        rm -f "$head_known_tmp" "$index_known_tmp"
+        if [ "${index_known:-0}" -gt "${head_known:-0}" ]; then
+            truth_layer_reasons+=("known table grew: ${head_known:-0} -> ${index_known:-0} entries")
+        fi
+    fi
+
+    if [ "${#truth_layer_reasons[@]}" -gt 0 ]; then
+        if ! grep -qE '^Truth-Layer-Change: .+ .+' "$msg_file"; then
+            {
+                echo ""
+                echo "Truth-layer change with no Truth-Layer-Change trailer:"
+                for r in "${truth_layer_reasons[@]}"; do
+                    echo "  - $r"
+                done
+                echo ""
+                echo "Add a trailer: Truth-Layer-Change: <bead> <reason>"
+            } >&2
+            exit 1
+        fi
+    fi
+fi
+
 # Skip empty messages and merge/fixup/squash flows (those start with #)
 case "$first_line" in
     ""|\#*) exit 0 ;;

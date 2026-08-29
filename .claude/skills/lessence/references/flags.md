@@ -89,7 +89,7 @@ hand and diffing hundreds of output lines: each reported line is one *input*
 line whose fate changed, ready to be judged.
 
 ```bash
-lessence --diff ~/.cargo/bin/lessence examples/*.log
+lessence --diff ~/.cargo/bin/lessence examples/originals/*.log
 ```
 
 Both sides run with `--format json --threads 1 -q`; groups are matched on

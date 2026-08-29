@@ -97,6 +97,47 @@ static PROVIDER_KEY: LazyLock<Regex> = LazyLock::new(|| {
 /// --sanitize-pii pass (all callers gate on the flag), so every output
 /// mode and field masks identically. Assignment masking runs first so
 /// `token: eyJ...` collapses to one `<SECRET>` rather than a nested mask.
+/// Shortest value the assignment locator will call a credential. The
+/// harvest scrubber's floor: below it the match is prose, not a secret.
+const MIN_CREDENTIAL_VALUE: usize = 6;
+
+/// Is the value of a `key: value` match a credential, or is the match prose
+/// that happens to contain a credential word? Masking may over-match — it
+/// hides what it is unsure of — but an invention *rewrites* the words it
+/// touches, so `failed to fetch token: Post "https://…": read tcp …` has to
+/// come back with `Post` and `read` intact. Two shape rules: a credential
+/// value is at least six characters, and a key reached through a `/` is a
+/// URL path segment (`…/serviceaccounts/cilium/token\": net/http: …`), not
+/// an assignment.
+fn is_credential_value(text: &str, match_start: usize, value: &str) -> bool {
+    let bare = value
+        .strip_prefix(['"', '\''])
+        .and_then(|v| v.strip_suffix(['"', '\'']))
+        .unwrap_or(value);
+    bare.len() >= MIN_CREDENTIAL_VALUE && !text[..match_start].ends_with('/')
+}
+
+/// Byte ranges of the *values* the credential locators find: the value of
+/// a credential-named assignment, and whole JWT / provider-key matches.
+/// `mask_credentials` replaces these with a marker; `--anonymize` invents a
+/// same-shape value for them instead, off the same three patterns — with the
+/// prose guard above, which masking does not need and inventions do.
+pub(crate) fn credential_spans(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut spans: Vec<std::ops::Range<usize>> = CREDENTIAL_ASSIGNMENT
+        .captures_iter(text)
+        .filter(|c| {
+            let whole = c.get(0).expect("group 0 always present on a match");
+            let value = c.get(2).expect("group 2 always present on a match");
+            is_credential_value(text, whole.start(), value.as_str())
+        })
+        .filter_map(|c| c.get(2).map(|m| m.range()))
+        .collect();
+    for re in [&*JWT, &*PROVIDER_KEY] {
+        spans.extend(re.find_iter(text).map(|m| m.range()));
+    }
+    spans
+}
+
 fn mask_credentials(text: &str) -> String {
     let masked = CREDENTIAL_ASSIGNMENT.replace_all(text, "${1}<SECRET>");
     let masked = JWT.replace_all(&masked, "<JWT>");
@@ -126,6 +167,10 @@ struct PatternGroup {
     /// --explain only: the existing group this line scored highest against
     /// before founding its own, or `None` when the buffer was empty.
     nearest: Option<Nearest>,
+    /// --distill only: the input line number of every member, in member
+    /// order (parallel to `lines`). Empty in every other mode, so the
+    /// per-line cost is not paid unless a distillation asked for it.
+    member_line_nos: Vec<usize>,
 }
 
 /// First whitespace token at which two normalized lines disagree. Tokenizes
@@ -207,6 +252,7 @@ impl PatternGroup {
             first_source_id: location.source_id,
             last_source_id: location.source_id,
             nearest: None,
+            member_line_nos: Vec::new(),
         }
     }
 
@@ -336,6 +382,12 @@ pub struct PatternFolder {
     /// JSON modes. Parameters (K, distinct_cap) are calibrated against
     /// the full corpus; see `docs/rollup-calibration.md` for evidence.
     rollup_computer: RollupComputer,
+    /// --distill: input line numbers to keep, appended group by group as
+    /// groups flush. Unordered across groups; `src/distill.rs` sorts.
+    distill_kept: Vec<usize>,
+    /// --distill: one template per flushed group — the input side of the
+    /// template-set contract check.
+    distill_templates: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -1611,7 +1663,18 @@ impl PatternFolder {
             json_sampled_entries: 0,
             json_omitted_values_lower_bound: 0,
             rollup_computer: RollupComputer::with_defaults().sanitized(sanitize_pii),
+            distill_kept: Vec::new(),
+            distill_templates: Vec::new(),
         }
+    }
+
+    /// --distill: the input line numbers the distillation keeps and the
+    /// template of every group that formed. Call after `finish()`.
+    pub fn take_distilled(&mut self) -> (Vec<usize>, Vec<String>) {
+        (
+            std::mem::take(&mut self.distill_kept),
+            std::mem::take(&mut self.distill_templates),
+        )
     }
 
     /// Absorb the ingestion outcome for the completeness section of the
@@ -1770,11 +1833,22 @@ impl PatternFolder {
             })
         };
 
+        // --distill needs every member's input line number, since the
+        // member that carries a rare variant can sit anywhere in a group.
+        let distill_line_no = self
+            .config
+            .distill
+            .is_some()
+            .then(|| location.map_or(self.position_counter, |l| l.line_no));
+
         if let Some(index) = match_index {
             if let Some(location) = location {
                 self.buffer[index].add_line_at(normalized_line, location);
             } else {
                 self.buffer[index].add_line(normalized_line, self.position_counter);
+            }
+            if let Some(line_no) = distill_line_no {
+                self.buffer[index].member_line_nos.push(line_no);
             }
         } else {
             // --explain: the line is about to found a group. Before it does,
@@ -1795,10 +1869,100 @@ impl PatternFolder {
                 PatternGroup::new(normalized_line, self.position_counter)
             };
             group.nearest = nearest;
+            if let Some(line_no) = distill_line_no {
+                group.member_line_nos.push(line_no);
+            }
             self.buffer.push(group);
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
         }
+    }
+
+    /// --distill: record what a distillation of this group must carry —
+    /// its template, and the input line numbers of the members to keep.
+    ///
+    /// "The first N members" is not enough. When a group over-folded two
+    /// events into one, the rarer event may sit at member 7,000, and a
+    /// distillation that dropped it could never show the defect. What makes
+    /// a member worth keeping is its normalized form: the template is built
+    /// by folding every distinct normalized form of the group into
+    /// `<VARIES>`, and the rollup lists exactly those forms' differences. So
+    /// the first member of every distinct normalized form is kept — bounded
+    /// by the same [`ROLLUP_DISTINCT_CAP`] the rollup reports to — and only
+    /// then are the earliest remaining members added until `members` is
+    /// reached, plus a log-scaled sample spread evenly over the occurrences
+    /// (`3 + floor(log2 n)`, capped at 16), so a distillation of a huge group
+    /// is a miniature spanning its whole run rather than just its head. A
+    /// group too small to collapse keeps every line: those are not folded
+    /// away, they are the log.
+    fn distill_take(&mut self, group: &PatternGroup, members: usize) {
+        self.distill_templates.push(group.template().to_string());
+        if !group.should_collapse(self.config.min_collapse) {
+            self.distill_kept
+                .extend(group.member_line_nos.iter().copied());
+            return;
+        }
+
+        let mut chosen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+        // The members that built the template, replayed exactly as
+        // `add_line_at` built it: a member that turned some template word
+        // into `<VARIES>` is the only evidence that word varies, and without
+        // it the distilled file would claim a literal the original never
+        // claimed. There is no cap here — the set cannot be larger than the
+        // template has words.
+        let mut template = group.lines[0].normalized.clone();
+        chosen.insert(0);
+        for (idx, line) in group.lines.iter().enumerate().skip(1) {
+            if line.hash == group.lines[0].hash {
+                continue;
+            }
+            let edits = varying_spans(&template, &line.normalized);
+            if edits.is_empty() {
+                continue;
+            }
+            for (at, len) in edits.into_iter().rev() {
+                template.replace_range(at..at + len, VARIES_MARK);
+            }
+            chosen.insert(idx);
+        }
+
+        // Then one member per distinct normalized form, which is what the
+        // rollup counts its variants by: two members can mark the same slot
+        // and still carry different values there, and `Server Reject` inside
+        // `Server Busy` is the whole reason to distil at all.
+        let mut seen: HashSet<u64> = HashSet::new();
+        for (idx, line) in group.lines.iter().enumerate() {
+            if seen.len() >= ROLLUP_DISTINCT_CAP {
+                break;
+            }
+            if seen.insert(line.hash) {
+                chosen.insert(idx);
+            }
+        }
+
+        for idx in 0..group.lines.len() {
+            if chosen.len() >= members {
+                break;
+            }
+            chosen.insert(idx);
+        }
+
+        // Then a log-scaled sample spread evenly over the group's
+        // occurrences, unioned with what is already chosen: 3 + ⌊log2 n⌋
+        // members, at most 16. Enough that the fold visibly compresses and
+        // the rollup fills; bounded so the distilled file stays a miniature
+        // of the log, never a copy of it. Additive only — everything the
+        // steps above already picked stays picked.
+        let n = group.lines.len();
+        let target = (3 + n.ilog2() as usize).min(16);
+        for i in 0..target {
+            let idx = ((i * (n - 1)) as f64 / (target - 1) as f64).round() as usize;
+            chosen.insert(idx.min(n - 1));
+        }
+
+        self.distill_kept
+            .extend(chosen.iter().filter_map(|i| group.member_line_nos.get(*i)));
     }
 
     fn flush_oldest_safe_group(&mut self) -> Result<Option<String>> {

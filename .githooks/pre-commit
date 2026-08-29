@@ -64,6 +64,38 @@ if command -v br >/dev/null 2>&1 && [ -d .beads ]; then
     fi
 fi
 
+# make gate: any staged src/ or Cargo.lock change must have a fresh PASS.
+# docs/verification.md "Hooks". gate.json's staged_diff_sha256 must match the
+# diff actually being committed — a gate run against a different change (or
+# none at all) does not count.
+staged_src=0
+for file in $(git diff --cached --name-only --diff-filter=ACM); do
+    case "$file" in
+        src/*|Cargo.lock) staged_src=1 ;;
+    esac
+done
+if [ "$staged_src" = "1" ]; then
+    gate_json="target/gate/gate.json"
+    if [ ! -f "$gate_json" ]; then
+        fail "src/ or Cargo.lock is staged with no target/gate/gate.json — run 'make gate' first"
+    fi
+    if command -v jq >/dev/null 2>&1; then
+        verdict=$(jq -r '.verdict' "$gate_json" 2>/dev/null || echo "")
+        recorded_sha=$(jq -r '.staged_diff_sha256' "$gate_json" 2>/dev/null || echo "")
+    else
+        verdict=$(sed -n 's/.*"verdict": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
+        recorded_sha=$(sed -n 's/.*"staged_diff_sha256": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
+    fi
+    current_sha=$( (git diff --cached; git diff) | sha256sum | awk '{print $1}')
+    if [ "$verdict" != "PASS" ]; then
+        fail "target/gate/gate.json verdict is '$verdict', not PASS — run 'make gate'"
+    fi
+    if [ "$recorded_sha" != "$current_sha" ]; then
+        fail "target/gate/gate.json was written for a different change — run 'make gate' again"
+    fi
+    pass "make gate PASS for this change"
+fi
+
 # Large file check (1MB limit)
 MAX_SIZE=1048576
 for file in $(git diff --cached --name-only --diff-filter=ACM); do

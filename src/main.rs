@@ -38,6 +38,14 @@ fn main() -> Result<()> {
         std::process::exit(i32::from(moved > 0));
     }
 
+    // --distill / --anonymize write a log rather than a report, so they
+    // reject the output-mode flags instead of ignoring them.
+    let distilling = cli.distill || cli.anonymize || cli.anonymize_words.is_some();
+    if distilling && let Err(e) = cli.validate_distill() {
+        eprintln!("lessence: {e}");
+        std::process::exit(2);
+    }
+
     // Validate output format before creating config; downstream dispatch
     // compares against the canonical spelling this returns.
     let mut format = cli::validate_format(&cli.format)?;
@@ -89,6 +97,10 @@ fn main() -> Result<()> {
         fail_pattern: cli.fail_on_pattern.clone(),
         frame_continuations: cli.frame_continuations,
         explain: cli.explain,
+        // Set for --anonymize too: that mode emits every line, but it still
+        // checks its output against the input's templates, and the folder is
+        // where those come from.
+        distill: distilling.then_some(cli.members),
         ..Config::default()
     };
     for name in &cli.disable_patterns {
@@ -125,6 +137,20 @@ fn main() -> Result<()> {
     if readers.is_empty() {
         eprintln!("lessence: no valid input");
         std::process::exit(1);
+    }
+
+    if distilling {
+        let opts = lessence::distill::Options {
+            distill: cli.distill,
+            members: cli.members,
+            // A vocabulary with nothing to anonymise would be a no-op the
+            // caller could not see; asking for words asks for anonymisation.
+            anonymize: cli.anonymize || cli.anonymize_words.is_some(),
+            words_file: cli.anonymize_words.clone(),
+            seed: cli.seed,
+        };
+        let code = lessence::distill::run(&config, &ingestor, readers, &opts)?;
+        std::process::exit(if input_failed { 1 } else { code });
     }
 
     // Handle preflight mode: process logs but only output JSON analysis

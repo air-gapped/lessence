@@ -3,14 +3,14 @@
 Measures what trigger evals can't: given the skill in a project and a large
 log to diagnose, which command does the model actually run first? Each run
 spawns a real `claude -p` session in an isolated temp project containing
-only this skill and one corpus log from `examples/`, then classifies the
+only this skill and one corpus log from `examples/originals/`, then classifies the
 tool_use stream.
 
 ## Files
 
 - `scenarios.json` — 4 diagnosis tasks (kubelet NotReady, argocd crash
   loop, ssh brute-force triage, vague slow-postgres), each bound to an
-  `examples/` corpus of 22k–70k lines.
+  `examples/originals/` corpus of 22k–70k lines.
 - `run_choice_eval.py` — the runner. Spawns N runs per scenario × model,
   writes JSONL.
 - `score.py` — scorer. Reports three metrics per model: first command is

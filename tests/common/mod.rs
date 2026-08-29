@@ -1,4 +1,22 @@
+use std::fs::File;
 use std::time::{Duration, Instant};
+
+/// Open a gitignored `examples/distilled/` corpus a test depends on. `None` means "print
+/// a skip line and return" — the caller does the returning. Silently passing
+/// when the file is absent is how a gate stops proving anything without
+/// anyone noticing, so this panics naming the missing path unless `CI` is set
+/// (GitHub runners carry no corpora and are expected to skip).
+#[allow(dead_code)] // only integration.rs uses this; security.rs and misc.rs share the module
+pub fn require_example(path: &str) -> Option<File> {
+    match File::open(path) {
+        Ok(f) => Some(f),
+        Err(e) if std::env::var_os("CI").is_some() => {
+            eprintln!("Skipping: {path} not available ({e}) — CI has no corpora");
+            None
+        }
+        Err(e) => panic!("{path} is required for this test and could not be opened: {e}"),
+    }
+}
 
 /// Assert that a function scales linearly (O(n)) with input size.
 ///

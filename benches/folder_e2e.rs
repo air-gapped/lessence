@@ -35,21 +35,24 @@ use std::time::Duration;
 /// contaminates the subtraction-method measurement. Journalctl coverage is
 /// deferred to the Phase 5 manual calibration sweep.
 const TIER1_CORPUS: &[(&str, &str)] = &[
-    ("examples/kubelet.log", "kubelet"),
+    ("examples/distilled/kubelet.log", "kubelet"),
     (
-        "examples/argocd_controller_production.log",
+        "examples/distilled/argocd_controller_production.log",
         "argocd_controller",
     ),
     (
-        "examples/harbor_postgres_primary.log",
+        "examples/distilled/harbor_postgres_primary.log",
         "harbor_postgres_primary",
     ),
-    ("examples/openssh_brute_force.log", "openssh_brute_force"),
     (
-        "examples/apache_error_production.log",
+        "examples/distilled/openssh_brute_force.log",
+        "openssh_brute_force",
+    ),
+    (
+        "examples/distilled/apache_error_production.log",
         "apache_error_production",
     ),
-    ("examples/nginx_sample.log", "nginx_sample"),
+    ("examples/distilled/nginx_sample.log", "nginx_sample"),
 ];
 
 /// Deterministic slice size — every bench input is truncated here.

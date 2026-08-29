@@ -214,9 +214,72 @@ pub struct Cli {
     #[arg(long)]
     pub completions: Option<clap_complete::Shell>,
 
+    /// Dev mode: write the input back out as a small log that folds the same
+    /// way — every group's members, every unfolded line, original order.
+    #[arg(long, hide = true)]
+    pub distill: bool,
+
+    /// Dev mode: member lines kept per folded group under --distill.
+    #[arg(long, hide = true, default_value_t = 3, value_parser = validate_members)]
+    pub members: usize,
+
+    /// Dev mode: replace every recognised value with an invented one of the
+    /// same class and shape.
+    #[arg(long, hide = true)]
+    pub anonymize: bool,
+
+    /// Dev mode: extra words to invent, one per line. Implies --anonymize.
+    #[arg(long, hide = true, value_name = "FILE")]
+    pub anonymize_words: Option<PathBuf>,
+
+    /// Dev mode: seed for --anonymize, for reproducible inventions.
+    #[arg(long, hide = true)]
+    pub seed: Option<u64>,
+
     /// Input files (reads stdin if none given, use - for explicit stdin)
     #[arg(value_name = "FILE")]
     pub files: Vec<PathBuf>,
+}
+
+impl Cli {
+    /// `--distill` / `--anonymize` write a log, not a report. Every
+    /// output-mode flag would be silently ignored, so a run that asks for
+    /// both is a usage error naming the pair.
+    pub fn validate_distill(&self) -> Result<(), String> {
+        let conflicts = [
+            (
+                self.format != crate::config::DEFAULT_OUTPUT_FORMAT,
+                "--format",
+            ),
+            (self.summary, "--summary"),
+            (self.fit, "--fit"),
+            (self.top.is_some(), "--top"),
+            (self.explain, "--explain"),
+            (self.diff.is_some(), "--diff"),
+            (self.preflight, "--preflight"),
+        ];
+        let Some((_, flag)) = conflicts.into_iter().find(|(hit, _)| *hit) else {
+            return Ok(());
+        };
+        let mode = if self.distill {
+            "--distill"
+        } else {
+            "--anonymize"
+        };
+        Err(format!(
+            "{mode} writes a log, not a report; {flag} cannot be combined with it"
+        ))
+    }
+}
+
+fn validate_members(s: &str) -> Result<usize, String> {
+    let value = s
+        .parse::<usize>()
+        .map_err(|_| format!("invalid number: '{s}'"))?;
+    if value < 1 {
+        return Err(format!("'{value}' must be at least 1"));
+    }
+    Ok(value)
 }
 
 /// The full clap command — single source of truth for the doc-contract tests.
@@ -280,6 +343,34 @@ mod tests {
         assert_eq!(validate_format("TEXT").unwrap(), "text");
         assert_eq!(validate_format("Json").unwrap(), "json");
         assert_eq!(validate_format("MARKDOWN").unwrap(), "markdown");
+    }
+
+    fn distilling() -> Cli {
+        let mut cli = Cli::parse_from(["lessence", "--distill"]);
+        cli.distill = true;
+        cli
+    }
+
+    #[test]
+    fn distill_rejects_an_output_mode_flag_naming_both() {
+        let mut cli = distilling();
+        cli.format = "markdown".to_string();
+        let err = cli
+            .validate_distill()
+            .expect_err("markdown must be rejected");
+        assert!(err.contains("--distill"), "{err}");
+        assert!(err.contains("--format"), "{err}");
+    }
+
+    #[test]
+    fn distill_alone_is_accepted() {
+        assert!(distilling().validate_distill().is_ok());
+    }
+
+    #[test]
+    fn validate_members_rejects_zero() {
+        assert!(validate_members("0").is_err());
+        assert_eq!(validate_members("1").expect("one member is legal"), 1);
     }
 
     #[test]

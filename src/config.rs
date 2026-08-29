@@ -54,6 +54,10 @@ pub struct Config {
     /// --explain: record, for every new group, the nearest existing group it
     /// failed to join. Read-only diagnostics; folding is unchanged.
     pub explain: bool,
+    /// --distill: keep this many member lines per folded group. `Some(n)`
+    /// switches the folder from emitting formatted groups to recording
+    /// which input lines a distillation must carry (`src/distill.rs`).
+    pub distill: Option<usize>,
 }
 
 impl Default for Config {
@@ -96,6 +100,7 @@ impl Default for Config {
             fail_pattern: None,  // No fail pattern by default
             frame_continuations: false, // Opt-in: one record per physical line by default
             explain: false,
+            distill: None,
         }
     }
 }

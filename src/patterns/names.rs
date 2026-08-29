@@ -23,7 +23,7 @@ static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| {
 
 // The alphabet Kubernetes draws generated-name suffixes and pod-template
 // hashes from (k8s.io/apimachinery rand.String): no vowels, no y, no 0/1/3.
-const K8S_RAND_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
+pub(crate) const K8S_RAND_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
 
 // Common prefixes that should be preserved (not treated as variable)
 static COMMON_PREFIXES: &[&str] = &[

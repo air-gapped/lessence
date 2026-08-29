@@ -191,6 +191,35 @@ fn credentials_quoted_value_masked_whole() {
 }
 
 #[test]
+fn credential_spans_leave_prose_after_a_credential_word_alone() {
+    // `--anonymize` rewrites what these spans cover, so a sentence that
+    // merely contains `token:` must yield none: the value is too short to
+    // be a secret, and the second key is a URL path segment.
+    let line = concat!(
+        "failed to fetch token: Post \"https://10.0.0.7:6443/api/v1/",
+        "serviceaccounts/blorb/token\": read tcp 10.0.0.7:51706: reset"
+    );
+    assert!(
+        credential_spans(line).is_empty(),
+        "prose spans: {:?}",
+        credential_spans(line)
+            .into_iter()
+            .map(|r| &line[r])
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn credential_spans_still_find_a_real_assignment() {
+    let line = "login password=frobnicated ok";
+    let spans = credential_spans(line);
+    assert_eq!(
+        spans.iter().map(|r| &line[r.clone()]).collect::<Vec<_>>(),
+        vec!["frobnicated"]
+    );
+}
+
+#[test]
 fn credentials_json_style_key() {
     assert_eq!(
         mask_credentials(r#"{"api_key": "abc123"}"#),

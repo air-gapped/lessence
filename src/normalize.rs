@@ -21,11 +21,13 @@ use crate::patterns::{
 struct DetectorEntry {
     /// Config gate: is this detector enabled for the run?
     enabled: fn(&Config) -> bool,
-    /// Cheap byte-level gate on the partially-normalized line; the
-    /// detector is skipped when it returns false. Mirrors the detector's
-    /// own fast pre-filter where one exists, so the deference check below
-    /// never runs on lines the detector would reject anyway.
-    prefilter: Option<fn(&Config, &str) -> bool>,
+    /// Cheap byte-level gate on `(config, original line, partially-
+    /// normalized line)`; the detector is skipped when it returns false.
+    /// Mirrors the detector's own fast pre-filter where one exists, so the
+    /// deference check below never runs on lines the detector would reject
+    /// anyway. The original is there for the gates that ask about a field
+    /// normalization has already erased.
+    prefilter: Option<fn(&Config, &str, &str) -> bool>,
     /// The kubernetes deference rule, expressed once per entry: when set
     /// and the predicate matches, the line's kubernetes-shaped content
     /// belongs to KubernetesDetector and this detector is skipped.
@@ -49,7 +51,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // EMAIL: before paths so emails inside URLs are handled correctly.
     DetectorEntry {
         enabled: |c| c.normalize_emails,
-        prefilter: Some(|_, s| s.contains('@')),
+        prefilter: Some(|_, _, s| s.contains('@')),
         defers_to_kubernetes: None,
         run: |n, s| n.email_detector.detect_and_replace(s),
     },
@@ -63,7 +65,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // JSON: structured data, Event objects, K8s objects.
     DetectorEntry {
         enabled: |c| c.normalize_json,
-        prefilter: Some(|_, s| s.contains('{')),
+        prefilter: Some(|_, _, s| s.contains('{')),
         defers_to_kubernetes: None,
         run: |_, s| JsonDetector::detect_and_replace(s),
     },
@@ -108,7 +110,10 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // `prog[<PID>]:`, which the tag alternative matches).
     DetectorEntry {
         enabled: |c| c.normalize_fqdns,
-        prefilter: Some(|_, s| s.starts_with("<TIMESTAMP> ")),
+        prefilter: Some(|_, original, s| {
+            s.starts_with("<TIMESTAMP> ")
+                && !UnifiedTimestampDetector::opens_with_kernel_uptime(original)
+        }),
         defers_to_kubernetes: None,
         run: |_, s| replace_syslog_host(s),
     },
@@ -131,7 +136,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // BRACKET CONTEXT: [error] [mod_jk] style tags.
     DetectorEntry {
         enabled: |c| c.normalize_brackets,
-        prefilter: Some(|_, s| {
+        prefilter: Some(|_, _, s| {
             s.contains('[') && BracketContextDetector::has_bracket_indicators(s)
         }),
         defers_to_kubernetes: Some(crate::patterns::has_kubernetes_indicators),
@@ -143,7 +148,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         // An `=` inside a quoted value is not a pair: gated on any `=`,
         // whether a Tetragon JSON event folded depended on the base64
         // padding of a field twenty kilobytes into the record.
-        prefilter: Some(|_, s| has_unquoted_eq(s)),
+        prefilter: Some(|_, _, s| has_unquoted_eq(s)),
         defers_to_kubernetes: None,
         run: |_, s| KeyValueDetector::detect_and_replace(s),
     },
@@ -152,7 +157,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // disable every bracket-shaped detector.
     DetectorEntry {
         enabled: |c| c.normalize_brackets,
-        prefilter: Some(|_, s| {
+        prefilter: Some(|_, _, s| {
             s.contains('[') && LogWithModuleDetector::has_log_module_indicators(s)
         }),
         defers_to_kubernetes: Some(crate::patterns::has_kubernetes_indicators),
@@ -163,7 +168,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // --disable-patterns key-value.
     DetectorEntry {
         enabled: |c| c.normalize_json || c.normalize_key_value,
-        prefilter: Some(|c, s| {
+        prefilter: Some(|c, _, s| {
             ((c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('=')))
                 && StructuredMessageDetector::has_structured_indicators(s)
         }),
@@ -190,7 +195,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // above tokenize (paths in quotes in particular).
     DetectorEntry {
         enabled: |c| c.normalize_quoted,
-        prefilter: Some(|_, s| s.contains('"') || s.contains('\'')),
+        prefilter: Some(|_, _, s| s.contains('"') || s.contains('\'')),
         defers_to_kubernetes: None,
         run: |_, s| QuotedStringDetector::detect_and_replace(s),
     },
@@ -333,9 +338,12 @@ static AUDIT_RECORD_TYPE: LazyLock<Regex> = LazyLock::new(|| {
 /// timestamp and the program tag — `<TIMESTAMP> gw-core dnsmasq[<PID>]:`,
 /// `<TIMESTAMP> usw-lab-2 daemon.err syslogd:`. The tag is `word:`
 /// (covers `word[<PID>]:` too, since a trailing `]:` is still non-space) or
-/// a `facility.level` pair.
+/// a `facility.level` pair. A tag opens on a letter or `/` — never a digit
+/// or a bracket: `usb 1-1.2: new device` and `peer_map_event (pdev:807e…)`
+/// are kernel lines whose second field is not a tag, so their first field
+/// is not a host.
 static SYSLOG_HOST: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^<TIMESTAMP> (\S+) (?:\S+:|[a-z]+\.[a-z]+\b)")
+    Regex::new(r"^<TIMESTAMP> (\S+) (?:[A-Za-z/]\S*:|[a-z]+\.[a-z]+\b)")
         .expect("syslog host anchor pattern must compile")
 });
 
@@ -662,7 +670,7 @@ impl Normalizer {
                 continue;
             }
             if let Some(prefilter) = entry.prefilter
-                && !prefilter(&self.config, &normalized)
+                && !prefilter(&self.config, &original, &normalized)
             {
                 continue;
             }

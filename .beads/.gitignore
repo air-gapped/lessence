@@ -45,3 +45,5 @@ redirect
 # br 0.2.20 runtime files (sidecars, locks, migration debris) — never commit
 *.vacuum-fsqlite-*
 .br_recovery/
+*.vacuum-wal-cert*
+*.fsqlite-migration-state

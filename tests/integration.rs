@@ -9,6 +9,7 @@ mod integration {
     mod test_binary_name;
     mod test_cli_formats;
     mod test_constitutional_compliance;
+    mod test_distill;
     mod test_documentation;
     mod test_edge_cases;
     mod test_essence_integration;

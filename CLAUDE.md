@@ -1,115 +1,114 @@
 # CLAUDE.md - lessence
 
-lessence ("log essence") — a CLI tool that extracts the essence of massive logs, preserving 100% of unique information while folding repetitive noise. Pipe any log through it to see the signal.
+lessence ("log essence") folds a massive log to its distinct events with
+counts, keeping every unique line. It is built for an agent that must
+understand a log it cannot read in full: `--explain` is the primary interface,
+the text output is a rendering of it. Zero data loss; an over-fold (two events
+shown as one) is the worst failure; shape recognisers, never vocabularies.
 
 ```bash
-lessence app.log                          # file argument (or stdin via <)
-kubectl logs pod | lessence               # kubernetes noise reduction
-lessence --human app.log                  # one screen, no scrolling
-lessence --essence app.log                # remove timestamps, show patterns
-lessence --format markdown app.log        # markdown output
+lessence app.log                       # file or stdin
+kubectl logs pod | lessence
+lessence --explain app.log             # JSON: groups, facts, why lines split
+lessence --diff <old-binary> app.log   # what an older build folds differently
 ```
 
-## Build & Test
+## Commands
 
 ```bash
-make ci                                   # fmt + clippy + test + deny — run before every push
-cargo build --release
-cargo test --lib                          # quick unit tests during dev
-cargo test --tests                        # integration tests
-./target/release/lessence --version       # verify binary
+make ci             # fmt + clippy + doc + build + test + deny  (~1 min, every commit)
+make gate           # every distilled corpus against its golden inventory; new ##CASE
+                    # blocks must fail on the HEAD build; instruction count on distilled
+                    # kubelet vs HEAD. ≤15 lines, target/gate/gate.json (seconds)
+make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
+                    # via the hidden dev flags `--distill --anonymize` (docs/distill.md):
+                    # every shape, no repetition, values invented. BLESS=1 re-blesses golden
+make release-check  # the gate against the last tag's build + mutants on the diff
+                    # since the tag + make ci + the slow (wall-clock) test profile. Writes
+                    # target/gate/release.json (~20 min)
+cargo test --lib    # unit tests while iterating
+cargo test --test integration known_open_defects -- --ignored --nocapture   # ##TODO status
 ```
 
-A pre-push hook (`.githooks/pre-push`) runs `make ci` automatically and
-blocks the push on failure. Bypass with `git push --no-verify` only with
-good reason.
+Run `make gate` before committing anything under `src/`; the pre-commit hook
+checks that `gate.json` was produced for exactly the staged change. Run
+`make release-check` before a release. Nothing else is required per change.
 
 ## Architecture
 
-**Pipeline**: stdin -> normalize -> group similar -> fold duplicates -> stdout
+Pipeline: read → normalize (detectors replace variable parts with placeholders)
+→ cluster by token similarity → living template with `<VARIES>` and a counted
+rollup → render. `src/normalize.rs` holds the detector order and the anchors
+(matched, never scored); `src/patterns/` the detectors, `timestamp/` one
+scored table of formats; `src/folder/` clustering and rendering; `src/diff.rs`
+the `--diff` mode. Details live in `docs/` and the `pattern-dev` skill.
 
-```
-src/
-  main.rs              # Binary entry: mode dispatch over the lib (clap)
-  lib.rs               # Library root
-  cli.rs               # CLI argument definitions and validators
-  config.rs            # Configuration + PATTERN_REGISTRY
-  ingest.rs            # Shared input contract: limits, escapes, fail-on-pattern
-  normalize.rs         # Pattern normalization + similarity matching
-  folder/              # Core folding engine (parallel via rayon)
-    mod.rs             #   grouping, rollups, PII masking
-    render.rs          #   all output modes: text, markdown, JSONL, summary, stats
-  patterns/            # 16 pattern detectors (timestamp, email, hash, network, ...)
-    timestamp/         # Unified timestamp detection (42 formats, one scored table)
-```
+## The truth layer
 
-**How folding works**: Lines are normalized (variable parts replaced with tokens like `<IP>`, `<TIMESTAMP>`, `<UUID>`), then grouped by similarity. Groups of 3+ similar lines are collapsed to a representative line + count.
+These define correct behaviour. Add to them; never weaken them.
 
-**Parallel processing**: When threads > 1 (default), lines are batched (10,000 at a time), normalized in parallel via rayon, then clustered sequentially.
+- `tests/fixtures/fold_regressions.log` — `##CASE` blocks driven through the
+  real binary. Every defect a corpus study finds becomes a `##CASE` with
+  invented lines (never copied from a corpus). A new `##CASE` must fail on the
+  baseline binary — `make gate` checks — unless its header says
+  `holds-on-base`, which declares it a guard of existing behaviour.
+  <!-- scar lessence-yuq: five tests that could not fail, one asserting second_run <= first_run*3 -->
+- `tests/integration/test_constitutional_compliance.rs` — owned-shape gates:
+  each tolerated near-miss names its bead; the tables only shrink.
+  <!-- scar: kubelet cap 700 -> 1000 proposed instead of a fix; caps replaced by owned shapes -->
+- `examples/distilled/*.log` (gitignored, scrubbed) — the corpora every gate
+  runs on: every shape of the originals, none of the repetition. The
+  originals in `examples/originals/` are raw material only — studied once,
+  distilled by `make distill`, never read by a gate. A gate fails loudly when
+  a distilled corpus is missing; no test passes by absence.
 
-## Key Flags
+The commit-msg hook refuses a commit that removes or edits an existing
+`##CASE` header, demotes a `##CASE` to `##TODO`, or grows a `known` table,
+unless the message carries `Truth-Layer-Change: <bead> <reason>`.
 
-```
---fit (--human)             One screen overview — no scrolling, stays visible
---summary                  One-line-per-pattern frequency overview (use with --top N)
---preflight                JSON analysis report to stdout (for automation/CI)
---essence                  Remove timestamps for pure content analysis
---threads N                Thread count (default: auto, use 1 for single-threaded)
---format text|markdown     Output format (default: text)
--q, --quiet                Suppress statistics footer (alias: --no-stats)
---stats-json               Emit JSON statistics to stderr
---top N                    Show only N most frequent patterns, sorted by count
---fail-on-pattern REGEX    Exit 1 if any input line matches (for CI gating)
---completions SHELL        Generate shell completions (bash/zsh/fish/elvish/powershell)
---disable-patterns X,Y     Disable specific pattern detectors
---threshold 83             Similarity percentage (0-100)
---min-collapse 3           Minimum lines before folding (min: 3)
---sanitize-pii             Mask emails and credential-class values (key assignments, JWTs, provider keys)
---preserve-color           Keep ANSI codes
-```
+## Evidence
 
-Valid pattern names (15): `timestamp`, `hash`, `network`, `uuid`, `email`, `path`, `duration`, `json`, `kubernetes`, `http-status`, `brackets`, `key-value`, `process`, `quoted-string`, `name`
+A claim about behaviour or speed points at a file a script wrote, or it is
+not a claim.
 
-## Design Principles
+| Claim | Evidence |
+|---|---|
+| tests pass | `make ci` exit 0 in this session |
+| output unchanged, or changed on purpose | `gate.json` → `golden[]`: templates added / removed / recounted, per distilled corpus |
+| not slower | `gate.json` → `perf.delta_pct`: `instructions:u` on distilled kubelet, single thread, one pinned P-core; threshold +1% |
+| a new test can fail | `gate.json` → `cases.new_failing_on_base` |
+| mutation score | `mutants.out/outcomes.json` from `make release-check` |
 
-- **Zero data loss** — 100% of unique information preserved. Only repetitive patterns are compressed.
-- **Parallel by default** — must outperform single-thread on multi-core systems.
-- **Complete coverage** — all pattern types fully implemented. No subset shortcuts.
-- **Security** — all regex patterns resist ReDoS. Input validation enforced. PII sanitization available. Security overhead < 5%.
-- **CLI pipeline tool** — stdin/stdout, non-destructive, Unix composable.
-- **Test-first** — if it's not tested, it's not done.
-- **Performance is release-gated by real corpora** — any change touching the
-  similarity code in `src/normalize.rs` or the clustering in `src/folder/`
-  MUST be benchmarked on the six `examples/` corpora (smallest first,
-  `taskset -c 0-13`, 3 runs, foreground) against the previous release binary
-  (`~/.cargo/bin/lessence`) before it is committed, and the fold output must
-  be byte-identical (or every diff explained). Synthetic benchmarks do not
-  count — the 0.4.4 regression showed "15%" synthetic and 2–4× real. Any
-  regression, however small, is presented to the owner; never self-approved.
+Not evidence: synthetic inputs, wall-clock numbers, a baseline binary you
+supplied yourself, a number quoted from memory.
+<!-- scar 349493a: a 1M-line synthetic benchmark showed +15%; the real journal went 20 s -> 6 min (0.4.4) -->
+<!-- scar: a musl release binary compared against a local glibc build; the allocator was the "win" -->
+
+Before reporting, audit each claim against a tool result from this session.
+Report in four parts: **DONE** (what changed, in user terms), **PROOF**
+(gate.json numbers, commit hashes), **SCOPE** (what was not touched),
+**NOT VERIFIED** (anything without a tool result — say so plainly).
 
 ## Commits
 
-Conventional commits drive release notes via release-please. The commit type
-controls what appears in the changelog — choose carefully:
-
-- `feat:` / `fix:` / `perf:` — **user-facing** changes. These appear in release notes.
-- `test:` / `refactor:` / `style:` — **internal** changes. Hidden from release notes.
-- `chore:` / `docs:` / `ci:` / `build:` — **infrastructure**. Hidden from release notes.
-
-The first line of the commit message becomes the changelog entry. Write it for
-users, not developers: "default cap of 30 patterns in --summary mode" is better
-than "add DEFAULT_SUMMARY_CAP constant to finish_summary".
+Conventional commits drive release notes via release-please. `feat:` / `fix:`
+/ `perf:` are user-facing and appear in the changelog — write the first line
+for users ("default cap of 30 patterns in --summary mode", not "add
+DEFAULT_SUMMARY_CAP"). `test:` / `refactor:` / `style:` / `chore:` / `docs:` /
+`ci:` / `build:` are hidden. `RELEASE_COMMIT=1` for `feat:`/`fix:`/`perf:`.
+Commit before risky operations. Before `git add`, check `git check-ignore`.
 
 ## Safety
 
-- Commit before risky operations (`git add . && git commit -m "protect work"`)
-- Never run destructive git commands without asking
-- Never create planning/scratch files inside the project tree — use /tmp or keep it in conversation
-- Before `git add`, verify files aren't matched by .gitignore (`git check-ignore <path>`)
+- Never run destructive git commands without asking; never push (pushing
+  main triggers the release train — the owner pushes).
+- Never create planning or scratch files inside the project tree.
+- Corpora are scrubbed by invention before they land in `examples/`; nothing
+  unscrubbed is ever on disk in the tree.
 
 ## Skills
 
-Project-specific skills in `.claude/skills/` load on demand:
-- **testing** — test commands, security testing, ReDoS patterns
-- **pattern-dev** — detection order, adding new patterns, normalization internals
-- **release** — versioning, changelog, publishing workflow
+`.claude/skills/`: **testing** (test commands, ReDoS patterns),
+**pattern-dev** (detector order, adding a pattern, normalization internals),
+**release** (versioning, changelog, publishing), **lessence** (how an agent
+uses the tool — keep it in sync with every user-facing change).

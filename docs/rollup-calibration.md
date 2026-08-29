@@ -17,7 +17,7 @@ tag v0.4.5 if the corpus changes or pattern detectors are revised).
 ## Methodology
 
 The harness runs across the Tier 1 + Tier 2 + Tier 3 corpus
-(`examples/*.log`), re-normalises each line via `Normalizer`, groups by
+(`examples/originals/*.log`), re-normalises each line via `Normalizer`, groups by
 exact normalized template, and records the number of distinct values
 per token type per group. This is an approximation of the true
 PatternFolder clustering (which uses byte-level similarity, not exact
