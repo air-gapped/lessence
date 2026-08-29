@@ -60,9 +60,18 @@ static SOURCE_LINE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Failed to compile source line regex")
 });
 
-// CLI flags pattern (like --flag-name or -f)
+// A syslog program tag written as a path: `/usr/libexec/xdg-desktop-portal[997798]:`.
+static SYSLOG_PATH_TAG: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(/[A-Za-z0-9_./~-]+)\[\d+\]:").expect("Failed to compile syslog path tag regex")
+});
+
+// CLI flags: `--flag-name` or a one-letter `-f`. A single dash before a
+// word — sentinel's `-sdown`, Go's `-namespace` — is a sign or a word, not
+// a flag; read as one, `+sdown` and `-sdown` became one <FLAG> and the
+// polarity of a failover vanished from the line.
 static CLI_FLAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\s--?[a-zA-Z][a-zA-Z0-9\-_]*").expect("Failed to compile CLI flag regex")
+    Regex::new(r"\s(?:--[a-zA-Z][a-zA-Z0-9\-_]*|-[a-zA-Z]\b)")
+        .expect("Failed to compile CLI flag regex")
 });
 
 // JSON-like structures and embedded objects
@@ -82,6 +91,7 @@ impl PathDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
+        let tag = Self::syslog_tag_range(text);
 
         // Replace Event objects first (they're more specific)
         result = EVENT_OBJECT
@@ -149,6 +159,7 @@ impl PathDetector {
                 let path = caps.get(1).unwrap().as_str();
                 if Self::is_likely_file_path(path)
                     && !Self::is_glued_to_word(&result, &caps.get(0).unwrap())
+                    && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
                 {
                     tokens.push(Token::Path(path.to_string()));
                     "<PATH>".to_string()
@@ -161,7 +172,7 @@ impl PathDetector {
         if result.contains('/') {
             let folded = RELATIVE_PATH.replace_all(&result, |caps: &regex::Captures| {
                 let m = caps.get(0).unwrap();
-                if Self::is_relative_path(&result, &m) {
+                if Self::is_relative_path(&result, &m) && !Self::in_syslog_tag(tag, &m) {
                     tokens.push(Token::Path(m.as_str().to_string()));
                     "<PATH>".to_string()
                 } else {
@@ -188,6 +199,7 @@ impl PathDetector {
                 let path = caps.get(1).unwrap().as_str();
                 if Self::is_likely_url_path(path)
                     && !Self::is_glued_to_word(&result, &caps.get(0).unwrap())
+                    && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
                 {
                     let normalized = Self::normalize_url_path(path);
                     tokens.push(Token::Path(path.to_string()));
@@ -231,6 +243,20 @@ impl PathDetector {
     /// a Postgres LSN `6E/F9009520`, a label key `kubernetes.io/cpu-cpuid.X87`,
     /// an image `docker.io/library/nginx`, a source file `internal/pkg/x.go`.
     /// None of them is a path.
+    /// `/usr/libexec/xdg-desktop-portal[997798]:` — a path where a syslog
+    /// program name goes is the program's name, an identity, not a path.
+    /// The byte range of such a tag, if the line carries one, so that no
+    /// path pass takes it or a piece of it.
+    fn syslog_tag_range(text: &str) -> Option<(usize, usize)> {
+        let caps = SYSLOG_PATH_TAG.captures(text)?;
+        let m = caps.get(1)?;
+        Some((m.start(), m.end()))
+    }
+
+    fn in_syslog_tag(tag: Option<(usize, usize)>, m: &regex::Match) -> bool {
+        tag.is_some_and(|(s, e)| m.start() < e && m.end() > s)
+    }
+
     fn is_glued_to_word(haystack: &str, m: &regex::Match) -> bool {
         m.start() > 0 && haystack.as_bytes()[m.start() - 1].is_ascii_alphanumeric()
     }
@@ -749,5 +775,36 @@ mod tests {
             let (r, _) = PathDetector::detect_and_replace(input);
             assert_eq!(r, expected, "input: {input}");
         }
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn a_single_dash_before_a_word_is_not_a_flag() {
+        let (r, _) = PathDetector::detect_and_replace("x # -sdown master mymaster y");
+        assert_eq!(r, "x # -sdown master mymaster y");
+        let (r, _) =
+            PathDetector::detect_and_replace("run --namespace kube-system -n foo -namespace bar");
+        assert_eq!(r, "run <FLAG> kube-system <FLAG> foo -namespace bar");
+    }
+
+    #[test]
+    fn a_syslog_program_tag_written_as_a_path_stays_whole() {
+        let (r, t) = PathDetector::detect_and_replace(
+            "fedora /usr/libexec/xdg-desktop-portal[997790]: Could not fstatat ns/pid: Not a directory",
+        );
+        assert_eq!(
+            r,
+            "fedora /usr/libexec/xdg-desktop-portal[997790]: Could not fstatat ns/pid: Not a directory"
+        );
+        assert!(
+            !t.iter()
+                .any(|t| matches!(t, Token::Path(p) if p.contains("libexec")))
+        );
+        let (r, _) = PathDetector::detect_and_replace("x /usr/libexec/xdg-desktop-portal y");
+        assert_eq!(r, "x <PATH> y");
     }
 }

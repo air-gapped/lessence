@@ -400,6 +400,50 @@ impl NetworkDetector {
     /// to be a known TLD. Deliberately no "lowercase multi-label" fallback:
     /// Java package names are lowercase dotted and would all match.
     fn is_likely_fqdn(s: &str) -> bool {
+        // `daemon.info`, `kern.warn`, `authpriv.notice`: the syslog
+        // facility.level field, a closed set on both sides (RFC 5424), on
+        // every line a BusyBox or macOS syslogd writes.
+        if let Some((facility, level)) = s.split_once('.')
+            && !level.contains('.')
+            && matches!(
+                facility,
+                "kern"
+                    | "user"
+                    | "mail"
+                    | "daemon"
+                    | "auth"
+                    | "syslog"
+                    | "lpr"
+                    | "news"
+                    | "uucp"
+                    | "cron"
+                    | "authpriv"
+                    | "ftp"
+                    | "local0"
+                    | "local1"
+                    | "local2"
+                    | "local3"
+                    | "local4"
+                    | "local5"
+                    | "local6"
+                    | "local7"
+            )
+            && matches!(
+                level,
+                "emerg"
+                    | "alert"
+                    | "crit"
+                    | "err"
+                    | "error"
+                    | "warning"
+                    | "warn"
+                    | "notice"
+                    | "info"
+                    | "debug"
+            )
+        {
+            return false;
+        }
         const COMMON_TLDS: &[&str] = &[
             "com",
             "net",
@@ -1332,5 +1376,31 @@ mod tests {
         );
         assert_eq!(r, "package (0.8.10.3) at <IP> and <IP>");
         assert_eq!(t.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn the_syslog_facility_level_is_not_a_domain() {
+        for line in [
+            "USWProHD24 syslog.info syslogd started",
+            "USW16PoE daemon.err mcad: x",
+            "x authpriv.notice y",
+            "x local7.debug y",
+        ] {
+            let (r, t) = NetworkDetector::detect_and_replace(line, true, true, true);
+            assert_eq!(r, line, "{line}");
+            assert!(t.is_empty(), "{line}");
+        }
+        let (r, _) = NetworkDetector::detect_and_replace(
+            "creating proc entry for system.info",
+            true,
+            true,
+            true,
+        );
+        assert_eq!(r, "creating proc entry for <FQDN>");
     }
 }

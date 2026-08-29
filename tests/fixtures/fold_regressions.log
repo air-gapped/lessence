@@ -807,7 +807,7 @@ Trace[1310679091]: ---"Objects streamed" count:26 30030ms (01:12:26.302)
 {"level":"warn","ts":"2026-08-29T01:11:50.015766Z","caller":"txn/util.go:93","msg":"apply request took too long","took":"4.933661554s","expected-duration":"100ms","prefix":"read-only range ","request":"key:\"rke2/apiaddresses\" ","response":"range_response_count:1 size:107"}
 {"level":"info","msg":"[ workqueue ] [call] run task[memoryMonitor] with args=&{Threshold:90}","time":"2026-08-11T00:31:25+02:00"}
 
-##CASE lessence-a8t template_present=<TIMESTAMP> <FQDN> hostapd[<PID>]:
+##CASE lessence-a8t template_present=<TIMESTAMP> daemon.info hostapd[<PID>]:
 ##WHY asctime (weekday, month, day, time, year) is one timestamp; the weekday used to stay literal and every event split by day
 ##FROM an access point's messages log (scrubbed)
 Sat Aug 29 08:40:15 2026 daemon.info hostapd[10691]: wifi0ap1: STA ca:bc:5a:b3:2e:b8 IEEE 802.11: disassociated
@@ -839,3 +839,48 @@ Aug 26 09:24:57 gasida chrony-gps-toff[5097]: 2026-08-26 09:24:57,058 INFO GPS m
 Aug 26 09:24:59 gasida chrony-gps-toff[5097]: 2026-08-26 09:24:59,071 INFO GPS mode 2 -> 3
 Aug 26 11:39:28 gasida chrony-gps-toff[5097]: 2026-08-26 11:39:28,040 INFO GPS mode 3 -> 1
 Aug 26 11:39:30 gasida chrony-gps-toff[5097]: 2026-08-26 11:39:30,065 INFO GPS mode 1 -> 3
+
+##CASE lessence-a8t template_absent=<PID>
+##WHY a bracketed number is a pid only in a syslog tag, a leading bracket or a pid= field; slot[2], sta_cnt[5], GENPLL[5], round[1], disk[0] and FWLOG: [N] are indices and counts
+##FROM switch, access point, harbor and NAS logs (scrubbed)
+[1829954.042457] rai0: total mc2uc sta_cnt[5] pending[0] unknown_free[0] accu[0] !
+[    0.060000] GENPLL[5] mdiv=40 rate=2000000000
+[   23.169804] got SATA disk[0]
+[5883842.689614] [wifi1] FWLOG: [119464107] WAL_DBGID_SECURITY_UCAST_KEY_SET ( 0x0, 0xbc9f67bd )
+[   74.201712] IPVS: Creating netns size=2104 id=0
+
+##CASE lessence-a8t template_present=cfgmtd[<PID>]: cfgmtd.cfgmtd_do_write(): Phase1: Write new cfg to slot[2]
+##WHY the real pid in the tag is a pid; the slot index beside it is not
+##FROM a switch messages log (scrubbed)
+Aug 25 02:29:42 USWProHD24 user.info : cfgmtd[1591]: cfgmtd.cfgmtd_do_write(): Phase1: Write new cfg to slot[2] as BACKUP
+
+##CASE lessence-a8t template_present=# -sdown master
+##WHY a single dash before a word is a sign, not a flag; +sdown and -sdown are opposite facts
+##FROM a redis sentinel log (scrubbed)
+[pod/redis-sentinel-gitlab-node-0/sentinel] 1:X 29 Aug 2026 01:11:47.982 # -sdown master mymaster redis-sentinel-gitlab-node-2.redis-sentinel-gitlab-headless.hicegu-lusup.svc.cluster.local 6379
+
+##CASE lessence-a8t template_present=ssh-ed25519 key
+##WHY letters then digits is a designator, not a generated suffix
+##FROM a switch messages log (scrubbed)
+Aug 28 10:10:08 Atetaganipo authpriv.info dropbear[4020]: Pubkey auth succeeded for 'tigolu' with ssh-ed25519 key SHA256:Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE from 10.34.231.9:47670
+
+##CASE lessence-a8t template_present=<ADDR>.mailbox
+##WHY a device-tree node address is the same value the kernel prints as 0x…, and an address in both forms
+##FROM the Raspberry Pi dmesg (scrubbed)
+[    0.028586] bcm2835-mbox 3f00b880.mailbox: mailbox enabled
+
+##CASE lessence-a8t template_absent=<UUID>
+##WHY the word request followed by a colon, a space and a plain word is a sentence, not a request id
+##FROM the kube-controller-manager (scrubbed)
+[pod/kube-controller-manager-uk/kube-controller-manager] E0829 01:11:43.181495       1 webhook.go:154] Failed to make webhook authenticator request: tokenreviews.authentication.k8s.io is forbidden: User "system:kube-controller-manager" cannot create resource "tokenreviews" in API group "authentication.k8s.io" at the cluster scope
+
+##CASE lessence-a8t template_present=/usr/libexec/xdg-desktop-portal[<PID>]:
+##WHY a path where the syslog program name goes is the program's name, an identity, not a path
+##FROM the Fedora user journal (scrubbed)
+2026-08-26T09:19:07+02:00 fedora /usr/libexec/xdg-desktop-portal[997790]: Realtime error: Could not get pidns for pid 997790: Could not fstatat ns/pid: Not a directory
+2026-08-26T09:19:07+02:00 fedora /usr/libexec/xdg-desktop-portal[997798]: Realtime error: Could not get pidns for pid 997798: Could not fstatat ns/pid: Not a directory
+
+##CASE lessence-a8t template_present=daemon.err mcad:
+##WHY the syslog facility.level field is a closed set on both sides, not a domain
+##FROM a switch messages log (scrubbed)
+Aug 29 03:10:07 USW16PoE daemon.err mcad: mcad[459]: ace_reporter.reporter_fail(): inform failed #2 (last inform: 58 seconds ago), rc=3

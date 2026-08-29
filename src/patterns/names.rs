@@ -132,6 +132,19 @@ impl NameDetector {
             return true;
         }
 
+        // Letters then digits and nothing else — `ed25519`, `sha256`,
+        // `ipv6` — is a designator, a word with a number in it, not a
+        // generated suffix (the hash detector draws the same line). A
+        // designator has a vowel in it; a generated chunk (`tsd92`,
+        // `mrgp8`) is drawn from an alphabet without one.
+        let letters = suffix.bytes().take_while(u8::is_ascii_alphabetic).count();
+        if letters >= 2
+            && suffix.bytes().skip(letters).all(|b| b.is_ascii_digit())
+            && !Self::is_k8s_rand(suffix)
+        {
+            return false;
+        }
+
         let has_letters = suffix.chars().any(char::is_alphabetic);
         let has_numbers = suffix.chars().any(char::is_numeric);
         let all_lowercase = suffix.chars().all(|c| c.is_lowercase() || c.is_numeric());
@@ -302,5 +315,24 @@ mod tests {
     #[test]
     fn variable_suffix_boundary_5_chars() {
         assert!(NameDetector::is_variable_suffix("", "ab1c2")); // exactly 5 — accepted
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn letters_then_digits_is_a_designator_not_a_suffix() {
+        for line in [
+            "with ssh-ed25519 key",
+            "cipher aes-sha256 x",
+            "proto tcp-ipv6 y",
+        ] {
+            let (r, _) = NameDetector::detect_and_replace(line);
+            assert_eq!(r, line, "{line}");
+        }
+        let (r, _) = NameDetector::detect_and_replace("pod api-deploy-7d9f8b6c5 x");
+        assert!(r.contains("<SUFFIX>"), "{r}");
     }
 }

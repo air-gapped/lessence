@@ -2,9 +2,14 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// PID patterns: [12345], pid=12345, (12345)
-static PID_BRACKET_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[pid=(\d+)\]|\[(\d+)\]").unwrap());
+// A pid in brackets: the syslog tag `sshd[1234]:`, a line-leading `[1234]`,
+// or an explicit `[pid=1234]`. Any other `word[N]` — `slot[2]`, `sta_cnt[5]`,
+// `GENPLL[5]`, `round[1]`, `disk[0]`, `Total BSS[35]`, `FWLOG: [119464107]`
+// — is an index or a count and stays what it is.
+static PID_TAG_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"([A-Za-z0-9_./-])\[(\d+)\]:").unwrap());
+static PID_LEADING_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(\d+)\]").unwrap());
+static PID_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[pid=(\d+)\]").unwrap());
 static PID_EQUALS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpid=(\d+)\b").unwrap());
 // Requires a process name attached to the parens — sshd(1234), nginx(42) —
 // so free-standing counts like "retry attempt (3)" are left alone.
@@ -18,9 +23,6 @@ static TID_HEX_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\btid=(0x[a-fA-F0-9]+)\b").unwrap());
 static THREAD_NAME_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[thread:([a-zA-Z0-9_-]+)\]").unwrap());
-
-// Generic numeric ID in various contexts
-static NUMERIC_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bid=(\d+)\b").unwrap());
 
 // The klog header's pid column: `E0910 00:02:39.914326       1 status.go:71]`.
 // By the time this runs the timestamp and the call site are placeholders;
@@ -45,29 +47,22 @@ impl ProcessDetector {
             });
         }
 
-        // PID in brackets like [pid=12345] or [12345]
-        for cap in PID_BRACKET_REGEX.captures_iter(text) {
-            if let Some(pid_match) = cap.get(1).or_else(|| cap.get(2)) {
-                let pid_str = pid_match.as_str();
-                if let Ok(pid) = pid_str.parse::<u32>()
+        // A placeholder replaces the number and nothing else: `sshd[1234]:`
+        // becomes `sshd[<PID>]:`; only an input that said `pid=` keeps it.
+        for (regex, group, form) in [
+            (&*PID_TAG_REGEX, 2, "${1}[<PID>]:"),
+            (&*PID_LEADING_REGEX, 1, "[<PID>]"),
+            (&*PID_FIELD_REGEX, 1, "[pid=<PID>]"),
+        ] {
+            for cap in regex.captures_iter(&result) {
+                if let Ok(pid) = cap[group].parse::<u32>()
                     && Self::is_likely_pid(pid)
                 {
                     tokens.push(Token::Pid(pid));
                 }
             }
+            result = regex.replace_all(&result, form).to_string();
         }
-        // A placeholder replaces the number and nothing else: `[1234]` becomes
-        // `[<PID>]`; only an input that said `pid=` keeps saying it.
-        result = PID_BRACKET_REGEX
-            .replace_all(&result, |caps: &regex::Captures| {
-                if caps.get(1).is_some() {
-                    "[pid=<PID>]"
-                } else {
-                    "[<PID>]"
-                }
-                .to_string()
-            })
-            .to_string();
 
         // PID with equals like pid=12345
         for cap in PID_EQUALS_REGEX.captures_iter(&result) {
@@ -106,22 +101,6 @@ impl ProcessDetector {
         }
         result = THREAD_NAME_REGEX
             .replace_all(&result, "[thread:<TID>]")
-            .to_string();
-
-        // Generic numeric IDs
-        for cap in NUMERIC_ID_REGEX.captures_iter(&result) {
-            let id_str = cap.get(1).unwrap().as_str();
-            if let Ok(id) = id_str.parse::<u32>()
-                && Self::is_likely_pid(id)
-                && !tokens
-                    .iter()
-                    .any(|t| matches!(t, Token::Pid(p) if *p == id))
-            {
-                tokens.push(Token::Pid(id));
-            }
-        }
-        result = NUMERIC_ID_REGEX
-            .replace_all(&result, "id=<PID>")
             .to_string();
 
         // Handle process(1234)-style PIDs. The token push and the text
@@ -319,5 +298,38 @@ mod tests {
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
         assert_eq!(result, text);
         assert!(tokens.is_empty(), "no PID tokens expected, got {tokens:?}");
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn a_pid_is_a_tag_a_leading_bracket_or_a_field_and_nothing_else() {
+        let (r, t) = ProcessDetector::detect_and_replace(
+            "cfgmtd[1591]: cfgmtd_do_write(): Write new cfg to slot[2] as BACKUP",
+        );
+        assert_eq!(
+            r,
+            "cfgmtd[<PID>]: cfgmtd_do_write(): Write new cfg to slot[2] as BACKUP"
+        );
+        assert_eq!(t.len(), 1);
+        for line in [
+            "rai0: total mc2uc sta_cnt[5] pending[0] unknown_free[0] accu[0] !",
+            "GENPLL[5] mdiv=40",
+            "got SATA disk[0]",
+            "FWLOG: [119464107] WAL_DBGID_DEV_RESET",
+            "IPVS: Creating netns size=2104 id=0",
+            "MASTER MODE enabled (user request from 'id=10 addr=x')",
+        ] {
+            let (r, t) = ProcessDetector::detect_and_replace(line);
+            assert_eq!(r, line, "{line}");
+            assert!(t.is_empty(), "{line}");
+        }
+        let (r, _) = ProcessDetector::detect_and_replace("[12345] Error occurred");
+        assert_eq!(r, "[<PID>] Error occurred");
+        let (r, _) = ProcessDetector::detect_and_replace("x [pid=12345] y");
+        assert_eq!(r, "x [pid=<PID>] y");
     }
 }

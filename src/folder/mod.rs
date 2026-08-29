@@ -959,16 +959,28 @@ pub(super) fn align_words(left: &[&str], right: &[&str]) -> Option<Vec<Option<us
     Some(out)
 }
 
-/// Where a template word and the member's aligned word share a field name —
-/// `msg=Connecting` / `msg=Connected`, `"NodeName":"a"` / `"NodeName":"b"` —
-/// the length of that `key=` / `"key":` prefix, so only the value varies.
-fn shared_key_prefix(r: &str, w: &str) -> usize {
-    let common = r.bytes().zip(w.bytes()).take_while(|(x, y)| x == y).count();
+/// Where a template unit and the member's aligned unit share a field name
+/// or a bracket — `msg=Connecting` / `msg=Connected`, `"NodeName":"a"` /
+/// `"NodeName":"b"`, `slot[1]` / `slot[2]` — the lengths of that shared
+/// prefix (up to the last `=` `:` `[` `(`) and of the shared closing
+/// brackets, so only the value between them varies.
+fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
+    let (rb, wb) = (r.as_bytes(), w.as_bytes());
+    let common = rb.iter().zip(wb).take_while(|(x, y)| x == y).count();
     let common = common.min(r.len() - 1).min(w.len() - 1);
-    r.as_bytes()[..common]
+    let prefix = rb[..common]
         .iter()
-        .rposition(|&b| b == b'=' || b == b':')
-        .map_or(0, |i| i + 1)
+        .rposition(|&b| matches!(b, b'=' | b':' | b'[' | b'('))
+        .map_or(0, |i| i + 1);
+    let mut suffix = 0;
+    while prefix + suffix + 1 < rb.len()
+        && prefix + suffix + 1 < wb.len()
+        && rb[rb.len() - 1 - suffix] == wb[wb.len() - 1 - suffix]
+        && matches!(rb[rb.len() - 1 - suffix], b']' | b')')
+    {
+        suffix += 1;
+    }
+    (prefix, suffix)
 }
 
 /// The template spans a member turns into `<VARIES>`: every aligned pair
@@ -996,8 +1008,8 @@ fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
         match aligned[i] {
             Some(j) if mem[j] == r => {}
             Some(j) => {
-                let k = shared_key_prefix(r, mem[j]);
-                edits.push((at + k, len - k));
+                let (p, q) = shared_affixes(r, mem[j]);
+                edits.push((at + p, len - p - q));
             }
             None => edits.push((at, len)),
         }
@@ -1040,12 +1052,16 @@ fn field_value(w: &str) -> Option<&str> {
 /// likes. Everything else is a word of the sentence.
 fn data_shaped(w: &str) -> bool {
     let w = w
-        .trim_start_matches(['+', '-', '(', '['])
-        .trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']']);
+        .trim_start_matches(['+', '-'])
+        .trim_end_matches(['.', ',', ';', ':', '!', '?']);
     let Some(v) = field_value(w) else {
         return true;
     };
-    (v.len() >= 2 && v.starts_with('"') && v.ends_with('"'))
+    // a bracketed value — `volumes=[valkey-data]`, `(6/0)` — is a value
+    let bracketed =
+        (v.starts_with('[') && v.ends_with(']')) || (v.starts_with('(') && v.ends_with(')'));
+    bracketed
+        || (v.len() >= 2 && v.starts_with('"') && v.ends_with('"'))
         || v.bytes()
             .any(|b| matches!(b, b'/' | b'.' | b'*' | b'<' | b'>' | b'\\' | b'@' | b'='))
 }
@@ -1056,30 +1072,38 @@ fn data_shaped(w: &str) -> bool {
 /// spans into `s`, each covering the words of the unit and the spaces
 /// between them.
 pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
+    /// A quoted string of more words than this is a sentence — the event's
+    /// own words, each its own unit — not a value with spaces in it.
+    const VALUE_WORDS: usize = 3;
     let mut units: Vec<(usize, usize)> = Vec::with_capacity(16);
-    let mut open: Option<usize> = None;
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    let close = |units: &mut Vec<(usize, usize)>, open: &mut Vec<(usize, usize)>| {
+        if open.len() <= VALUE_WORDS {
+            let (start, _) = open[0];
+            let (at, len) = open[open.len() - 1];
+            units.push((start, at + len - start));
+        } else {
+            units.extend(open.iter().copied());
+        }
+        open.clear();
+    };
     for (at, len) in word_spans(s) {
         let quotes = s[at..at + len].bytes().filter(|&b| b == b'"').count();
-        match open {
-            Some(start) => {
-                if quotes % 2 == 1 {
-                    units.push((start, at + len - start));
-                    open = None;
-                }
+        if open.is_empty() {
+            if quotes % 2 == 1 {
+                open.push((at, len));
+            } else {
+                units.push((at, len));
             }
-            None => {
-                if quotes % 2 == 1 {
-                    open = Some(at);
-                } else {
-                    units.push((at, len));
-                }
+        } else {
+            open.push((at, len));
+            if quotes % 2 == 1 {
+                close(&mut units, &mut open);
             }
         }
     }
-    if let Some(start) = open
-        && let Some(&(at, len)) = word_spans(s).collect::<Vec<_>>().last()
-    {
-        units.push((start, at + len - start));
+    if !open.is_empty() {
+        close(&mut units, &mut open);
     }
     units
 }
@@ -1124,7 +1148,14 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
         }
         d
     };
-    let lone_unit = |u: &str| u.split_whitespace().any(lone);
+    // A word one line has and the other lacks is a new sentence word only
+    // if the other line has it nowhere: a list that grew by one entry
+    // (`partial failures: [a: … cache], [b: … cache]`) repeats words the
+    // shorter line already carries.
+    let lone_unit = |u: &str, other: &[&str]| {
+        u.split_whitespace()
+            .any(|w| lone(w) && !other.iter().any(|o| o.split_whitespace().any(|x| x == w)))
+    };
     let mut matched_b = vec![false; ub.len()];
     let mut diffs = 0;
     for (i, &x) in ua.iter().enumerate() {
@@ -1135,14 +1166,14 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
                     diffs += unit_diffs(x, ub[j]);
                 }
             }
-            None if lone_unit(x) => diffs += 1,
+            None if lone_unit(x, &ub) => diffs += 1,
             None => {}
         }
     }
     diffs
         + ub.iter()
             .zip(&matched_b)
-            .filter(|(u, m)| !**m && lone_unit(u))
+            .filter(|(u, m)| !**m && lone_unit(u, &ua))
             .count()
 }
 
@@ -1408,10 +1439,13 @@ impl RollupComputer {
             .into_iter()
             .map(|(at, len)| &template[at..at + len])
             .collect();
-        let slots: Vec<(usize, usize)> = tmpl_words
+        let slots: Vec<(usize, usize, usize)> = tmpl_words
             .iter()
             .enumerate()
-            .filter_map(|(i, w)| w.find(VARIES_MARK).map(|k| (i, k)))
+            .filter_map(|(i, w)| {
+                w.find(VARIES_MARK)
+                    .map(|k| (i, k, w.len() - k - VARIES_MARK.len()))
+            })
             .collect();
         let mut varies: HashMap<String, usize> = HashMap::new();
         let mut varies_capped = false;
@@ -1424,7 +1458,7 @@ impl RollupComputer {
                 let Some(aligned) = align_words(&tmpl_words, &member) else {
                     continue;
                 };
-                for &(i, k) in &slots {
+                for &(i, k, q) in &slots {
                     let masked;
                     let value = match aligned[i] {
                         Some(j) => {
@@ -1435,7 +1469,10 @@ impl RollupComputer {
                                 member[j]
                             };
                             let prefix = &tmpl_words[i][..k];
-                            w.strip_prefix(prefix).unwrap_or(w)
+                            let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
+                            w.strip_prefix(prefix)
+                                .and_then(|v| v.strip_suffix(suffix))
+                                .unwrap_or(w)
                         }
                         None => "∅",
                     };

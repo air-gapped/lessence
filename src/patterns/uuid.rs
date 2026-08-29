@@ -82,13 +82,13 @@ impl UuidDetector {
         // Request IDs
         for cap in REQUEST_ID_REGEX.captures_iter(&result) {
             let req_id = cap.get(1).unwrap().as_str();
-            if Self::is_likely_id(req_id) {
+            if Self::is_likely_id(req_id) && !Self::is_prose(&cap) {
                 tokens.push(Token::Uuid(req_id.to_string()));
             }
         }
         result = REQUEST_ID_REGEX
             .replace_all(&result, |caps: &regex::Captures| {
-                if Self::is_likely_id(&caps[1]) {
+                if Self::is_likely_id(&caps[1]) && !Self::is_prose(caps) {
                     Self::keep_prefix(caps)
                 } else {
                     caps[0].to_string()
@@ -143,6 +143,16 @@ impl UuidDetector {
         let has_numbers = text.chars().any(char::is_numeric);
 
         has_letters || has_numbers
+    }
+
+    /// `request: tokenreviews` — the word `request` followed by a colon, a
+    /// space and a plain word is a sentence, not a request id. An id sits
+    /// right after its separator or carries a digit.
+    fn is_prose(caps: &regex::Captures) -> bool {
+        let whole = &caps[0];
+        let id = &caps[1];
+        whole[..whole.len() - id.len()].ends_with(' ')
+            && id.bytes().all(|b| b.is_ascii_alphabetic())
     }
 
     #[inline]
@@ -428,5 +438,26 @@ mod tests {
             "container_id=<UUID> trace_id=<UUID> auid=4294967295 node_id=n7"
         );
         assert_eq!(t.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn request_followed_by_a_word_in_prose_is_not_a_request_id() {
+        let (r, t) = UuidDetector::detect_and_replace(
+            "Failed to make webhook authenticator request: tokenreviews is forbidden",
+        );
+        assert_eq!(
+            r,
+            "Failed to make webhook authenticator request: tokenreviews is forbidden"
+        );
+        assert!(t.is_empty());
+        let (r, _) = UuidDetector::detect_and_replace("request=abc123def done");
+        assert_eq!(r, "request=<UUID> done");
+        let (r, _) = UuidDetector::detect_and_replace("request: 5f3a9c1e done");
+        assert_eq!(r, "request: <UUID> done");
     }
 }

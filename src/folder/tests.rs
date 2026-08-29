@@ -2139,7 +2139,11 @@ fn finish_top_n_derives_json_group_completeness() {
     let mut f = make_folder_json();
     for i in 0..4 {
         for _ in 0..(4 - i) {
-            f.process_line(&format!("pattern-{i} event")).unwrap();
+            f.process_line(&format!(
+                "{} event",
+                ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"][i]
+            ))
+            .unwrap();
         }
     }
     let (shown, total, _coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
@@ -2167,7 +2171,11 @@ fn finish_top_n_summary_cap_classifies_omissions() {
     let mut f = make_folder_json();
     for i in 0..3 {
         for _ in 0..(3 - i) {
-            f.process_line(&format!("pattern-{i} event")).unwrap();
+            f.process_line(&format!(
+                "{} event",
+                ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"][i]
+            ))
+            .unwrap();
         }
     }
     let (shown, total, _coverage, fit_truncated) = f.finish_top_n(1, None, true).unwrap();
@@ -5080,4 +5088,61 @@ fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
     let joined = format!("{:?}", r[VARIES].samples);
     assert!(!joined.contains("FIXVALUE"), "{joined}");
     assert!(joined.contains("<SECRET>"), "{joined}");
+}
+
+#[test]
+fn a_quoted_sentence_keeps_its_words_and_a_quoted_name_is_one_slot() {
+    // kubelet: `"… started for volume \"host-sys\" (UniqueName: …) pod \"x\""`
+    // is the event's own sentence; a differing value inside it varies on
+    // its own, the sentence stays. `controller="crt configmap"` is a name.
+    assert_eq!(
+        unit_spans(r#"a "b c" d"#).len(),
+        3,
+        "a two-word quoted value is one unit"
+    );
+    assert_eq!(
+        unit_spans(r#"a "b c d e f" g"#).len(),
+        7,
+        "a five-word quoted string is a sentence"
+    );
+    let mut f = make_folder();
+    for vol in ["xtables-lock", "host-sys", "run-nvidia"] {
+        f.process_line(&format!(
+            r#"I0914 09:34:56.988344  752362 reconciler_common.go:245] "operationExecutor.VerifyControllerAttachedVolume started for volume \"{vol}\" (UniqueName: \"kubernetes.io/host-path/fe082e26-f4ea-4de8-a42e-4c3b91c60916-{vol}\") pod \"gpu-feature-discovery-mrgp8\" (UID: \"fe082e26-f4ea-4de8-a42e-4c3b91c60916\") " pod="gpu-operator/gpu-feature-discovery-mrgp8""#
+        ))
+        .unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let t = f.buffer[0].template();
+    assert!(
+        t.contains("started for volume <VARIES> (UniqueName:"),
+        "{t}"
+    );
+    assert!(
+        t.contains("VerifyControllerAttachedVolume"),
+        "the sentence stays: {t}"
+    );
+}
+
+#[test]
+fn a_token_ending_in_a_small_integer_folds_with_its_siblings() {
+    // usw_messages: `slot[1]` beside `slot[2]`; `id=1` beside `id=2`.
+    let mut f = make_folder();
+    for slot in [1, 2, 1] {
+        f.process_line(&format!(
+            "Aug 25 02:29:46 USW16PoE user.info : cfgmtd[939]: cfgmtd.cfgmtd_do_write(): Phase2: Verify OK on slot[{slot}]"
+        ))
+        .unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    assert!(
+        f.buffer[0]
+            .template()
+            .ends_with("Verify OK on slot[<VARIES>]"),
+        "{}",
+        f.buffer[0].template()
+    );
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].samples, vec!["1", "2"]);
+    assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
 }

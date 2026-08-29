@@ -14,7 +14,7 @@ W0909 13:07:12.237366    3116 transport.go:356] Unable to cancel request for *ot
 W0909 13:21:42.989676    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
 ...
 
-Original: 2,000 lines → 147 lines (92.7% reduction)
+Original: 2,000 lines → 151 lines (92.5% reduction)
 ```
 <!-- gen:example:end -->
 

@@ -16,6 +16,12 @@ static SHA256_REGEX: LazyLock<Regex> =
 static SHA512_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{128}\b").unwrap());
 
+// A device-tree node address: eight hex digits glued to a dotted node
+// name — `3f00b880.mailbox`, `3f200000.gpio` — the same value the kernel
+// also prints as `0x3f200000`, and an address in both forms.
+static DT_ADDR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b([0-9a-f]{8})(\.[a-z])").unwrap());
+
 // Git commit hash: 7-40 hex characters (but not overlapping with above)
 static GIT_HASH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{7,39}\b").unwrap());
@@ -147,6 +153,11 @@ impl HashDetector {
                 })
                 .to_string();
         }
+
+        for cap in DT_ADDR_REGEX.captures_iter(&result) {
+            tokens.push(Token::Number(cap[1].to_string()));
+        }
+        result = DT_ADDR_REGEX.replace_all(&result, "<ADDR>${2}").to_string();
 
         // Git commit hashes (7-39 chars, after longer ones are processed).
         // Require both a digit and a letter: pure digits are numbers
@@ -352,5 +363,31 @@ mod tests {
         // a MAC is six groups, not sixteen
         let (r, _) = HashDetector::detect_and_replace("mac 00:11:22:33:44:55");
         assert_eq!(r, "mac 00:11:22:33:44:55");
+    }
+}
+
+#[cfg(test)]
+mod shapes_2026_08_29 {
+    use super::*;
+
+    #[test]
+    fn a_device_tree_node_address_is_an_address() {
+        let (r, t) = HashDetector::detect_and_replace(
+            "bcm2835-mbox 3f00b880.mailbox: enabled; window base 0x3f200000",
+        );
+        assert_eq!(
+            r,
+            "bcm2835-mbox <ADDR>.mailbox: enabled; window base 0x3f200000"
+        );
+        assert!(matches!(t[0], Token::Number(_)));
+        let (r, _) = HashDetector::detect_and_replace("commit 3f00b880 x");
+        assert_eq!(r, "commit <HASH> x");
+    }
+
+    #[test]
+    fn a_run_of_digits_alone_is_not_a_hash() {
+        let (r, t) = HashDetector::detect_and_replace("time_micros 1787969018585092 job 22162");
+        assert_eq!(r, "time_micros 1787969018585092 job 22162");
+        assert!(t.is_empty());
     }
 }

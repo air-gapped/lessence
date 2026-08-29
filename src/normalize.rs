@@ -11,7 +11,7 @@ use crate::patterns::{
     email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector, is_small_int,
     json::JsonDetector, key_value::KeyValueDetector, kubernetes::KubernetesDetector,
     log_module::LogWithModuleDetector, names::NameDetector, network::NetworkDetector,
-    path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector,
+    path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector, small_int_tail,
     structured::StructuredMessageDetector, timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
 
@@ -662,7 +662,9 @@ impl Normalizer {
             &s1[t1.start as usize..t1.end as usize],
             &s2[t2.start as usize..t2.end as usize],
         );
-        a == b || (is_small_int(a) && is_small_int(b))
+        a == b
+            || (is_small_int(a) && is_small_int(b))
+            || small_int_tail(a).is_some_and(|t| small_int_tail(b) == Some(t))
     }
 
     /// Size of the multiset intersection of two ascending-sorted hash
@@ -1680,7 +1682,7 @@ mod tests {
 
     #[test]
     fn normalize_names_disabled_suppresses_name_tokens() {
-        let input = "service api-deploy-abc123-x1y2 started";
+        let input = "service api-deploy-7d9f8b6c5-x1y2z started";
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_names = false, input);
         assert!(

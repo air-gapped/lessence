@@ -394,13 +394,47 @@ pub(crate) fn is_small_int(tok: &str) -> bool {
     (1..=2).contains(&tok.len()) && tok.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// What the similarity metric hashes for a token. Two small integers hash
-/// alike: `Port 5 link up` and `Port 6 link up` are one shape, and the
-/// shown line says so with `<VARIES>` and the counts of each — the digits
-/// stay literal on the line, they just do not keep it from folding.
+/// A token that ends in a small integer — `id=1`, `rc=3`, `slot[2]`,
+/// `on[2]`, `#2`, `wifi0ap1`, `eth0` — split into what surrounds the
+/// digits: `("slot[", "]")`. Two such tokens with the same surroundings are
+/// one shape to the similarity metric; the digits stay on the line.
+pub(crate) fn small_int_tail(tok: &str) -> Option<(&str, &str)> {
+    let b = tok.as_bytes();
+    let mut end = b.len();
+    if end > 0 && matches!(b[end - 1], b']' | b')') {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && b[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    let digits = end - start;
+    if digits == 0 || digits > 2 || start == 0 {
+        return None;
+    }
+    Some((&tok[..start], &tok[end..]))
+}
+
+/// Hash a token the way the similarity metric sees it. Two small integers
+/// hash alike, and so do two tokens that differ only in a small integer at
+/// their end: `Port 5 link up` and `Port 6 link up` are one shape, `id=1`
+/// and `id=2` too, `slot[1]` and `slot[2]`, and the shown line says so
+/// with `<VARIES>` and the counts of each — the digits stay literal on the
+/// line, they just do not keep it from folding.
 #[inline]
-fn sim_key(tok: &str) -> &str {
-    if is_small_int(tok) { "<d>" } else { tok }
+fn hash_sim_token(tok: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = ahash::AHasher::default();
+    if is_small_int(tok) {
+        "<d>".hash(&mut hasher);
+    } else if let Some((before, after)) = small_int_tail(tok) {
+        before.hash(&mut hasher);
+        "<d>".hash(&mut hasher);
+        after.hash(&mut hasher);
+    } else {
+        tok.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// The words of `s`.
@@ -410,7 +444,6 @@ pub(crate) fn words(s: &str) -> impl Iterator<Item = &str> + '_ {
 
 impl SimTokens {
     fn from_normalized(s: &str) -> Self {
-        use std::hash::{Hash, Hasher};
         if s.len() > u32::MAX as usize {
             return SimTokens::Unbounded;
         }
@@ -420,10 +453,8 @@ impl SimTokens {
                 return Self::overflow_from(s);
             }
             let tok = &s[start..start + len];
-            let mut hasher = ahash::AHasher::default();
-            sim_key(tok).hash(&mut hasher);
             toks.push(SimTok {
-                hash: hasher.finish(),
+                hash: hash_sim_token(tok),
                 start: start as u32,
                 end: (start + len) as u32,
             });
@@ -440,16 +471,13 @@ impl SimTokens {
     /// sorted hashes. Positions are dropped: the multiset comparison does not
     /// use them, and at these sizes they are the bulk of the memory.
     fn overflow_from(s: &str) -> Self {
-        use std::hash::{Hash, Hasher};
         let mut sorted_hashes: Vec<u64> = Vec::with_capacity(MAX_SIMILARITY_TOKENS * 2);
         let mut lead = [0u64; MULTISET_LEAD];
         for tok in words(s) {
             if sorted_hashes.len() == MAX_MULTISET_TOKENS {
                 return SimTokens::Unbounded;
             }
-            let mut hasher = ahash::AHasher::default();
-            sim_key(tok).hash(&mut hasher);
-            let h = hasher.finish();
+            let h = hash_sim_token(tok);
             if sorted_hashes.len() < MULTISET_LEAD {
                 lead[sorted_hashes.len()] = h;
             }
