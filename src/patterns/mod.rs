@@ -78,7 +78,7 @@ pub enum HashType {
 /// share a bucket (IPv4+IPv6, Pid+ThreadID, HttpStatus+HttpStatusClass,
 /// the four kubernetes kinds); the mapping is a per-kind fact here, and
 /// `FoldingStats::bump` in the folder is its one consumer.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum StatsBucket {
     Timestamps,
     Ips,

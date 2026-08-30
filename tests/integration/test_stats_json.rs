@@ -75,7 +75,7 @@ fn test_stats_json_suppresses_human_readable_stats() {
 
     // Stdout should not contain the markdown stats footer
     assert!(
-        !stdout.contains("lessence Compression Report"),
+        !stdout.contains("lessence briefing"),
         "Human stats should not appear on stdout"
     );
     assert!(
@@ -111,11 +111,11 @@ fn test_human_stats_footer_goes_to_stderr_not_stdout() {
 
     // stdout must carry only log output so pipelines stay clean
     assert!(
-        !stdout.contains("lessence Compression Report"),
+        !stdout.contains("lessence briefing"),
         "Stats footer must not pollute stdout, got:\n{stdout}"
     );
     assert!(
-        stderr.contains("lessence Compression Report"),
+        stderr.contains("lessence briefing"),
         "Stats footer should appear on stderr, got:\n{stderr}"
     );
 }

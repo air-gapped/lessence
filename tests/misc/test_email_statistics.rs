@@ -1,6 +1,11 @@
 // Contract Tests for Email Pattern Statistics Tracking
 // Feature: 014-email-not-shown
-// These tests define the expected behavior for email statistics tracking
+// These tests define the expected behavior for email statistics tracking.
+//
+// The stderr report used to be a "Pattern Distribution" markdown table; it
+// is now the orientation briefing's `tokens:` line (lessence-xxz), a
+// comma-separated `class occurrences/distinct` list (lessence-nn3 added the
+// `/distinct` half). These tests were updated to match.
 
 use std::process::Command;
 
@@ -8,7 +13,7 @@ use std::process::Command;
 ///
 /// Given: A log file containing email addresses
 /// When: lessence processes the file
-/// Then: The Pattern Distribution must include an "Email Addresses" row with correct count
+/// Then: The briefing's tokens line must include an "emails" entry with correct count
 #[test]
 fn test_email_statistics_shown_in_report() {
     // Test input with 3 email addresses
@@ -37,32 +42,21 @@ fn test_email_statistics_shown_in_report() {
 
     let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
-    // Verify Pattern Distribution includes Email Addresses row
+    // Verify the tokens line includes an emails entry with the right count
+    // (3 emails in input). A trailing comma or the line's end both close it.
     assert!(
-        stderr_str.contains("Email Addresses"),
-        "Pattern Distribution should include 'Email Addresses' row"
+        stderr_str.contains("emails 3/"),
+        "tokens line should include 'emails 3/', got: {stderr_str}"
     );
 
-    // Verify email count is correct (3 emails in input)
-    assert!(
-        stderr_str.contains("Email Addresses | 3 |") || stderr_str.contains("Email Addresses | 3|"),
-        "Email count should be 3, got: {stderr_str}"
-    );
-
-    // Verify email description is correct
-    assert!(
-        stderr_str.contains("RFC 5322 email addresses, user accounts"),
-        "Email description should be 'RFC 5322 email addresses, user accounts'"
-    );
-
-    println!("✅ Email statistics are shown correctly in Pattern Distribution");
+    println!("✅ Email statistics are shown correctly in the briefing tokens line");
 }
 
 /// Contract 2: Email statistics must be hidden when no emails are detected
 ///
 /// Given: A log file containing NO email addresses
 /// When: lessence processes the file
-/// Then: The Pattern Distribution must NOT include an "Email Addresses" row
+/// Then: The tokens line must NOT include an "emails" entry
 #[test]
 fn test_email_statistics_hidden_when_zero() {
     // Test input with NO email addresses
@@ -89,10 +83,10 @@ fn test_email_statistics_hidden_when_zero() {
 
     let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
-    // Verify Pattern Distribution does NOT include Email Addresses row
+    // Verify the tokens line does NOT include an emails entry when count is 0
     assert!(
-        !stderr_str.contains("Email Addresses"),
-        "Pattern Distribution should NOT include 'Email Addresses' row when count is 0"
+        !stderr_str.contains("emails "),
+        "tokens line should NOT include 'emails' when count is 0, got: {stderr_str}"
     );
 
     println!("✅ Email statistics are hidden correctly when count is 0");
@@ -139,16 +133,11 @@ fn test_email_statistics_in_essence_mode() {
         "Essence mode output should contain <EMAIL> tokens"
     );
 
-    // Verify Pattern Distribution includes Email Addresses row
+    // Verify the tokens line includes an emails entry with the right count
+    // (4 emails in input).
     assert!(
-        stderr_str.contains("Email Addresses"),
-        "Pattern Distribution should include 'Email Addresses' row in essence mode"
-    );
-
-    // Verify email count is correct (4 emails in input)
-    assert!(
-        stderr_str.contains("Email Addresses | 4 |") || stderr_str.contains("Email Addresses | 4|"),
-        "Email count should be 4 in essence mode"
+        stderr_str.contains("emails 4/"),
+        "tokens line should include 'emails 4/' in essence mode, got: {stderr_str}"
     );
 
     println!("✅ Email statistics work correctly in essence mode");
@@ -158,7 +147,7 @@ fn test_email_statistics_in_essence_mode() {
 ///
 /// Given: A log file containing both email addresses and numeric patterns
 /// When: lessence processes the file
-/// Then: Email patterns must appear in their own category, not in "Numbers/Percentages"
+/// Then: Email patterns must appear in their own category, not in "percentages"
 #[test]
 fn test_email_not_grouped_with_percentages() {
     // Test input with emails and numbers
@@ -185,27 +174,15 @@ fn test_email_not_grouped_with_percentages() {
 
     let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
-    // Verify both Email Addresses and Numbers/Percentages appear as separate categories
+    // Verify both emails and percentages appear as separate token classes,
+    // each with their own count (2 each — not merged into one entry).
     assert!(
-        stderr_str.contains("Email Addresses"),
-        "Pattern Distribution should include 'Email Addresses' category"
+        stderr_str.contains("emails 2/"),
+        "tokens line should include 'emails 2/', got: {stderr_str}"
     );
-
     assert!(
-        stderr_str.contains("Numbers/Percentages") || stderr_str.contains("Numbers"),
-        "Pattern Distribution should include 'Numbers/Percentages' category"
-    );
-
-    // Verify they have different counts (not grouped together)
-    // Email count should be 2, percentage count should be 2 (separate)
-    let email_line = stderr_str
-        .lines()
-        .find(|line| line.contains("Email Addresses"))
-        .expect("Should find Email Addresses line");
-
-    assert!(
-        email_line.contains("| 2 |") || email_line.contains("|2|"),
-        "Email count should be 2 (not grouped with percentages)"
+        stderr_str.contains("percentages 2/"),
+        "tokens line should include 'percentages 2/' as a separate class, got: {stderr_str}"
     );
 
     println!("✅ Email patterns are tracked separately from percentages/numbers");

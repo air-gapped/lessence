@@ -604,6 +604,73 @@ fn hash_token_value_different_tokens_different_hashes() {
     assert_ne!(a, b);
 }
 
+/// Byte-identical to hashing `token.value_string()` the old (allocating)
+/// way, for every `Token` variant — proves the streamed FNV-1a refactor
+/// (`hash_token_value` folding each variant's fields directly) didn't
+/// change a single hash, which matters because `distinct_count` on a
+/// cardinality estimator must not shift across a refactor.
+#[test]
+fn hash_token_value_matches_value_string_for_all_variants() {
+    fn hash_str(s: &str) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0100_0000_01b3;
+        let mut h: u64 = FNV_OFFSET;
+        for b in s.as_bytes() {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        h
+    }
+
+    let tokens: Vec<Token> = vec![
+        Token::Timestamp("2025-01-01".into()),
+        Token::IPv4("10.0.0.1".into()),
+        Token::IPv6("::1".into()),
+        Token::Port(443),
+        Token::Hash(HashType::SHA1, "abc123".into()),
+        Token::Uuid("550e8400-e29b-41d4-a716-446655440000".into()),
+        Token::Pid(9999),
+        Token::ThreadID("worker-3".into()),
+        Token::Path("/var/log/app.log".into()),
+        Token::Json(r#"{"key":"val"}"#.into()),
+        Token::Duration("3.5s".into()),
+        Token::Size("2MB".into()),
+        Token::Number("42".into()),
+        Token::HttpStatus(404),
+        Token::QuotedString("hello world".into()),
+        Token::Name("myapp".into()),
+        Token::KubernetesNamespace("kube-system".into()),
+        Token::VolumeName("pvc-data".into()),
+        Token::PluginType("csi-driver".into()),
+        Token::PodName("api-server-xyz".into()),
+        Token::HttpStatusClass("5xx".into()),
+        Token::BracketContext(vec!["error".into(), "handler".into()]),
+        Token::KeyValuePair {
+            key: "user".into(),
+            value_type: "string".into(),
+        },
+        Token::LogWithModule {
+            level: "WARN".into(),
+            module: "net".into(),
+        },
+        Token::StructuredMessage {
+            component: "api".into(),
+            level: "error".into(),
+        },
+        Token::Email("user@example.com".into()),
+    ];
+
+    for token in &tokens {
+        let expected = hash_str(&token_value_string(token));
+        assert_eq!(
+            hash_token_value(token),
+            expected,
+            "hash_token_value diverged from value_string hashing for {:?}",
+            token_type_name(token)
+        );
+    }
+}
+
 // ---------------------------------------------------------------
 // is_sample_worthy — exhaustiveness
 // ---------------------------------------------------------------
@@ -2180,6 +2247,7 @@ fn print_summary_json_with_stats() {
     f.stats.patterns_detected = 50;
     f.stats.timestamps = 10;
     f.stats.ips = 5;
+    f.stats.template_counts.record("synthetic", 100, None, None);
     let mut buf = Vec::new();
     f.print_summary_json(&mut buf, std::time::Duration::from_millis(42))
         .unwrap();
@@ -2331,7 +2399,7 @@ fn format_group_dispatch_json_mode() {
 }
 
 // ---------------------------------------------------------------
-// Stats counters: count_pattern_types, count_active_pattern_types
+// Stats counters: count_pattern_types
 // ---------------------------------------------------------------
 
 #[test]
@@ -2412,37 +2480,6 @@ fn count_pattern_types_empty_tokens() {
     assert_eq!(f.stats.timestamps, 0);
     assert_eq!(f.stats.ips, 0);
     assert_eq!(f.stats.emails, 0);
-}
-
-#[test]
-fn count_active_pattern_types_all_zero() {
-    let f = make_folder();
-    assert_eq!(f.count_active_pattern_types(), 0);
-}
-
-#[test]
-fn count_active_pattern_types_one_nonzero() {
-    let mut f = make_folder();
-    f.stats.timestamps = 5;
-    assert_eq!(f.count_active_pattern_types(), 1);
-}
-
-#[test]
-fn count_active_pattern_types_all_nonzero() {
-    let mut f = make_folder();
-    f.stats.timestamps = 1;
-    f.stats.ips = 1;
-    f.stats.hashes = 1;
-    f.stats.uuids = 1;
-    f.stats.durations = 1;
-    f.stats.pids = 1;
-    f.stats.sizes = 1;
-    f.stats.percentages = 1;
-    f.stats.http_status = 1;
-    f.stats.paths = 1;
-    f.stats.kubernetes = 1;
-    // Note: emails is NOT counted by count_active_pattern_types
-    assert_eq!(f.count_active_pattern_types(), 11);
 }
 
 // ---------------------------------------------------------------
@@ -2536,11 +2573,11 @@ fn format_group_pii_masking_masks_emails() {
 }
 
 // ---------------------------------------------------------------
-// print_preflight_json
+// print_preflight_json / print_stats: the briefing (lessence-xxz)
 // ---------------------------------------------------------------
 
 #[test]
-fn preflight_report_counts_and_schema() {
+fn preflight_report_is_the_briefing_schema() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -2548,206 +2585,181 @@ fn preflight_report_counts_and_schema() {
     });
     f.process_line("2024-01-01 10:00:00 error").unwrap();
     f.process_line("2024-01-01 10:00:01 error").unwrap();
+    let _ = f.finish().unwrap();
 
     let mut buf = Vec::new();
     f.print_preflight_json(&mut buf).unwrap();
     let report: serde_json::Value = serde_json::from_str(&String::from_utf8(buf).unwrap()).unwrap();
-    assert_eq!(report["total_lines"], 2);
-    assert!(!report["recommendations"].as_array().unwrap().is_empty());
-    assert_eq!(report["pattern_distribution"]["timestamps"], 2);
-    // All four estimate fields deliberately carry the same measured value:
-    // the schema stayed stable after the per-scenario simulation was removed.
-    assert_eq!(
-        report["estimated_compression"]["default"],
-        report["estimated_compression"]["aggressive"]
-    );
+    assert_eq!(report["lines"], 2);
+    assert_eq!(report["source"], serde_json::Value::Null);
+    assert!(report["span"].is_object());
+    assert!(report["format"].is_object());
+    assert!(report["levels"].is_object());
+    assert!(report["templates"]["shown"].is_array());
+    assert!(report["tokens"].is_array());
 }
 
-// ---------------------------------------------------------------
-// print_stats
-// ---------------------------------------------------------------
+#[test]
+fn build_briefing_source_is_bare_filename() {
+    let mut f = make_folder();
+    f.register_source("examples/distilled/kubelet.log".to_string());
+    let briefing = f.build_briefing();
+    assert_eq!(briefing.source.as_deref(), Some("kubelet.log"));
+}
 
 #[test]
-fn print_stats_contains_report_header() {
+fn build_briefing_source_none_for_stdin() {
     let f = make_folder();
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(output.contains("# lessence Compression Report"));
+    let briefing = f.build_briefing();
+    assert_eq!(briefing.source, None);
 }
 
 #[test]
-fn print_stats_shows_pattern_rows_for_nonzero() {
+fn build_briefing_tokens_only_nonzero_classes() {
     let mut f = make_folder();
     f.stats.timestamps = 10;
     f.stats.ips = 5;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(output.contains("Timestamps"), "should show Timestamps row");
+    let briefing = f.build_briefing();
+    let classes: Vec<&str> = briefing.tokens.iter().map(|t| t.class).collect();
+    assert!(classes.contains(&"timestamps"));
+    assert!(classes.contains(&"ips"));
+    assert!(!classes.contains(&"emails"), "emails is 0, must be absent");
+}
+
+#[test]
+fn build_briefing_tokens_sorted_by_occurrences_descending() {
+    let mut f = make_folder();
+    f.stats.ips = 5;
+    f.stats.timestamps = 10;
+    let briefing = f.build_briefing();
+    assert_eq!(briefing.tokens[0].class, "timestamps");
+    assert_eq!(briefing.tokens[1].class, "ips");
+}
+
+#[test]
+fn build_briefing_levels_aggregate_from_process_line() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    f.process_line("E0909 13:07:09.181236 pod_workers.go] err")
+        .unwrap();
+    f.process_line("W0909 13:07:10.000000 transport.go] warn")
+        .unwrap();
+    f.process_line("plain line with no level shape").unwrap();
+    let _ = f.finish().unwrap();
+    let briefing = f.build_briefing();
+    assert_eq!(briefing.levels.error, 1);
+    assert_eq!(briefing.levels.warn, 1);
+    assert_eq!(briefing.levels.lines_with_level, 2);
+}
+
+#[test]
+fn build_briefing_format_sniff_from_process_line() {
+    // Format is read off tokens where tokens can answer, plus an O(1)
+    // matched-delimiter test on the raw line. `Token::Json` fires only on
+    // *embedded* JSON blobs, so a well-formed top-level record like
+    // `{"a":1}` produces no `Token::Json` and no `KeyValuePair` pair — the
+    // delimiter test is what recognises it. Without that test a 27,760-line
+    // all-JSON argocd log reported `plain 100%`, inverting the one decision
+    // the sniff exists to inform: jq or awk.
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    f.process_line(r#"{"a":1}"#).unwrap();
+    f.process_line("plain text line").unwrap();
+    f.process_line("more plain text").unwrap();
+    let _ = f.finish().unwrap();
+    let briefing = f.build_briefing();
+    assert_eq!(briefing.format.json, 1);
+    assert_eq!(briefing.format.plain, 2);
+    assert_eq!(briefing.format.dominant, "plain");
     assert!(
-        output.contains("IP Addresses"),
-        "should show IP Addresses row"
-    );
-    // emails is 0, so should NOT appear
-    assert!(
-        !output.contains("Email Addresses"),
-        "should not show Email row when 0"
+        briefing.format.mixed,
+        "1 of 3 json is not a clean single format"
     );
 }
 
 #[test]
-fn print_stats_zero_lines_shows_zero_compression() {
+fn build_briefing_span_from_timestamp_tokens() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    f.process_line("2024-01-01 10:00:00 first").unwrap();
+    f.process_line("no timestamp here").unwrap();
+    f.process_line("2024-01-01 10:00:05 last").unwrap();
+    let _ = f.finish().unwrap();
+    let briefing = f.build_briefing();
+    assert!(briefing.span.first.is_some());
+    assert!(briefing.span.last.is_some());
+    assert_ne!(briefing.span.first, briefing.span.last);
+}
+
+#[test]
+fn build_briefing_template_counts_complete_after_finish() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    for _ in 0..5 {
+        f.process_line("repeated error <VARIES>").unwrap();
+    }
+    let _ = f.finish().unwrap();
+    let briefing = f.build_briefing();
+    let total: usize = briefing
+        .templates
+        .shown
+        .iter()
+        .map(|e| e.count)
+        .collect::<Vec<_>>()
+        .iter()
+        .sum();
+    assert!(total > 0);
+    assert_eq!(f.stats.template_counts.total_members(), f.stats.total_lines);
+}
+
+#[test]
+fn finish_top_n_records_omitted_templates_too() {
+    // Only the top N groups get formatted through format_group_dispatch;
+    // the rest must still be recorded so the template map stays complete
+    // regardless of --top's cutoff (this is what the debug_assert in
+    // build_briefing checks on every call).
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        top_n: Some(1),
+        ..Config::default()
+    });
+    for i in 0..3 {
+        f.process_line(&format!("distinct template number {i}"))
+            .unwrap();
+    }
+    let _ = f.finish_top_n(1, None, false).unwrap();
+    assert_eq!(f.stats.template_counts.total_members(), f.stats.total_lines);
+}
+
+#[test]
+fn print_stats_contains_briefing_header() {
     let f = make_folder();
     let mut buf = Vec::new();
     f.print_stats(&mut buf).unwrap();
     let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("0.0%"),
-        "zero lines should show 0.0% compression"
-    );
+    assert!(output.contains("--- lessence briefing:"));
 }
 
 #[test]
-fn print_stats_all_pattern_rows_appear() {
-    let mut f = make_folder();
-    f.stats.timestamps = 1;
-    f.stats.ips = 2;
-    f.stats.hashes = 3;
-    f.stats.uuids = 4;
-    f.stats.durations = 5;
-    f.stats.pids = 6;
-    f.stats.sizes = 7;
-    f.stats.percentages = 8;
-    f.stats.http_status = 9;
-    f.stats.paths = 10;
-    f.stats.kubernetes = 11;
-    f.stats.emails = 12;
+fn print_stats_stdin_source_in_header() {
+    let f = make_folder();
     let mut buf = Vec::new();
     f.print_stats(&mut buf).unwrap();
     let output = String::from_utf8(buf).unwrap();
-    assert!(output.contains("Timestamps"), "missing Timestamps row");
-    assert!(output.contains("IP Addresses"), "missing IP row");
-    assert!(output.contains("Hashes"), "missing Hashes row");
-    assert!(output.contains("UUIDs"), "missing UUIDs row");
-    assert!(output.contains("Durations"), "missing Durations row");
-    assert!(output.contains("Process IDs"), "missing PIDs row");
-    assert!(output.contains("File Sizes"), "missing Sizes row");
-    assert!(
-        output.contains("Numbers/Percentages"),
-        "missing Percentages row"
-    );
-    assert!(output.contains("HTTP Status"), "missing HTTP row");
-    assert!(output.contains("File Paths"), "missing Paths row");
-    assert!(output.contains("Kubernetes"), "missing K8s row");
-    assert!(output.contains("Email Addresses"), "missing Emails row");
-}
-
-#[test]
-fn print_stats_compression_ratio_math() {
-    let mut f = make_folder();
-    f.stats.total_lines = 200;
-    f.stats.lines_saved = 150;
-    f.stats.output_lines = 50;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("75.0%"),
-        "150/200 should be 75.0% reduction, got: {output}"
-    );
-    assert!(
-        output.contains("200 lines"),
-        "should show 200 original lines"
-    );
-    assert!(
-        output.contains("50 lines"),
-        "should show 50 compressed lines"
-    );
-}
-
-#[test]
-fn print_stats_high_compression_recommendation() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 95;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("High compression ratio"),
-        "95% should trigger high compression recommendation"
-    );
-}
-
-#[test]
-fn print_stats_low_compression_recommendation() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 30;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("Low compression ratio"),
-        "30% should trigger low compression recommendation"
-    );
-}
-
-#[test]
-fn print_stats_moderate_compression_recommendation() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 80;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("Moderate compression ratio"),
-        "80% should trigger moderate recommendation"
-    );
-}
-
-#[test]
-fn print_stats_high_repetition_warning() {
-    let mut f = make_folder();
-    f.stats.collapsed_groups = 51;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("High pattern repetition"),
-        ">50 collapsed groups should trigger repetition warning"
-    );
-}
-
-#[test]
-fn print_stats_no_repetition_warning_at_50() {
-    let mut f = make_folder();
-    f.stats.collapsed_groups = 50;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("High pattern repetition"),
-        "exactly 50 collapsed groups should NOT trigger warning"
-    );
-}
-
-#[test]
-fn print_stats_summary_section_values() {
-    let mut f = make_folder();
-    f.stats.total_lines = 500;
-    f.stats.patterns_detected = 42;
-    f.stats.collapsed_groups = 10;
-    f.stats.lines_saved = 300;
-    f.stats.timestamps = 5;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(output.contains("42"), "should show patterns_detected=42");
-    assert!(output.contains("10"), "should show collapsed_groups=10");
-    assert!(output.contains("300"), "should show lines_saved=300");
+    assert!(output.contains("--- lessence briefing: stdin ("));
 }
 
 // ---------------------------------------------------------------
@@ -3199,117 +3211,34 @@ fn build_stats_json_with_data() {
 }
 
 // ---------------------------------------------------------------
-// print_stats boundary tests (already takes Writer)
+// print_stats: FormatSniff.mixed boundary (< 90% dominant is mixed)
 // ---------------------------------------------------------------
 
-// Boundary tests: > 90 and > 70 thresholds
-// The code uses strict >, so exactly 90.0 is NOT "High" and exactly 70.0 is NOT "Moderate"
-
 #[test]
-fn print_stats_91_pct_is_high() {
+fn build_briefing_format_exactly_90_pct_dominant_not_mixed() {
     let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 91;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("High compression"),
-        "91% should be high: {output}"
-    );
+    f.stats.format_plain = 90;
+    f.stats.format_json = 10;
+    let briefing = f.build_briefing();
+    assert!(!briefing.format.mixed, "exactly 90% dominant is not mixed");
 }
 
 #[test]
-fn print_stats_90_pct_is_moderate() {
+fn build_briefing_format_below_90_pct_dominant_is_mixed() {
     let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 90;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("Moderate"),
-        "exactly 90% is moderate, not high: {output}"
-    );
+    f.stats.format_plain = 89;
+    f.stats.format_json = 11;
+    let briefing = f.build_briefing();
+    assert!(briefing.format.mixed, "89% dominant should be mixed");
 }
 
 #[test]
-fn print_stats_71_pct_is_moderate() {
+fn build_briefing_format_all_one_class_not_mixed() {
     let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 71;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("Moderate"),
-        "71% should be moderate: {output}"
-    );
-}
-
-#[test]
-fn print_stats_70_pct_is_low() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.lines_saved = 70;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("High compression"),
-        "70% is not high: {output}"
-    );
-    assert!(
-        !output.contains("Moderate"),
-        "70% is not moderate: {output}"
-    );
-}
-
-#[test]
-fn print_stats_50_groups_no_warning() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.collapsed_groups = 50;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("High pattern repetition"),
-        "50 groups should not warn: {output}"
-    );
-}
-
-#[test]
-fn print_stats_51_groups_warning() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.collapsed_groups = 51;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        output.contains("High pattern repetition"),
-        "51 groups should warn: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_counter_no_row() {
-    let mut f = make_folder();
-    f.stats.total_lines = 100;
-    f.stats.timestamps = 0;
-    f.stats.ips = 5;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("Timestamps"),
-        "zero timestamps should have no row"
-    );
-    assert!(
-        output.contains("IP Addresses"),
-        "nonzero IPs should have a row"
-    );
+    f.stats.format_plain = 100;
+    let briefing = f.build_briefing();
+    assert!(!briefing.format.mixed);
+    assert_eq!(briefing.format.dominant, "plain");
 }
 
 // ---------------------------------------------------------------
@@ -3952,164 +3881,22 @@ fn format_group_essence_identical_suppresses_last() {
 }
 
 // ---------------------------------------------------------------
-// print_stats: each stat field at zero must NOT produce its row
-// Kills `> with >=` on each `if self.stats.FIELD > 0` check
+// build_briefing: the tokens filter is strictly > 0, not >= 0
 // ---------------------------------------------------------------
 
 #[test]
-fn print_stats_zero_timestamps_no_row() {
+fn build_briefing_tokens_count_of_one_is_shown() {
     let mut f = make_folder();
-    f.stats.timestamps = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Timestamps |"),
-        "timestamps=0 should not produce Timestamps row: {output}"
-    );
+    f.stats.hashes = 1;
+    let briefing = f.build_briefing();
+    assert!(briefing.tokens.iter().any(|t| t.class == "hashes"));
 }
 
 #[test]
-fn print_stats_zero_ips_no_row() {
-    let mut f = make_folder();
-    f.stats.ips = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| IP Addresses |"),
-        "ips=0 should not produce IP Addresses row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_hashes_no_row() {
-    let mut f = make_folder();
-    f.stats.hashes = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Hashes |"),
-        "hashes=0 should not produce Hashes row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_uuids_no_row() {
-    let mut f = make_folder();
-    f.stats.uuids = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| UUIDs |"),
-        "uuids=0 should not produce UUIDs row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_durations_no_row() {
-    let mut f = make_folder();
-    f.stats.durations = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Durations |"),
-        "durations=0 should not produce Durations row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_pids_no_row() {
-    let mut f = make_folder();
-    f.stats.pids = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Process IDs |"),
-        "pids=0 should not produce Process IDs row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_sizes_no_row() {
-    let mut f = make_folder();
-    f.stats.sizes = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| File Sizes |"),
-        "sizes=0 should not produce File Sizes row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_percentages_no_row() {
-    let mut f = make_folder();
-    f.stats.percentages = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Numbers/Percentages |"),
-        "percentages=0 should not produce Numbers/Percentages row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_http_status_no_row() {
-    let mut f = make_folder();
-    f.stats.http_status = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| HTTP Status |"),
-        "http_status=0 should not produce HTTP Status row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_paths_no_row() {
-    let mut f = make_folder();
-    f.stats.paths = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| File Paths |"),
-        "paths=0 should not produce File Paths row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_kubernetes_no_row() {
-    let mut f = make_folder();
-    f.stats.kubernetes = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Kubernetes |"),
-        "kubernetes=0 should not produce Kubernetes row: {output}"
-    );
-}
-
-#[test]
-fn print_stats_zero_emails_no_row() {
-    let mut f = make_folder();
-    f.stats.emails = 0;
-    let mut buf = Vec::new();
-    f.print_stats(&mut buf).unwrap();
-    let output = String::from_utf8(buf).unwrap();
-    assert!(
-        !output.contains("| Email Addresses |"),
-        "emails=0 should not produce Email Addresses row: {output}"
-    );
+fn build_briefing_tokens_count_of_zero_is_absent() {
+    let f = make_folder();
+    let briefing = f.build_briefing();
+    assert!(briefing.tokens.is_empty());
 }
 
 // ---------------------------------------------------------------

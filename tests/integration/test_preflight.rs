@@ -28,9 +28,16 @@ fn run_preflight(input: &str, extra_args: &[&str]) -> serde_json::Value {
 }
 
 fn timestamps(analysis: &serde_json::Value) -> u64 {
-    analysis["pattern_distribution"]["timestamps"]
-        .as_u64()
-        .expect("timestamps must be a number")
+    analysis["tokens"]
+        .as_array()
+        .expect("tokens must be an array")
+        .iter()
+        .find(|t| t["class"] == "timestamps")
+        .map_or(0, |t| {
+            t["occurrences"]
+                .as_u64()
+                .expect("occurrences must be a number")
+        })
 }
 
 #[test]
@@ -49,7 +56,7 @@ fn preflight_analyzes_colorized_logs_fully() {
     }
     let analysis = run_preflight(&input, &[]);
 
-    assert_eq!(analysis["total_lines"], 100);
+    assert_eq!(analysis["lines"], 100);
     assert_eq!(
         timestamps(&analysis),
         100,
@@ -67,7 +74,7 @@ fn preflight_strips_escape_payloads_like_the_fold_run_would() {
     let input = "\x1b]0;2024-01-01 10:00:00\x07ERROR: connection refused\n".repeat(50);
 
     let stripped = run_preflight(&input, &[]);
-    assert_eq!(stripped["total_lines"], 50);
+    assert_eq!(stripped["lines"], 50);
     assert_eq!(
         timestamps(&stripped),
         0,
@@ -92,7 +99,7 @@ fn preflight_reports_plain_input_unchanged() {
         ));
     }
     let analysis = run_preflight(&input, &[]);
-    assert_eq!(analysis["total_lines"], 50);
+    assert_eq!(analysis["lines"], 50);
     assert!(
         timestamps(&analysis) > 0,
         "plain timestamps must still be detected"

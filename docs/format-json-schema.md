@@ -337,6 +337,112 @@ lessence --format json prod.log \
   inside group records uses UPPERCASE conventions. The two are
   independent.
 
+## `Briefing` schema
+
+The orientation block an agent should read before deciding what to run next.
+It appears in two places, both from the same struct so they can never drift:
+
+1. **`lessence --preflight <log>`** — the `Briefing` printed directly as the
+   entire stdout JSON document (not wrapped in a record; there is no other
+   `--preflight` output).
+2. **`--explain`'s (`--format json --explain`) summary record**, under a new
+   `briefing` field alongside `input_lines`, `pattern_hits`, etc.
+
+`--preflight` used to print a `PreflightReport` — four duplicate
+`estimated_compression` figures and an always-empty `sample_patterns` array.
+That type and its stderr "# lessence Compression Report" markdown table are
+both gone; `Briefing` replaces them everywhere.
+
+```json
+{
+  "source": "kubelet.log",
+  "lines": 3951,
+  "span": {
+    "first": "E0909 13:07:09.181236",
+    "last": "E0920 14:52:55.728948",
+    "duration_seconds": 956746,
+    "lines_per_second": 0.004129622700277817
+  },
+  "format": {"json": 0, "logfmt": 50, "plain": 3901, "dominant": "plain", "mixed": false},
+  "levels": {
+    "fatal": 0, "error": 1044, "warn": 48, "info": 2681, "debug": 0, "trace": 0,
+    "lines_with_level": 3773
+  },
+  "templates": {
+    "total_groups": 248,
+    "shown": [
+      {
+        "count": 713,
+        "pct": 18.046064287522146,
+        "template": "<TIMESTAMP>    <PID> reconciler_common.go:<LINE>] \"operationExecutor...\"",
+        "first_epoch": 1788986556,
+        "last_epoch": 1789897999,
+        "span_seconds": 911443
+      }
+    ],
+    "shown_share_pct": 52.09,
+    "truncated": false,
+    "singletons": 34,
+    "singleton_pct": 0.86
+  },
+  "tokens": [
+    {"class": "uuids", "occurrences": 5352, "distinct": 314, "distinct_exact": true}
+  ],
+  "histogram": {
+    "bucket_seconds": 924398,
+    "buckets": [441, 30, 30, 95],
+    "busiest_index": 0,
+    "busiest_count": 441,
+    "busiest_pct": 23.824959481361425
+  }
+}
+```
+
+### Field reference
+
+| Field | Type | Description — what to DO with it |
+|---|---|---|
+| `source` | string \| null | Input filename, or `null` for stdin. |
+| `lines` | integer | Total input lines. |
+| `span.first` / `span.last` | string \| null | Raw first/last timestamp string, unparsed. `null` on both when no line carried a recognised timestamp — nothing else in `span` is meaningful then. |
+| `span.duration_seconds` | integer \| null | `last - first` in seconds. `null` when either endpoint is missing or the pair is unparseable. |
+| `span.lines_per_second` | number \| null | `lines / duration_seconds`. `null` when duration is `null` or 0. A low rate on a long span (kubelet: 0.004 lines/s over 11 days) says this is a sparse control-plane log, not a busy one — don't expect a hot loop. |
+| `format.json` / `.logfmt` / `.plain` | integer | Line counts by surface format. |
+| `format.dominant` | string | `"json"`, `"logfmt"`, or `"plain"` — the largest of the three. Decide `jq` vs `awk`/`grep` from this before the first command. |
+| `format.mixed` | boolean | `true` when more than one format is present in meaningful proportion — a single pipeline won't parse every line uniformly. |
+| `levels.fatal`/`error`/`warn`/`info`/`debug`/`trace` | integer | Counts by severity. |
+| `levels.lines_with_level` | integer | How many lines carried a recognisable level at all — the denominator for the per-severity percentages, and usually less than `lines`. Compare it to `lines`: a low ratio means most lines are unleveled and a `grep -i error` sweep alone will miss context. |
+| `templates.total_groups` | integer | Total distinct templates found, shown or not. |
+| `templates.shown` | array | Up to 10 templates, by count descending, each with `count`, `pct` (of all lines), `template`, and `first_epoch`/`last_epoch`/`span_seconds` (all `null` together when no member carried a timestamp). `span_seconds: 0` means every member landed in the same second — read as "in <1s" (an instant, likely one triggering event); a large `span_seconds` means "over &lt;duration&gt;" (routine, recurring). Rank by `span_seconds`, not `count`, to find the one-off among the housekeeping. |
+| `templates.shown_share_pct` | number | Percent of all lines the shown templates account for together. |
+| `templates.truncated` | boolean | `true` once distinct templates exceeded the internal cap (8192) — `total_groups` undercounts past that point. |
+| `templates.singletons` | integer | Templates occurring exactly once — the tail the top-10 table can't show. Nonzero means there is rare signal worth a second pass even after reading the top templates. |
+| `templates.singleton_pct` | number | Percent of all lines the singletons account for. |
+| `tokens` | array | One entry per token class with `occurrences > 0`, sorted by occurrences descending. `class` is a lowercase name (`uuids`, `paths`, `ips`, ...). |
+| `tokens[].occurrences` | integer | Total times this class appeared across all lines. |
+| `tokens[].distinct` | integer | Distinct values seen — exact while `distinct_exact` is `true`; an HLL estimate (accurate to a few percent) once the class crosses 2048 distinct values. |
+| `tokens[].distinct_exact` | boolean | `false` marks an HLL estimate (rendered with a `~` in text mode). |
+| `histogram` | object \| null | `null` when `span.duration_seconds` is `null` — a histogram needs a clock. Otherwise a run-length time histogram, oldest-first, at most 24 buckets spanning `span.first..=span.last`. |
+| `histogram.bucket_seconds` | integer | Width of each bucket in seconds. |
+| `histogram.buckets` | array of integers | Line count per bucket, oldest first. |
+| `histogram.busiest_index` | integer | Index into `buckets` of the busiest one. |
+| `histogram.busiest_count` | integer | Its line count. |
+| `histogram.busiest_pct` | number | That count as a percent of all bucketed lines. |
+
+### Year inference
+
+`span.duration_seconds` and the histogram's bucket placement are unaffected by
+the source format's year handling. Two raw timestamp shapes carry no year of
+their own — klog/glog (`E0909 13:07:09`) and syslog BSD (`Sep  9 13:07:09`) —
+so `epoch_seconds` stamps them with the current UTC year to place them on a
+clock; the duration/histogram arithmetic is correct regardless, since it only
+needs a consistent clock, not the *right* year. The text renderer's busiest-
+bucket label reflects this: `--preflight`'s JSON has no such label to worry
+about (it reports only the epoch-derived numbers above), but the stderr
+briefing's `shape:` line prints `MM-DD HH:MM` instead of `YYYY-MM-DD HH:MM`
+for a year-less source, rather than printing an inferred year as if the log
+had stated it.
+
 ## See also
 
 - `docs/rollup-calibration.md` — methodology and evidence for the

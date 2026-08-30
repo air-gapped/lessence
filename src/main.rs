@@ -156,10 +156,19 @@ fn main() -> Result<()> {
     // Handle preflight mode: process logs but only output JSON analysis
     if config.preflight {
         let mut folder = PatternFolder::new(config.clone());
-        // Process all lines but don't output log content
+        // Process all lines but don't output log content. The briefing's
+        // `source` field still needs the input filename, so BeginInput is
+        // registered even though nothing else here is JSON-output-gated.
         let ingest_report = ingestor.run(readers, |event| {
-            if let Event::Line { text, .. } = event {
-                folder.process_line(text)?;
+            match event {
+                Event::BeginInput { source } => {
+                    if let Some(source) = source {
+                        folder.register_source(source.to_string());
+                    }
+                }
+                Event::Line { text, .. } => {
+                    folder.process_line(text)?;
+                }
             }
             Ok(())
         })?;
@@ -202,11 +211,11 @@ fn main() -> Result<()> {
     let ingest_report = ingestor.run(readers, |event| {
         match event {
             Event::BeginInput { source } => {
-                current_source_id = if use_json_output {
-                    source.map(|source| folder.register_source(source.to_string()))
-                } else {
-                    None
-                };
+                // Registered unconditionally, not just in JSON mode: the
+                // briefing's `source` field (text footer, --preflight,
+                // --explain) needs the filename too. `current_source_id`
+                // itself is only consumed by `process_line_at` below.
+                current_source_id = source.map(|source| folder.register_source(source.to_string()));
             }
             Event::Line { text, line_number } => {
                 let output = if use_json_output {

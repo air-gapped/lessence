@@ -20,3 +20,6 @@ proptest-regressions/
 .bv/
 # br doctor per-run artifacts
 .doctor/
+
+# Python bytecode from the eval harness under .claude/skills/
+__pycache__/

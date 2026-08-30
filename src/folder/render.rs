@@ -15,11 +15,11 @@
 //!    the markdown report.
 
 use super::{
-    BTreeMap, Completeness, CompressionEstimates, Count, Duration, GroupCompleteness, GroupRecord,
-    GroupRollup, InputCompleteness, LineRef, LogLine, PatternDistribution, PatternFolder,
-    PatternGroup, PreflightReport, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, SamplePatterns, StatsJson,
-    SummaryRecord, TimeRange, Token, VariationCompleteness, Write, apply_pii_masking,
-    first_timestamp_in, io, mask_credentials, render_compact_marker, token_type_name,
+    BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup,
+    InputCompleteness, LineRef, LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD,
+    Result, StatsJson, SummaryRecord, TimeRange, Token, VariationCompleteness, Write,
+    apply_pii_masking, first_timestamp_in, group_epoch_range, io, mask_credentials,
+    render_compact_marker, token_type_name,
 };
 
 impl PatternFolder {
@@ -40,6 +40,24 @@ impl PatternFolder {
     /// remains present (as an empty `{}`) so the schema shape is
     /// unchanged; only the compute cost is skipped.
     pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
+        // The single point every finalised group passes through, on the
+        // sequential path only (streaming eviction, the final drain, and
+        // --top N's ranking pass all call this). Accumulates rather than
+        // overwrites: lessence-940 means the same template can flush more
+        // than once as its group fragments across evictions.
+        //
+        // --sanitize-pii applies here too: the briefing's top-templates
+        // list is another output surface, and an unmasked template would
+        // leak the exact secret/email the rest of the run redacts.
+        let briefing_template = self.maybe_mask_pii(group.template(), &group.first().tokens);
+        let (first_epoch, last_epoch) = group_epoch_range(group);
+        self.stats.template_counts.record(
+            &briefing_template,
+            group.count(),
+            first_epoch,
+            last_epoch,
+        );
+
         // --distill emits input lines, not rendered groups: record which
         // members the distillation keeps and skip formatting entirely.
         if let Some(members) = self.config.distill {
@@ -432,106 +450,115 @@ impl PatternFolder {
                     },
                 }
             },
+            briefing: self.build_briefing(),
         };
         serde_json::to_writer(&mut *writer, &record)?;
         writeln!(writer)?;
         Ok(())
     }
 
-    pub fn print_stats<W: Write>(&self, writer: &mut W) -> Result<()> {
-        // Calculate metrics
-        let compression_ratio = if self.stats.total_lines > 0 {
-            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
-        } else {
-            0.0
+    /// Build the run's orientation briefing (src/briefing.rs) from
+    /// accumulated stats. Shared by the text footer, `--preflight`, and
+    /// `--explain`'s summary record.
+    pub(super) fn build_briefing(&self) -> crate::briefing::Briefing {
+        use crate::briefing::{Briefing, FormatSniff, Levels, Span};
+
+        let stats = &self.stats;
+        let total_lines = stats.total_lines;
+
+        let source = self.sources.first().map(|s| {
+            std::path::Path::new(s)
+                .file_name()
+                .map_or_else(|| s.clone(), |f| f.to_string_lossy().into_owned())
+        });
+
+        let (json, logfmt, plain) = (stats.format_json, stats.format_logfmt, stats.format_plain);
+        let format_total = json + logfmt + plain;
+        let (dominant, dominant_count) = [("json", json), ("logfmt", logfmt), ("plain", plain)]
+            .into_iter()
+            .max_by_key(|(_, c)| *c)
+            .unwrap_or(("plain", 0));
+        let mixed = format_total > 0 && (dominant_count as f64) < (format_total as f64) * 0.9;
+
+        // Every input line must be represented in the template map exactly
+        // once (by member count), unless the 8192-template cap was hit.
+        debug_assert!(
+            stats.template_counts.is_truncated()
+                || stats.template_counts.total_members() == total_lines,
+            "template_counts must account for every input line: {} != {total_lines}",
+            stats.template_counts.total_members()
+        );
+
+        let mut tokens: Vec<crate::briefing::TokenClass> = stats
+            .token_classes()
+            .into_iter()
+            .filter(|(_, _, count)| *count > 0)
+            .map(|(class, bucket, occurrences)| {
+                let (distinct, distinct_exact) = stats.cardinality_for(bucket);
+                crate::briefing::TokenClass {
+                    class,
+                    occurrences,
+                    distinct,
+                    distinct_exact,
+                }
+            })
+            .collect();
+        tokens.sort_by(|a, b| {
+            b.occurrences
+                .cmp(&a.occurrences)
+                .then_with(|| a.class.cmp(b.class))
+        });
+
+        // Duration/histogram both need the span as epoch seconds; compute
+        // once and share.
+        let span_epochs = match (&stats.span_first, &stats.span_last) {
+            (Some(first), Some(last)) => crate::briefing::span_epochs(first, last),
+            _ => None,
         };
+        let duration_seconds = match (&stats.span_first, &stats.span_last) {
+            (Some(first), Some(last)) => crate::briefing::span_duration_seconds(first, last),
+            _ => None,
+        };
+        let lines_per_second = match duration_seconds {
+            Some(d) if d > 0 => Some(total_lines as f64 / d as f64),
+            _ => None,
+        };
+        let histogram = span_epochs.and_then(|(f, l)| stats.histogram.build(f, l));
 
-        let output_lines = self.stats.output_lines;
-
-        // Output markdown report
-        writeln!(writer, "\n---")?;
-        writeln!(writer, "# lessence Compression Report")?;
-        writeln!(
-            writer,
-            "*Generated by lessence v{} on {}*",
-            env!("CARGO_PKG_VERSION"),
-            chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
-        )?;
-        writeln!(writer)?;
-        writeln!(writer, "## Summary")?;
-        writeln!(writer, "- **Original**: {} lines", self.stats.total_lines)?;
-        writeln!(
-            writer,
-            "- **Compressed**: {output_lines} lines ({compression_ratio:.1}% reduction)"
-        )?;
-        writeln!(
-            writer,
-            "- **Patterns detected**: {} across {} categories",
-            self.stats.patterns_detected,
-            self.count_active_pattern_types()
-        )?;
-        writeln!(
-            writer,
-            "- **Collapsed groups**: {} ({} lines saved)",
-            self.stats.collapsed_groups, self.stats.lines_saved
-        )?;
-        writeln!(writer)?;
-
-        // Pattern distribution table
-        writeln!(writer, "## Pattern Distribution")?;
-        writeln!(writer, "| Pattern Type | Count | Description |")?;
-        writeln!(writer, "|--------------|-------|-------------|")?;
-
-        for (label, count, description) in self.stats.pattern_counters() {
-            if count > 0 {
-                writeln!(writer, "| {label} | {count} | {description} |")?;
-            }
+        Briefing {
+            source,
+            lines: total_lines,
+            span: Span {
+                first: stats.span_first.clone(),
+                last: stats.span_last.clone(),
+                duration_seconds,
+                lines_per_second,
+            },
+            format: FormatSniff {
+                json,
+                logfmt,
+                plain,
+                dominant,
+                mixed,
+            },
+            levels: Levels {
+                fatal: stats.level_fatal,
+                error: stats.level_error,
+                warn: stats.level_warn,
+                info: stats.level_info,
+                debug: stats.level_debug,
+                trace: stats.level_trace,
+                lines_with_level: stats.level_lines_with_level,
+            },
+            templates: stats.template_counts.build(total_lines),
+            tokens,
+            histogram,
         }
+    }
 
-        writeln!(writer)?;
-
-        // Analysis guidance
-        writeln!(writer, "## Recommendations for Analysis")?;
-        if compression_ratio > 90.0 {
-            writeln!(
-                writer,
-                "- **High compression ratio** ({compression_ratio:.1}%) indicates many repetitive patterns"
-            )?;
-        } else if compression_ratio > 70.0 {
-            writeln!(
-                writer,
-                "- **Moderate compression ratio** ({compression_ratio:.1}%) indicates some repetitive patterns"
-            )?;
-        } else {
-            writeln!(
-                writer,
-                "- **Low compression ratio** ({compression_ratio:.1}%) indicates diverse log content"
-            )?;
-        }
-
-        writeln!(
-            writer,
-            "- **Search strategy**: Use compressed output to identify error types, then grep original logs for details"
-        )?;
-        writeln!(
-            writer,
-            "- **Variation indicators**: Pay attention to `[+N similar, varying: X, Y]` to understand what changes between similar errors"
-        )?;
-        writeln!(
-            writer,
-            "- **Focus areas**: Unique error messages that couldn't be compressed likely indicate distinct issues"
-        )?;
-
-        if self.stats.collapsed_groups > 50 {
-            writeln!(
-                writer,
-                "- **High pattern repetition**: {} collapsed groups suggest systematic issues worth investigating",
-                self.stats.collapsed_groups
-            )?;
-        }
-
-        writeln!(writer, "---")?;
-
+    pub fn print_stats<W: Write>(&self, writer: &mut W) -> Result<()> {
+        let briefing = self.build_briefing();
+        write!(writer, "{}", crate::briefing::render_text(&briefing))?;
         Ok(())
     }
 
@@ -564,63 +591,9 @@ impl PatternFolder {
         writeln!(handle)?;
         Ok(())
     }
-    /// Build the --preflight analysis report from the folder's stats.
-    fn build_preflight_report(&self) -> PreflightReport {
-        let stats = self.get_stats();
-
-        let compression_ratio = if stats.total_lines > 0 {
-            (stats.lines_saved as f64 / stats.total_lines as f64) * 100.0
-        } else {
-            0.0
-        };
-
-        let output_lines = stats.total_lines.saturating_sub(stats.lines_saved);
-
-        let recommendations = vec![
-            format!("Compression achieved: {:.1}%", compression_ratio),
-            format!(
-                "Output size: {} lines (from {} original)",
-                output_lines, stats.total_lines
-            ),
-            if compression_ratio > 90.0 {
-                "Excellent compression - highly recommended for processing".to_string()
-            } else if compression_ratio > 70.0 {
-                "Good compression - recommended for processing".to_string()
-            } else {
-                "Low compression - consider if processing is beneficial".to_string()
-            },
-        ];
-
-        PreflightReport {
-            total_lines: stats.total_lines,
-            estimated_compression: CompressionEstimates {
-                default: format!("{compression_ratio:.1}% compression"),
-                with_paths: format!("{compression_ratio:.1}% compression"),
-                with_numbers: format!("{compression_ratio:.1}% compression"),
-                aggressive: format!("{compression_ratio:.1}% compression"),
-            },
-            pattern_distribution: PatternDistribution {
-                timestamps: stats.timestamps,
-                ips: stats.ips,
-                paths: stats.paths,
-                hashes: stats.hashes,
-                numbers: stats.durations, // Use durations as numbers
-                uuids: stats.uuids,
-                pids: stats.pids,
-            },
-            recommendations,
-            sample_patterns: SamplePatterns {
-                paths: vec![],
-                numbers: vec![],
-                timestamps: vec![],
-                ips: vec![],
-            },
-        }
-    }
-
-    /// Emit the pretty-printed --preflight JSON report.
+    /// Emit the pretty-printed --preflight JSON report: the run's briefing.
     pub fn print_preflight_json<W: Write>(&self, writer: &mut W) -> Result<()> {
-        let report = self.build_preflight_report();
+        let report = self.build_briefing();
         let json = serde_json::to_string_pretty(&report)?;
         writeln!(writer, "{json}")?;
         Ok(())

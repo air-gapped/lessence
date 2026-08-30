@@ -15,8 +15,8 @@ when_to_use: >-
   crash-looping pods, test failures, or anything not normal in log output.
   When tempted to tail -N, head -N, or sample a log over ~200 lines to keep
   output small: lessence -q is usually smaller than tail -200 and contains
-  every unique line, and its output already reports line counts (stats
-  footer) and per-pattern time ranges — no wc/head/tail recon pass needed. Pipe logs through lessence
+  every unique line, and its output already reports line counts, level
+  distribution and per-pattern time ranges (the briefing) — no wc/head/tail recon pass needed. Pipe logs through lessence
   FIRST — before reading them raw. Does NOT trigger for short output (under
   ~50 lines), live following (tail -f), or when the task is ONLY a
   known-keyword search — plain grep suffices there; if the question is even
@@ -38,7 +38,7 @@ When it does bound output
 (`--summary`, `--top N`) it says how many patterns were omitted. Prefer
 the view that declares its blind spots over the one that hides them.
 
-No recon pass needed first: the stats footer reports line counts and
+No recon pass needed first: the briefing reports line counts and
 each folded group carries its time range, so `wc -l` / `head -3` /
 `tail -3` scoping before running lessence is redundant — start with
 lessence directly.
@@ -72,17 +72,73 @@ cargo test 2>&1 | lessence            # capture stderr too
 
 # Agent-friendly output (prefer these when piping into Claude)
 lessence --format json < app.log      # JSONL with rollup metadata — best for follow-up jq queries
-lessence --preflight < app.log        # JSON compression analysis (no folded output)
+lessence --preflight < app.log        # orientation briefing as JSON (no folded output)
 lessence --stats-json < app.log       # machine-readable stats on stderr
 lessence --summary < app.log          # compact one-line-per-pattern overview (caps at 30, use --top N to adjust)
 
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
-lessence -q < app.log                 # suppress stats footer (footer goes to stderr since 0.4.4 — stdout is always pipe-clean)
+lessence -q < app.log                 # suppress the briefing (it goes to stderr — stdout is always pipe-clean)
 ```
 
 ## Reading the Output
+
+### The briefing (read this first, every time)
+
+Every run — text mode, `--explain`, `--preflight` — starts by orienting you
+before you decide what to run next. In text mode it's a stderr footer after
+the folded output; `--preflight` prints the same facts as its entire JSON
+document; `--explain`'s summary record carries it as `briefing`. `-q`
+silences only the stderr rendering, never the JSON.
+
+```
+--- lessence briefing: kubelet.log (3,951 lines)
+span:    E0909 13:07:09.181236 → E0920 14:52:55.728948  (11d 1h, 0.004 lines/s)
+shape:   ▆▁▁▁ ▁ ▁ ▁█▁▁▁▁▁▁ ▁▁▂▁▁▁  busiest 09-14 03:51 +11h 4m holds 1,785 (46.6%)
+format:  plain 3,901 (99%), logfmt 50 (1%)
+levels:  error 1,044 (27.7%), warn 48 (1.3%), info 2,681 (71.1%) — on 3,773 lines (95%)
+top templates (10 of 248, 52.1% of all lines):
+    18%  713  over 10d 13h  <TIMESTAMP>    <PID> reconciler_common.go:<LINE>] "operationExecutor…
+   ...
+rare:    34 templates occur once (0.9% of lines)
+tokens:  quoted_strings 8,090/798, timestamps 6,063/~4,778, uuids 5,352/314, paths 5,294/378, ...
+---
+```
+
+Read it top to bottom, and let it decide the next command:
+
+- **`format:`** decides `jq` vs `grep`/`awk` before you write the first
+  command. `format: json 100%` on argocd means every downstream query is a
+  `jq` one-liner; a mixed or plain-dominant log means `grep`/`awk`.
+- **`levels:`** decides whether to read every error or fold within them.
+  `error 31 (0.1%)` on argocd means read all 31 directly — no need to
+  compress further. `error 8,000` means fold first, then grep.
+- **`top templates`, the middle column (count over span), is the signal that
+  separates routine from real.** On argocd: `22,527 over 5h 50m` is TLS-config
+  housekeeping firing every few seconds for the entire run — background noise
+  regardless of how large the count looks. `31 in <1s` a few rows down is the
+  single restart event that actually answers "what happened" — every member
+  landed within the same second. Ranking by count alone puts the housekeeping
+  first and the answer last; always check the span column, not just the count.
+- **`tokens:`** — `occurrences/distinct` per class decides whether a class is
+  a facet or a correlation key:
+  - **Low distinct relative to occurrences** (`uuids 5,352/314`, kubelet) is a
+    facet: 314 pods, each recurring. Group by it — `jq` the `K8S_POD` samples,
+    or grep one and expect many hits.
+  - **Distinct near occurrences** (`uuids 46,662/~46,001`) is a per-request
+    correlation key: almost every occurrence is a different value. Pull one
+    failing line's id and grep that exact id across the file — the
+    investigation is usually over in one command, because that id threads
+    through every log line the same request touched.
+  - `~` before the distinct count means it's an HLL estimate (crossed 2048
+    distinct values) — accurate to a few percent, still fine for this
+    low/high judgment call.
+- **`rare:`** — nonzero means there's a tail the top-10 table can't show;
+  worth a look even after reading the dominant templates.
+
+Full field reference (every field, every type, both JSON locations):
+`docs/format-json-schema.md`, "`Briefing` schema".
 
 ### Text mode (default)
 
@@ -169,7 +225,7 @@ volume of logs. Start here unless exploring unknown patterns.
 
 ### Full pipeline (for investigation)
 ```bash
-# 1. Is the log even worth compressing?
+# 1. Orient: span, format, levels, top templates, token cardinality
 lessence --preflight < app.log
 
 # 2. Compact overview (patterns + counts only)
@@ -216,10 +272,10 @@ lessence --threshold 50 --summary -q < stats.log
 
 ### Multi-source comparison
 ```bash
-# Compare compression across multiple log sources
+# Compare error rate and template diversity across multiple log sources
 for f in /tmp/*.log; do
   echo -n "$(basename $f): "
-  lessence --preflight "$f" | jq -r '.estimated_compression.default'
+  lessence --preflight "$f" | jq -r '"error \(.levels.error) of \(.lines) lines, \(.templates.total_groups) distinct templates"'
 done
 
 # Compare structure between pods

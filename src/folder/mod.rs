@@ -420,9 +420,117 @@ pub struct FoldingStats {
     pub kubernetes: usize,
     pub emails: usize,
     pub macs: usize,
+
+    // Briefing collectors (lessence-xxz). Per-line format/level counters and
+    // the run's timestamp span are updated on the sequential path only
+    // (never inside the rayon closure); the template map is updated wherever
+    // a group is finalised.
+    pub format_json: usize,
+    pub format_logfmt: usize,
+    pub format_plain: usize,
+    pub level_fatal: usize,
+    pub level_error: usize,
+    pub level_warn: usize,
+    pub level_info: usize,
+    pub level_debug: usize,
+    pub level_trace: usize,
+    pub level_lines_with_level: usize,
+    pub span_first: Option<String>,
+    pub span_last: Option<String>,
+    pub template_counts: crate::briefing::TemplateCounts,
+    pub histogram: crate::briefing::HistogramBuilder,
+    /// Distinct-value cardinality per token class (lessence-nn3), keyed by
+    /// the same `StatsBucket` as `bump`. One estimator per class that has
+    /// ever seen a token; classes that never occur are simply absent.
+    pub(crate) cardinality: ahash::AHashMap<StatsBucket, crate::briefing::CardinalityEstimator>,
 }
 
 impl FoldingStats {
+    /// Classify one raw input line's format and severity for the briefing,
+    /// from its already-detected tokens (falling back to a bounded raw-byte
+    /// scan for level only when no token answers it — see
+    /// `crate::briefing::level_from_tokens`). Called once per line on the
+    /// sequential path, regardless of thread mode, after tokens are known
+    /// (so alongside `count_pattern_types`/`record_span`, not before them).
+    fn record_briefing_line(&mut self, tokens: &[Token], line: &str) {
+        let format = crate::briefing::format_from_line(tokens, line);
+        let level = crate::briefing::level_from_tokens(tokens, line);
+        match format {
+            crate::briefing::FormatClass::Json => self.format_json += 1,
+            crate::briefing::FormatClass::Logfmt => self.format_logfmt += 1,
+            crate::briefing::FormatClass::Plain => self.format_plain += 1,
+        }
+        if let Some(level) = level {
+            self.level_lines_with_level += 1;
+            match level {
+                crate::briefing::Level::Fatal => self.level_fatal += 1,
+                crate::briefing::Level::Error => self.level_error += 1,
+                crate::briefing::Level::Warn => self.level_warn += 1,
+                crate::briefing::Level::Info => self.level_info += 1,
+                crate::briefing::Level::Debug => self.level_debug += 1,
+                crate::briefing::Level::Trace => self.level_trace += 1,
+            }
+        }
+    }
+
+    /// Extend the run's timestamp span with one line's tokens. Called on
+    /// every sequential-clustering path (single-thread and post-batch),
+    /// each of which sees lines in file order.
+    fn record_span(&mut self, tokens: &[Token]) {
+        if let Some(ts) = first_timestamp_in(tokens) {
+            if self.span_first.is_none() {
+                self.span_first = Some(ts.clone());
+            }
+            if let Some(epoch) = crate::briefing::epoch_seconds(&ts) {
+                self.histogram.record(epoch);
+            }
+            self.span_last = Some(ts);
+        }
+    }
+
+    /// Every token class as (briefing field name, count), for the
+    /// briefing's `tokens` list. Distinct from `pattern_counters`'s
+    /// human-readable labels — these are the stable machine names the
+    /// bead specifies.
+    fn token_classes(&self) -> [(&'static str, StatsBucket, usize); 22] {
+        [
+            ("timestamps", StatsBucket::Timestamps, self.timestamps),
+            ("ips", StatsBucket::Ips, self.ips),
+            ("ports", StatsBucket::Ports, self.ports),
+            ("fqdns", StatsBucket::Fqdns, self.fqdns),
+            ("hashes", StatsBucket::Hashes, self.hashes),
+            ("uuids", StatsBucket::Uuids, self.uuids),
+            ("pids", StatsBucket::Pids, self.pids),
+            ("paths", StatsBucket::Paths, self.paths),
+            ("json", StatsBucket::Json, self.json),
+            ("durations", StatsBucket::Durations, self.durations),
+            ("sizes", StatsBucket::Sizes, self.sizes),
+            ("percentages", StatsBucket::Percentages, self.percentages),
+            (
+                "quoted_strings",
+                StatsBucket::QuotedStrings,
+                self.quoted_strings,
+            ),
+            ("names", StatsBucket::Names, self.names),
+            ("brackets", StatsBucket::Brackets, self.brackets),
+            ("key_values", StatsBucket::KeyValues, self.key_values),
+            ("log_modules", StatsBucket::LogModules, self.log_modules),
+            ("structured", StatsBucket::Structured, self.structured),
+            ("kubernetes", StatsBucket::Kubernetes, self.kubernetes),
+            ("emails", StatsBucket::Emails, self.emails),
+            ("macs", StatsBucket::Macs, self.macs),
+            ("http_status", StatsBucket::HttpStatus, self.http_status),
+        ]
+    }
+
+    /// Distinct-value count and exactness for one token class, from the
+    /// per-class cardinality estimator. `(0, true)` for a class that never
+    /// occurred — no estimator was ever created for it.
+    fn cardinality_for(&self, bucket: StatsBucket) -> (u64, bool) {
+        self.cardinality
+            .get(&bucket)
+            .map_or((0, true), |c| (c.distinct(), c.is_exact()))
+    }
     /// Route one detected token into its distribution counter. The
     /// token-kind → bucket mapping is a fact of the token taxonomy
     /// (`Token::facts().stats_bucket`); this is the bucket → field side.
@@ -451,101 +559,6 @@ impl FoldingStats {
             StatsBucket::Emails => self.emails += 1,
             StatsBucket::Macs => self.macs += 1,
         }
-    }
-
-    /// Every pattern category as (footer label, count, footer description).
-    /// Single source of truth for the Pattern Distribution table and the
-    /// active-category count, so a new counter cannot be forgotten in one
-    /// place but not the other.
-    fn pattern_counters(&self) -> [(&'static str, usize, &'static str); 22] {
-        [
-            (
-                "Timestamps",
-                self.timestamps,
-                "Log timestamps, dates, times",
-            ),
-            ("IP Addresses", self.ips, "IPv4, IPv6, network addresses"),
-            ("Ports", self.ports, "Network port numbers"),
-            ("Hostnames", self.fqdns, "Fully-qualified domain names"),
-            (
-                "Hashes",
-                self.hashes,
-                "Pod UIDs, container IDs, volume names, checksums",
-            ),
-            (
-                "UUIDs",
-                self.uuids,
-                "Request IDs, trace IDs, unique identifiers",
-            ),
-            (
-                "Durations",
-                self.durations,
-                "Timeouts, latencies, elapsed times",
-            ),
-            (
-                "Process IDs",
-                self.pids,
-                "PIDs, thread IDs, process identifiers",
-            ),
-            (
-                "File Sizes",
-                self.sizes,
-                "Memory usage, file sizes, data volumes",
-            ),
-            (
-                "Numbers/Percentages",
-                self.percentages,
-                "CPU usage, percentages, metrics",
-            ),
-            (
-                "HTTP Status",
-                self.http_status,
-                "Response codes, error codes",
-            ),
-            ("File Paths", self.paths, "File paths, URLs, directories"),
-            ("JSON", self.json, "Inline JSON objects"),
-            (
-                "Quoted Strings",
-                self.quoted_strings,
-                "Quoted values and messages",
-            ),
-            ("Names", self.names, "Hyphenated component names"),
-            (
-                "Bracket Contexts",
-                self.brackets,
-                "[error] [module] logging contexts",
-            ),
-            (
-                "Key-Value Pairs",
-                self.key_values,
-                "key=value configuration and metrics",
-            ),
-            (
-                "Log Modules",
-                self.log_modules,
-                "[level] module logging patterns",
-            ),
-            (
-                "Structured Messages",
-                self.structured,
-                "JSON/logfmt structured log envelopes",
-            ),
-            (
-                "Kubernetes",
-                self.kubernetes,
-                "Namespaces, volumes, plugins, pod names",
-            ),
-            (
-                "Email Addresses",
-                self.emails,
-                "RFC 5322 email addresses, user accounts",
-            ),
-            (
-                "MAC Addresses",
-                self.macs,
-                "Hardware addresses, six hex pairs",
-            ),
-        ]
     }
 
     fn pattern_hits(&self) -> PatternHits {
@@ -615,49 +628,8 @@ struct PatternHits {
 }
 
 // -------------------------------------------------------------------------
-// --preflight JSON schema. One pretty-printed report to stdout instead of
-// fold output; consumed by automation/CI.
-// -------------------------------------------------------------------------
-
-#[derive(Serialize)]
-struct PreflightReport {
-    total_lines: usize,
-    estimated_compression: CompressionEstimates,
-    pattern_distribution: PatternDistribution,
-    recommendations: Vec<String>,
-    sample_patterns: SamplePatterns,
-}
-
-/// Since the per-scenario compression simulation was removed (it was dead
-/// code), all four fields carry the same measured value. They are kept so
-/// the --preflight JSON schema stays stable for existing consumers.
-#[derive(Serialize)]
-struct CompressionEstimates {
-    default: String,
-    with_paths: String,
-    with_numbers: String,
-    aggressive: String,
-}
-
-#[derive(Serialize)]
-struct PatternDistribution {
-    timestamps: usize,
-    ips: usize,
-    paths: usize,
-    hashes: usize,
-    numbers: usize,
-    uuids: usize,
-    pids: usize,
-}
-
-#[derive(Serialize)]
-struct SamplePatterns {
-    paths: Vec<String>,
-    numbers: Vec<String>,
-    timestamps: Vec<String>,
-    ips: Vec<String>,
-}
-
+// --preflight JSON schema is the Briefing (src/briefing.rs), serialized
+// pretty to stdout. See `PatternFolder::build_briefing`.
 // -------------------------------------------------------------------------
 // JSONL output schema (Phase 2 — no rollups yet).
 //
@@ -723,6 +695,7 @@ struct SummaryRecord {
     #[serde(flatten)]
     stats: StatsJson,
     completeness: Completeness,
+    briefing: crate::briefing::Briefing,
 }
 
 #[derive(Serialize, Default)]
@@ -809,6 +782,20 @@ fn first_timestamp_in(tokens: &[Token]) -> Option<String> {
         Token::Timestamp(s) => Some(s.clone()),
         _ => None,
     })
+}
+
+/// A group's first- and last-member epoch, for the briefing's per-template
+/// count-over-span column. `first()`/`last()` are the group's earliest- and
+/// most-recently-added members, which are in file order on the sequential
+/// path (the only path `template_counts.record` is called from).
+fn group_epoch_range(group: &PatternGroup) -> (Option<i64>, Option<i64>) {
+    let first = first_timestamp_in(&group.first().tokens)
+        .as_deref()
+        .and_then(crate::briefing::epoch_seconds);
+    let last = first_timestamp_in(&group.last().tokens)
+        .as_deref()
+        .and_then(crate::briefing::epoch_seconds);
+    (first, last)
 }
 
 // -------------------------------------------------------------------------
@@ -921,9 +908,52 @@ fn token_value_string(token: &Token) -> String {
     token.value_string()
 }
 
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+/// Fold one byte slice into a running FNV-1a hash. Streaming this over a
+/// token's constituent fields (with the same separators `value_string`
+/// would insert between them) is byte-identical to hashing the
+/// concatenated canonical string — FNV-1a's state carries across calls
+/// regardless of how the bytes are chunked — without ever building that
+/// `String`.
+fn fnv1a_fold(h: &mut u64, bytes: &[u8]) {
+    for &b in bytes {
+        *h ^= u64::from(b);
+        *h = h.wrapping_mul(FNV_PRIME);
+    }
+}
+
+/// Fold a `u64`'s decimal digits into a running FNV-1a hash — the same
+/// bytes `n.to_string().as_bytes()` would produce, without allocating.
+fn fnv1a_fold_decimal(h: &mut u64, n: u64) {
+    let mut buf = [0u8; 20];
+    let mut i = buf.len();
+    if n == 0 {
+        i -= 1;
+        buf[i] = b'0';
+    } else {
+        let mut rest = n;
+        while rest > 0 {
+            i -= 1;
+            buf[i] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+        }
+    }
+    fnv1a_fold(h, &buf[i..]);
+}
+
 /// Hash a token value to a u64. Used for count-only tracking of
 /// high-cardinality types (Timestamp, Number, Duration, ...) where
-/// retaining full strings would blow the memory budget.
+/// retaining full strings would blow the memory budget, and now also for
+/// every token's per-class cardinality estimator (lessence-nn3), which
+/// runs once per token per line — allocation there is not affordable.
+///
+/// Streams FNV-1a directly over each variant's constituent `&str`/numeric
+/// fields (with `value_string`'s exact separators) instead of building a
+/// canonical `String` first, but is required to produce byte-identical
+/// output to hashing that string — proven by
+/// `hash_token_value_matches_value_string` for every variant.
 ///
 /// Uses the same FNV-1a hashing as `seed_for_group` — NOT
 /// `ahash::AHasher::default()` — so `distinct_count` is deterministic
@@ -933,18 +963,56 @@ fn token_value_string(token: &Token) -> String {
 /// shift `distinct_count` by one on cap boundaries. Keeping everything
 /// fixed-seed sidesteps that class of flake entirely.
 fn hash_token_value(token: &Token) -> u64 {
-    // Reuse `token_value_string` to get a canonical string representation,
-    // then run FNV-1a over its bytes. This is slower than hashing field
-    // bytes directly but keeps the code in one place. Count-only tokens
-    // are rare per line compared to the total workload, so the overhead
-    // is negligible relative to pattern detection.
-    let canonical = token_value_string(token);
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0100_0000_01b3;
     let mut h: u64 = FNV_OFFSET;
-    for b in canonical.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(FNV_PRIME);
+    match token {
+        Token::Timestamp(s)
+        | Token::IPv4(s)
+        | Token::IPv6(s)
+        | Token::Mac(s)
+        | Token::Fqdn(s)
+        | Token::Host(s)
+        | Token::Uuid(s)
+        | Token::Path(s)
+        | Token::Json(s)
+        | Token::Duration(s)
+        | Token::Size(s)
+        | Token::Number(s)
+        | Token::QuotedString(s)
+        | Token::Name(s)
+        | Token::KubernetesNamespace(s)
+        | Token::VolumeName(s)
+        | Token::PluginType(s)
+        | Token::PodName(s)
+        | Token::ThreadID(s)
+        | Token::HttpStatusClass(s)
+        | Token::Email(s) => fnv1a_fold(&mut h, s.as_bytes()),
+        Token::Hash(_, s) => fnv1a_fold(&mut h, s.as_bytes()),
+        Token::BracketContext(parts) => {
+            for (i, part) in parts.iter().enumerate() {
+                if i > 0 {
+                    fnv1a_fold(&mut h, b",");
+                }
+                fnv1a_fold(&mut h, part.as_bytes());
+            }
+        }
+        Token::Port(p) => fnv1a_fold_decimal(&mut h, u64::from(*p)),
+        Token::HttpStatus(s) => fnv1a_fold_decimal(&mut h, u64::from(*s)),
+        Token::Pid(p) => fnv1a_fold_decimal(&mut h, u64::from(*p)),
+        Token::KeyValuePair { key, value_type } => {
+            fnv1a_fold(&mut h, key.as_bytes());
+            fnv1a_fold(&mut h, b"=");
+            fnv1a_fold(&mut h, value_type.as_bytes());
+        }
+        Token::LogWithModule { level, module } => {
+            fnv1a_fold(&mut h, level.as_bytes());
+            fnv1a_fold(&mut h, b":");
+            fnv1a_fold(&mut h, module.as_bytes());
+        }
+        Token::StructuredMessage { component, level } => {
+            fnv1a_fold(&mut h, component.as_bytes());
+            fnv1a_fold(&mut h, b":");
+            fnv1a_fold(&mut h, level.as_bytes());
+        }
     }
     h
 }
@@ -1780,6 +1848,12 @@ impl PatternFolder {
             self.stats.patterns_detected += 1;
             self.count_pattern_types(&normalized_line.tokens);
         }
+        // Format/level classification reads mostly off the tokens just
+        // computed, falling back to a bounded byte scan only when nothing
+        // free answered the level — see `record_briefing_line`.
+        self.stats
+            .record_briefing_line(&normalized_line.tokens, line);
+        self.stats.record_span(&normalized_line.tokens);
 
         // Try to find a matching group in the buffer
         self.cluster_line_at(normalized_line, location);
@@ -2180,9 +2254,25 @@ impl PatternFolder {
         let total_groups = groups_with_counts.len();
         let total_input_lines = self.stats.total_lines;
 
-        // Take top N
-        let top_groups: Vec<(usize, PatternGroup)> =
-            groups_with_counts.into_iter().take(n).collect();
+        // Take top N. The groups beyond N never pass through
+        // `format_group_dispatch` (they're not rendered), so the briefing's
+        // template map would silently miss them; record those directly here
+        // so `sum(template_counts) == total_lines` holds regardless of
+        // --top's cutoff.
+        let mut top_groups: Vec<(usize, PatternGroup)> = Vec::with_capacity(n.min(total_groups));
+        for (i, (count, group)) in groups_with_counts.into_iter().enumerate() {
+            if i < n {
+                top_groups.push((count, group));
+            } else {
+                let (first_epoch, last_epoch) = group_epoch_range(&group);
+                self.stats.template_counts.record(
+                    group.template(),
+                    group.count(),
+                    first_epoch,
+                    last_epoch,
+                );
+            }
+        }
 
         let lines_covered: usize = top_groups.iter().map(|(c, _)| c).sum();
 
@@ -2255,16 +2345,14 @@ impl PatternFolder {
 
     fn count_pattern_types(&mut self, tokens: &[Token]) {
         for token in tokens {
-            self.stats.bump(token.facts().stats_bucket);
+            let bucket = token.facts().stats_bucket;
+            self.stats.bump(bucket);
+            self.stats
+                .cardinality
+                .entry(bucket)
+                .or_default()
+                .insert(hash_token_value(token));
         }
-    }
-
-    fn count_active_pattern_types(&self) -> usize {
-        self.stats
-            .pattern_counters()
-            .iter()
-            .filter(|(_, count, _)| *count > 0)
-            .count()
     }
 
     /// Parallel batch processing: normalize in parallel, cluster sequentially
@@ -2320,6 +2408,9 @@ impl PatternFolder {
             self.stats.patterns_detected += 1;
             self.count_pattern_types(&normalized_line.tokens);
         }
+        self.stats
+            .record_briefing_line(&normalized_line.tokens, &normalized_line.original);
+        self.stats.record_span(&normalized_line.tokens);
 
         // Fast similarity matching using pre-computed normalized text. The
         // grouping position remains batch-granular to preserve clustering and
