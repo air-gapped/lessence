@@ -203,3 +203,38 @@ talks to `127.0.0.1:6443`, the distilled copy to an invented address), so the
 transcripts carry values that have not been through invention. Publishing
 them is the owner's call, not the harness's. Keep result files outside the
 tree, or scrub them first.
+
+
+## Second measurement — 2026-08-30, against the briefing build
+
+Same harness, primed arm only, sonnet, **3 runs per scenario**, `--max-turns
+25`, against 0.4.5 f95fda3b5 (the build carrying the briefing). No run
+truncated or errored.
+
+| scenario | primed, pre-briefing (n=1) | primed, with briefing (n=3) |
+|---|---|---|
+| kubelet-notready | 17% | 72% |
+| ssh-intrusion | 80% | 53% |
+| db-vague | 40% | 20% |
+| argocd-crashloop | 20% | 47% |
+
+The single number worth trusting here is the one that is not a percentage of a
+small sample: `apiserver-unreachable`, the weight-2 finding that IS the answer
+to the kubelet scenario, went from **0/8 across both pre-briefing arms to 3/3**.
+That is the result. The scenario percentages move in both directions on n=1
+versus n=3 and should not be read as trends — ssh and db-vague going down is
+almost certainly sampling, not regression, but nobody has the runs to say so.
+
+Two caveats that belong with any citation of this:
+
+**It is confounded.** The commit that added the briefing also added the
+SKILL.md section teaching an agent how to read it. This measures binary and
+skill together. To attribute the gain to the output itself, run a primed arm
+with the old skill text against the new binary.
+
+**The arms are not matched** — 12 runs after, 8 before, and 1 run per scenario
+before against 3 after.
+
+What did not move: the `crashloopbackoff-app-pods` distractor still fires 3/3
+on kubelet, so agents name the loudest downstream symptom alongside the cause
+rather than instead of it.
