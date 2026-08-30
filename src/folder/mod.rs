@@ -171,6 +171,32 @@ struct PatternGroup {
     /// order (parallel to `lines`). Empty in every other mode, so the
     /// per-line cost is not paid unless a distillation asked for it.
     member_line_nos: Vec<usize>,
+    /// True member count. Equals `lines.len()` for a group that has never
+    /// been evicted from the live buffer (the common case). A group that
+    /// *has* been evicted (lessence-940) keeps accumulating this field
+    /// after `lines` is truncated down to just its first and last member —
+    /// `count()` reads this, never `lines.len()`, so every caller sees the
+    /// true total regardless of what is physically retained.
+    count: usize,
+    /// Set once this group has passed through eviction: the bounded rollup
+    /// accumulator that survives in place of the full member list. `None`
+    /// for a group still fully materialized in `lines`.
+    retained: Option<RetainedState>,
+}
+
+/// Rollup accumulator for a group that has been evicted from the live
+/// buffer but keeps its identity (lessence-940): seeded once by scanning
+/// every member the group had at eviction time (`RollupComputer::seed`,
+/// identical arithmetic to a normal flush), then extended one rejoining
+/// member at a time (`RollupComputer::accumulate_tokens` /
+/// `accumulate_varies`) — never rescanned, so memory stays bounded by the
+/// per-type `distinct_cap` regardless of how many more members arrive.
+/// Finalised into a `GroupRollup` exactly once, at actual emission.
+#[derive(Debug, Default)]
+struct RetainedState {
+    per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+    varies: HashMap<String, usize>,
+    varies_capped: bool,
 }
 
 /// First whitespace token at which two normalized lines disagree. Tokenizes
@@ -253,6 +279,8 @@ impl PatternGroup {
             last_source_id: location.source_id,
             nearest: None,
             member_line_nos: Vec::new(),
+            count: 1,
+            retained: None,
         }
     }
 
@@ -267,6 +295,41 @@ impl PatternGroup {
         self.lines.push(line);
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
+        self.count += 1;
+    }
+
+    /// Rejoin a member into a group that has already been evicted from the
+    /// live buffer (lessence-940). Only ever called with a line whose hash
+    /// equals this group's founding representative — the sole way a line
+    /// finds a retained group again is the exact-hash fast path — so the
+    /// member's normalized text is always identical to `first().normalized`
+    /// and the template can never gain a new varying slot here (that only
+    /// happens through the similarity scan, which never sees retained
+    /// groups). `lines` is kept at its truncated [first, last] shape; the
+    /// rollup accumulator is extended by one member, never rescanned.
+    fn retained_rejoin(
+        &mut self,
+        line: LogLine,
+        location: LineLocation,
+        rollup_computer: &RollupComputer,
+    ) {
+        self.count += 1;
+        self.last_line_no = location.line_no;
+        self.last_source_id = location.source_id;
+        if let Some(state) = &mut self.retained {
+            rollup_computer.accumulate_tokens(std::slice::from_ref(&line), &mut state.per_type);
+            rollup_computer.accumulate_varies(
+                std::slice::from_ref(&line),
+                &self.template,
+                &mut state.varies,
+                &mut state.varies_capped,
+            );
+        }
+        if self.lines.len() < 2 {
+            self.lines.push(line);
+        } else {
+            self.lines[1] = line;
+        }
     }
 
     /// A member that differs from the template at some word — `Timeout`
@@ -292,7 +355,7 @@ impl PatternGroup {
     }
 
     fn should_collapse(&self, min_collapse: usize) -> bool {
-        self.lines.len() >= min_collapse
+        self.count() >= min_collapse
     }
 
     fn first(&self) -> &LogLine {
@@ -304,7 +367,7 @@ impl PatternGroup {
     }
 
     fn count(&self) -> usize {
-        self.lines.len()
+        self.count
     }
 }
 
@@ -388,7 +451,45 @@ pub struct PatternFolder {
     /// --distill: one template per flushed group — the input side of the
     /// template-set contract check.
     distill_templates: Vec<String>,
+    /// Groups evicted from the live buffer that keep their identity
+    /// instead of being emitted immediately (lessence-940): a later line
+    /// whose founding hash matches rejoins here instead of founding a
+    /// fresh group. Keyed the same way `group_index` is — a hash present
+    /// in one map is never present in the other. Never populated in
+    /// --distill mode (distillation needs every member's raw line, which
+    /// eviction would discard) or in the ranked modes (they never evict).
+    /// Drained and emitted once each, at `finish()`.
+    retained: ahash::AHashMap<u64, PatternGroup>,
+    /// How many times a group could not be retained because
+    /// `RETAINED_TEMPLATE_CAP` was already full when it evicted — it was
+    /// emitted immediately instead, exactly as before this feature, and so
+    /// remains fragmentable if the same template reappears later. Declared
+    /// in the JSON completeness record rather than silently dropped.
+    json_retention_cap_hits: usize,
 }
+
+/// Outcome of `PatternFolder::retain_evicted_group`. Not a `Result` — a
+/// declined group is the routine fallback path (--distill, or the
+/// retention cap), not an error, and clippy's `result_large_err` lint
+/// correctly flags a ~270-byte `PatternGroup` in an `Err` variant. This
+/// eviction-time path is cold relative to per-line clustering, so the size
+/// difference between variants is not worth boxing for.
+#[allow(clippy::large_enum_variant)]
+enum Retention {
+    /// Moved into `self.retained`; nothing to emit now.
+    Kept,
+    /// Not retained; the caller emits it immediately, exactly as before
+    /// this feature.
+    Declined(PatternGroup),
+}
+
+/// Upper bound on distinct templates held in `PatternFolder::retained` at
+/// once. Past this, a newly-evicted group is emitted immediately instead
+/// of retained — the same behaviour as before this feature — rather than
+/// growing the map without limit. Chosen well above the distinct-template
+/// count of every corpus this project measures against (~2,200 on the
+/// largest), so the cap is a genuine backstop, not an expected ceiling.
+const RETAINED_TEMPLATE_CAP: usize = 16_384;
 
 #[derive(Debug, Default)]
 pub struct FoldingStats {
@@ -723,6 +824,12 @@ struct GroupCompleteness {
     omitted_by_top: Count,
     omitted_by_summary_cap: Count,
     omitted_by_fit: Count,
+    /// How many groups could not be kept mergeable across an eviction
+    /// (lessence-940) because `RETAINED_TEMPLATE_CAP` was already full when
+    /// they evicted, and so were emitted immediately instead — the same
+    /// fragmentation risk as before this feature, bounded rather than
+    /// silently absent. Zero on every corpus this project measures against.
+    fragmented_by_retention_cap: usize,
 }
 
 #[derive(Serialize, Default)]
@@ -1427,6 +1534,7 @@ fn render_compact_marker(
 /// Intermediate accumulator for one (group, token_type) pair during
 /// rollup computation. Sample-worthy types retain strings; count-only
 /// types retain u64 hashes. Both cap at `distinct_cap`.
+#[derive(Debug)]
 enum Accumulator {
     /// Sample-worthy: retain full values so we can draw samples.
     Values(HashSet<String>),
@@ -1477,26 +1585,26 @@ impl RollupComputer {
         self
     }
 
-    /// Compute the rollup for one group. Iterates the group's lines
-    /// once, bucketing each token into its per-type accumulator, then
-    /// draws the final samples and produces one VariationEntry per
-    /// token type that appeared.
-    ///
-    /// Complexity: O(total_tokens_in_group). Memory bound:
-    /// `sum(min(distinct, cap)) × per-entry-size`, where per-entry-size
-    /// is `sizeof(u64)` for count-only and `value_len` for sample-worthy.
-    fn compute(&self, group: &PatternGroup) -> GroupRollup {
-        // Flags + accumulators, keyed by token type name.
-        // Kept as BTreeMap so the final JSON serialisation is sorted.
-        let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
+    /// Bucket every token of `lines` into `per_type`'s accumulators —
+    /// the token-type half of a group's rollup. Shared by a full-group
+    /// scan (`compute`, `seed`) and a single-member extension of an
+    /// already-seeded accumulator (`PatternGroup::retained_rejoin`), so a
+    /// group that has been evicted from the live buffer keeps accumulating
+    /// this state one member at a time instead of needing every member
+    /// re-scanned (lessence-940).
+    fn accumulate_tokens(
+        &self,
+        lines: &[LogLine],
+        per_type: &mut BTreeMap<&'static str, (Accumulator, bool)>,
+    ) {
+        // Upper bound on distinct values per token type: can't exceed the
+        // number of lines passed in. Pre-allocating HashSets with this hint
+        // avoids the grow-rehash cycle that shows up disproportionately in
+        // parallel-mode flush timing. For a single-member call (a rejoin)
+        // this is just 1 — the hint only matters for a fresh accumulator.
+        let capacity_hint = lines.len().min(self.distinct_cap);
 
-        // Upper bound on distinct values per token type: can't exceed
-        // the number of lines in the group. Pre-allocating HashSets
-        // with this hint avoids the grow-rehash cycle that shows up
-        // disproportionately in parallel-mode flush timing.
-        let capacity_hint = group.lines.len().min(self.distinct_cap);
-
-        for line in &group.lines {
+        for line in lines {
             for token in &line.tokens {
                 let name = token_type_name(token);
                 let sample_worthy = is_sample_worthy(token);
@@ -1538,23 +1646,36 @@ impl RollupComputer {
                 }
             }
         }
+    }
 
-        // Words the detectors never touched can still differ between
-        // members — `Configuring patroni` folded with `Configuring crontab`
-        // because eight words in nine match. Tokens are the only thing the
-        // loop above can see, so without this pass the rollup would report
-        // those ten subsystems as one, and "zero data loss" would hold only
-        // for tokenised variation (lessence-w1p). Compare each member to the
-        // representative word by word; a differing word that is not a
-        // placeholder is reported under VARIES like any other type.
-        // Every word is counted, the representative's included, because an
-        // agent reading `Server Busy` needs to know that one member in 7,165
-        // said `Server Reject` — the count is what makes rare visible.
-        // The template is authoritative: every `<VARIES>` it carries is a
-        // slot, and each member's word aligned to that slot is counted —
-        // minus the `key=` prefix the slot kept. A member that has no word
-        // there (a shorter line) counts as `∅`, so an absence is visible.
-        let template = group.template();
+    /// Words the detectors never touched can still differ between
+    /// members — `Configuring patroni` folded with `Configuring crontab`
+    /// because eight words in nine match. Tokens are the only thing
+    /// `accumulate_tokens` can see, so without this pass the rollup would
+    /// report those ten subsystems as one, and "zero data loss" would hold
+    /// only for tokenised variation (lessence-w1p). Compare each member to
+    /// `template`'s words; a differing word that is not a placeholder is
+    /// reported under VARIES like any other type. Every word is counted,
+    /// the representative's included, because an agent reading `Server
+    /// Busy` needs to know that one member in 7,165 said `Server Reject` —
+    /// the count is what makes rare visible. The template is authoritative:
+    /// every `<VARIES>` it carries is a slot, and each member's word
+    /// aligned to that slot is counted — minus the `key=` prefix the slot
+    /// kept. A member that has no word there (a shorter line) counts as
+    /// `∅`, so an absence is visible.
+    ///
+    /// Shared the same way `accumulate_tokens` is: a full-group scan seeds
+    /// `varies`, and a rejoining member (always identical in normalized
+    /// text to the group's founder — the only way a line finds a retained
+    /// group again — so `template`'s slot set cannot change here) extends
+    /// it one line at a time.
+    fn accumulate_varies(
+        &self,
+        lines: &[LogLine],
+        template: &str,
+        varies: &mut HashMap<String, usize>,
+        varies_capped: &mut bool,
+    ) {
         let tmpl_words: Vec<&str> = unit_spans(template)
             .into_iter()
             .map(|(at, len)| &template[at..at + len])
@@ -1567,50 +1688,125 @@ impl RollupComputer {
                     .map(|k| (i, k, w.len() - k - VARIES_MARK.len()))
             })
             .collect();
-        let mut varies: HashMap<String, usize> = HashMap::new();
-        let mut varies_capped = false;
-        if !slots.is_empty() {
-            for line in &group.lines {
-                let member: Vec<&str> = unit_spans(&line.normalized)
-                    .into_iter()
-                    .map(|(at, len)| &line.normalized[at..at + len])
-                    .collect();
-                let Some(aligned) = align_words(&tmpl_words, &member) else {
-                    continue;
-                };
-                for &(i, k, q) in &slots {
-                    let masked;
-                    let value = match aligned[i] {
-                        Some(j) => {
-                            let w = if self.sanitize_pii {
-                                masked = mask_credentials(member[j]);
-                                masked.as_str()
-                            } else {
-                                member[j]
-                            };
-                            let prefix = &tmpl_words[i][..k];
-                            let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
-                            w.strip_prefix(prefix)
-                                .and_then(|v| v.strip_suffix(suffix))
-                                .unwrap_or(w)
-                        }
-                        None => "∅",
-                    };
-                    if let Some(n) = varies.get_mut(value) {
-                        *n += 1;
-                    } else if varies.len() < self.distinct_cap {
-                        varies.insert(value.to_string(), 1);
-                    } else {
-                        varies_capped = true;
+        if slots.is_empty() {
+            return;
+        }
+        for line in lines {
+            let member: Vec<&str> = unit_spans(&line.normalized)
+                .into_iter()
+                .map(|(at, len)| &line.normalized[at..at + len])
+                .collect();
+            let Some(aligned) = align_words(&tmpl_words, &member) else {
+                continue;
+            };
+            for &(i, k, q) in &slots {
+                let masked;
+                let value = match aligned[i] {
+                    Some(j) => {
+                        let w = if self.sanitize_pii {
+                            masked = mask_credentials(member[j]);
+                            masked.as_str()
+                        } else {
+                            member[j]
+                        };
+                        let prefix = &tmpl_words[i][..k];
+                        let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
+                        w.strip_prefix(prefix)
+                            .and_then(|v| v.strip_suffix(suffix))
+                            .unwrap_or(w)
                     }
+                    None => "∅",
+                };
+                if let Some(n) = varies.get_mut(value) {
+                    *n += 1;
+                } else if varies.len() < self.distinct_cap {
+                    varies.insert(value.to_string(), 1);
+                } else {
+                    *varies_capped = true;
                 }
             }
+        }
+    }
+
+    /// Compute the rollup for a group that has never been evicted from the
+    /// live buffer: seeds fresh accumulators from its full member list and
+    /// finalises immediately. Complexity: O(total_tokens_in_group). Memory
+    /// bound: `sum(min(distinct, cap)) × per-entry-size`, where
+    /// per-entry-size is `sizeof(u64)` for count-only and `value_len` for
+    /// sample-worthy.
+    fn compute(&self, group: &PatternGroup) -> GroupRollup {
+        let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
+        self.accumulate_tokens(&group.lines, &mut per_type);
+        let mut varies: HashMap<String, usize> = HashMap::new();
+        let mut varies_capped = false;
+        self.accumulate_varies(
+            &group.lines,
+            group.template(),
+            &mut varies,
+            &mut varies_capped,
+        );
+        self.finalize(
+            per_type,
+            varies,
+            varies_capped,
+            group.template(),
+            &group.first().normalized,
+        )
+    }
+
+    /// Seed a retained group's accumulator at the moment it is evicted from
+    /// the live buffer: one full scan of its current member list — the
+    /// last point that full list exists — after which `PatternGroup::lines`
+    /// is truncated and further members extend this state one at a time.
+    fn seed(&self, group: &PatternGroup) -> RetainedState {
+        let mut state = RetainedState::default();
+        self.accumulate_tokens(&group.lines, &mut state.per_type);
+        self.accumulate_varies(
+            &group.lines,
+            group.template(),
+            &mut state.varies,
+            &mut state.varies_capped,
+        );
+        state
+    }
+
+    /// Finalise a retained group's accumulator into a `GroupRollup`, at
+    /// actual emission — the one point a retained group is rendered.
+    /// `template` is the group's (fixed, post-retention) template;
+    /// `seed_key` reproduces the same per-group sample-draw seed `compute`
+    /// uses (the founding line's normalized text).
+    fn finalize_retained(
+        &self,
+        state: RetainedState,
+        template: &str,
+        seed_key: &str,
+    ) -> GroupRollup {
+        self.finalize(
+            state.per_type,
+            state.varies,
+            state.varies_capped,
+            template,
+            seed_key,
+        )
+    }
+
+    /// Draw samples deterministically from each Accumulator and produce one
+    /// `VariationEntry` per token type that appeared. Seed is per-group so
+    /// the same template → the same draw, regardless of how the
+    /// accumulators were built (one scan, or a scan plus incremental
+    /// extensions).
+    fn finalize(
+        &self,
+        mut per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+        varies: HashMap<String, usize>,
+        varies_capped: bool,
+        template: &str,
+        seed_key: &str,
+    ) -> GroupRollup {
+        if template.contains(VARIES_MARK) {
             per_type.insert(VARIES, (Accumulator::Counted(varies), varies_capped));
         }
-
-        // Finalise: draw samples deterministically from each Accumulator.
-        // Seed is per-group so same template → same draw.
-        let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(&group.first().normalized));
+        let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(seed_key));
         let mut out: GroupRollup = BTreeMap::new();
         for (name, (acc, capped)) in per_type {
             let distinct_count = acc.len();
@@ -1733,6 +1929,8 @@ impl PatternFolder {
             rollup_computer: RollupComputer::with_defaults().sanitized(sanitize_pii),
             distill_kept: Vec::new(),
             distill_templates: Vec::new(),
+            retained: ahash::AHashMap::new(),
+            json_retention_cap_hits: 0,
         }
     }
 
@@ -1890,6 +2088,18 @@ impl PatternFolder {
     /// group. The hash shortcut picks the same group the scan would (see
     /// the `group_index` field docs).
     fn cluster_line_at(&mut self, normalized_line: LogLine, location: Option<LineLocation>) {
+        // A line whose hash matches a group that has already been evicted
+        // from the live buffer rejoins it directly (lessence-940) instead
+        // of founding a fresh group under the same template. `group_index`
+        // and `retained` share one key space and are never both populated
+        // for the same hash, so this check and the one below it are
+        // mutually exclusive.
+        if let Some(group) = self.retained.get_mut(&normalized_line.hash) {
+            let loc = location
+                .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
+            group.retained_rejoin(normalized_line, loc, &self.rollup_computer);
+            return;
+        }
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
@@ -2076,7 +2286,18 @@ impl PatternFolder {
                     *v -= 1;
                 }
             }
-            let formatted = self.format_group_dispatch(&group)?;
+            // The flush threshold bounds the *members* held in memory, not
+            // a group's identity (lessence-940): keep the group retrievable
+            // by a later exact-hash rejoin instead of emitting it now and
+            // forgetting it ever existed. Only the modes that already never
+            // evict, and --distill (which needs every member's raw line),
+            // opt out; `retain_evicted_group` returns the group back on any
+            // other reason it declined (chiefly the retention cap).
+            let mut group = match self.retain_evicted_group(group) {
+                Retention::Kept => return Ok(None),
+                Retention::Declined(group) => group,
+            };
+            let formatted = self.format_group_dispatch(&mut group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
             if self.is_markdown_output() {
@@ -2095,6 +2316,40 @@ impl PatternFolder {
         }
 
         Ok(None)
+    }
+
+    /// Try to keep an evicted group's identity instead of emitting it right
+    /// away (lessence-940). On success the group is moved into
+    /// `self.retained`, keyed by its founding hash, with `lines` truncated
+    /// to `[first, last]` and a seeded rollup accumulator in place of the
+    /// member list the flush threshold exists to bound; the caller emits
+    /// nothing now; a later exact-hash match rejoins it directly
+    /// (`cluster_line_at`) and it is drained and formatted once, at
+    /// `finish()`. Declines — handing `group` straight back — for
+    /// --distill (needs every member's raw line to choose distilled
+    /// samples) or once `RETAINED_TEMPLATE_CAP` is full — a hash already in
+    /// `self.retained` can never reach this call (any line matching it
+    /// would have rejoined in `cluster_line_at` before a buffer group with
+    /// that founding hash could exist), so every insertion here is new.
+    fn retain_evicted_group(&mut self, mut group: PatternGroup) -> Retention {
+        if self.config.distill.is_some() {
+            return Retention::Declined(group);
+        }
+        let key = group.first().hash;
+        if !self.retained.contains_key(&key) && self.retained.len() >= RETAINED_TEMPLATE_CAP {
+            self.json_retention_cap_hits += 1;
+            return Retention::Declined(group);
+        }
+        let state = self.rollup_computer.seed(&group);
+        let first = group.first().clone();
+        group.lines = if group.count() <= 1 {
+            vec![first]
+        } else {
+            vec![first, group.last().clone()]
+        };
+        group.retained = Some(state);
+        self.retained.insert(key, group);
+        Retention::Kept
     }
 
     /// Prepare summary data: flush batches, merge groups by normalized text,
@@ -2185,16 +2440,22 @@ impl PatternFolder {
 
         let mut output = Vec::new();
 
-        // Sort groups by position to maintain chronological order. The
-        // buffer is emptied below, so the hash index goes with it.
+        // Every group still in the live buffer, plus every group retained
+        // past its eviction (lessence-940) — each rendered exactly once,
+        // here, since retention deliberately defers emission rather than
+        // streaming a record per eviction. Sorted together by founding
+        // position so output order stays chronological regardless of which
+        // of the two a group came from, and deterministic across runs and
+        // thread counts (`position` is assigned from input order, never
+        // from processing order). The buffer and the retained map are
+        // emptied below, so both hash indexes go with them.
         self.group_index.clear();
-        self.buffer.sort_by_key(|group| group.position);
+        let mut groups: Vec<PatternGroup> = std::mem::take(&mut self.buffer);
+        groups.extend(std::mem::take(&mut self.retained).into_values());
+        groups.sort_by_key(|group| group.position);
 
-        // Flush all remaining groups in chronological order. take() empties
-        // the buffer in O(1); the old remove(0) loop shifted the whole
-        // vector on every iteration (O(n²) in buffered groups).
-        for group in std::mem::take(&mut self.buffer) {
-            let formatted = self.format_group_dispatch(&group)?;
+        for mut group in groups {
+            let formatted = self.format_group_dispatch(&mut group)?;
             // Track output lines: count newlines in formatted output + 1 for the last line
             self.stats.output_lines += formatted.lines().count();
             if self.is_markdown_output() {
@@ -2277,8 +2538,8 @@ impl PatternFolder {
         let lines_covered: usize = top_groups.iter().map(|(c, _)| c).sum();
 
         let mut output = Vec::new();
-        for (count, group) in top_groups {
-            let formatted = self.format_group_dispatch(&group)?;
+        for (count, mut group) in top_groups {
+            let formatted = self.format_group_dispatch(&mut group)?;
             self.stats.output_lines += formatted.lines().count();
             output.push((count, formatted));
         }

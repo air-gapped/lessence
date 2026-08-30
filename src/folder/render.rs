@@ -39,12 +39,13 @@ impl PatternFolder {
     /// before this guard was added. The `variation` field in JSON mode
     /// remains present (as an empty `{}`) so the schema shape is
     /// unchanged; only the compute cost is skipped.
-    pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
+    pub(super) fn format_group_dispatch(&mut self, group: &mut PatternGroup) -> Result<String> {
         // The single point every finalised group passes through, on the
-        // sequential path only (streaming eviction, the final drain, and
-        // --top N's ranking pass all call this). Accumulates rather than
-        // overwrites: lessence-940 means the same template can flush more
-        // than once as its group fragments across evictions.
+        // sequential path only (the live buffer's final drain, a retained
+        // group's final drain, and --top N's ranking pass all call this —
+        // streaming eviction no longer does, since lessence-940: a group
+        // keeps its identity past eviction instead of being formatted and
+        // forgotten, so this now runs exactly once per template).
         //
         // --sanitize-pii applies here too: the briefing's top-templates
         // list is another output surface, and an unmasked template would
@@ -60,13 +61,30 @@ impl PatternFolder {
 
         // --distill emits input lines, not rendered groups: record which
         // members the distillation keeps and skip formatting entirely.
+        // (--distill never retains a group past eviction, so `retained` is
+        // always `None` here.)
         if let Some(members) = self.config.distill {
             self.distill_take(group, members);
             return Ok(String::new());
         }
         let mut rollup = if group.count() >= self.config.min_collapse {
-            self.rollup_computer.compute(group)
+            match group.retained.take() {
+                // Retained past eviction (lessence-940): the accumulator
+                // was seeded from every member the group had at that
+                // point and extended one rejoining member at a time since
+                // — finalise it now, the one time this group is rendered,
+                // instead of a batch scan `lines` can no longer support.
+                Some(state) => self.rollup_computer.finalize_retained(
+                    state,
+                    group.template(),
+                    &group.first().normalized,
+                ),
+                None => self.rollup_computer.compute(group),
+            }
         } else {
+            // A group that never reached min_collapse carries no rollup
+            // either way; drop any seeded-but-unused accumulator with it.
+            group.retained = None;
             if self.is_json_output() {
                 self.json_uncomputed_variation_groups += 1;
             }
@@ -403,7 +421,8 @@ impl PatternFolder {
                 let group_total = self.json_groups_total.unwrap_or(self.json_groups_emitted);
                 let groups_complete = self.json_omitted_by_top == 0
                     && self.json_omitted_by_summary_cap == 0
-                    && self.json_omitted_by_fit == 0;
+                    && self.json_omitted_by_fit == 0
+                    && self.json_retention_cap_hits == 0;
                 let variation_complete = self.json_capped_entries == 0
                     && self.json_uncomputed_variation_groups == 0
                     && self.json_omitted_values_lower_bound == 0;
@@ -434,6 +453,7 @@ impl PatternFolder {
                         omitted_by_top: Count::exact(self.json_omitted_by_top),
                         omitted_by_summary_cap: Count::exact(self.json_omitted_by_summary_cap),
                         omitted_by_fit: Count::exact(self.json_omitted_by_fit),
+                        fragmented_by_retention_cap: self.json_retention_cap_hits,
                     },
                     variation_values: VariationCompleteness {
                         complete: variation_complete,

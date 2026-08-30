@@ -351,21 +351,158 @@ fn top_n_retains_all_groups_past_flush_threshold() {
 
 /// The inverse guard: streaming fold mode must keep evicting past the
 /// threshold, or unbounded inputs would grow the buffer without limit.
+/// Since lessence-940 an eviction keeps the group's identity in
+/// `retained` instead of streaming it out immediately (a bounded
+/// accumulator, not the member list the threshold exists to cap) — so
+/// this now pins the buffer staying bounded and the retained map picking
+/// up exactly what left it, not `process_line` returning `Some`.
 #[test]
 fn fold_mode_still_evicts_past_flush_threshold() {
     let mut folder = PatternFolder::new(Config {
         thread_count: Some(1),
         ..Config::default()
     });
-    let mut evicted = 0;
     for i in 0..1_200 {
-        if folder.process_line(&eviction_word(i)).unwrap().is_some() {
-            evicted += 1;
-        }
+        folder.process_line(&eviction_word(i)).unwrap();
     }
     assert!(
-        evicted > 0,
-        "fold mode must stream evictions past the threshold"
+        folder.buffer.len() <= 1_000,
+        "buffer must stay bounded past the flush threshold, got {}",
+        folder.buffer.len()
+    );
+    assert!(
+        !folder.retained.is_empty(),
+        "evicted groups must be retained, not silently dropped"
+    );
+}
+
+/// The count-conservation half of lessence-940's fix: across an eviction
+/// large enough to force several flushes, the sum of every group record's
+/// `count` must equal the input line count exactly, and no normalized
+/// template may be the `normalized` field of two different group records.
+#[test]
+fn retained_groups_conserve_total_count_and_never_duplicate_template() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        output_format: "json".to_string(),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    let mut total_lines = 0usize;
+    // A repeating signal, interleaved with over 2,000 mutually dissimilar
+    // filler lines — several buffer flushes' worth — so the signal's group
+    // is evicted and re-encountered more than once.
+    for round in 0..3 {
+        f.process_line("gateway heartbeat ok node=edge-01").unwrap();
+        total_lines += 1;
+        for i in 0..800 {
+            f.process_line(&format!("filler event {}", eviction_word(round * 800 + i)))
+                .unwrap();
+            total_lines += 1;
+        }
+    }
+    let output = f.finish().unwrap();
+
+    let mut seen_templates = std::collections::HashSet::new();
+    let mut counted_total = 0usize;
+    for line in &output {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["type"], "group");
+        let template = v["normalized"].as_str().unwrap().to_string();
+        assert!(
+            seen_templates.insert(template.clone()),
+            "template appeared in two group records: {template}"
+        );
+        counted_total += v["count"].as_u64().unwrap() as usize;
+    }
+    assert_eq!(
+        counted_total, total_lines,
+        "sum of group counts must equal total input lines"
+    );
+    // The signal specifically must have folded to one record with the true
+    // total, not fragmented across its three occurrences.
+    let signal_count = output
+        .iter()
+        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+        .find(|v| v["normalized"] == "gateway heartbeat ok node=edge-01")
+        .map(|v| v["count"].as_u64().unwrap());
+    assert_eq!(
+        signal_count,
+        Some(3),
+        "the recurring signal must fold to one record"
+    );
+}
+
+/// The rollup half of lessence-940's fix: a group's `<VARIES>` value
+/// histogram must keep accumulating across an eviction, not restart. Two
+/// members straddling the eviction boundary carry different values in the
+/// same rolled-up (untokenised, plain-word) slot; the finalised rollup must
+/// still name both.
+#[test]
+fn rollup_survives_eviction_and_names_values_from_both_sides() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        output_format: "json".to_string(),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    // Founder and a similarity-joined member, merged while still live: the
+    // group's template already carries a VARIES slot for "alpha"/"beta"
+    // before eviction ever happens.
+    f.process_line("worker process alpha started successfully at 10.0.0.1")
+        .unwrap();
+    f.process_line("worker process beta started successfully at 10.0.0.2")
+        .unwrap();
+
+    // Over 1,000 mutually dissimilar filler lines force the group (still
+    // below min_collapse, and now well past the 100-line safe distance) to
+    // be evicted and retained.
+    for i in 0..1_050 {
+        f.process_line(&format!("filler event {}", eviction_word(i)))
+            .unwrap();
+    }
+
+    // Rejoin: only an exact-hash match to the founder reaches a retained
+    // group, so this must repeat the founder's own text — extending the
+    // "alpha" side of the histogram after the accumulator was seeded (with
+    // both "alpha" and "beta") at eviction time.
+    f.process_line("worker process alpha started successfully at 10.0.0.1")
+        .unwrap();
+
+    let output = f.finish().unwrap();
+    let record = output
+        .iter()
+        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+        .find(|v| v["normalized"] == "worker process <VARIES> started successfully at <IP>")
+        .expect("the worker group must fold to one record");
+    assert_eq!(record["count"], 3);
+
+    let varies = &record["variation"]["VARIES"];
+    let samples: Vec<&str> = varies["samples"]
+        .as_array()
+        .expect("VARIES samples present")
+        .iter()
+        .map(|s| s.as_str().unwrap())
+        .collect();
+    assert!(
+        samples.contains(&"alpha") && samples.contains(&"beta"),
+        "rollup must name values from both sides of the eviction, got: {samples:?}"
+    );
+    let counts: Vec<u64> = varies["sample_counts"]
+        .as_array()
+        .expect("VARIES sample_counts present")
+        .iter()
+        .map(|c| c.as_u64().unwrap())
+        .collect();
+    let alpha_idx = samples.iter().position(|&s| s == "alpha").unwrap();
+    let beta_idx = samples.iter().position(|&s| s == "beta").unwrap();
+    assert_eq!(
+        counts[alpha_idx], 2,
+        "alpha occurs twice: founder plus the rejoin"
+    );
+    assert_eq!(
+        counts[beta_idx], 1,
+        "beta occurs once, from before the eviction"
     );
 }
 
@@ -394,44 +531,35 @@ fn explain_retains_a_recurring_group_past_flush_threshold() {
         "one recurring key must fold to one group record under --explain, got: {output:?}"
     );
 
-    // Inverse guard: the identical sequence with explain off must still
-    // evict, proving this test pins the exemption, not the threshold.
+    // The identical sequence with explain off must ALSO fold to one record
+    // now (lessence-940): eviction keeps the group's identity in
+    // `retained` instead of forgetting it, so a recurring key no longer
+    // fragments outside --explain either. `process_line` never streams a
+    // "recurringkey" record early — the group is always the buffer's
+    // current-oldest-first pick or retained, never the newest — so every
+    // match surfaces only at `finish()`.
     let mut f2 = PatternFolder::new(Config {
         thread_count: Some(1),
         ..Config::default()
     });
-    let mut evicted_matches = 0;
-    if f2
-        .process_line("recurringkey")
-        .unwrap()
-        .is_some_and(|s| s.contains("recurringkey"))
-    {
-        evicted_matches += 1;
-    }
+    assert!(f2.process_line("recurringkey").unwrap().is_none());
     for i in 0..1_100 {
-        if f2
-            .process_line(&eviction_word(i))
-            .unwrap()
-            .is_some_and(|s| s.contains("recurringkey"))
-        {
-            evicted_matches += 1;
-        }
+        assert!(
+            !f2.process_line(&eviction_word(i))
+                .unwrap()
+                .is_some_and(|s| s.contains("recurringkey")),
+            "recurringkey must not stream out early"
+        );
     }
-    if f2
-        .process_line("recurringkey")
-        .unwrap()
-        .is_some_and(|s| s.contains("recurringkey"))
-    {
-        evicted_matches += 1;
-    }
+    assert!(f2.process_line("recurringkey").unwrap().is_none());
     let output2 = f2.finish().unwrap();
-    evicted_matches += output2
+    let matches2 = output2
         .iter()
         .filter(|s| s.contains("recurringkey"))
         .count();
     assert_eq!(
-        evicted_matches, 2,
-        "without --explain the recurring key must fragment into two records, got: {output2:?}"
+        matches2, 1,
+        "without --explain the recurring key must also fold to one group record, got: {output2:?}"
     );
 }
 
@@ -1966,8 +2094,16 @@ fn flush_oldest_safe_group_flushes_old_group() {
     // Advance position counter well past safe_distance (100)
     f.position_counter = 200;
     let result = f.flush_oldest_safe_group().unwrap();
-    assert!(result.is_some(), "should flush group that is 199 lines old");
+    // Since lessence-940 a successful eviction keeps the group's identity
+    // in `retained` instead of streaming it out immediately, so the return
+    // is `None` on success now — the buffer emptying (and the group
+    // landing in `retained`) is the observable effect.
+    assert_eq!(
+        result, None,
+        "a retained eviction returns no formatted output"
+    );
     assert!(f.buffer.is_empty(), "buffer should be empty after flush");
+    assert_eq!(f.retained.len(), 1, "the evicted group must be retained");
 }
 
 #[test]
@@ -2010,11 +2146,18 @@ fn flush_exact_safe_distance_boundary() {
         result, None,
         "distance of exactly 100 should NOT flush (> not >=)"
     );
+    assert_eq!(f.buffer.len(), 1, "group must still be in the buffer");
 
-    // distance = 101 SHOULD flush
+    // distance = 101 SHOULD flush. A successful eviction retains the group
+    // (lessence-940) rather than streaming it, so the observable effect is
+    // the buffer emptying, not a `Some` return.
     f.position_counter = 102; // distance = 102 - 1 = 101
     let result = f.flush_oldest_safe_group().unwrap();
-    assert!(result.is_some(), "distance of 101 should flush");
+    assert_eq!(
+        result, None,
+        "a retained eviction returns no formatted output"
+    );
+    assert!(f.buffer.is_empty(), "distance of 101 should flush");
 }
 
 #[test]
@@ -2026,8 +2169,12 @@ fn flush_uses_subtraction_not_division() {
         .push(PatternGroup::new(make_line("division test", vec![]), 50));
     f.position_counter = 160;
     let result = f.flush_oldest_safe_group().unwrap();
+    assert_eq!(
+        result, None,
+        "a retained eviction returns no formatted output"
+    );
     assert!(
-        result.is_some(),
+        f.buffer.is_empty(),
         "distance 110 should flush (subtraction gives 110, division gives 3)"
     );
 }
@@ -2042,10 +2189,28 @@ fn flush_selects_first_among_equal_positions() {
     f.buffer
         .push(PatternGroup::new(make_line("second_group_bbb", vec![]), 5));
     f.position_counter = 200;
-    let result = f.flush_oldest_safe_group().unwrap().unwrap();
+    let result = f.flush_oldest_safe_group().unwrap();
+    // A successful eviction is retained, not streamed (lessence-940): which
+    // group was picked shows up in what is left behind, not in the return.
+    assert_eq!(
+        result, None,
+        "a retained eviction returns no formatted output"
+    );
+    assert_eq!(f.buffer.len(), 1, "one group should remain buffered");
     assert!(
-        result.contains("first_group_aaa"),
-        "should flush first group at equal position, got: {result}"
+        f.buffer[0].template().contains("second_group_bbb"),
+        "the first group at equal position should have been the one flushed, buffer holds: {}",
+        f.buffer[0].template()
+    );
+    assert!(
+        f.retained
+            .values()
+            .any(|g| g.template().contains("first_group_aaa")),
+        "should flush first group at equal position, retained holds: {:?}",
+        f.retained
+            .values()
+            .map(PatternGroup::template)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2058,9 +2223,18 @@ fn flush_accumulates_output_lines() {
     f.position_counter = 200;
     assert_eq!(f.stats.output_lines, 0);
     let _result = f.flush_oldest_safe_group().unwrap();
+    // Since lessence-940 a retained eviction defers formatting (and so
+    // `output_lines`) to `finish()` — it does not run
+    // `self.stats.output_lines += formatted.lines().count()` at flush time
+    // at all, unlike the pre-retention behaviour this test used to pin.
+    assert_eq!(
+        f.stats.output_lines, 0,
+        "a retained eviction must not format (or count output lines) early"
+    );
+    f.finish().unwrap();
     assert!(
         f.stats.output_lines > 0,
-        "output_lines should be incremented after flush, got 0"
+        "output_lines should be incremented once the retained group is finally emitted, got 0"
     );
 }
 
@@ -2379,8 +2553,8 @@ fn absorb_ingest_report_sets_input_completeness() {
 #[test]
 fn format_group_dispatch_text_mode() {
     let mut f = make_folder();
-    let group = make_group("hello", vec![vec![]]);
-    let output = f.format_group_dispatch(&group).unwrap();
+    let mut group = make_group("hello", vec![vec![]]);
+    let output = f.format_group_dispatch(&mut group).unwrap();
     // Text mode: should NOT be valid JSON
     assert!(
         serde_json::from_str::<serde_json::Value>(&output).is_err(),
@@ -2391,8 +2565,8 @@ fn format_group_dispatch_text_mode() {
 #[test]
 fn format_group_dispatch_json_mode() {
     let mut f = make_folder_json();
-    let group = make_group("hello", vec![vec![]]);
-    let output = f.format_group_dispatch(&group).unwrap();
+    let mut group = make_group("hello", vec![vec![]]);
+    let output = f.format_group_dispatch(&mut group).unwrap();
     // JSON mode: should be valid JSON
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "group");
@@ -3092,7 +3266,7 @@ fn format_group_dispatch_computes_rollup_for_collapsible() {
     // Kills: >= min_collapse → < min_collapse
     // A group at min_collapse should get rollup metadata in the output
     let mut f = make_folder();
-    let group = make_group(
+    let mut group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
@@ -3102,7 +3276,7 @@ fn format_group_dispatch_computes_rollup_for_collapsible() {
         ],
     );
     assert_eq!(group.count(), 4); // >= min_collapse=3
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&mut group).unwrap();
     // Rollup produces variation markers with type names (e.g., "ipv4")
     // The legacy format_collapsed_line produces "[+N similar, varying: X]"
     // With rollup, it produces "[+N similar | ipv4×M ...]"
@@ -3496,14 +3670,14 @@ fn finish_top_n_zero_input_lines() {
 #[test]
 fn format_group_dispatch_below_min_collapse_no_rollup() {
     let mut f = make_folder(); // min_collapse = 3
-    let group = make_group(
+    let mut group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
             vec![Token::IPv4("10.0.0.2".into())],
         ],
     ); // count = 2, below min_collapse = 3
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&mut group).unwrap();
     // Below min_collapse: no rollup marker, just the raw lines
     assert!(
         !output.contains("similar"),
@@ -3515,7 +3689,7 @@ fn format_group_dispatch_below_min_collapse_no_rollup() {
 fn format_group_dispatch_at_min_collapse_computes_rollup() {
     let mut f = make_folder(); // min_collapse = 3
     // Use enough varied tokens that rollup produces distinct output vs legacy
-    let group = make_group(
+    let mut group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
@@ -3525,7 +3699,7 @@ fn format_group_dispatch_at_min_collapse_computes_rollup() {
             vec![Token::IPv4("10.0.0.5".into())],
         ],
     ); // count = 5, well above min_collapse
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&mut group).unwrap();
     // Rollup path produces "ipv4×N" markers; legacy produces "[+N similar, varying: ...]"
     // If >= is mutated to <, count=5 >= 3 would become 5 < 3 = false → empty rollup
     // → legacy format which says "similar" but NOT "ipv4"
