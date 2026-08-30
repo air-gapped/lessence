@@ -2238,8 +2238,13 @@ impl PatternFolder {
         // after the run and never consume streamed evictions — evicting here
         // would silently drop groups from both the ranking and the coverage
         // denominator. Hold every group, exactly as the parallel pipeline
-        // does for all modes.
-        if self.config.summary || self.config.top_n.is_some() {
+        // does for all modes. --explain is exempted too: it is consumed
+        // whole after the run by a machine, never streamed to a human
+        // reader, so an evicted group re-forming later would emit one event
+        // as several records with split counts (lessence-940) — a
+        // fragmented count is a false premise, and the reader cannot merge
+        // what it cannot detect.
+        if self.config.summary || self.config.top_n.is_some() || self.config.explain {
             return false;
         }
         // Constitutional flush threshold: Use dynamic memory management instead of arbitrary limits

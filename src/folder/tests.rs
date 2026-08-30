@@ -369,6 +369,72 @@ fn fold_mode_still_evicts_past_flush_threshold() {
     );
 }
 
+/// `--explain` is consumed whole after the run by a machine, never streamed
+/// to a human reader: an evicted group re-forming later must not emit the
+/// same event as two records with split counts (lessence-940). Pins the
+/// exemption itself, not the threshold: the same input under `explain:
+/// false` must still evict.
+#[test]
+fn explain_retains_a_recurring_group_past_flush_threshold() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        explain: true,
+        ..Config::default()
+    });
+    assert!(f.process_line("recurringkey").unwrap().is_none());
+    for i in 0..1_100 {
+        f.process_line(&eviction_word(i)).unwrap();
+    }
+    // Recurring after the buffer would have overflowed a non-explain run.
+    assert!(f.process_line("recurringkey").unwrap().is_none());
+    let output = f.finish().unwrap();
+    let matches = output.iter().filter(|s| s.contains("recurringkey")).count();
+    assert_eq!(
+        matches, 1,
+        "one recurring key must fold to one group record under --explain, got: {output:?}"
+    );
+
+    // Inverse guard: the identical sequence with explain off must still
+    // evict, proving this test pins the exemption, not the threshold.
+    let mut f2 = PatternFolder::new(Config {
+        thread_count: Some(1),
+        ..Config::default()
+    });
+    let mut evicted_matches = 0;
+    if f2
+        .process_line("recurringkey")
+        .unwrap()
+        .is_some_and(|s| s.contains("recurringkey"))
+    {
+        evicted_matches += 1;
+    }
+    for i in 0..1_100 {
+        if f2
+            .process_line(&eviction_word(i))
+            .unwrap()
+            .is_some_and(|s| s.contains("recurringkey"))
+        {
+            evicted_matches += 1;
+        }
+    }
+    if f2
+        .process_line("recurringkey")
+        .unwrap()
+        .is_some_and(|s| s.contains("recurringkey"))
+    {
+        evicted_matches += 1;
+    }
+    let output2 = f2.finish().unwrap();
+    evicted_matches += output2
+        .iter()
+        .filter(|s| s.contains("recurringkey"))
+        .count();
+    assert_eq!(
+        evicted_matches, 2,
+        "without --explain the recurring key must fragment into two records, got: {output2:?}"
+    );
+}
+
 /// Deterministic 6-letter words: single-token lines that never group with
 /// each other (zero shared tokens → similarity score 0).
 fn eviction_word(i: usize) -> String {
