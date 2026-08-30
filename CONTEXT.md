@@ -82,6 +82,23 @@ Corollary worth internalising: if a defect is recorded into the goldens by a
 re-bless, every later gate run agrees with the defect. That is how a 606-group
 explosion in `k8s_traefik` passed green for a day.
 
+**The golden is also blind to the mode users get.** It is taken from
+`--explain --threads 1` (`scripts/gate.sh:179`), and `should_flush` returns
+false whenever `summary`, `top_n` or `explain` is set — so the golden has never
+exercised eviction. The default text output and `--format json` are the only
+modes that evict, and neither has any golden coverage.
+
+That is not a theoretical gap. `lessence-940` emitted a recurring event as
+several records with its count split across them — 210 duplicated templates in
+2,214 on the distilled epyc journal — and the gate said `golden: 80 corpora, 0
+changed` both while the defect was live and after it was fixed. It could
+neither catch it nor confirm the repair; a hand-written reproduction had to do
+both. Tracked as `lessence-xoq`.
+
+So when a change touches the streaming or eviction path, `golden: 0 changed`
+says nothing at all, and the burden is on you to produce a reproduction that
+distinguishes before from after.
+
 ## The corpora
 
 `examples/` is gitignored, so **nothing in git records which corpora exist**.
