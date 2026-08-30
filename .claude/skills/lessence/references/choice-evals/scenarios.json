@@ -1,26 +1,238 @@
-[
-  {
-    "id": "kubelet-notready",
-    "fixture": "examples/kubelet.log",
-    "dest": "kubelet.log",
-    "prompt": "Our k8s node went NotReady earlier today and I dumped the kubelet log before rebooting. It's in kubelet.log in this directory (about 70,000 lines). Figure out what went wrong with the node."
+{
+  "framings": {
+    "none": "",
+    "recon": "Answer as if this is reconnaissance: your job is to make your SECOND command aimed, not to finish the investigation in one step."
   },
-  {
-    "id": "argocd-crashloop",
-    "fixture": "examples/argocd_controller_production.log",
-    "dest": "app.log",
-    "prompt": "The argocd application controller keeps restarting every few minutes. Full log dump is in app.log here (about 27,000 lines). Diagnose the cause of the restarts."
-  },
-  {
-    "id": "ssh-intrusion",
-    "fixture": "examples/openssh_brute_force.log",
-    "dest": "auth.log",
-    "prompt": "This auth.log (about 38,000 lines) is from a server that was under an SSH brute-force attack. Did anyone actually get in? Tell me what I should be worried about."
-  },
-  {
-    "id": "db-vague",
-    "fixture": "examples/harbor_postgres_primary.log",
-    "dest": "postgres.log",
-    "prompt": "Postgres has been slow since last night and I don't know why. postgres.log in this directory has about 54,000 lines. What's going on in there?"
-  }
-]
+  "scenarios": [
+    {
+      "id": "kubelet-notready",
+      "fixture": "examples/originals/kubelet.log",
+      "dest": "kubelet.log",
+      "prompt": "Our k8s node went NotReady earlier today and I dumped the kubelet log before rebooting. It's in kubelet.log in this directory (about 70,000 lines). Figure out what went wrong with the node.",
+      "ground_truth": [
+        {
+          "id": "apiserver-unreachable",
+          "weight": 2,
+          "any_of": [
+            "api ?server.{0,30}(unreachable|reset|timeout|unavailable)",
+            "connection.{0,20}(reset|refused).{0,20}api ?server",
+            "local api ?server.{0,20}(down|flap)"
+          ]
+        },
+        {
+          "id": "node-status-lease-fail",
+          "weight": 1,
+          "any_of": [
+            "(lease|node status).{0,30}(fail|retry|expir)",
+            "node.{0,20}not ?ready.{0,20}(lease|heartbeat)"
+          ]
+        },
+        {
+          "id": "kubelet-restarts",
+          "weight": 1,
+          "any_of": [
+            "kubelet.{0,20}(restart|crash|pid change)",
+            "kubelet process (kept )?restart"
+          ]
+        },
+        {
+          "id": "cni-cilium-down",
+          "weight": 1,
+          "any_of": [
+            "cilium.{0,20}(agent|socket).{0,20}(down|missing|unreachable)",
+            "cni.{0,20}fail"
+          ]
+        },
+        {
+          "id": "containerd-runtime-unavailable",
+          "weight": 1,
+          "any_of": [
+            "containerd.{0,20}(unavailable|unresponsive|eof)",
+            "container runtime.{0,20}(unavailable|down)",
+            "pleg.{0,10}(not healthy|unhealthy)"
+          ]
+        }
+      ],
+      "distractors": [
+        {
+          "id": "volume-mount-token-fetch",
+          "any_of": [
+            "mountvolume.{0,20}(fail|token)",
+            "volume.{0,20}token fetch fail"
+          ]
+        },
+        {
+          "id": "crashloopbackoff-app-pods",
+          "any_of": [
+            "crashloopbackoff",
+            "pod.{0,20}crash.{0,20}loop"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "argocd-crashloop",
+      "fixture": "examples/originals/argocd_controller_production.log",
+      "dest": "app.log",
+      "prompt": "The argocd application controller keeps restarting every few minutes. Full log dump is in app.log here (about 27,000 lines). Diagnose the cause of the restarts.",
+      "ground_truth": [
+        {
+          "id": "one-restart-not-looping",
+          "weight": 2,
+          "any_of": [
+            "(one|single|1).{0,15}restart",
+            "stable.{0,20}(after|since).{0,20}restart",
+            "only.{0,15}restart.{0,15}(early|once|09:1)"
+          ]
+        },
+        {
+          "id": "tls-reload-is-not-restart",
+          "weight": 1,
+          "any_of": [
+            "tls.{0,20}(reload|load).{0,20}(not|isn.?t).{0,20}restart",
+            "routine.{0,20}tls.{0,20}reload"
+          ]
+        },
+        {
+          "id": "watch-context-canceled",
+          "weight": 1,
+          "any_of": [
+            "watch.{0,20}(cancel|fail)",
+            "context canceled"
+          ]
+        },
+        {
+          "id": "needs-external-evidence",
+          "weight": 1,
+          "any_of": [
+            "(check|need).{0,20}(kubectl describe|events|oomkilled|liveness|restart count)"
+          ]
+        }
+      ],
+      "distractors": [
+        {
+          "id": "tls-reload-cadence-as-restart",
+          "any_of": [
+            "restart.{0,15}(every|regular|periodic).{0,15}(second|minute)",
+            "tls.{0,20}(reload|config).{0,20}(indicates|shows).{0,20}restart"
+          ]
+        },
+        {
+          "id": "blame-watch-failed-as-ongoing",
+          "any_of": [
+            "(repeated|recurring|ongoing).{0,20}watch fail"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ssh-intrusion",
+      "fixture": "examples/originals/openssh_brute_force.log",
+      "dest": "auth.log",
+      "prompt": "This auth.log (about 38,000 lines) is from a server that was under an SSH brute-force attack. Did anyone actually get in? Tell me what I should be worried about.",
+      "ground_truth": [
+        {
+          "id": "no-successful-intrusion",
+          "weight": 2,
+          "any_of": [
+            "no (one|attacker).{0,20}(got in|succeeded|compromised)",
+            "attack.{0,15}(unsuccessful|failed|did not succeed)",
+            "nobody.{0,15}(got in|logged in)"
+          ]
+        },
+        {
+          "id": "only-legit-login-is-key-auth",
+          "weight": 1,
+          "any_of": [
+            "(only|legitimate).{0,30}(publickey|ssh key).{0,20}(login|access)",
+            "publickey.{0,20}(ubuntu|admin).{0,20}(trusted|known|legitimate)"
+          ]
+        },
+        {
+          "id": "password-auth-not-attempted",
+          "weight": 1,
+          "any_of": [
+            "(no|zero).{0,20}failed password",
+            "password auth.{0,20}(disabled|not (used|attempted))"
+          ]
+        },
+        {
+          "id": "distributed-broad-attack",
+          "weight": 1,
+          "any_of": [
+            "(many|hundreds|dozens|distributed).{0,20}(source )?ips",
+            "botnet"
+          ]
+        }
+      ],
+      "distractors": [
+        {
+          "id": "root-target-flag",
+          "any_of": [
+            "root.{0,15}(compromised|targeted).{0,15}(concern|worry)"
+          ]
+        },
+        {
+          "id": "volume-implies-breach",
+          "any_of": [
+            "(thousands|so many|11,?355).{0,15}(attempts|failures).{0,15}(breach|compromise|got in)"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "db-vague",
+      "fixture": "examples/originals/harbor_postgres_primary.log",
+      "dest": "postgres.log",
+      "prompt": "Postgres has been slow since last night and I don't know why. postgres.log in this directory has about 54,000 lines. What's going on in there?",
+      "ground_truth": [
+        {
+          "id": "no-evidence-of-slowness",
+          "weight": 2,
+          "any_of": [
+            "(no|nothing).{0,20}(evidence|indication|sign).{0,20}(slow|slowness|degrad)",
+            "log(s)? (do not|don't|doesn't) show.{0,20}(slow|problem|issue)"
+          ]
+        },
+        {
+          "id": "heartbeat-only-no-queries",
+          "weight": 1,
+          "any_of": [
+            "(only|just).{0,20}(heartbeat|patroni).{0,20}(no|not).{0,20}(query|queries)",
+            "no (slow )?query log"
+          ]
+        },
+        {
+          "id": "need-other-source",
+          "weight": 1,
+          "any_of": [
+            "(check|need).{0,20}(pg_stat_statements|slow query log|application|host metrics)"
+          ]
+        },
+        {
+          "id": "cluster-healthy-per-log",
+          "weight": 1,
+          "any_of": [
+            "(cluster|replication|patroni).{0,20}(healthy|normal|stable)"
+          ]
+        }
+      ],
+      "distractors": [
+        {
+          "id": "blame-sep14-failover",
+          "any_of": [
+            "failover.{0,20}(cause|explain).{0,20}slow",
+            "leader.{0,20}(change|election).{0,20}slow(ness)?"
+          ]
+        },
+        {
+          "id": "blame-protocolerror",
+          "any_of": [
+            "objectcache.{0,20}protocol ?error",
+            "invalidchunklength"
+          ]
+        }
+      ]
+    }
+  ]
+}
