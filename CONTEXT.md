@@ -6,7 +6,7 @@ git. Commands and architecture are in `CLAUDE.md`; the design principles and who
 the tool is for are in `CLAUDE.local.md`; gate mechanics in `docs/verification.md`;
 the dev flags in `docs/distill.md`. This file does not restate them.
 
-Numbers below were measured on 2026-08-30 at commit `3745830`. They are facts
+Numbers below were measured on 2026-08-30 at commit `d3fdf21`. They are facts
 with a shelf life — re-measure rather than cite.
 
 ## Vocabulary
@@ -141,7 +141,7 @@ corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
 
 | class | templates | groups |
 |---|---:|---:|
-| unexplained — likely legitimate flush re-founding | 104 | 129 |
+| not anchor debt — streaming eviction (`lessence-940`) | 104 | 129 |
 | PCI address | 75 | 204 |
 | HTTP status class | 30 | 32 |
 | systemd unit | 18 | 32 |
@@ -151,10 +151,12 @@ corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
 
 Notes on that table:
 
-- The **unexplained** bucket is probably not defects. Their sharing groups have
-  identical anchor values — a group re-founded after a flush window is
-  legitimately its own group. `nearest.anchor_mismatch` is therefore not a
-  reliable per-pair signal: `nearest` may point at a third group entirely.
+- The **unexplained** bucket is not anchor debt. Their sharing groups have
+  identical anchor values on both sides: this is `lessence-940`, streaming
+  eviction re-forming a group under a key it already used, already measured and
+  awaiting an owner decision on the streaming tradeoff. `nearest.anchor_mismatch`
+  is therefore not a reliable per-pair signal — `nearest` may point at a third
+  group entirely.
 - The **request-target residual** is not an unfixed erasure. The route *is*
   rendered, then `<VARIES>` overwrites it: `"GET /route HTTP/<DECIMAL>"` is one
   unit (a quoted run of ≤3 words) and the HTTP verb differs between members, so
