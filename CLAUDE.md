@@ -16,10 +16,11 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 ## Commands
 
 ```bash
-make ci             # fmt + clippy + doc + build + test + deny  (~1 min, every commit)
-make gate           # every distilled corpus against its golden inventory; new ##CASE
-                    # blocks must fail on the HEAD build; instruction count on distilled
-                    # kubelet vs HEAD. ≤15 lines, target/gate/gate.json (seconds)
+make ci             # fmt + clippy + doc + build + test + deny  (~5 s warm, every commit)
+make gate           # FAILS on exactly two things: a new ##CASE that also passes on the
+                    # HEAD build (vacuous), and kubelet instructions over +1%. The golden
+                    # diff it prints is material for you to READ, not a verdict — a changed
+                    # golden never fails the gate. ≤15 lines, target/gate/gate.json (seconds)
 make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
                     # via the hidden dev flags `--distill --anonymize` (docs/distill.md):
                     # every shape, no repetition, values invented. BLESS=1 re-blesses golden
@@ -28,6 +29,10 @@ make release-check  # the gate against the last tag's build + mutants on the dif
                     # target/gate/release.json (~20 min)
 cargo test --lib    # unit tests while iterating
 cargo test --test integration known_open_defects -- --ignored --nocapture   # ##TODO status
+cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture  # open anchor classes
+make install        # to ~/.cargo/bin, keeping a copy of every build installed under
+                    # ~/.local/share/lessence/installed (version + commit) — that archive
+                    # is how a new ##CASE is checked against the build that shipped
 ```
 
 Run `make gate` before committing anything under `src/`; the pre-commit hook
@@ -57,7 +62,9 @@ These define correct behaviour. Add to them; never weaken them.
   each tolerated near-miss names its bead; the tables only shrink.
   <!-- scar: kubelet cap 700 -> 1000 proposed instead of a fix; caps replaced by owned shapes -->
 - `examples/distilled/*.log` (gitignored, scrubbed) — the corpora every gate
-  runs on: every shape of the originals, none of the repetition. The
+  runs on: every shape of the originals, their repetition scaled down rather
+  than removed (`CONTEXT.md`, "Vocabulary": distilled is fidelity, miniature is
+  proportion — that file is the definition, this is a pointer). The
   originals in `examples/originals/` are raw material only — studied once,
   distilled by `make distill`, never read by a gate. A gate fails loudly when
   a distilled corpus is missing; no test passes by absence.
@@ -74,7 +81,7 @@ not a claim.
 | Claim | Evidence |
 |---|---|
 | tests pass | `make ci` exit 0 in this session |
-| output unchanged, or changed on purpose | `gate.json` → `golden[]`: templates added / removed / recounted, per distilled corpus |
+| output changed on purpose | `gate.json` → `golden[]`: templates added / removed / recounted, per corpus. **Read the diff — the gate does not judge it.** A re-bless makes any output "correct", so `golden: 0 changed` straight after `BLESS=1 make distill` proves only that you just wrote those files |
 | not slower | `gate.json` → `perf.delta_pct`: `instructions:u` on distilled kubelet, single thread, one pinned P-core; threshold +1% |
 | a new test can fail | `gate.json` → `cases.new_failing_on_base` |
 | mutation score | `mutants.out/outcomes.json` from `make release-check` |
@@ -83,6 +90,10 @@ Not evidence: synthetic inputs, wall-clock numbers, a baseline binary you
 supplied yourself, a number quoted from memory.
 <!-- scar 349493a: a 1M-line synthetic benchmark showed +15%; the real journal went 20 s -> 6 min (0.4.4) -->
 <!-- scar: a musl release binary compared against a local glibc build; the allocator was the "win" -->
+<!-- scar 2026-08-30: four claims asserted from memory, all wrong — the corpus
+     inventory, two root causes read off a commit message rather than measured,
+     and a render edge case defended in argument that occurs in 0 of 120
+     identities. Each took under a minute to check. Run the command. -->
 
 Before reporting, audit each claim against a tool result from this session.
 Report in four parts: **DONE** (what changed, in user terms), **PROOF**
@@ -105,6 +116,13 @@ Commit before risky operations. Before `git add`, check `git check-ignore`.
 - Never create planning or scratch files inside the project tree.
 - Corpora are scrubbed by invention before they land in `examples/`; nothing
   unscrubbed is ever on disk in the tree.
+
+## Orientation
+
+`CONTEXT.md` — vocabulary (distilled vs miniature), what each gate proves and
+what it does not, the corpus inventory git cannot show because `examples/` is
+gitignored, and the anchor invariant with its open classes. Read it before
+claiming what a corpus holds or why a fold split.
 
 ## Skills
 

@@ -20,9 +20,11 @@ present, no surviving real value. A distillate can be three lines per group —
 shape-complete and proportionless.
 
 **Miniature** — a *proportion* property. The file still reads like a log:
-relative frequencies survive (members are kept log-scaled, `3 + ⌊log2 n⌋`, capped
-at 16), original order intact. This is what makes a fold visibly a fold and a
-perf number mean anything.
+relative frequencies survive (members are kept log-scaled, so a big group keeps
+more lines than a small one), original order intact. This is what makes a fold
+visibly a fold and a perf number mean anything. The selection rule itself is a
+spec and lives in `docs/distill.md`, "Member selection" — it has changed once
+already, so it is not repeated here.
 
 They fail independently. Until `a0ffc6d` the corpora were distilled but not
 miniatures: a 12,000-line group and a 3-line group both showed three lines, so
