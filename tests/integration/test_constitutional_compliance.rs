@@ -358,11 +358,12 @@ fn offender_groups(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
 }
 
 /// Sweeps every distilled corpus and reports invisible-anchor-splits still
-/// open. This is the full-repo picture, not a gate — kubectl `[pod/x/y]`
-/// prefixes, PCI addresses, klog call sites, systemd units, program fields
-/// and status fields are anchor classes the route fix did not touch, and
-/// each becomes a `##CASE` (and moves out of this report) as it is fixed.
-/// `a_route_split_is_visible` below carries the one class already fixed.
+/// open. This is the full-repo picture, not a gate — PCI addresses, klog
+/// call sites, systemd units, program fields and status fields are anchor
+/// classes the route and kubectl-prefix fixes did not touch, and each
+/// becomes a `##CASE` (and moves out of this report) as it is fixed.
+/// `a_route_split_is_visible` and `a_pod_prefix_split_is_visible` below
+/// carry the two classes already fixed.
 ///
 ///     cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture
 #[test]
@@ -456,6 +457,94 @@ fn a_route_split_is_visible() {
         assert!(
             offenders.is_empty(),
             "{}: {} route-anchor split(s) invisible on the shown line: {:?}",
+            path.display(),
+            offenders.len(),
+            offenders
+                .iter()
+                .take(5)
+                .map(|(t, lines)| format!(
+                    "{}x {}",
+                    lines.len(),
+                    t.chars().take(160).collect::<String>()
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// A `[pod/<pod>/<container>]` kubectl prefix's identity — a small local
+/// reader mirroring `normalize::pod_skeleton`'s stripping heuristic, rather
+/// than exporting internals (the precedent set by `status_class` above).
+/// Two sampled lines with different identities here are two different
+/// workloads or containers, not one event under two names.
+fn pod_identity(line: &str) -> Option<(String, String)> {
+    static PREFIX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\[pod/([^/\]]+)/([^\]]+)\]").expect("prefix regex"));
+    const RAND: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
+    let caps = PREFIX.captures(line)?;
+    let pod = caps.get(1)?.as_str();
+    let container = caps.get(2)?.as_str();
+    let generated = |seg: &str| {
+        let b = seg.as_bytes();
+        (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
+            || (b.len() <= 2 && b.iter().all(u8::is_ascii_lowercase))
+            || (b.len() == 5 && b.iter().all(|c| RAND.contains(c)))
+            || ((8..=10).contains(&b.len())
+                && b.iter().all(|c| RAND.contains(c) || c.is_ascii_digit()))
+    };
+    let mut keep = pod;
+    for _ in 0..3 {
+        match keep.rsplit_once('-') {
+            Some((head, tail)) if generated(tail) => keep = head,
+            _ => break,
+        }
+    }
+    Some((keep.to_string(), container.to_string()))
+}
+
+/// The kubectl-prefix-anchor fix's gate: on every `k8s_*` distilled corpus,
+/// an anchor split forced by the `[pod/<pod>/<container>]` prefix must never
+/// print the same template twice for two different pod identities. This is
+/// the second anchor class this fix closed (the first is
+/// `a_route_split_is_visible` above); `invisible_anchor_splits` carries
+/// every class not yet fixed. An offender is kept only when its sampled
+/// lines actually disagree on pod identity — a template repeated for some
+/// other, still-open anchor class is not this test's failure to report.
+#[test]
+fn a_pod_prefix_split_is_visible() {
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir);
+
+    let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
+        .expect("examples/distilled must be readable once require_example confirmed it exists")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|f| f.to_str())
+                .is_some_and(|f| f.starts_with("k8s_") && f.ends_with(".log"))
+        })
+        .collect();
+    corpora.sort();
+    assert!(
+        !corpora.is_empty(),
+        "examples/distilled/k8s_*.log must be non-empty — a gate fails loudly on an absent corpus, never passes by omission"
+    );
+
+    for path in &corpora {
+        let offenders: Vec<(String, Vec<String>)> = offender_groups(path)
+            .into_iter()
+            .filter(|(_, lines)| {
+                let identities: std::collections::BTreeSet<(String, String)> =
+                    lines.iter().filter_map(|l| pod_identity(l)).collect();
+                identities.len() > 1
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{}: {} pod-prefix-anchor split(s) invisible on the shown line: {:?}",
             path.display(),
             offenders.len(),
             offenders

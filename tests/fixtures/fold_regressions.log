@@ -773,6 +773,16 @@ ifodes-volef   31m         Normal    SuccessfulCreate               statefulset/
 [pod/render-twin-gemma4-5c9c5df548-dxqmk/vllm-render] INFO:     10.72.178.55:35848 - "GET /health HTTP/1.1" 200 OK
 [pod/render-twin-gemma4-5c9c5df548-sprtr/vllm-render] INFO:     10.72.178.55:52368 - "GET /health HTTP/1.1" 200 OK
 
+##CASE lessence-a8t template_present=[pod/csi-plugin-<SUFFIX>/
+##WHY two containers of one workload were both erased to [<PATH>]; the split the prefix forces was invisible on the line
+##FROM the openebs csi-plugin (scrubbed)
+[pod/csi-plugin-77db6c9c5c-h2n8s/csi-attacher] provisioning volume for pvc-42
+[pod/csi-plugin-77db6c9c5c-h2n8s/csi-attacher] provisioning volume for pvc-43
+[pod/csi-plugin-77db6c9c5c-h2n8s/csi-attacher] provisioning volume for pvc-44
+[pod/csi-plugin-77db6c9c5c-h2n8s/csi-resizer] provisioning volume for pvc-42
+[pod/csi-plugin-77db6c9c5c-h2n8s/csi-resizer] provisioning volume for pvc-43
+[pod/csi-plugin-77db6c9c5c-h2n8s/csi-resizer] provisioning volume for pvc-44
+
 ##CASE lessence-a8t groups=2
 ##WHY blank stdout from two containers is two groups; the prefix alone tells them apart, and two mons are one daemon
 ##FROM rook-ceph (scrubbed)

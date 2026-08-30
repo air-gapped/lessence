@@ -10,9 +10,10 @@ use crate::patterns::{
     bracket_context::BracketContextDetector, duration::DurationDetector,
     email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector, is_small_int,
     json::JsonDetector, key_value::KeyValueDetector, kubernetes::KubernetesDetector,
-    log_module::LogWithModuleDetector, names::NameDetector, network::NetworkDetector,
-    path::PathDetector, process::ProcessDetector, quoted::QuotedStringDetector, small_int_tail,
-    structured::StructuredMessageDetector, timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
+    log_module::LogWithModuleDetector, names::K8S_RAND_ALPHABET, names::NameDetector,
+    network::NetworkDetector, path::PathDetector, process::ProcessDetector,
+    quoted::QuotedStringDetector, small_int_tail, structured::StructuredMessageDetector,
+    timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
 
 /// One entry in the detector ordering table. The table is the single place
@@ -526,7 +527,7 @@ fn anchor_hash(original: &str) -> u64 {
     }
     if original.starts_with("[pod/") {
         for caps in KUBECTL_PREFIX.captures_iter(original) {
-            hash_pod_skeleton(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
+            pod_skeleton(caps.get(1).map_or("", |m| m.as_str())).hash(&mut hasher);
             caps.get(2).map_or("", |m| m.as_str()).hash(&mut hasher);
             found = true;
         }
@@ -535,22 +536,27 @@ fn anchor_hash(original: &str) -> u64 {
     if found { hasher.finish() } else { 0 }
 }
 
-/// Hash a pod name up to its instance suffixes: `web-7d9f8b6c5-xk2lp` and
-/// `web-7d9f8b6c5-q8zmt` are one workload, `gitaly-0` and `gitaly-1` too,
-/// and so are `rook-ceph-osd-0-56d5fdf8f8-ltzv5` and `rook-ceph-osd-1-…`
-/// or `rook-ceph-mon-bp-…` and `rook-ceph-mon-cc-…`: the same daemon on
-/// another instance. A trailing segment goes when it is an ordinal, an
-/// instance letter or two, a 5-char chunk of the generated-name alphabet,
-/// or an 8–10 char pod-template hash.
-fn hash_pod_skeleton(pod: &str, hasher: &mut AHasher) {
-    const RAND: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
+/// A pod name's identity, with its instance suffixes stripped: the surviving
+/// prefix of `web-7d9f8b6c5-xk2lp` and `web-7d9f8b6c5-q8zmt` is one workload,
+/// `gitaly-0` and `gitaly-1` too, and so are `rook-ceph-osd-0-56d5fdf8f8-ltzv5`
+/// and `rook-ceph-osd-1-…` or `rook-ceph-mon-bp-…` and `rook-ceph-mon-cc-…`:
+/// the same daemon on another instance. A trailing segment goes when it is an
+/// ordinal, an instance letter or two, a 5-char chunk of the generated-name
+/// alphabet, or an 8–10 char pod-template hash.
+///
+/// This is the identity `anchor_hash` hashes and `render_pod_prefix` shows,
+/// so the two cannot drift: whatever this function decides to strip is
+/// exactly what disappears from the rendered line, and whatever it keeps is
+/// exactly what the shown skeleton claims held for every member of the group.
+fn pod_skeleton(pod: &str) -> &str {
     let generated = |seg: &str| {
         let b = seg.as_bytes();
         (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
             || (b.len() <= 2 && b.iter().all(u8::is_ascii_lowercase))
-            || (b.len() == 5 && b.iter().all(|c| RAND.contains(c)))
+            || (b.len() == 5 && b.iter().all(|c| K8S_RAND_ALPHABET.contains(c)))
             || ((8..=10).contains(&b.len())
-                && b.iter().all(|c| RAND.contains(c) || c.is_ascii_digit()))
+                && b.iter()
+                    .all(|c| K8S_RAND_ALPHABET.contains(c) || c.is_ascii_digit()))
     };
     let mut keep = pod;
     for _ in 0..3 {
@@ -559,7 +565,7 @@ fn hash_pod_skeleton(pod: &str, hasher: &mut AHasher) {
             _ => break,
         }
     }
-    keep.hash(hasher);
+    keep
 }
 
 /// Hash a name with its instance ids removed: a run holding 8+ hex digits
@@ -711,21 +717,46 @@ fn render_route(target: &str) -> String {
     out
 }
 
-/// Sentinel-protect every anchored route's exact byte span in `original` so
-/// no detector — `PathDetector` in particular — can swallow it before the
-/// route can be rendered as its skeleton. Mirrors exactly what `anchor_hash`
-/// reads: a request target on an `HTTP/` line, and a `FIELD_PATH` value on a
-/// record that also names a method. A file path elsewhere is untouched.
+/// Render a `[pod/<pod>/<container>]` kubectl prefix as its skeleton — the
+/// same identity `anchor_hash` hashes via [`pod_skeleton`], as readable text.
+/// Re-matches `KUBECTL_PREFIX` on the short span; that is simpler than
+/// threading captures through the sentinel-splicing machinery below.
+/// `-<SUFFIX>` stands for the whole stripped tail — never one per stripped
+/// segment, since members of a group can strip a different number of
+/// segments and repeating the token would claim more than one suffix
+/// varied. It is only emitted when something was actually stripped, so
+/// `[pod/etcd/etcd]` renders verbatim.
+fn render_pod_prefix(matched: &str) -> String {
+    let Some(caps) = KUBECTL_PREFIX.captures(matched) else {
+        return matched.to_string();
+    };
+    let pod = caps.get(1).map_or("", |m| m.as_str());
+    let container = caps.get(2).map_or("", |m| m.as_str());
+    let skeleton = pod_skeleton(pod);
+    if skeleton.len() == pod.len() {
+        format!("[pod/{skeleton}/{container}]")
+    } else {
+        format!("[pod/{skeleton}-<SUFFIX>/{container}]")
+    }
+}
+
+/// Sentinel-protect every anchored span's exact bytes in `original` so no
+/// detector — `PathDetector` in particular — can swallow it before it can be
+/// rendered as its skeleton. Mirrors exactly what `anchor_hash` reads: a
+/// request target on an `HTTP/` line, a `FIELD_PATH` value on a record that
+/// also names a method, and a `[pod/<pod>/<container>]` kubectl prefix. A
+/// file path elsewhere is untouched.
 ///
-/// Returns the sentinel-substituted line plus the (sentinel, rendered route)
+/// Returns the sentinel-substituted line plus the (sentinel, rendered span)
 /// pairs to splice back in once every detector has run.
-fn protect_anchored_routes(original: &str) -> (String, Vec<(String, String)>) {
-    let mut spans: Vec<(usize, usize)> = Vec::new();
+type AnchoredSpan = (usize, usize, fn(&str) -> String);
+fn protect_anchored_spans(original: &str) -> (String, Vec<(String, String)>) {
+    let mut spans: Vec<AnchoredSpan> = Vec::new();
 
     if original.contains("HTTP/") {
         for caps in REQUEST_TARGET.captures_iter(original) {
             if let Some(m) = caps.get(1) {
-                spans.push((m.start(), m.end()));
+                spans.push((m.start(), m.end(), render_route));
             }
         }
     }
@@ -742,8 +773,16 @@ fn protect_anchored_routes(original: &str) -> (String, Vec<(String, String)>) {
         if has_method {
             for caps in FIELD_PATH.captures_iter(original) {
                 if let Some(m) = caps.get(1) {
-                    spans.push((m.start(), m.end()));
+                    spans.push((m.start(), m.end(), render_route));
                 }
+            }
+        }
+    }
+
+    if original.starts_with("[pod/") {
+        for caps in KUBECTL_PREFIX.captures_iter(original) {
+            if let Some(m) = caps.get(0) {
+                spans.push((m.start(), m.end(), render_pod_prefix));
             }
         }
     }
@@ -752,17 +791,17 @@ fn protect_anchored_routes(original: &str) -> (String, Vec<(String, String)>) {
         return (original.to_string(), Vec::new());
     }
 
-    spans.sort_unstable();
+    spans.sort_unstable_by_key(|&(start, end, _)| (start, end));
     let mut result = String::with_capacity(original.len());
     let mut renders = Vec::with_capacity(spans.len());
     let mut cursor = 0;
-    for (i, (start, end)) in spans.into_iter().enumerate() {
+    for (i, (start, end, render)) in spans.into_iter().enumerate() {
         if start < cursor {
             continue; // overlapping match — already covered
         }
         result.push_str(&original[cursor..start]);
-        let sentinel = format!("\u{0}ROUTE{i}\u{0}");
-        renders.push((sentinel.clone(), render_route(&original[start..end])));
+        let sentinel = format!("\u{0}A{i}\u{0}");
+        renders.push((sentinel.clone(), render(&original[start..end])));
         result.push_str(&sentinel);
         cursor = end;
     }
@@ -779,10 +818,10 @@ impl Normalizer {
     }
 
     pub fn normalize_line(&self, original: String) -> Result<LogLine> {
-        // An anchored route (see `anchor_hash`) must render as its skeleton,
+        // An anchored span (see `anchor_hash`) must render as its skeleton,
         // not `<PATH>` — otherwise the split it forces is invisible in the
         // shown line. Protect its exact span before any detector runs...
-        let (mut normalized, route_renders) = protect_anchored_routes(&original);
+        let (mut normalized, anchored_renders) = protect_anchored_spans(&original);
         let mut tokens = Vec::with_capacity(8);
 
         // Walk the detector ordering table; each enabled detector replaces
@@ -808,7 +847,7 @@ impl Normalizer {
 
         // ...then splice the rendered skeleton back in, now that no detector
         // can consume it.
-        for (sentinel, rendered) in &route_renders {
+        for (sentinel, rendered) in &anchored_renders {
             if normalized.contains(sentinel.as_str()) {
                 normalized = normalized.replace(sentinel.as_str(), rendered);
             }
@@ -1174,6 +1213,81 @@ mod tests {
             .normalize_line("workerEnv.init() ok /var/log/app/42/status".to_string())
             .unwrap();
         assert_eq!(line.normalized, "workerEnv.init() ok <PATH>");
+
+        // KUBECTL_PREFIX is `^`-anchored: a `pod/x/y` run not at line start
+        // is an ordinary path, not a kubectl prefix — make it visible if
+        // that anchoring ever changes.
+        let line = normalizer
+            .normalize_line("saw pod/x/y earlier".to_string())
+            .unwrap();
+        assert_eq!(line.normalized, "saw <PATH> earlier");
+    }
+
+    #[test]
+    fn a_pod_prefix_renders_its_workload() {
+        assert_eq!(
+            render_pod_prefix("[pod/rook-ceph-rgw-s3-a-b69d45f98-dwxsc/rgw]"),
+            "[pod/rook-ceph-rgw-s3-<SUFFIX>/rgw]"
+        );
+        // Nothing stripped: no suffix claimed.
+        assert_eq!(render_pod_prefix("[pod/etcd/etcd]"), "[pod/etcd/etcd]");
+    }
+
+    #[test]
+    fn the_pod_prefix_hash_and_render_agree() {
+        let cases = [
+            "[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]",
+            "[pod/llm-d-sim-67cb674c47-f86lm/vllm-render]",
+            "[pod/render-twin-5c9c5df548-dxqmk/vllm-render]",
+            "[pod/gitaly-0/gitaly]",
+            "[pod/gitaly-1/gitaly]",
+        ];
+        for case in cases {
+            let caps = KUBECTL_PREFIX.captures(case).expect("test case matches");
+            let pod = caps.get(1).map_or("", |m| m.as_str());
+            let skeleton = pod_skeleton(pod);
+            let rendered = render_pod_prefix(case);
+            assert!(
+                rendered.contains(skeleton),
+                "{rendered} must contain the hashed skeleton {skeleton}"
+            );
+        }
+
+        // Two replicas of one workload render identically.
+        assert_eq!(
+            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
+            render_pod_prefix("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render]")
+        );
+        // Different anchors render differently.
+        assert_ne!(
+            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
+            render_pod_prefix("[pod/render-twin-5c9c5df548-dxqmk/vllm-render]")
+        );
+        assert_ne!(
+            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
+            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/other]")
+        );
+    }
+
+    #[test]
+    fn the_kubectl_prefix_is_on_the_line() {
+        let normalizer = Normalizer::new(Config::default());
+        let normalize = |s: &str| normalizer.normalize_line(s.to_string()).unwrap().normalized;
+
+        let first = normalize("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render] GET /health");
+        let second = normalize("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render] GET /health");
+        assert_eq!(first, second, "two replicas of one workload");
+        assert!(first.contains("[pod/llm-d-sim-<SUFFIX>/vllm-render]"));
+        assert!(
+            !first.contains("<PATH>"),
+            "no <PATH> in the prefix: {first}"
+        );
+
+        let third = normalize("[pod/render-twin-5c9c5df548-dxqmk/vllm-render] GET /health");
+        assert_ne!(first, third, "another workload");
+
+        let fourth = normalize("[pod/llm-d-sim-67cb674c47-d6ms5/other] GET /health");
+        assert_ne!(first, fourth, "same pod, different container");
     }
 
     // ---- detector ordering table: kubernetes deference ----
@@ -2815,9 +2929,30 @@ mod anchor_tests_2026_08_29 {
             "another workload, same container name"
         );
         assert_ne!(first.anchor, fourth.anchor, "another container");
+        // The split above must be visible on the line, not just in the
+        // anchor: a template read alone must not claim two workloads share
+        // it (CLAUDE.local.md: templates are claims).
+        assert_eq!(first.normalized, second.normalized);
+        assert!(
+            first
+                .normalized
+                .contains("[pod/llm-d-sim-<SUFFIX>/vllm-render]")
+        );
+        assert_ne!(first.normalized, third.normalized);
+        assert_ne!(first.normalized, fourth.normalized);
+        assert!(
+            !first.normalized.contains("<PATH>"),
+            "no <PATH> in the kubectl prefix: {}",
+            first.normalized
+        );
         let ord0 = normalize("[pod/gitaly-0/gitaly] x");
         let ord1 = normalize("[pod/gitaly-1/gitaly] x");
         assert_eq!(ord0.anchor, ord1.anchor, "statefulset ordinals");
+        assert_eq!(ord0.normalized, ord1.normalized);
+        assert_eq!(
+            ord0.normalized, "[pod/gitaly-<SUFFIX>/gitaly] x",
+            "the ordinal strips"
+        );
         let osd0 = normalize("[pod/rook-ceph-osd-0-56d5fdf8f8-ltzv5/osd] x");
         let osd1 = normalize("[pod/rook-ceph-osd-1-6bb486f64d-njdks/osd] x");
         let mon_bp = normalize("[pod/rook-ceph-mon-bp-74f99bc8b4-v8d9g/mon] x");
@@ -2826,8 +2961,11 @@ mod anchor_tests_2026_08_29 {
             osd0.anchor, osd1.anchor,
             "the same daemon on another instance"
         );
+        assert_eq!(osd0.normalized, osd1.normalized);
         assert_eq!(mon_bp.anchor, mon_cc.anchor, "instance letters");
+        assert_eq!(mon_bp.normalized, mon_cc.normalized);
         assert_ne!(osd0.anchor, mon_bp.anchor, "osd is not mon");
+        assert_ne!(osd0.normalized, mon_bp.normalized);
     }
 
     #[test]
