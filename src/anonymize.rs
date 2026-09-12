@@ -800,6 +800,54 @@ mod mac_tests {
 }
 
 #[cfg(test)]
+mod ipv4_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn a_full_subnet_uses_every_usable_host_before_reusing_an_address() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        let mut addresses = HashSet::new();
+        let mut subnets = HashSet::new();
+        for host in 1..=254 {
+            let original = format!("203.0.113.{host}");
+            let out = a.invent_value(Class::Ipv4, &original);
+            let octets = out.parse::<Ipv4Addr>().unwrap().octets();
+            assert_eq!(octets[0], 10);
+            assert_ne!(octets[3], 0, "network address is not a usable host: {out}");
+            assert_ne!(
+                octets[3], 255,
+                "broadcast address is not a usable host: {out}"
+            );
+            assert!(
+                addresses.insert(out.clone()),
+                "host reused too early: {out}"
+            );
+            subnets.insert([octets[0], octets[1], octets[2]]);
+        }
+        assert_eq!(subnets.len(), 1, "co-membership must survive a full subnet");
+    }
+
+    #[test]
+    fn distinct_subnets_remain_distinct_when_invented_prefixes_collide() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        let mut subnets = HashSet::new();
+        // Enough networks to exercise redraws in the seeded 16-bit prefix
+        // space, rather than just checking two lucky initial draws.
+        for network in 0..1024 {
+            let original = format!("198.{}.{}.17", network / 256, network % 256);
+            let out = a.invent_value(Class::Ipv4, &original);
+            let octets = out.parse::<Ipv4Addr>().unwrap().octets();
+            assert_eq!(octets[0], 10);
+            assert!(
+                subnets.insert([octets[0], octets[1], octets[2]]),
+                "distinct input subnet aliased by {out}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
