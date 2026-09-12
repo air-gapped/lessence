@@ -222,5 +222,49 @@ JSON"#,
                 assert!(error.to_string().contains("other-lessence"), "{error:#}");
             }
         }
+
+        #[test]
+        fn comparison_counts_joins_splits_and_resizes_but_not_unchanged_groups() {
+            let old_dir = tempfile::tempdir().unwrap();
+            let new_dir = tempfile::tempdir().unwrap();
+            let old = binary(
+                old_dir.path(),
+                r#"cat <<'JSON'
+{"count":2,"first":{"line_no":1},"last":{"line_no":2}}
+{"count":7,"first":{"line_no":3},"last":{"line_no":9}}
+{"count":1,"first":{"line_no":4},"last":{"line_no":4}}
+JSON"#,
+            );
+            let new = binary(
+                new_dir.path(),
+                r#"cat <<'JSON'
+{"count":2,"first":{"line_no":1},"last":{"line_no":2}}
+{"count":3,"first":{"line_no":3},"last":{"line_no":5}}
+{"count":1,"first":{"line_no":6},"last":{"line_no":6}}
+JSON"#,
+            );
+            assert_eq!(run(&old, &new, &[], "1").unwrap(), 3);
+            assert_eq!(run(&new, &new, &[], "1").unwrap(), 0);
+        }
+
+        #[test]
+        fn comparison_distinguishes_sources_and_propagates_child_failure() {
+            let old_dir = tempfile::tempdir().unwrap();
+            let new_dir = tempfile::tempdir().unwrap();
+            let old = binary(
+                old_dir.path(),
+                r#"echo '{"count":1,"first":{"source":"old.log","line_no":1},"last":{"line_no":1}}'"#,
+            );
+            let new = binary(
+                new_dir.path(),
+                r#"echo '{"count":1,"first":{"source":"new.log","line_no":1},"last":{"line_no":1}}'"#,
+            );
+            assert_eq!(run(&old, &new, &[], "1").unwrap(), 2);
+            let bad = binary(new_dir.path(), "echo 'cannot fold' >&2; exit 7");
+            for (before, after) in [(&old, &bad), (&bad, &old)] {
+                let error = run(before, after, &[], "1").unwrap_err();
+                assert!(error.to_string().contains("cannot fold"), "{error:#}");
+            }
+        }
     }
 }
