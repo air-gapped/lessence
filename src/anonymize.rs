@@ -762,6 +762,44 @@ pub fn word_shape(line: &str) -> String {
 }
 
 #[cfg(test)]
+mod mac_tests {
+    use super::*;
+
+    #[test]
+    fn mac_rewrites_preserve_notation_and_use_local_unicast_addresses() {
+        for (original, separator, alphabet) in [
+            ("00:1a:2b:3c:4d:5e", ':', "0123456789abcdef"),
+            ("00:1A:2B:3C:4D:5E", ':', "0123456789ABCDEF"),
+            ("00-1a-2b-3c-4d-5e", '-', "0123456789abcdef"),
+            ("00-1A-2B-3C-4D-5E", '-', "0123456789ABCDEF"),
+        ] {
+            // Exercise the address-bit contract across a reproducible set
+            // of draws, rather than pinning one random address as a golden.
+            for seed in 0..32 {
+                let mut a = Anonymizer::new(seed, Vec::new());
+                a.learn(&[Token::Mac(original.to_string())]);
+                a.seal();
+                let out = a.rewrite(original);
+
+                assert_ne!(out, original, "the hardware identity must be invented");
+                let octets: Vec<&str> = out.split(separator).collect();
+                assert_eq!(octets.len(), 6, "six pairs with {separator}: {out}");
+                for octet in &octets {
+                    assert_eq!(octet.len(), 2, "each octet is two hex digits: {out}");
+                    assert!(
+                        octet.bytes().all(|b| alphabet.as_bytes().contains(&b)),
+                        "hex digits must preserve the input case: {out}"
+                    );
+                }
+                let first = u8::from_str_radix(octets[0], 16).unwrap();
+                assert_eq!(first & 1, 0, "invented addresses must be unicast: {out}");
+                assert_eq!(first & 2, 2, "invented addresses must be local: {out}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
