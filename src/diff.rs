@@ -167,4 +167,60 @@ mod tests {
         );
         assert!(f.groups.contains_key(&(None, 1)));
     }
+
+    #[cfg(unix)]
+    mod process {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn binary(dir: &Path, body: &str) -> PathBuf {
+            let path = dir.join("other-lessence");
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+            path
+        }
+
+        #[test]
+        fn fold_runs_with_explicit_arguments_and_keeps_source_identity() {
+            let dir = tempfile::tempdir().unwrap();
+            let bin = binary(
+                dir.path(),
+                r#"[ "$#" = 7 ] && [ "$1" = --format ] && [ "$2" = json ] &&
+[ "$3" = --threads ] && [ "$4" = 3 ] && [ "$5" = -q ] &&
+[ "$6" = first.log ] && [ "$7" = 'second log' ] || exit 9
+cat <<'JSON'
+{"count":3,"first":{"source":"first.log","line_no":1},"last":{"line_no":7}}
+{"count":2,"first":{"source":"second log","line_no":1},"last":{"line_no":5}}
+{"count":1,"first":{"line_no":1},"last":{"line_no":1}}
+{"type":"summary","input_lines":6}
+JSON"#,
+            );
+            let fold = Fold::run(&bin, &["first.log".into(), "second log".into()], "3")
+                .expect("the child receives separate filename arguments");
+            assert_eq!(fold.groups.len(), 3);
+            let first = &fold.groups[&(Some("first.log".into()), 1)];
+            assert_eq!((first.count, first.last.line_no), (3, 7));
+            assert_eq!(fold.groups[&(Some("second log".into()), 1)].count, 2);
+            assert_eq!(fold.groups[&(None, 1)].count, 1);
+        }
+
+        #[test]
+        fn fold_reports_launch_exit_and_record_errors() {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = Fold::run(&dir.path().join("missing"), &[], "1")
+                .err()
+                .expect("missing binary must fail");
+            assert!(missing.to_string().contains("could not run"));
+
+            for (body, expected) in [
+                ("echo 'fixture failure' >&2; exit 7", "fixture failure"),
+                ("echo not-json", "unparseable group record"),
+            ] {
+                let bin = binary(dir.path(), body);
+                let error = Fold::run(&bin, &[], "1").err().expect("must fail");
+                assert!(error.to_string().contains(expected), "{error:#}");
+                assert!(error.to_string().contains("other-lessence"), "{error:#}");
+            }
+        }
+    }
 }
