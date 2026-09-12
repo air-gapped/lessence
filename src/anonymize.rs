@@ -848,6 +848,50 @@ mod ipv4_tests {
 }
 
 #[cfg(test)]
+mod ipv6_tests {
+    use super::*;
+    use std::net::Ipv6Addr;
+
+    #[test]
+    fn ipv6_preserves_address_class_compression_and_hex_group_widths() {
+        for seed in 0..8 {
+            let mut a = Anonymizer::new(seed, Vec::new());
+            for (original, prefix) in [
+                ("fe80::1a2b", "fe80:"),
+                ("FE80::1A2B", "FE80:"),
+                ("fd12:3456::abcd", "fd"),
+                ("FC12:3456::ABCD", "FC"),
+            ] {
+                let out = a.draw_ipv6(original);
+                assert!(out.parse::<Ipv6Addr>().is_ok(), "invalid IPv6: {out}");
+                assert!(out.starts_with(prefix), "address class lost: {out}");
+                assert_ne!(out, original, "the host identity must be invented");
+                assert_eq!(
+                    out.split(':').map(str::len).collect::<Vec<_>>(),
+                    original.split(':').map(str::len).collect::<Vec<_>>(),
+                    "compression and group widths must survive: {out}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ipv6_special_addresses_stay_but_prefix_like_host_groups_are_invented() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        for original in ["::", "::1", "fe80::"] {
+            assert_eq!(a.draw_ipv6(original), original);
+        }
+
+        let out = a.draw_ipv6("2001:db8:fe80:fd12:fc34::abcd");
+        assert!(out.parse::<Ipv6Addr>().is_ok(), "invalid IPv6: {out}");
+        let groups: Vec<&str> = out.split(':').collect();
+        assert_ne!(groups[2], "fe80", "only the first group defines the class");
+        assert_ne!(groups[3], "fd12", "host groups must be invented");
+        assert_ne!(groups[4], "fc34", "host groups must be invented");
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
