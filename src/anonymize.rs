@@ -892,6 +892,48 @@ mod ipv6_tests {
 }
 
 #[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn credentials_are_consistent_but_do_not_rewrite_the_same_word_in_prose() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        let out = a.rewrite("前缀 token=Fable9Wren8 note=Fable9Wren8");
+        let (invented, prose) = out
+            .strip_prefix("前缀 token=")
+            .unwrap()
+            .split_once(" note=")
+            .unwrap();
+        assert_ne!(invented, "Fable9Wren8", "credential must be invented");
+        assert_eq!(invented.len(), "Fable9Wren8".len());
+        assert_eq!(
+            prose, "Fable9Wren8",
+            "positional matches must stay positional"
+        );
+        assert_eq!(
+            a.rewrite("password=Fable9Wren8"),
+            format!("password={invented}"),
+            "one credential keeps the same invention across different keys"
+        );
+    }
+
+    #[test]
+    fn a_credential_that_is_also_a_known_address_reuses_its_address_invention() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        a.learn(&[Token::IPv4("203.0.113.25".to_string())]);
+        a.seal();
+        let invented = a.rewrite("203.0.113.25");
+        assert_ne!(invented, "203.0.113.25");
+        assert!(invented.parse::<std::net::Ipv4Addr>().is_ok());
+        assert_eq!(
+            a.rewrite("token=203.0.113.25 peer=203.0.113.25"),
+            format!("token={invented} peer={invented}"),
+            "overlapping credential and address matches must agree"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
