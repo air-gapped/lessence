@@ -26,6 +26,8 @@ mod integration {
     mod test_microservices_compression;
     mod test_nginx_compression;
     mod test_normalization_integration;
+    #[cfg(unix)]
+    mod test_output_errors;
     mod test_performance;
     mod test_preflight;
     mod test_stats_json;

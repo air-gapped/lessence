@@ -228,13 +228,7 @@ fn main() -> Result<()> {
                     if use_top_n {
                         // In top-N mode, discard incremental output — we'll use finish_top_n()
                     } else {
-                        match writeln!(stdout, "{output}") {
-                            Ok(_) => {}
-                            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                                std::process::exit(0);
-                            }
-                            Err(e) => return Err(e.into()),
-                        }
+                        write_output(&mut stdout, format_args!("{output}\n"))?;
                     }
                 }
             }
@@ -251,17 +245,10 @@ fn main() -> Result<()> {
         let json_output = use_json_output;
 
         for (count, formatted) in &groups_to_show {
-            let result = if json_output {
-                writeln!(stdout, "{formatted}")
+            if json_output {
+                write_output(&mut stdout, format_args!("{formatted}\n"))?;
             } else {
-                writeln!(stdout, "[{count}x] {formatted}")
-            };
-            match result {
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    std::process::exit(0);
-                }
-                Err(e) => return Err(e.into()),
+                write_output(&mut stdout, format_args!("[{count}x] {formatted}\n"))?;
             }
         }
         if fit_truncated > 0 {
@@ -300,13 +287,7 @@ fn main() -> Result<()> {
     // Flush any remaining buffered lines (markdown mode buffers them in
     // the folder instead and emits one assembled document below)
     for output in folder.finish()? {
-        match writeln!(stdout, "{output}") {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                std::process::exit(0);
-            }
-            Err(e) => return Err(e.into()),
-        }
+        write_output(&mut stdout, format_args!("{output}\n"))?;
     }
 
     // Markdown: emit one assembled document from the buffered entries
@@ -344,4 +325,14 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// A reader closing its pipe is a successful early stop; other output
+/// failures must reach the caller. Shared by incremental, top-N and final output.
+fn write_output(writer: &mut impl Write, args: std::fmt::Arguments<'_>) -> Result<()> {
+    match writer.write_fmt(args) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Err(e) => Err(e.into()),
+    }
 }
