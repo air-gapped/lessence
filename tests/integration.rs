@@ -31,6 +31,7 @@ mod integration {
     mod test_performance;
     mod test_preflight;
     mod test_stats_json;
+    mod test_stats_precedence;
     mod test_thread_safety;
     mod test_top_n;
     mod test_validation_errors;

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use std::io::{self, IsTerminal, Write};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 // Override the global allocator with mimalloc on musl-target builds. musl's
 // default malloc is dramatically slower than glibc's ptmalloc under the
@@ -266,18 +266,7 @@ fn main() -> Result<()> {
             "(showing top {shown} of {total_groups} patterns, covering {coverage_pct}% of input lines)"
         );
 
-        if json_output {
-            folder.print_summary_json(&mut stdout, start_time.elapsed())?;
-            if config.stats_json {
-                eprintln!(
-                    "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
-                );
-            }
-        } else if config.stats_json {
-            folder.print_stats_json(start_time.elapsed())?;
-        } else if config.stats {
-            folder.print_stats(&mut io::stderr())?;
-        }
+        print_report_stats(&folder, &config, start_time.elapsed(), json_output)?;
         if pattern_matched || input_failed {
             std::process::exit(1);
         }
@@ -299,26 +288,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // JSON mode: emit the terminal summary record, then skip the
-    // human/--stats-json paths (the summary record supersedes them).
-    if use_json_output {
-        folder.print_summary_json(&mut io::stdout(), start_time.elapsed())?;
-        if config.stats_json {
-            eprintln!(
-                "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
-            );
-        }
-        if pattern_matched || input_failed {
-            std::process::exit(1);
-        }
-        return Ok(());
-    }
-
-    if config.stats_json {
-        folder.print_stats_json(start_time.elapsed())?;
-    } else if config.stats {
-        folder.print_stats(&mut io::stderr())?;
-    }
+    print_report_stats(&folder, &config, start_time.elapsed(), use_json_output)?;
 
     if pattern_matched || input_failed {
         std::process::exit(1);
@@ -335,4 +305,27 @@ fn write_output(writer: &mut impl Write, args: std::fmt::Arguments<'_>) -> Resul
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
         Err(e) => Err(e.into()),
     }
+}
+
+/// JSON reports always end with a summary record; text reports choose
+/// JSON stats, the human briefing, or silence according to the stats flags.
+fn print_report_stats(
+    folder: &PatternFolder,
+    config: &Config,
+    elapsed: Duration,
+    json_output: bool,
+) -> Result<()> {
+    if json_output {
+        folder.print_summary_json(&mut io::stdout(), elapsed)?;
+        if config.stats_json {
+            eprintln!(
+                "lessence: --stats-json ignored in JSON mode (summary record already emitted)"
+            );
+        }
+    } else if config.stats_json {
+        folder.print_stats_json(elapsed)?;
+    } else if config.stats {
+        folder.print_stats(&mut io::stderr())?;
+    }
+    Ok(())
 }
