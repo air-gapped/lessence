@@ -31,7 +31,7 @@ golden_of() {
     # $1 = distilled log path -> writes count<TAB>template sorted to stdout
     local f="$1"
     if [ "$have_jq" -eq 1 ]; then
-        "$BIN" --explain --threads 1 "$f" | jq -r 'select(.type=="group") | "\(.count)\t\(.normalized)"' | sort
+        "$BIN" --explain --threads 1 "$f" | jq -r 'select(.type=="group") | "\(.count)\t\(.normalized)"' | LC_ALL=C sort
     else
         "$BIN" --explain --threads 1 "$f" | python3 -c '
 import json, sys
@@ -48,6 +48,13 @@ rows.sort()
 print("\n".join(rows))
 '
     fi
+}
+
+golden_diff() {
+    # Inventories are multisets of rows, independent of the locale that
+    # wrote them. Keep duplicates: an extra group must still be visible.
+    diff -u --label "$1" --label "$1 (current)" \
+        <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2")
 }
 
 fail() {
@@ -110,7 +117,7 @@ for f in examples/originals/*.log; do
         golden_of "$dist_log" > "$fresh"
         groups="$(wc -l < "$fresh")"
         if [ -f "$golden_file" ] && [ -z "${BLESS:-}" ]; then
-            if diff -u "$golden_file" "$fresh" > /tmp/distill-golden-diff.$$; then
+            if golden_diff "$golden_file" "$fresh" > /tmp/distill-golden-diff.$$; then
                 golden_status="kept"
             else
                 golden_status="changed"
@@ -123,7 +130,7 @@ for f in examples/originals/*.log; do
             rm -f /tmp/distill-golden-diff.$$
         else
             if [ -f "$golden_file" ]; then
-                diff -u "$golden_file" "$fresh" >&2 || true
+                golden_diff "$golden_file" "$fresh" >&2 || true
                 golden_status="changed"
             else
                 golden_status="written"
