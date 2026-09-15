@@ -36,6 +36,12 @@ No target other than `make distill` reads an original corpus.
    (`count<TAB>template` per group, sorted) is compared to `<name>.golden`.
    Changed corpora are printed (templates added / removed / recounted) and
    listed in `gate.json`; a change alone is not a FAIL.
+5b. Modes: for each distilled corpus, the `--explain` and `--format json`
+   inventories are taken for both binaries and the rows the two modes do not
+   share are counted (`comm -3`). `--explain` never evicts and `--format json`
+   does, so the two must agree; the count per corpus may not exceed the
+   baseline's → FAIL if it does. Corpora with a non-zero count on either
+   binary are printed (`modes:` line) and listed in `gate.json`.
 6. Perf: `taskset -c $GATE_CPU perf stat -e instructions:u,task-clock -x, --
    <bin> --threads 1 -q examples/distilled/kubelet.log`, base then new, two
    rounds, minimum per binary; a third round if the two differ by > 0.3%.
@@ -49,6 +55,7 @@ No target other than `make distill` reads an original corpus.
   "new":  {"sha256": "", "rustc": ""},
   "cases": {"new": 0, "new_failing_on_base": 0, "vacuous": []},
   "golden": [{"corpus": "", "added": [], "removed": [], "recounted": []}],
+  "modes": [{"corpus": "", "base": 0, "new": 0}],
   "perf": {"cpu": 0, "instructions_base": 0, "instructions_new": 0,
            "spread_pct": 0.0, "delta_pct": 0.0, "threshold_pct": 1.0},
   "verdict": "PASS" }

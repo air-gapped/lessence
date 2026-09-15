@@ -174,11 +174,11 @@ have_jq=0
 command -v jq >/dev/null 2>&1 && have_jq=1
 
 golden_of() {
-    local f="$1"
+    local f="$1" mode="${2:---explain}" bin="${3:-$new_bin}"
     if [ "$have_jq" -eq 1 ]; then
-        "$(pwd)/$new_bin" --explain --threads 1 "$f" | jq -r 'select(.type=="group") | "\(.count)\t\(.normalized)"' | sort
+        "$(pwd)/$bin" $mode --threads 1 "$f" | jq -r 'select(.type=="group") | "\(.count)\t\(.normalized)"' | sort
     else
-        "$(pwd)/$new_bin" --explain --threads 1 "$f" | python3 -c '
+        "$(pwd)/$bin" $mode --threads 1 "$f" | python3 -c '
 import json, sys
 rows = []
 for line in sys.stdin:
@@ -244,6 +244,33 @@ for name in "${distilled_corpora[@]}"; do
     rm -f "$fresh"
 done
 
+# ── 5b. Modes: --explain never evicts, --format json does. The two must
+# report the same events with the same counts (lessence-xoq); where they do
+# not, one of them is wrong. The disagreement is compared against the
+# baseline binary per corpus and may not grow.
+
+modes_json_rows=()
+modes_table_rows=()
+modes_fail=0
+for name in "${distilled_corpora[@]}"; do
+    f="examples/distilled/${name}.log"
+    e_new="$(mktemp)"; j_new="$(mktemp)"; e_base="$(mktemp)"; j_base="$(mktemp)"
+    golden_of "$f" --explain "$new_bin" > "$e_new"
+    golden_of "$f" --format=json "$new_bin" > "$j_new"
+    golden_of "$f" --explain "$base_bin" > "$e_base"
+    golden_of "$f" --format=json "$base_bin" > "$j_base"
+    d_new="$(comm -3 "$e_new" "$j_new" | wc -l | tr -d ' ')"
+    d_base="$(comm -3 "$e_base" "$j_base" | wc -l | tr -d ' ')"
+    rm -f "$e_new" "$j_new" "$e_base" "$j_base"
+    if [ "$d_new" -ne 0 ] || [ "$d_base" -ne 0 ]; then
+        modes_json_rows+=("{\"corpus\": \"${name}\", \"base\": ${d_base}, \"new\": ${d_new}}")
+        modes_table_rows+=("$(printf '%-24s explain/json rows differing: base=%s new=%s' "$name" "$d_base" "$d_new")")
+    fi
+    if [ "$d_new" -gt "$d_base" ]; then
+        modes_fail=1
+    fi
+done
+
 # ── 6. Perf: instructions:u on distilled kubelet, pinned, two rounds, min ──
 
 GATE_CPU="${GATE_CPU:-$(cut -d- -f1 /sys/devices/cpu_core/cpus 2>/dev/null || echo 0)}"
@@ -305,6 +332,10 @@ if [ "$perf_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("perf regression: ${delta_pct}% > ${GATE_PERF_MAX}%")
 fi
+if [ "$modes_fail" -eq 1 ]; then
+    verdict="FAIL"
+    fail_reasons+=("--explain and --format json disagree on more rows than the baseline")
+fi
 
 # ── Output: table (<=15 lines) ──────────────────────────────────────────────
 
@@ -313,6 +344,10 @@ echo "gate: $GATE_BASE ($base_commit) vs working tree"
 echo "cases: ${n_new} new, ${#vacuous[@]} vacuous"
 echo "golden: ${#distilled_corpora[@]} corpora, ${#golden_table_rows[@]} changed"
 for row in "${golden_table_rows[@]}"; do
+    echo "  $row"
+done
+echo "modes: ${#modes_table_rows[@]} corpora where --explain and --format json differ"
+for row in "${modes_table_rows[@]}"; do
     echo "  $row"
 done
 printf "perf(%s): instructions:u base=%s new=%s delta=%s%% (max %s%%) spread=%s%%\n" \
@@ -330,6 +365,7 @@ git_head="$(git rev-parse HEAD)"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 golden_json="$(IFS=,; echo "${golden_json_rows[*]:-}")"
+modes_json="$(IFS=,; echo "${modes_json_rows[*]:-}")"
 vacuous_json="$(printf '"%s",' "${vacuous[@]:-}" | sed 's/,$//')"
 cases_new_failing_on_base=$((n_new - ${#vacuous[@]}))
 
@@ -342,6 +378,7 @@ cat > "$GATE_DIR/gate.json" <<JSON
   "new": {"sha256": "${new_sha}", "rustc": "${rustc_version}"},
   "cases": {"new": ${n_new}, "new_failing_on_base": ${cases_new_failing_on_base}, "vacuous": [${vacuous_json}]},
   "golden": [${golden_json}],
+  "modes": [${modes_json}],
   "perf": {"cpu": ${GATE_CPU}, "instructions_base": ${instr_base}, "instructions_new": ${instr_new},
            "spread_pct": ${spread_pct}, "delta_pct": ${delta_pct}, "threshold_pct": ${GATE_PERF_MAX}},
   "verdict": "${verdict}"

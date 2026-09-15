@@ -52,12 +52,13 @@ Other terms as this repo uses them:
 
 ## What the gates prove — and what they do not
 
-`scripts/gate.sh` sets its verdict to FAIL on exactly two conditions
-(`scripts/gate.sh:298-308`):
+`scripts/gate.sh` sets its verdict to FAIL on exactly three conditions:
 
 1. a newly added `##CASE` that is **vacuous** — it passes on the baseline
    binary, so it could never have caught anything;
-2. a **perf regression** over +1% (`instructions:u` on distilled kubelet).
+2. a **perf regression** over +1% (`instructions:u` on distilled kubelet);
+3. `--explain` and `--format json` **disagreeing on more rows than they did
+   on the baseline**, on any corpus (the `modes` line; see below).
 
 **A golden change never fails the gate.** Changed goldens are printed for a
 human or agent to read and judge. So this line:
@@ -82,22 +83,31 @@ Corollary worth internalising: if a defect is recorded into the goldens by a
 re-bless, every later gate run agrees with the defect. That is how a 606-group
 explosion in `k8s_traefik` passed green for a day.
 
-**The golden is also blind to the mode users get.** It is taken from
-`--explain --threads 1` (`scripts/gate.sh:179`), and `should_flush` returns
-false whenever `summary`, `top_n` or `explain` is set — so the golden has never
-exercised eviction. The default text output and `--format json` are the only
-modes that evict, and neither has any golden coverage.
+**The golden is blind to the mode users get.** It is taken from
+`--explain --threads 1`, and `should_flush` returns false whenever `summary`,
+`top_n` or `explain` is set — so the golden has never exercised eviction. The
+default text output and `--format json` are the only modes that evict, and
+neither has golden coverage.
 
 That is not a theoretical gap. `lessence-940` emitted a recurring event as
 several records with its count split across them — 210 duplicated templates in
 2,214 on the distilled epyc journal — and the gate said `golden: 80 corpora, 0
 changed` both while the defect was live and after it was fixed. It could
 neither catch it nor confirm the repair; a hand-written reproduction had to do
-both. Tracked as `lessence-xoq`.
+both.
 
-So when a change touches the streaming or eviction path, `golden: 0 changed`
-says nothing at all, and the burden is on you to produce a reproduction that
-distinguishes before from after.
+Since `lessence-xoq` the gate covers this without a second golden: for every
+corpus it runs both modes on both binaries and counts the inventory rows
+(`count<TAB>template`) the two modes do not share. The two modes must report
+the same events with the same counts; where they do not, one of them is wrong.
+The count is compared to the baseline binary per corpus and **may not grow**
+— growth is a FAIL. Shrinking is printed and is the signal that a streaming
+fix worked (the `lessence-682` merge took the epyc journal from 516 to 481).
+The residual on the three journal corpora is the eviction tradeoff itself: a
+line similar but not identical to an evicted group can only rejoin it by exact
+hash, so it founds a new group under `--format json` and joins under
+`--explain`. That residual is tracked as its own bead; the gate holds it
+where it is.
 
 ## The corpora
 

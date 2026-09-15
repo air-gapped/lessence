@@ -17,8 +17,9 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 
 ```bash
 make ci             # fmt + clippy + doc + build + test + deny  (~5 s warm, every commit)
-make gate           # FAILS on exactly two things: a new ##CASE that also passes on the
-                    # HEAD build (vacuous), and kubelet instructions over +1%. The golden
+make gate           # FAILS on exactly three things: a new ##CASE that also passes on the
+                    # HEAD build (vacuous), kubelet instructions over +1%, and --explain vs
+                    # --format json disagreeing on more rows than on the HEAD build. The golden
                     # diff it prints is material for you to READ, not a verdict — a changed
                     # golden never fails the gate. ≤15 lines, target/gate/gate.json (seconds)
 make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
