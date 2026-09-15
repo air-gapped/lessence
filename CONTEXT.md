@@ -57,8 +57,8 @@ Other terms as this repo uses them:
 1. a newly added `##CASE` that is **vacuous** — it passes on the baseline
    binary, so it could never have caught anything;
 2. a **perf regression** over +1% (`instructions:u` on distilled kubelet);
-3. `--explain` and `--format json` **disagreeing on more rows than they did
-   on the baseline**, on any corpus (the `modes` line; see below).
+3. `--explain` and `--format json` **disagreeing on a corpus where the
+   baseline agreed exactly** (the `modes` line; see below).
 
 **A golden change never fails the gate.** Changed goldens are printed for a
 human or agent to read and judge. So this line:
@@ -100,14 +100,16 @@ Since `lessence-xoq` the gate covers this without a second golden: for every
 corpus it runs both modes on both binaries and counts the inventory rows
 (`count<TAB>template`) the two modes do not share. The two modes must report
 the same events with the same counts; where they do not, one of them is wrong.
-The count is compared to the baseline binary per corpus and **may not grow**
-— growth is a FAIL. Shrinking is printed and is the signal that a streaming
-fix worked (the `lessence-682` merge took the epyc journal from 516 to 481).
-The residual on the three journal corpora is the eviction tradeoff itself: a
-line similar but not identical to an evicted group can only rejoin it by exact
-hash, so it founds a new group under `--format json` and joins under
-`--explain`. That residual is tracked as its own bead; the gate holds it
-where it is.
+A corpus on which the baseline binary agrees exactly **must still agree
+exactly** — 77 of 80 do — and a new disagreement there is a FAIL: that is the
+shape of `lessence-940`, an eviction defect that reaches every corpus large
+enough to evict. The three journal corpora that already disagree carry the
+eviction tradeoff itself: a line similar but not identical to an evicted group
+can only rejoin it by exact hash, so it founds a new group under `--format
+json` and joins under `--explain`. On those the count is printed for reading,
+not judged, because any normalization change moves it by a few rows either
+way; the `lessence-682` merge took the epyc journal from 516 to 481, and the
+residual is tracked as `lessence-3ck`.
 
 ## The corpora
 

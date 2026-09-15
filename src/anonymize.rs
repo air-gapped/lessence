@@ -120,6 +120,9 @@ pub struct Anonymizer {
     subnets: HashMap<[u8; 3], (u8, u8)>,
     /// `--anonymize-words`, lowercased, longest first.
     words: Vec<String>,
+    /// The same words as a set: no invention may contain one as a segment,
+    /// or the word the run exists to remove would come back invented.
+    word_set: HashSet<String>,
 }
 
 impl Anonymizer {
@@ -132,8 +135,10 @@ impl Anonymizer {
         words.retain(|w| !w.is_empty());
         words.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         words.dedup();
+        let word_set: HashSet<String> = words.iter().cloned().collect();
         Self {
             rng: ChaCha8Rng::seed_from_u64(seed),
+            word_set,
             values: HashMap::new(),
             index: HashMap::new(),
             creds: HashMap::new(),
@@ -170,6 +175,18 @@ impl Anonymizer {
                 if !value.is_empty() && self.used.insert(value.to_string()) {
                     self.pending.push((value.to_string(), class));
                 }
+            }
+        }
+    }
+
+    /// Learn the DNS-shaped names on a line's text, whether or not the
+    /// normalizer erased them (lessence-c2f): the fold keeps a dotted name
+    /// literal unless the line says it is a host, but the scrub cannot
+    /// afford that doubt. Learned in text order after the line's tokens.
+    pub fn learn_text(&mut self, text: &str) {
+        for name in crate::patterns::network::NetworkDetector::dns_shaped_names(text) {
+            if self.used.insert(name.to_string()) {
+                self.pending.push((name.to_string(), Class::Host));
             }
         }
     }
@@ -359,12 +376,28 @@ impl Anonymizer {
             // Its own original is not a collision: a class the table leaves
             // unchanged draws itself every time, and redrawing 64 times to
             // escape it would only burn the seed.
-            if invention == value || !self.used.contains(&invention) {
+            if invention == value
+                || (!self.used.contains(&invention) && !self.contains_vocabulary(&invention))
+            {
                 break;
             }
         }
         self.used.insert(invention.clone());
         invention
+    }
+
+    /// Does an invention carry a vocabulary word as one of its segments?
+    /// `invent_like` draws each label of a hostname from the alphabet by
+    /// length class, and a two-letter label lands on a two-letter word
+    /// often enough that one run in a few hundred would fail its own
+    /// survived-word check on an invented `g8`.
+    fn contains_vocabulary(&self, invention: &str) -> bool {
+        if self.word_set.is_empty() {
+            return false;
+        }
+        invention
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|seg| !seg.is_empty() && self.word_set.contains(&seg.to_ascii_lowercase()))
     }
 
     fn draw(&mut self, class: Class, value: &str) -> String {
@@ -936,6 +969,24 @@ mod credential_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An invented label may not be a vocabulary word: the run exists to
+    /// remove that word, and the survived-word check would fail on it.
+    #[test]
+    fn an_invention_never_carries_a_vocabulary_word() {
+        let mut hits = 0;
+        for seed in 0..200u64 {
+            let mut a = Anonymizer::new(seed, vec!["g8".to_string(), "ab".to_string()]);
+            a.learn(&[Token::Fqdn("lc.oppdiqfrhj.vyvmmxvn.k9.bolt".to_string())]);
+            a.seal();
+            let out = a.rewrite("loading lc.oppdiqfrhj.vyvmmxvn.k9.bolt");
+            for seg in out.split(|c: char| !c.is_ascii_alphanumeric()) {
+                assert!(seg != "g8" && seg != "ab", "seed {seed}: {out}");
+            }
+            hits += 1;
+        }
+        assert_eq!(hits, 200);
+    }
 
     fn anon() -> Anonymizer {
         Anonymizer::new(1, Vec::new())

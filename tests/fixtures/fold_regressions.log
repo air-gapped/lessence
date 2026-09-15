@@ -572,8 +572,8 @@ time="2025-08-30T14:37:13.629738286Z" level=info msg="Resolving identity labels 
 ##FROM the journalctl corpus
 Sep 14 06:58:42 oryx systemd[1]: var-lib-kubelet-pods-3f1c9a2e\x2d5b7d\x2d4e8f\x2d9a0b\x2d1c2d3e4f5a6b-volumes-kubernetes.io\x7eprojected-kube\x2dapi\x2daccess.mount: Deactivated successfully.
 
-##CASE lessence-27p template_present=GroupVersion <FQDN> v1
-##WHY a dotted name standing alone is a DNS-shaped name whatever its role; an API group folds like a host
+##CASE lessence-c2f template_present=GroupVersion apiextensions.k8s.io v1
+##WHY a dotted name standing alone is erased only on evidence it is a host; an API group in prose is the API group
 ##FROM the apiserver corpus
 I0908 20:33:43.566190       1 handler.go:286] Adding GroupVersion apiextensions.k8s.io v1 to ResourceManager
 
@@ -2072,3 +2072,14 @@ svc node ready check pass level info region east gamma state one
 svc node ready check pass level info region east delta state two
 svc node ready check pass level info region east alpha state three
 svc node ready check pass level info region east beta state four
+
+##CASE lessence-c2f out_absent=<FQDN>
+##WHY a resource type named in reverse DNS was classified by its last label: .io was on a
+##WHY  TLD list and became <FQDN>, .do was not and survived, so four denials of four
+##WHY  resources showed as two variants (varies×2 {<FQDN>×3, postgresqls…×1}) and an
+##WHY  agent could not see which resources were denied
+##FROM the apiserver RBAC shape; the names are invented API groups
+E0901 10:00:01.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list cephclusters.ceph.rook.io in namespace rook
+E0901 10:00:02.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list postgresqls.acid.zalan.do in namespace rook
+E0901 10:00:03.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list drivers.csi.ceph.io in namespace rook
+E0901 10:00:04.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list cephobjectstores.ceph.rook.io in namespace rook

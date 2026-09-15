@@ -4942,10 +4942,12 @@ fn variation_types_presence_only_kinds_compare_fixed() {
 #[test]
 fn a_placeholder_against_a_plain_word_varies_too() {
     // usw_dmesg: `creating proc entry for system.info` founded the group and
+    // ten bare words joined it (system.info is literal since lessence-c2f,
+    // so an address stands in for the placeholder here);
     // ten bare words joined it; the template said <FQDN> for all eleven.
     let mut f = make_folder();
     for l in [
-        "[    5.450000] creating proc entry for system.info",
+        "[    5.450000] creating proc entry for 10.0.0.1",
         "[    5.450000] creating proc entry for board",
         "[    5.460000] creating proc entry for IsDefault",
     ] {
@@ -4958,7 +4960,7 @@ fn a_placeholder_against_a_plain_word_varies_too() {
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
-    assert!(r[VARIES].samples.contains(&"<FQDN>".to_string()));
+    assert!(r[VARIES].samples.contains(&"<IP>".to_string()));
 }
 
 #[test]

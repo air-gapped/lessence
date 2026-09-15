@@ -133,8 +133,9 @@ fn anonymize_all(
                     .unwrap_or_default()
             })
             .collect();
-        for tokens in &batch {
+        for (line, tokens) in chunk.iter().zip(&batch) {
             anonymizer.learn(tokens);
+            anonymizer.learn_text(line);
         }
     }
     anonymizer.seal();

@@ -373,17 +373,23 @@ impl NetworkDetector {
 
         if normalize_fqdns {
             // FQDN detection. The token gate and the text replacement share
-            // is_likely_fqdn so a rejected match is left untouched.
+            // the same evidence test so a rejected match is left untouched.
             for cap in FQDN_REGEX.find_iter(&result) {
                 let fqdn_str = cap.as_str();
-                if Self::is_likely_fqdn(fqdn_str) && Self::fqdn_stands_alone(&result, &cap) {
+                if Self::is_likely_fqdn(fqdn_str)
+                    && Self::fqdn_stands_alone(&result, &cap)
+                    && Self::fqdn_has_endpoint_evidence(&result, &cap)
+                {
                     tokens.push(Token::Fqdn(fqdn_str.to_string()));
                 }
             }
             result = FQDN_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
                     let m = caps.get(0).unwrap();
-                    if Self::is_likely_fqdn(m.as_str()) && Self::fqdn_stands_alone(&result, &m) {
+                    if Self::is_likely_fqdn(m.as_str())
+                        && Self::fqdn_stands_alone(&result, &m)
+                        && Self::fqdn_has_endpoint_evidence(&result, &m)
+                    {
                         "<FQDN>".to_string()
                     } else {
                         m.as_str().to_string()
@@ -444,7 +450,34 @@ impl NetworkDetector {
         {
             return false;
         }
-        const COMMON_TLDS: &[&str] = &[
+        // Anything else dotted is a candidate; whether it is a host is
+        // decided by evidence on the line (`fqdn_has_endpoint_evidence`),
+        // not by its last label. `cephclusters.ceph.rook.io` and
+        // `postgresqls.acid.zalan.do` are the same kind of name, and a
+        // TLD list said one was a host and the other was not (lessence-c2f).
+        s.contains('.')
+    }
+
+    /// `checkpoint.go`, `main.rs`, `app.py`: a source file, whose `:123`
+    /// is a line number and never a port.
+    fn is_source_file(name: &str) -> bool {
+        const SOURCE_EXTS: &[&str] = &[
+            ".go", ".rs", ".py", ".js", ".ts", ".java", ".c", ".cc", ".cpp", ".h", ".rb", ".php",
+            ".kt", ".swift", ".cs", ".ex", ".erl", ".scala", ".lua", ".pl", ".sh",
+        ];
+        SOURCE_EXTS.iter().any(|ext| name.ends_with(ext))
+    }
+
+    /// Every DNS-shaped name on a line, for the anonymizer (`--anonymize`)
+    /// to learn regardless of whether the normalizer erased it. The fold
+    /// erases a dotted name only on evidence it is a host
+    /// (`fqdn_has_endpoint_evidence`); the scrub must err the other way,
+    /// since a real hostname in prose with no evidence around it is still a
+    /// real hostname. A name qualifies when its last label is a known TLD
+    /// or it has three labels or more — an API group, a Java package and a
+    /// hostname all read alike, and all are safe to invent.
+    pub fn dns_shaped_names(text: &str) -> Vec<&str> {
+        const SCRUB_TLDS: &[&str] = &[
             "com",
             "net",
             "org",
@@ -478,7 +511,6 @@ impl NetworkDetector {
             "in",
             "br",
             "arpa",
-            // Internal / cluster suffixes
             "local",
             "internal",
             "localdomain",
@@ -487,8 +519,124 @@ impl NetworkDetector {
             "home",
             "svc",
         ];
-        s.rsplit_once('.')
-            .is_some_and(|(_, tld)| COMMON_TLDS.contains(&tld))
+        if !text.contains('.') {
+            return Vec::new();
+        }
+        FQDN_REGEX
+            .find_iter(text)
+            .filter(|m| {
+                let name = m.as_str();
+                Self::is_likely_fqdn(name)
+                    && Self::fqdn_stands_alone(text, m)
+                    && !Self::is_source_file(name)
+                    && (name.matches('.').count() >= 2
+                        || name
+                            .rsplit_once('.')
+                            .is_some_and(|(_, tld)| SCRUB_TLDS.contains(&tld)))
+            })
+            .map(|m| m.as_str())
+            .collect()
+    }
+
+    /// Evidence that a dotted name is a network endpoint and not a
+    /// reverse-DNS resource name, a Java package, a plugin id or a label
+    /// key (lessence-c2f). A name is erased to `<FQDN>` only when the line
+    /// itself says it is a host:
+    ///
+    /// - a port follows it (`host:443`) or a URL scheme precedes it;
+    /// - it is the value of a host-shaped field (`host=`, `hostname=`,
+    ///   `server=`, `addr=`, `endpoint=`, `peer=`, `upstream=`, …);
+    /// - it sits in the positional syslog host slot, right after the
+    ///   timestamp;
+    /// - its last label is DNS-only (`.arpa`, `.local`, `.svc`,
+    ///   `.internal`, `.lan`, `.localdomain`, `.home`), a suffix no API
+    ///   group or package uses.
+    ///
+    /// A dotted name in prose with none of these stays literal. Two lines
+    /// that differ only in such a name still fold — one plain word apart —
+    /// and the name shows in the rollup as a `<VARIES>` value, which is
+    /// what an agent needs when the names are the four resources a role is
+    /// denied.
+    fn fqdn_has_endpoint_evidence(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
+        let name = m.as_str();
+
+        // A DNS-only suffix.
+        if let Some((_, last)) = name.rsplit_once('.')
+            && matches!(
+                last,
+                "arpa" | "local" | "localdomain" | "internal" | "lan" | "home" | "svc"
+            )
+        {
+            return true;
+        }
+
+        // A port after the name — unless the name is a source file and the
+        // number is its line (`caller=checkpoint.go:123`).
+        if m.end() + 1 < b.len()
+            && b[m.end()] == b':'
+            && b[m.end() + 1].is_ascii_digit()
+            && !Self::is_source_file(name)
+        {
+            return true;
+        }
+
+        // A URL scheme before the name.
+        if haystack[..m.start()].ends_with("://") {
+            return true;
+        }
+
+        // The positional syslog host slot: the word right after the
+        // timestamp on a syslog-shaped line.
+        const TS: &str = "<TIMESTAMP> ";
+        if m.start() == TS.len() && haystack.starts_with(TS) {
+            return true;
+        }
+
+        // The value of a host-shaped field: `host=`, `hostname: `,
+        // `"server":"`, `addr=`. Walk back over the separator and any
+        // quote to the key, and judge the key by its last word.
+        let mut i = m.start();
+        while i > 0 && matches!(b[i - 1], b'"' | b'\'' | b' ') {
+            i -= 1;
+        }
+        if i > 0 && matches!(b[i - 1], b'=' | b':') {
+            i -= 1;
+            while i > 0 && matches!(b[i - 1], b'"' | b'\'') {
+                i -= 1;
+            }
+            let key_end = i;
+            while i > 0
+                && (b[i - 1].is_ascii_alphanumeric() || matches!(b[i - 1], b'_' | b'-' | b'.'))
+            {
+                i -= 1;
+            }
+            let key = haystack[i..key_end].to_ascii_lowercase();
+            let last = key.rsplit(['_', '-', '.']).next().unwrap_or("");
+            if matches!(
+                last,
+                "host"
+                    | "hostname"
+                    | "hosts"
+                    | "server"
+                    | "servername"
+                    | "addr"
+                    | "address"
+                    | "fqdn"
+                    | "domain"
+                    | "endpoint"
+                    | "peer"
+                    | "remote"
+                    | "upstream"
+                    | "origin"
+                    | "target"
+                    | "url"
+                    | "uri"
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Lightweight pre-filter to validate IPv6 structural plausibility before regex execution
@@ -1149,15 +1297,59 @@ mod tests {
 
     #[test]
     fn fqdn_valid_produces_token() {
-        // Valid FQDN should produce a token
-        let (_, tokens) =
-            NetworkDetector::detect_and_replace("connect example.com ok", false, false, true);
+        // A name with a port after it is a host.
+        let (r, tokens) =
+            NetworkDetector::detect_and_replace("connect example.com:443 ok", false, false, true);
+        assert_eq!(r, "connect <FQDN>:443 ok");
         assert!(
             tokens
                 .iter()
                 .any(|t| matches!(t, Token::Fqdn(s) if s == "example.com")),
             "valid FQDN should produce Fqdn token: {tokens:?}"
         );
+    }
+
+    /// A dotted name is erased only on evidence that it is an endpoint
+    /// (lessence-c2f): a port, a scheme, a host-shaped key, the syslog
+    /// host slot, or a DNS-only suffix. Bare in prose it stays literal —
+    /// an API group, a package, a plugin id and a hostname all read alike.
+    #[test]
+    fn a_dotted_name_is_a_host_only_on_evidence() {
+        for (line, want) in [
+            ("connect example.com ok", "connect example.com ok"),
+            (
+                "denied cephclusters.ceph.rook.io",
+                "denied cephclusters.ceph.rook.io",
+            ),
+            (
+                "denied postgresqls.acid.zalan.do",
+                "denied postgresqls.acid.zalan.do",
+            ),
+            (
+                "GroupVersion apiextensions.k8s.io v1",
+                "GroupVersion apiextensions.k8s.io v1",
+            ),
+            ("connect example.com:443 ok", "connect <FQDN>:443 ok"),
+            ("host=db-01.example.com up", "host=<FQDN> up"),
+            ("remote_addr=db-01.example.com", "remote_addr=<FQDN>"),
+            (r#""server":"db-01.example.com""#, r#""server":"<FQDN>""#),
+            ("upstream: db-01.example.com", "upstream: <FQDN>"),
+            (
+                "<TIMESTAMP> gw.example.com kernel: up",
+                "<TIMESTAMP> <FQDN> kernel: up",
+            ),
+            ("PTR 77.100.51.198.in-addr.arpa", "PTR <FQDN>"),
+            ("dial postgres.staging.svc ok", "dial <FQDN> ok"),
+            ("class=hibernate.SQL", "class=hibernate.SQL"),
+            ("caller=checkpoint.go:123 ok", "caller=checkpoint.go:123 ok"),
+            (
+                "resource=cephclusters.ceph.rook.io",
+                "resource=cephclusters.ceph.rook.io",
+            ),
+        ] {
+            let (r, _) = NetworkDetector::detect_and_replace(line, false, false, true);
+            assert_eq!(r, want, "{line}");
+        }
     }
 
     #[test]
@@ -1324,13 +1516,15 @@ mod tests {
                 "{line}: {t:?}"
             );
         }
+        // A dotted name standing alone in prose is not erased either: an
+        // API group reads exactly like a host (lessence-c2f).
         let (r, _) = NetworkDetector::detect_and_replace(
             "GroupVersion apiextensions.k8s.io v1",
             true,
             true,
             true,
         );
-        assert_eq!(r, "GroupVersion <FQDN> v1");
+        assert_eq!(r, "GroupVersion apiextensions.k8s.io v1");
         // an escaped quote after the name is not glue
         let (r, _) = NetworkDetector::detect_and_replace(
             r#"msg="loading \"io.containerd.store.v1.local\"...""#,
@@ -1339,6 +1533,24 @@ mod tests {
             true,
         );
         assert_eq!(r, r#"msg="loading \"<FQDN>\"...""#);
+    }
+
+    /// The scrub scan learns every DNS-shaped name, evidence or not, and
+    /// still leaves source files and facility.level pairs alone.
+    #[test]
+    fn dns_shaped_names_err_toward_scrubbing() {
+        let names = NetworkDetector::dns_shaped_names(
+            "denied cephclusters.ceph.rook.io and postgresqls.acid.zalan.do at db-01.example.com caller=checkpoint.go:12 daemon.info x.y",
+        );
+        assert_eq!(
+            names,
+            vec![
+                "cephclusters.ceph.rook.io",
+                "postgresqls.acid.zalan.do",
+                "db-01.example.com"
+            ]
+        );
+        assert!(NetworkDetector::dns_shaped_names("no dots here").is_empty());
     }
 
     /// Every IPv6 compression form is one address; what does not parse as
@@ -1395,12 +1607,14 @@ mod shapes_2026_08_29 {
             assert_eq!(r, line, "{line}");
             assert!(t.is_empty(), "{line}");
         }
+        // `system.info` is not a facility.level pair, but it is not a host
+        // either: nothing on the line says so (lessence-c2f).
         let (r, _) = NetworkDetector::detect_and_replace(
             "creating proc entry for system.info",
             true,
             true,
             true,
         );
-        assert_eq!(r, "creating proc entry for <FQDN>");
+        assert_eq!(r, "creating proc entry for system.info");
     }
 }

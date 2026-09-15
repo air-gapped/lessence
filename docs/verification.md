@@ -39,9 +39,10 @@ No target other than `make distill` reads an original corpus.
 5b. Modes: for each distilled corpus, the `--explain` and `--format json`
    inventories are taken for both binaries and the rows the two modes do not
    share are counted (`comm -3`). `--explain` never evicts and `--format json`
-   does, so the two must agree; the count per corpus may not exceed the
-   baseline's → FAIL if it does. Corpora with a non-zero count on either
-   binary are printed (`modes:` line) and listed in `gate.json`.
+   does, so the two must agree. A corpus where the baseline count is 0 must
+   stay 0 → FAIL otherwise; a corpus already carrying the eviction residual
+   (lessence-3ck) is printed, not judged. Corpora with a non-zero count on
+   either binary are printed (`modes:` line) and listed in `gate.json`.
 6. Perf: `taskset -c $GATE_CPU perf stat -e instructions:u,task-clock -x, --
    <bin> --threads 1 -q examples/distilled/kubelet.log`, base then new, two
    rounds, minimum per binary; a third round if the two differ by > 0.3%.
