@@ -392,3 +392,47 @@ fn a_fold_across_a_literal_word_keeps_both_words() {
         "the common word must survive too:\n{distilled}"
     );
 }
+
+#[test]
+fn distill_reports_a_rate_order_inversion_without_changing_the_log_contract() {
+    let mut input = String::new();
+    for second in 0..100 {
+        input.push_str(&format!(
+            "2025-01-20T10:{:02}:{:02}Z housekeeping heartbeat\n",
+            second / 60,
+            second % 60
+        ));
+        if [0, 2, 4].contains(&second) {
+            input.push_str(&format!(
+                "2025-01-20T10:00:{second:02}Z database connection failed\n"
+            ));
+        }
+    }
+    let out = run_stdin(&["--distill", "--threads", "1"], input.as_bytes());
+    let report = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{report}");
+    assert!(
+        report.contains("2 comparable templates, 0 unavailable"),
+        "{report}"
+    );
+    assert!(report.contains("source_interval=1.000000s"), "{report}");
+    assert!(report.contains("1 ordering inversions"), "{report}");
+    let log = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !log.contains("distill rate"),
+        "diagnostics must stay on stderr"
+    );
+    assert!(log.lines().count() < input.lines().count());
+    assert!(
+        log.lines()
+            .all(|line| input.lines().any(|original| original == line))
+    );
+
+    let original = run_stdin(&["--explain", "--threads", "1"], input.as_bytes());
+    let distilled = run_stdin(&["--explain", "--threads", "1"], &out.stdout);
+    assert_eq!(templates(&original.stdout), templates(&distilled.stdout));
+
+    let anonymized = run_stdin(&["--anonymize", "--seed", "1"], input.as_bytes());
+    assert!(anonymized.status.success());
+    assert!(!String::from_utf8_lossy(&anonymized.stderr).contains("distill rate"));
+}

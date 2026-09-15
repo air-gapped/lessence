@@ -514,6 +514,8 @@ pub struct PatternFolder {
     /// --distill: one template per flushed group — the input side of the
     /// template-set contract check.
     distill_templates: Vec<String>,
+    /// --distill only: per-template clock spans, combined across evictions.
+    distill_rates: crate::distill::rates::Rates,
     /// Groups evicted from the live buffer that keep their identity
     /// instead of being emitted immediately (lessence-940): a later line
     /// whose founding hash matches rejoins here instead of founding a
@@ -2058,6 +2060,7 @@ impl PatternFolder {
             rollup_computer: RollupComputer::with_defaults().sanitized(sanitize_pii),
             distill_kept: Vec::new(),
             distill_templates: Vec::new(),
+            distill_rates: crate::distill::rates::Rates::new(),
             retained: ahash::AHashMap::new(),
             json_retention_cap_hits: 0,
         }
@@ -2070,6 +2073,10 @@ impl PatternFolder {
             std::mem::take(&mut self.distill_kept),
             std::mem::take(&mut self.distill_templates),
         )
+    }
+
+    pub(crate) fn take_distilled_rates(&mut self) -> crate::distill::rates::Rates {
+        std::mem::take(&mut self.distill_rates)
     }
 
     /// Absorb the ingestion outcome for the completeness section of the
@@ -2310,6 +2317,13 @@ impl PatternFolder {
     /// away, they are the log.
     fn distill_take(&mut self, group: &PatternGroup, members: usize) {
         self.distill_templates.push(group.template().to_string());
+        let rates = self
+            .distill_rates
+            .entry(group.template().to_string())
+            .or_default();
+        for (line, &line_no) in group.lines.iter().zip(&group.member_line_nos) {
+            rates.record(line_no, &line.tokens);
+        }
         if !group.should_collapse(self.config.min_collapse) {
             self.distill_kept
                 .extend(group.member_line_nos.iter().copied());

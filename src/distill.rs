@@ -24,6 +24,8 @@ use crate::ingest::{Event, IngestReport, Ingestor, InputReader};
 use crate::normalize::Normalizer;
 use crate::patterns::Token;
 
+pub(crate) mod rates;
+
 /// How many failures of one kind to print before summarising the rest.
 /// A contract check that floods the terminal teaches nothing the first
 /// twenty lines did not.
@@ -87,8 +89,8 @@ pub fn run(
     // can change how a line folds, and a distillation selected from a log
     // other than the one it emits would carry members for groups that no
     // longer exist.
-    let selected = fold(config, source)?.kept;
-    let kept = keep_set(source, opts, &selected);
+    let source_fold = fold(config, source)?;
+    let kept = keep_set(source, opts, &source_fold.kept);
     let out_lines: Vec<String> = kept.iter().map(|&n| source[n - 1].clone()).collect();
 
     let mut stdout = io::stdout().lock();
@@ -102,7 +104,15 @@ pub fn run(
     stdout.flush()?;
 
     let mut ok = true;
-    ok &= check_templates(config, source, &out_lines)?;
+    let output_fold = fold(config, &out_lines)?;
+    ok &= compare_templates(&source_fold, &output_fold);
+    if opts.distill {
+        rates::report(
+            &source_fold.rates,
+            &output_fold.rates,
+            &mut io::stderr().lock(),
+        )?;
+    }
     ok &= check_word_shapes(source, &out_lines);
     if let Some(a) = anonymizer.as_ref() {
         ok &= check_survivors(&a.replaced_originals(), &out_lines);
@@ -147,6 +157,7 @@ fn anonymize_all(
 struct Fold {
     kept: Vec<usize>,
     templates: Vec<String>,
+    rates: rates::Rates,
 }
 
 fn fold(config: &Config, lines: &[String]) -> Result<Fold> {
@@ -156,7 +167,12 @@ fn fold(config: &Config, lines: &[String]) -> Result<Fold> {
     }
     folder.finish()?;
     let (kept, templates) = folder.take_distilled();
-    Ok(Fold { kept, templates })
+    let rates = folder.take_distilled_rates();
+    Ok(Fold {
+        kept,
+        templates,
+        rates,
+    })
 }
 
 /// The input line numbers the output carries, in order: what the folder
@@ -188,15 +204,15 @@ fn keep_set(lines: &[String], opts: &Options, selected: &[usize]) -> BTreeSet<us
 /// Contract 1: folding the output yields the same templates as folding the
 /// input. Both sides are read after anonymisation, so an invented value is
 /// not mistaken for a lost shape.
-fn check_templates(config: &Config, source: &[String], out_lines: &[String]) -> Result<bool> {
-    let want: BTreeSet<String> = fold(config, source)?.templates.into_iter().collect();
-    let have: BTreeSet<String> = fold(config, out_lines)?.templates.into_iter().collect();
+fn compare_templates(source: &Fold, output: &Fold) -> bool {
+    let want: BTreeSet<&String> = source.templates.iter().collect();
+    let have: BTreeSet<&String> = output.templates.iter().collect();
 
-    let lost: Vec<&String> = want.difference(&have).collect();
-    let gained: Vec<&String> = have.difference(&want).collect();
+    let lost: Vec<&String> = want.difference(&have).copied().collect();
+    let gained: Vec<&String> = have.difference(&want).copied().collect();
     report("template missing from the distilled output", &lost);
     report("template only in the distilled output", &gained);
-    Ok(lost.is_empty() && gained.is_empty())
+    lost.is_empty() && gained.is_empty()
 }
 
 /// Contract 1b: every distinct word shape of the input appears in the
@@ -425,7 +441,7 @@ mod tests {
         // replace — loses the tenth line, and the check must say so.
         let naive: Vec<String> = lines[..3].to_vec();
         assert!(
-            !check_templates(&config, &lines, &naive).expect("check"),
+            !compare_templates(&folded, &fold(&config, &naive).expect("fold")),
             "a distillation missing the rare variant must not pass"
         );
 
@@ -433,7 +449,7 @@ mod tests {
         let kept = keep_set(&lines, &opts(), &folded.kept);
         let honest: Vec<String> = kept.iter().map(|&n| lines[n - 1].clone()).collect();
         assert!(
-            check_templates(&config, &lines, &honest).expect("check"),
+            compare_templates(&folded, &fold(&config, &honest).expect("fold")),
             "the selected members must reproduce every template"
         );
     }

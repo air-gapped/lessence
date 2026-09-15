@@ -45,6 +45,31 @@ file keeps one of them: the same claim lessence makes with `<NUMBER>`, and
 the known limit of the distillation. With `--anonymize`, selection runs on
 the anonymised log.
 
+## Rate comparison (`--distill`, including `make distill`)
+
+After folding the selected output, stderr reports each template's mean
+inter-arrival interval in the source and distillate: clock span divided by
+`occurrences - 1`. Every occurrence counts, including lines sharing a
+timestamp. The source is the anonymised input when anonymisation is enabled,
+so the two sides use the same invented identities. Identical templates are
+combined across evictions before comparing them.
+
+The interval distortion is `distilled interval / source interval`; the report
+also divides it by the median distortion of all comparable templates in that
+corpus. Every pair whose strict frequency ordering reverses is listed using
+the template numbers defined in the report. Ties are not reversals. The report
+is advisory: distortion and inversions do not change the exit status, member
+selection, stdout log, or two-column golden format. No sidecar is written.
+
+Clocks use the briefing's timestamp parser at one-second resolution, with the
+span taken between minimum and maximum parsed timestamps. Templates with
+missing/unsupported timestamps (including uptime-only logs), fewer than two
+occurrences, a zero span, or a first timestamp later than the last are named
+as unavailable and excluded from comparisons. A backwards endpoint can mean a
+clock reversal or an unstated year boundary; the report does not guess which.
+Mean intervals describe rate loss, not regularity: a burst and a periodic
+event can have the same mean. Preserving gap shape is separate work.
+
 ## `--anonymize`
 
 Same original value → same invented value for the whole run; two originals

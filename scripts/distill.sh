@@ -67,6 +67,8 @@ for f in examples/originals/*.log; do
 
     lines_in="$(wc -l < "$f")"
 
+    echo "distill rate comparison: $name" >&2
+
     set +e
     "$BIN" --distill --anonymize --seed 1 --anonymize-words "$SCRUB_VOCAB" "$f" > "$dist_log"
     rc=$?
