@@ -2057,3 +2057,18 @@ filler event ombaaa
 filler event pmbaaa
 filler event qmbaaa
 gateway heartbeat ok node=edge-01
+
+##CASE lessence-682 groups=1
+##WHY two lines that differ in two plain words each found a group, and each
+##WHY  group's differing words later become <VARIES>; the two then render the
+##WHY  same template with the count split between them, and a reader summing
+##WHY  by template sees two events where there is one
+##FROM the clustering scope itself (a line is compared to founders, never to
+##FROM  other groups); the invented lines are long enough to fold on one
+##FROM  differing word and refused on two, per MAX_PLAIN_WORD_DIFFS
+svc node ready check pass level info region east alpha state one
+svc node ready check pass level info region east beta state two
+svc node ready check pass level info region east gamma state one
+svc node ready check pass level info region east delta state two
+svc node ready check pass level info region east alpha state three
+svc node ready check pass level info region east beta state four

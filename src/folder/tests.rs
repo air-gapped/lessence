@@ -5202,3 +5202,64 @@ fn a_token_ending_in_a_small_integer_folds_with_its_siblings() {
     assert_eq!(r[VARIES].samples, vec!["1", "2"]);
     assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
 }
+
+// ---- lessence-682: groups that converge on one template are one group ----
+
+/// Two founders two plain words apart each found a group; one more member
+/// each turns both differing words into `<VARIES>`, so both groups render
+/// the same claim. `finish` must fold them into one line with one count,
+/// and the rollup must carry every member's words.
+#[test]
+fn groups_converging_on_one_template_render_once() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    for tail in [
+        "alpha state one",
+        "beta state two",
+        "gamma state one",
+        "delta state two",
+        "alpha state three",
+        "beta state four",
+    ] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    assert_eq!(
+        f.buffer.len(),
+        2,
+        "the two founders must not fold on arrival"
+    );
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "one claim renders once: {out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 6);
+    assert_eq!(
+        record["normalized"],
+        format!("{stem} <VARIES> state <VARIES>")
+    );
+    let varies = &record["variation"]["VARIES"];
+    assert_eq!(varies["distinct_count"], 8, "{varies}");
+}
+
+/// Same convergence, but the earlier group has been through eviction and
+/// carries an accumulator instead of its member list: the merge extends
+/// the accumulator rather than rescanning, and the count is still whole.
+#[test]
+fn a_retained_group_absorbs_a_converging_live_group() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    f.process_line(&format!("{stem} alpha state one")).unwrap();
+    f.process_line(&format!("{stem} gamma state one")).unwrap();
+    f.process_line(&format!("{stem} alpha state three"))
+        .unwrap();
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 1, "the first group must be retained");
+    f.process_line(&format!("{stem} beta state two")).unwrap();
+    f.process_line(&format!("{stem} delta state two")).unwrap();
+    f.process_line(&format!("{stem} beta state four")).unwrap();
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 6);
+    assert_eq!(record["variation"]["VARIES"]["distinct_count"], 8);
+}

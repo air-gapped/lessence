@@ -332,6 +332,69 @@ impl PatternGroup {
         }
     }
 
+    /// Fold another group into this one at render time (lessence-682).
+    /// Only ever called for two groups whose templates and anchors are
+    /// identical, so every member of `other` already satisfies this
+    /// group's claim and the template needs no re-marking. Whichever of
+    /// the two holds the full member list keeps it; as soon as either has
+    /// been through eviction the merged group carries an accumulator
+    /// instead, extended from the other's members or accumulator without
+    /// a rescan.
+    fn absorb(&mut self, other: PatternGroup, rollup_computer: &RollupComputer) {
+        debug_assert_eq!(self.template, other.template);
+        self.count += other.count;
+        let other_is_later = other.last_line_no > self.last_line_no
+            || (other.last_line_no == self.last_line_no && other.position > self.position);
+        if other_is_later {
+            self.last_line_no = other.last_line_no;
+            self.last_source_id = other.last_source_id;
+        }
+        self.member_line_nos.extend(other.member_line_nos);
+
+        if self.retained.is_none() && other.retained.is_none() {
+            // Both fully materialized: one member list, with the true last
+            // member kept at the end so `last()` stays honest.
+            let own_last = self.lines.pop().unwrap();
+            let mut other_lines = other.lines;
+            if other_is_later {
+                self.lines.push(own_last);
+                self.lines.append(&mut other_lines);
+            } else {
+                self.lines.append(&mut other_lines);
+                self.lines.push(own_last);
+            }
+            return;
+        }
+
+        if self.retained.is_none() {
+            self.retained = Some(rollup_computer.seed(self));
+        }
+        let state = self.retained.as_mut().expect("seeded above");
+        if let Some(from) = other.retained {
+            rollup_computer.merge_retained(state, from);
+        } else {
+            rollup_computer.accumulate_tokens(&other.lines, &mut state.per_type);
+            rollup_computer.accumulate_varies(
+                &other.lines,
+                &self.template,
+                &mut state.varies,
+                &mut state.varies_capped,
+            );
+        }
+        let first = self.lines[0].clone();
+        let last = if other_is_later {
+            other.lines.last().cloned()
+        } else if self.lines.len() > 1 {
+            self.lines.last().cloned()
+        } else {
+            None
+        };
+        self.lines = match last {
+            Some(last) if self.count > 1 => vec![first, last],
+            _ => vec![first],
+        };
+    }
+
     /// A member that differs from the template at some word — `Timeout`
     /// where the first line said `Unreachable`, a bare `board` where it said
     /// `<FQDN>`, `-sdown` read as `<FLAG>` where it said `+sdown` — makes
@@ -1553,6 +1616,15 @@ impl Accumulator {
             Self::Counted(m) => m.len(),
         }
     }
+
+    /// An empty accumulator of the same kind.
+    fn empty_like(other: &Self) -> Self {
+        match other {
+            Self::Values(_) => Self::Values(HashSet::new()),
+            Self::Hashes(_) => Self::Hashes(HashSet::new()),
+            Self::Counted(_) => Self::Counted(HashMap::new()),
+        }
+    }
 }
 
 /// Stateless rollup computer. One per `PatternFolder`. Parameters
@@ -1788,6 +1860,63 @@ impl RollupComputer {
             template,
             seed_key,
         )
+    }
+
+    /// Merge one retained accumulator into another (lessence-682): the
+    /// union of each token type's distinct set and the sum of each varying
+    /// word's count, under the same `distinct_cap` a single group obeys.
+    fn merge_retained(&self, into: &mut RetainedState, from: RetainedState) {
+        for (name, (acc, capped)) in from.per_type {
+            let entry = into
+                .per_type
+                .entry(name)
+                .or_insert_with(|| (Accumulator::empty_like(&acc), false));
+            if capped {
+                entry.1 = true;
+            }
+            if entry.1 {
+                continue;
+            }
+            match (&mut entry.0, acc) {
+                (Accumulator::Values(s), Accumulator::Values(other)) => {
+                    for v in other {
+                        if s.len() >= self.distinct_cap {
+                            entry.1 = true;
+                            break;
+                        }
+                        s.insert(v);
+                    }
+                }
+                (Accumulator::Hashes(s), Accumulator::Hashes(other)) => {
+                    for v in other {
+                        if s.len() >= self.distinct_cap {
+                            entry.1 = true;
+                            break;
+                        }
+                        s.insert(v);
+                    }
+                }
+                (Accumulator::Counted(m), Accumulator::Counted(other)) => {
+                    for (k, n) in other {
+                        *m.entry(k).or_insert(0) += n;
+                    }
+                }
+                // The two groups share a template, so a token type is
+                // sample-worthy in both or in neither; a mismatch cannot
+                // happen, and if it did the entry is left as it was.
+                _ => {}
+            }
+        }
+        for (value, n) in from.varies {
+            if let Some(m) = into.varies.get_mut(&value) {
+                *m += n;
+            } else if into.varies.len() < self.distinct_cap {
+                into.varies.insert(value, n);
+            } else {
+                into.varies_capped = true;
+            }
+        }
+        into.varies_capped |= from.varies_capped;
     }
 
     /// Draw samples deterministically from each Accumulator and produce one
@@ -2453,6 +2582,7 @@ impl PatternFolder {
         let mut groups: Vec<PatternGroup> = std::mem::take(&mut self.buffer);
         groups.extend(std::mem::take(&mut self.retained).into_values());
         groups.sort_by_key(|group| group.position);
+        let groups = self.merge_converged(groups);
 
         for mut group in groups {
             let formatted = self.format_group_dispatch(&mut group)?;
@@ -2471,6 +2601,33 @@ impl PatternFolder {
         }
 
         Ok(output)
+    }
+
+    /// Two lines can found separate groups — too unlike each other to fold
+    /// when each arrived — and later converge on the same template as each
+    /// accumulates members and its differing words become `<VARIES>`
+    /// (lessence-682). Groups are compared to founders, never to each
+    /// other, so nothing upstream notices. Identical template and anchor
+    /// mean identical claim, and one claim is one line with one count:
+    /// merge them here, at the one point every group passes through in
+    /// founding order. `--distill` emits input lines, not groups, and keeps
+    /// every member either way, so it is left alone.
+    fn merge_converged(&self, groups: Vec<PatternGroup>) -> Vec<PatternGroup> {
+        if self.config.distill.is_some() || groups.len() < 2 {
+            return groups;
+        }
+        let mut by_claim: HashMap<(String, u64), usize> = HashMap::with_capacity(groups.len());
+        let mut out: Vec<PatternGroup> = Vec::with_capacity(groups.len());
+        for group in groups {
+            let key = (group.template().to_string(), group.first().anchor);
+            if let Some(&at) = by_claim.get(&key) {
+                out[at].absorb(group, &self.rollup_computer);
+            } else {
+                by_claim.insert(key, out.len());
+                out.push(group);
+            }
+        }
+        out
     }
 
     /// Finish processing and return the top N groups by frequency, already
