@@ -53,15 +53,21 @@ else
         || mutants_rc=$?
     rm -f "$diff_file"
     outcomes="mutants.out/outcomes.json"
-    if [ ! -f "$outcomes" ]; then
-        # cargo mutants exits non-zero when mutants are missed, which is a
-        # score, not a failure; no outcomes at all is a failure to run.
-        mutation_score="failed (rc=${mutants_rc}, no outcomes written)"
+    # cargo mutants exits 0 (all caught), 2 (missed), 3 (timeouts) or 4
+    # (unviable) after a complete run; anything else means it did not
+    # finish, and a partial or malformed outcomes.json must not be read as
+    # a score (lessence-xr6).
+    case "$mutants_rc" in
+        0|2|3|4) mutants_complete=1 ;;
+        *) mutants_complete=0 ;;
+    esac
+    if [ "$mutants_complete" -eq 0 ] || [ ! -f "$outcomes" ] \
+        || ! jq -e '.outcomes | type == "array"' "$outcomes" >/dev/null 2>&1; then
+        mutation_score="failed (rc=${mutants_rc}, no complete outcomes)"
         gate_status="FAIL"
-    fi
-    if [ -f "$outcomes" ]; then
-        mutants_caught="$(jq '[.outcomes[] | select(.scenario.Mutant and .summary=="Caught")] | length' "$outcomes" 2>/dev/null || echo 0)"
-        mutants_total="$(jq '[.outcomes[] | select(.scenario.Mutant)] | length' "$outcomes" 2>/dev/null || echo 0)"
+    else
+        mutants_caught="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant and .summary=="CaughtMutant")] | length' "$outcomes")"
+        mutants_total="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant)] | length' "$outcomes")"
         if [ "$mutants_total" -gt 0 ]; then
             mutation_score="$(awk -v c="$mutants_caught" -v t="$mutants_total" 'BEGIN{printf "%.1f", c/t*100}')"
         else
