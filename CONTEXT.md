@@ -190,6 +190,14 @@ and `exe=`/`"binary":` fields keep the program path. The hasher and renderer
 read the same capture spans. An ordinary path outside these anchored
 grammars still becomes `<PATH>`.
 
+PCI addresses now retain their exact `domain:bus:device.function` text
+(`lessence-a8t.3`). Hashing and rendering use the same recognizer. An address
+inside a rendered route is shown beside its skeleton, with repeated
+addresses kept in order. Template construction treats an address as one
+fixed unit, so varying path text around it cannot erase part of the address.
+`pci_address_splits_are_visible` gates the two
+hardware corpora that carried this invisible-anchor class.
+
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
 

@@ -507,6 +507,42 @@ fn call_site_traceback_and_program_splits_are_visible() {
     }
 }
 
+/// The hardware corpora had dozens of different PCI identities hidden
+/// behind the same numeric/path templates. They must all stay visible.
+#[test]
+fn pci_address_splits_are_visible() {
+    static PCI: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
+            .expect("PCI address regex must compile")
+    });
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir);
+    for name in ["epyc_7days_journalctl.log", "nas_dmesg.log"] {
+        let path = std::path::Path::new("examples/distilled").join(name);
+        assert!(path.exists(), "missing corpus {}", path.display());
+        // Systemd and other open anchor classes share these corpora.
+        // Compare ordered PCI identities rather than exempting templates.
+        let offenders: Vec<_> = offender_groups(&path)
+            .into_iter()
+            .filter(|(_, lines)| {
+                lines
+                    .iter()
+                    .map(|line| PCI.find_iter(line).map(|m| m.as_str()).collect::<Vec<_>>())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    > 1
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{} hides PCI identities: {offenders:?}",
+            path.display()
+        );
+    }
+}
+
 /// The route-anchor fix's gate: on the two HTTP access-log corpora whose
 /// anchor is the request route (`normalize::anchor_hash`'s route-skeleton
 /// arm), an anchor split must never print the same template twice. This is

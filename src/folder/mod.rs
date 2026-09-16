@@ -1239,13 +1239,28 @@ fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
         return Vec::new();
     };
     let mut edits = Vec::new();
+    let mut same_pci_identity = None;
     for (i, &(at, len)) in spans.iter().enumerate() {
         let r = tmpl[i];
-        if r.contains(VARIES_MARK) {
+        if r.contains(VARIES_MARK) || aligned[i].is_some_and(|j| mem[j] == r) {
+            continue;
+        }
+        // An alignment shift around a shared PCI identity must not
+        // erase it. Check the complete ordered list before preserving an
+        // unmatched atom, so this helper is safe even outside an anchored
+        // group. Most atoms align directly and never need this scan.
+        if crate::normalize::pci_addresses(r)
+            .next()
+            .is_some_and(|m| m.start() == 0 && m.end() == r.len())
+            && *same_pci_identity.get_or_insert_with(|| {
+                crate::normalize::pci_addresses(template)
+                    .map(|m| m.as_str())
+                    .eq(crate::normalize::pci_addresses(member).map(|m| m.as_str()))
+            })
+        {
             continue;
         }
         match aligned[i] {
-            Some(j) if mem[j] == r => {}
             Some(j) => {
                 let (p, q) = shared_affixes(r, mem[j]);
                 edits.push((at + p, len - p - q));
@@ -1310,7 +1325,7 @@ fn data_shaped(w: &str) -> bool {
 /// — is one unit, because a value with spaces is still one value. Byte
 /// spans into `s`, each covering the words of the unit and the spaces
 /// between them.
-pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
+fn word_unit_spans(s: &str) -> Vec<(usize, usize)> {
     /// A quoted string of more words than this is a sentence — the event's
     /// own words, each its own unit — not a value with spaces in it.
     const VALUE_WORDS: usize = 3;
@@ -1347,6 +1362,40 @@ pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
     units
 }
 
+/// Template units keep each PCI identity atomic, even inside a path.
+/// Splitting byte spans inserts no whitespace into the shown template.
+/// The join policy still uses the original word units below.
+pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
+    let units = word_unit_spans(s);
+    let mut pci = crate::normalize::pci_addresses(s).peekable();
+    if pci.peek().is_none() {
+        return units;
+    }
+    let mut split = Vec::with_capacity(units.len() + 4);
+    for (at, len) in units {
+        let end = at + len;
+        let mut cursor = at;
+        while let Some(address) = pci.peek() {
+            if address.start() >= end {
+                break;
+            }
+            // PCI syntax contains no word/quote separators, so every
+            // address fits wholly within one original unit.
+            debug_assert!(address.start() >= cursor && address.end() <= end);
+            if cursor < address.start() {
+                split.push((cursor, address.start() - cursor));
+            }
+            split.push((address.start(), address.len()));
+            cursor = address.end();
+            pci.next();
+        }
+        if cursor < end {
+            split.push((cursor, end - cursor));
+        }
+    }
+    split
+}
+
 /// How many words two lines disagree in where the disagreement is one of
 /// sentence, not of value: the letters differ and at least one side is not
 /// data. `Fork CoW for RDB` against `Fork CoW for AOF rewrite` is three,
@@ -1359,11 +1408,11 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
     let differs =
         |x: &str, y: &str| !(letters(x).eq(letters(y)) || (data_shaped(x) && data_shaped(y)));
     let lone = |x: &str| letters(x).next().is_some() && !data_shaped(x);
-    let ua: Vec<&str> = unit_spans(a)
+    let ua: Vec<&str> = word_unit_spans(a)
         .into_iter()
         .map(|(at, len)| &a[at..at + len])
         .collect();
-    let ub: Vec<&str> = unit_spans(b)
+    let ub: Vec<&str> = word_unit_spans(b)
         .into_iter()
         .map(|(at, len)| &b[at..at + len])
         .collect();

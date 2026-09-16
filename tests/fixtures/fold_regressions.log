@@ -4269,3 +4269,30 @@ I0916 09:12:35.123456       8 reflector.go:137] local.dev/worker/task.go:241: fo
 ##WHY The exact identity that prevents these events from joining must remain visible.
 ##FROM invented call-site, traceback or program event
 exe="/usr/local/bin/worker" uid=1000 event=exec
+
+##CASE lessence-a8t.3 template_present=0000:3a:00.0
+##WHY Different PCI identities must remain visible when numeric or path detectors would erase them.
+##FROM invented PCI device event
+[    0.125000] pci 0000:3a:00.0: enabling device (0000 -> 0002)
+
+##CASE lessence-a8t.3 template_present=0000:04:00.0
+##WHY Different PCI identities must remain visible when numeric or path detectors would erase them.
+##FROM invented PCI device event
+[    0.125000] iommu: Using direct mapping for device 0000:04:00.0
+
+##CASE lessence-a8t.3 template_present=0000:21:00.0
+##WHY Different PCI identities must remain visible when numeric or path detectors would erase them.
+##FROM invented PCI device event
+warning device path=/sys/bus/pci/devices/0000:21:00.0/driver failed
+
+##CASE lessence-a8t.3 template_present=0000:21:00.0
+##WHY Different PCI identities must remain visible when numeric or path detectors would erase them.
+##FROM invented PCI device event
+method=GET path="/devices/0000:21:00.0?peer=0000:21:00.0"
+
+##CASE lessence-a8t.3 template_present=usb-0000:2a:00.3
+##WHY A shared PCI address inside a USB path stays visible when the suffix varies.
+##FROM invented HID device events
+Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw0: USB HID v2.10 Keyboard [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input0
+Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw1: USB HID v2.10 Mouse [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input1
+Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw0: USB HID v2.10 Keyboard [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input0

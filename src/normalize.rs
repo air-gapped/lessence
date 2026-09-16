@@ -244,6 +244,21 @@ static PCI_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
         .expect("pci-address anchor pattern must compile")
 });
 
+/// One recognizer supplies the exact PCI identities to both hashing and
+/// rendering, including their order and repeated occurrences.
+pub(crate) fn pci_addresses(original: &str) -> impl Iterator<Item = regex::Match<'_>> {
+    // A PCI function is an ASCII digit 0..7 after a dot. In normalized
+    // text this cheaply rejects source files and other dotted words.
+    let bytes = original.as_bytes();
+    (original.contains(':')
+        && original
+            .match_indices('.')
+            .any(|(at, _)| bytes.get(at + 1).is_some_and(|b| matches!(b, b'0'..=b'7'))))
+    .then(|| PCI_ADDRESS.find_iter(original))
+    .into_iter()
+    .flatten()
+}
+
 /// A klog header, `E0910 00:02:39.914326       1 status.go:71]`. The capture
 /// is the call site, `file.go:line` — klog's event identity, the way a
 /// syslog program name is.
@@ -438,7 +453,7 @@ fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
 /// lines therefore group exactly as they did before.
 ///
 /// Anchors are read from the raw line, before normalization erases them.
-fn anchor_hash(original: &str) -> u64 {
+fn anchor_hash(original: &str, pci: &[regex::Match<'_>]) -> u64 {
     let mut hasher = AHasher::default();
     let mut found = false;
 
@@ -461,11 +476,9 @@ fn anchor_hash(original: &str) -> u64 {
 
     // A PCI address needs both separators; the pair is rare enough together to
     // keep the scan off most lines.
-    if original.contains(':') && original.contains('.') {
-        for found_addr in PCI_ADDRESS.find_iter(original) {
-            found_addr.as_str().hash(&mut hasher);
-            found = true;
-        }
+    for address in pci {
+        address.as_str().hash(&mut hasher);
+        found = true;
     }
 
     // Some grammars put the event identity in a fixed position as a name:
@@ -765,10 +778,10 @@ fn render_pod_prefix(matched: &str) -> String {
 
 /// Sentinel-protect every anchored span's exact bytes in `original` so no
 /// detector — `PathDetector` in particular — can swallow it before it can be
-/// rendered as its skeleton. Mirrors exactly what `anchor_hash` reads: a
-/// request target on an `HTTP/` line, a `FIELD_PATH` value on a record that
-/// also names a method, a `[pod/<pod>/<container>]` kubectl prefix, and each
-/// anchored status class, and exact call-site/frame/program identities.
+/// rendered as its identity. Uses the same matches as `anchor_hash` for
+/// request targets, `FIELD_PATH` values on records that name a method,
+/// `[pod/<pod>/<container>]` prefixes, status classes, PCI addresses, and
+/// exact call-site/frame/program identities.
 /// A file path elsewhere is untouched.
 ///
 /// Keeps the substituted line, the spans to restore after detection, and
@@ -780,6 +793,7 @@ enum AnchorRender {
     StatusField,
     Exact,
     KlogCallSite,
+    PciAddress,
 }
 
 impl AnchorRender {
@@ -789,7 +803,7 @@ impl AnchorRender {
             Self::PodPrefix => render_pod_prefix(text),
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
-            Self::Exact | Self::KlogCallSite => text.to_string(),
+            Self::Exact | Self::KlogCallSite | Self::PciAddress => text.to_string(),
         }
     }
 }
@@ -806,7 +820,7 @@ struct ProtectedStatus {
 }
 
 type AnchoredSpan = (usize, usize, AnchorRender);
-fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
+fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> ProtectedAnchors {
     let mut spans: Vec<AnchoredSpan> = Vec::new();
     let mut statuses = Vec::new();
 
@@ -851,6 +865,10 @@ fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
             });
             spans.push((span.start, span.end, AnchorRender::StatusField));
         }
+    }
+
+    for address in pci {
+        spans.push((address.start(), address.end(), AnchorRender::PciAddress));
     }
 
     // These anchors match their literal identity, unlike route/status
@@ -898,6 +916,7 @@ fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
     let mut result = String::with_capacity(original.len());
     let mut renders: Vec<(String, String)> = Vec::with_capacity(spans.len());
     let mut cursor = 0;
+    let mut covering_is_literal = false;
     for (i, (start, end, render)) in spans.into_iter().enumerate() {
         if start < cursor {
             // An identity can itself occur inside an anchored route's
@@ -909,10 +928,15 @@ fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
                     | AnchorRender::StatusField
                     | AnchorRender::Exact
                     | AnchorRender::KlogCallSite
+                    | AnchorRender::PciAddress
             ) && let Some((_, rendered)) = renders.last_mut()
             {
                 let identity = render.render(&original[start..end]);
+                // Literal outer fields already show nested PCI addresses.
+                // A route skeleton needs every occurrence appended, even
+                // when the same address appeared earlier in its query.
                 if matches!(render, AnchorRender::HttpStatus | AnchorRender::StatusField)
+                    || (matches!(render, AnchorRender::PciAddress) && !covering_is_literal)
                     || !rendered.contains(&identity)
                 {
                     rendered.push(' ');
@@ -931,6 +955,10 @@ fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
             'A'
         };
         let sentinel = format!("\u{0}{kind}{i}\u{0}");
+        covering_is_literal = matches!(
+            render,
+            AnchorRender::Exact | AnchorRender::KlogCallSite | AnchorRender::PciAddress
+        );
         renders.push((sentinel.clone(), render.render(&original[start..end])));
         result.push_str(&sentinel);
         cursor = end;
@@ -955,7 +983,8 @@ impl Normalizer {
         // An anchored span (see `anchor_hash`) must render as its skeleton,
         // not `<PATH>` — otherwise the split it forces is invisible in the
         // shown line. Protect its exact span before any detector runs...
-        let protected = protect_anchored_spans(&original);
+        let pci: Vec<_> = pci_addresses(&original).collect();
+        let protected = protect_anchored_spans(&original, &pci);
         let mut normalized = protected.text;
         let mut tokens = Vec::with_capacity(8);
 
@@ -1000,7 +1029,7 @@ impl Normalizer {
 
         // Anchors come from the raw line: normalization has just erased the
         // very fields they identify.
-        let anchor = anchor_hash(&original);
+        let anchor = anchor_hash(&original, &pci);
 
         // Fold the anchor into the line hash so the folder's exact-hash group
         // index cannot attach this line to a group with a different anchor.
@@ -1280,6 +1309,66 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pci_identity_is_visible_in_messages_and_paths() {
+        let normalizer = Normalizer::new(Config::default());
+        for shape in [
+            "[    0.125000] pci ADDRESS: enabling device (0000 -> 0002)",
+            "[    0.125000] iommu: Using direct mapping for device ADDRESS",
+            "warning device path=/sys/bus/pci/devices/ADDRESS/driver failed",
+        ] {
+            let a = normalizer
+                .normalize_line(shape.replace("ADDRESS", "0000:3a:00.0"))
+                .unwrap();
+            let b = normalizer
+                .normalize_line(shape.replace("ADDRESS", "0000:3a:00.1"))
+                .unwrap();
+            assert_ne!(a.anchor, b.anchor);
+            assert_ne!(a.normalized, b.normalized);
+            assert!(a.normalized.contains("0000:3a:00.0"), "{}", a.normalized);
+            assert!(!a.normalized.contains('\0'));
+        }
+    }
+
+    #[test]
+    fn nested_pci_identities_keep_their_order_and_multiplicity() {
+        let normalizer = Normalizer::new(Config::default());
+        let one = normalizer
+            .normalize_line(r#"method=GET path="/devices/0000:21:00.0""#.into())
+            .unwrap();
+        let two = normalizer
+            .normalize_line(r#"method=GET path="/devices/0000:21:00.0?peer=0000:21:00.0""#.into())
+            .unwrap();
+        assert_ne!(one.anchor, two.anchor);
+        assert_ne!(one.normalized, two.normalized);
+        assert_eq!(one.normalized.matches("0000:21:00.0").count(), 1);
+        assert_eq!(two.normalized.matches("0000:21:00.0").count(), 2);
+        let literal = normalizer
+            .normalize_line(r#"exe="/devices/0000:21:00.0/tool""#.into())
+            .unwrap();
+        assert_eq!(literal.normalized.matches("0000:21:00.0").count(), 1);
+        let ordered = normalizer
+            .normalize_line(
+                r#"method=GET path="/devices?first=0000:21:00.0&second=0000:04:00.0""#.into(),
+            )
+            .unwrap();
+        assert!(
+            ordered.normalized.find("0000:21:00.0").unwrap()
+                < ordered.normalized.find("0000:04:00.0").unwrap()
+        );
+    }
+
+    #[test]
+    fn pci_near_misses_do_not_gain_device_identity() {
+        let normalizer = Normalizer::new(Config::default());
+        for address in ["0000:21:00.8", "000:21:00.0", "0000:2g:00.0", "10.23.4.5"] {
+            let line = normalizer
+                .normalize_line(format!("device {address} enabled"))
+                .unwrap();
+            assert_eq!(line.anchor, 0, "{address}");
+        }
+    }
 
     #[test]
     fn nested_status_identities_keep_their_multiplicity() {

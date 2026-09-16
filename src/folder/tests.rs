@@ -5287,6 +5287,77 @@ fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
 }
 
 #[test]
+fn pci_identity_survives_variation_on_either_side_without_added_spaces() {
+    let address = "0000:2a:00.3";
+    for (first, next) in [
+        ("usb-0000:2a:00.3/input0", "usb-0000:2a:00.3/input1"),
+        ("left-0000:2a:00.3/path", "right-0000:2a:00.3/path"),
+        ("left-0000:2a:00.3/input0", "right-0000:2a:00.3/input1"),
+        (
+            r#"path="left-0000:2a:00.3/input0""#,
+            r#"path="right-0000:2a:00.3/input1""#,
+        ),
+        (
+            "usb-0000:2a:00.3/input0 ready",
+            "ready usb-0000:2a:00.3/input1",
+        ),
+    ] {
+        let mut template = first.to_string();
+        for (at, len) in varying_spans(first, next).into_iter().rev() {
+            template.replace_range(at..at + len, VARIES_MARK);
+        }
+        assert!(template.contains(address), "{first} vs {next}: {template}");
+        assert!(template.contains(VARIES_MARK), "{template}");
+        if !first.contains(' ') {
+            assert!(!template.contains(' '), "{template}");
+        }
+    }
+}
+
+#[test]
+fn pci_template_atoms_do_not_treat_different_address_lists_as_equal() {
+    for (first, next, expected_count) in [
+        ("usb-0000:2a:00.3/input0", "usb-0000:2a:00.4/input0", 0),
+        (
+            "left-0000:2a:00.3/right-0000:2a:00.3",
+            "left-0000:2a:00.3",
+            1,
+        ),
+    ] {
+        let mut template = first.to_string();
+        for (at, len) in varying_spans(first, next).into_iter().rev() {
+            template.replace_range(at..at + len, VARIES_MARK);
+        }
+        assert_eq!(
+            template.matches("0000:2a:00.3").count(),
+            expected_count,
+            "{template}"
+        );
+    }
+}
+
+#[test]
+fn hid_suffix_variations_keep_the_pci_address_out_of_the_varies_rollup() {
+    let mut f = make_folder();
+    for (slot, kind) in [(0, "Keyboard"), (1, "Mouse"), (0, "Keyboard")] {
+        f.process_line(&format!(
+            "Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw{slot}: USB HID v2.10 {kind} [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input{slot}"
+        )).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let template = f.buffer[0].template();
+    assert!(template.contains("usb-0000:2a:00.3"), "{template}");
+    let rollup = f.rollup_computer.compute(&f.buffer[0]);
+    let samples = &rollup[VARIES].samples;
+    assert!(samples.iter().any(|s| s.contains("input0")), "{samples:?}");
+    assert!(samples.iter().any(|s| s.contains("input1")), "{samples:?}");
+    assert!(
+        samples.iter().all(|s| !s.contains("0000:2a:00.3")),
+        "{samples:?}"
+    );
+}
+
+#[test]
 fn a_quoted_sentence_keeps_its_words_and_a_quoted_name_is_one_slot() {
     // kubelet: `"… started for volume \"host-sys\" (UniqueName: …) pod \"x\""`
     // is the event's own sentence; a differing value inside it varies on
