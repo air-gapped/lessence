@@ -63,6 +63,13 @@ terminal_size = "0.4.4"
 #     in .github/dependabot.yml.
 rand = { version = "0.9", default-features = false, features = ["alloc"] }
 rand_chacha = "0.9"
+# `--sanitize …:pseudonym`: HMAC-SHA256 under a per-run key drawn from the
+# operating system (or derived from LESSENCE_SANITIZE_KEY). A standard keyed
+# construction on purpose — nothing bespoke to audit. getrandom is already in
+# the tree via rand; a direct dependency so the call is explicit.
+getrandom = "0.3"
+hmac = "0.12"
+sha2 = "0.10"
 
 # mimalloc replaces musl's malloc on musl-target release builds. musl's
 # default malloc is 4-19× slower than glibc's ptmalloc on this codebase

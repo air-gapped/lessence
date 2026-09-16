@@ -170,7 +170,7 @@ pub struct Cli {
     #[arg(long)]
     pub sanitize_pii: bool,
 
-    /// Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
+    /// Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
     #[arg(long, value_name = "ENTITY[:ACTION]", value_delimiter = ',', action = clap::ArgAction::Append)]
     pub sanitize: Vec<String>,
 

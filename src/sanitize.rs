@@ -13,7 +13,9 @@
 
 use crate::patterns::Token;
 use crate::patterns::network::NetworkDetector;
+use hmac::{Hmac, Mac};
 use regex::Regex;
+use sha2::{Digest, Sha256};
 use std::sync::LazyLock;
 
 /// What happens to a value the sanitizer recognises.
@@ -57,8 +59,13 @@ impl Entity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sanitizer {
     actions: [Option<Action>; 4],
-    key: u64,
+    /// The pseudonym key: 256 bits, derived from `LESSENCE_SANITIZE_KEY`
+    /// or drawn from the operating system. Only present when some entity
+    /// pseudonymises; plain redaction never touches a key.
+    key: Option<[u8; 32]>,
 }
+
+type HmacSha256 = Hmac<Sha256>;
 
 /// Credential-class value in a `key = value` / `key: value` assignment.
 /// Matches any key ending in a credential word (so `client_secret`,
@@ -92,41 +99,58 @@ pub const KEY_ENV: &str = "LESSENCE_SANITIZE_KEY";
 
 impl Sanitizer {
     /// What a bare `--sanitize-pii` means, exactly as it always has:
-    /// emails and credentials, redacted.
+    /// emails and credentials, redacted. No key is involved.
     pub fn legacy() -> Self {
-        Self::from_actions([Some(Action::Redact), Some(Action::Redact), None, None])
-    }
-
-    fn from_actions(actions: [Option<Action>; 4]) -> Self {
         Self {
-            actions,
-            key: Self::key_from_env(),
+            actions: [Some(Action::Redact), Some(Action::Redact), None, None],
+            key: None,
         }
     }
 
-    /// The pseudonym key: `LESSENCE_SANITIZE_KEY` hashed when set, so two
-    /// runs under the same key give the same tags; otherwise a draw from
-    /// the clock and the pid, private to this run. A fixed public default
-    /// was considered and rejected: a tag over a small value space (RFC
-    /// 1918 addresses) would be dictionary-recoverable by anyone, which is
-    /// the opposite of what the flag is for. Cross-run correlation is a
-    /// choice the caller makes by setting the key.
-    fn key_from_env() -> u64 {
+    /// Build from a decided action set, drawing a key only if one is
+    /// needed. Fails only when a pseudonym is asked for and the operating
+    /// system cannot supply entropy — a clock-and-pid fallback would
+    /// quietly defeat the private-key guarantee, so it is refused instead.
+    fn from_actions(actions: [Option<Action>; 4]) -> Result<Self, String> {
+        let key = if actions.contains(&Some(Action::Pseudonym)) {
+            Some(Self::key_from_env()?)
+        } else {
+            None
+        };
+        Ok(Self { actions, key })
+    }
+
+    /// The pseudonym key: `LESSENCE_SANITIZE_KEY` hashed to 256 bits when
+    /// set, so two runs under the same key give the same tags; otherwise
+    /// 32 bytes from the operating system, private to this run. A fixed
+    /// public default was considered and rejected: a tag over a small
+    /// value space (RFC 1918 addresses) would be dictionary-recoverable by
+    /// anyone. Cross-run correlation is a choice the caller makes by
+    /// setting the key.
+    fn key_from_env() -> Result<[u8; 32], String> {
         match std::env::var(KEY_ENV) {
-            Ok(k) if !k.is_empty() => fnv1a(0xcbf2_9ce4_8422_2325, k.as_bytes()),
+            Ok(k) if !k.is_empty() => Ok(Self::derive_key(k.as_bytes())),
             _ => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos() as u64);
-                fnv1a(now ^ u64::from(std::process::id()), b"lessence")
+                let mut key = [0u8; 32];
+                getrandom::fill(&mut key).map_err(|e| {
+                    format!(
+                        "cannot draw a pseudonym key from the operating system ({e}); set {KEY_ENV}"
+                    )
+                })?;
+                Ok(key)
             }
         }
+    }
+
+    /// A caller-chosen key string, hashed to 256 bits.
+    fn derive_key(bytes: &[u8]) -> [u8; 32] {
+        Sha256::digest(bytes).into()
     }
 
     /// Fix the key explicitly — tests and library callers.
     #[must_use]
     pub fn with_key(mut self, key: u64) -> Self {
-        self.key = key;
+        self.key = Some(Self::derive_key(&key.to_le_bytes()));
         self
     }
 
@@ -168,7 +192,7 @@ impl Sanitizer {
         if actions.iter().all(Option::is_none) {
             return Ok(None);
         }
-        Ok(Some(Self::from_actions(actions)))
+        Self::from_actions(actions).map(Some)
     }
 
     fn action(&self, entity: Entity) -> Option<Action> {
@@ -179,8 +203,24 @@ impl Sanitizer {
     fn tag(&self, entity: Entity, class: &str, value: &str) -> String {
         match self.action(entity) {
             Some(Action::Pseudonym) => {
-                let h = fnv1a(self.key, value.as_bytes());
-                format!("<{class}:{:06x}>", h & 0xff_ffff)
+                // HMAC-SHA256 under the run's key, truncated to 64 bits: a
+                // standard keyed construction, so a known value-and-tag
+                // pair reveals nothing about the key. Truncation keeps the
+                // tag readable inside a template and leaves a birthday
+                // collision past four billion distinct values in one log.
+                let key = self
+                    .key
+                    .as_ref()
+                    .expect("a pseudonym action always carries a key");
+                let mut mac = HmacSha256::new_from_slice(key).expect("HMAC accepts any key length");
+                mac.update(value.as_bytes());
+                let out = mac.finalize().into_bytes();
+                let mut tag = String::with_capacity(16);
+                for b in &out[..8] {
+                    use std::fmt::Write as _;
+                    let _ = write!(tag, "{b:02x}");
+                }
+                format!("<{class}:{tag}>")
             }
             _ => format!("<{class}>"),
         }
@@ -325,17 +365,6 @@ fn apply(text: &str, mut edits: Vec<(usize, usize, String)>) -> String {
     out
 }
 
-/// FNV-1a over `bytes` from `seed`: deterministic on every platform, which
-/// the pseudonym contract needs (same input, same key, same output).
-fn fnv1a(seed: u64, bytes: &[u8]) -> u64 {
-    let mut h = seed;
-    for b in bytes {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,12 +432,51 @@ mod tests {
         assert_eq!(a1, a2);
         assert_ne!(a1, b);
         assert!(
-            a1.starts_with("<HOST:") && a1.len() == "<HOST:>".len() + 6,
+            a1.starts_with("<HOST:") && a1.len() == "<HOST:>".len() + 16,
             "{a1}"
         );
         assert!(!a1.contains("example"));
         let other_key = s(&["host:pseudonym"], false).unwrap().with_key(8);
         assert_ne!(other_key.mask_text("a.example.com"), a1);
+    }
+
+    /// The pair that collided under the 24-bit FNV tag (found after 2,681
+    /// invented addresses, key 7) is distinct now, and so is every pair in
+    /// a run of ten thousand.
+    #[test]
+    fn pseudonyms_do_not_collide_at_log_cardinalities() {
+        let z = s(&["ip:pseudonym"], false).unwrap();
+        assert_ne!(z.mask_text("10.0.7.67"), z.mask_text("10.0.10.120"));
+        let mut seen = std::collections::HashSet::new();
+        for a in 0..40u32 {
+            for b in 0..250u32 {
+                assert!(
+                    seen.insert(z.mask_text(&format!("10.{a}.{b}.7"))),
+                    "collision at 10.{a}.{b}.7"
+                );
+            }
+        }
+    }
+
+    /// The env key is hashed, so two runs under it agree; a run without it
+    /// draws its own and matches neither; redaction alone carries no key.
+    #[test]
+    fn the_env_key_makes_runs_comparable_and_its_absence_does_not() {
+        assert_eq!(Sanitizer::derive_key(b"one"), Sanitizer::derive_key(b"one"));
+        assert_ne!(Sanitizer::derive_key(b"one"), Sanitizer::derive_key(b"two"));
+        assert!(Sanitizer::legacy().key.is_none());
+        assert!(
+            Sanitizer::parse(&["host".to_string()], false)
+                .unwrap()
+                .unwrap()
+                .key
+                .is_none()
+        );
+        if std::env::var(KEY_ENV).is_err() {
+            let a = Sanitizer::from_actions([None, None, Some(Action::Pseudonym), None]).unwrap();
+            let b = Sanitizer::from_actions([None, None, Some(Action::Pseudonym), None]).unwrap();
+            assert_ne!(a.mask_text("db.example.com"), b.mask_text("db.example.com"));
+        }
     }
 
     #[test]
