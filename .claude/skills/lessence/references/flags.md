@@ -41,7 +41,8 @@ Example: `--disable-patterns timestamp,uuid` to keep timestamps and UUIDs litera
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sanitize-pii` | off | Mask emails (`<EMAIL>`) and credential-class values: `key=value`/`key: value` assignments to credential-named keys (`<SECRET>`), JWTs (`<JWT>`), and `sk-`/`ghp_`/`xox`-style provider keys (`<KEY>`). |
+| `--sanitize ENTITY[:ACTION]` | off | Mask one entity: `email`, `credential`, `host` or `ip`. Action `redact` (default) gives the class tag (`<HOST>`); `pseudonym` gives a keyed tag (`<HOST:1a2b3c>`) that is the same for the same value within a run, so a masked host still folds with itself and the rollup still counts distinct hosts. The key is drawn per run; to correlate hosts across two runs, set `LESSENCE_SANITIZE_KEY` to the same value for both. Repeatable or comma-separated (`--sanitize host,ip:pseudonym`). Masks the shown lines, the template and every rollup sample. |
+| `--sanitize-pii` | off | Exactly `--sanitize email,credential`, never widened. Mask emails (`<EMAIL>`) and credential-class values: `key=value`/`key: value` assignments to credential-named keys (`<SECRET>`), JWTs (`<JWT>`), and `sk-`/`ghp_`/`xox`-style provider keys (`<KEY>`). |
 | `--max-line-length N` | 1MB | Skip lines exceeding this length. Supports K/M/G suffixes. |
 | `--max-lines N` | unlimited | Stop processing after N lines. |
 | `--preserve-color` | off | Keep ANSI escape codes (stripped by default). |

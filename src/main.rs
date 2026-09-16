@@ -76,6 +76,13 @@ fn main() -> Result<()> {
 
     // Detector gates start at their defaults (all enabled); each
     // --disable-patterns name expands through config::PATTERN_REGISTRY.
+    let sanitizer = match lessence::sanitize::Sanitizer::parse(&cli.sanitize, cli.sanitize_pii) {
+        Ok(z) => z,
+        Err(e) => {
+            eprintln!("lessence: {e}");
+            std::process::exit(2);
+        }
+    };
     let mut config = Config {
         threshold: cli.threshold,
         min_collapse: cli.min_collapse,
@@ -91,7 +98,8 @@ fn main() -> Result<()> {
             .max_line_length
             .or(Some(config::DEFAULT_MAX_LINE_LENGTH)),
         max_lines: cli.max_lines,
-        sanitize_pii: cli.sanitize_pii, // Wire PII sanitization flag
+        sanitize_pii: sanitizer.is_some(),
+        sanitize: sanitizer,
         top_n: effective_top,
         stats_json: cli.stats_json,
         fail_pattern: cli.fail_on_pattern.clone(),

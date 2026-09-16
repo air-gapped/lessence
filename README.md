@@ -103,8 +103,11 @@ lessence --essence < app.log              # stdin works too
 # Markdown report
 lessence --format markdown app.log > report.md
 
-# Mask emails before sharing logs
+# Mask emails and credentials before sharing logs
 lessence --sanitize-pii app.log
+
+# Also mask hosts and addresses; pseudonyms keep the fold (same host, same tag)
+lessence --sanitize host:pseudonym,ip app.log
 ```
 
 ## Essence Mode
@@ -148,6 +151,7 @@ headline example above is the only CI-verified number.
 --essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
 --threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
+--sanitize <ENTITY[:ACTION]>    Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
 --max-line-length <MAX_LINE_LENGTH>    Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
 --max-lines <MAX_LINES>    Maximum number of lines to process (stop after this count, default: no limit)
 --stats-json    Emit JSON statistics to stderr (replaces human-readable stats) [default: false]

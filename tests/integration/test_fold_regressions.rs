@@ -176,6 +176,9 @@ fn run(case: &Case, threads: &str) -> Run {
 
     let mut child = Command::new(&*BIN)
         .args(&args)
+        // A pseudonym key is drawn per run; the thread-count check compares
+        // two processes, so both get the same one.
+        .env("LESSENCE_SANITIZE_KEY", "fixture")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

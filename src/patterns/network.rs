@@ -477,6 +477,14 @@ impl NetworkDetector {
     /// or it has three labels or more — an API group, a Java package and a
     /// hostname all read alike, and all are safe to invent.
     pub fn dns_shaped_names(text: &str) -> Vec<&str> {
+        Self::dns_shaped_spans(text)
+            .into_iter()
+            .map(|(s, e)| &text[s..e])
+            .collect()
+    }
+
+    /// `dns_shaped_names` as byte spans, for a caller that rewrites.
+    pub fn dns_shaped_spans(text: &str) -> Vec<(usize, usize)> {
         const SCRUB_TLDS: &[&str] = &[
             "com",
             "net",
@@ -534,7 +542,20 @@ impl NetworkDetector {
                             .rsplit_once('.')
                             .is_some_and(|(_, tld)| SCRUB_TLDS.contains(&tld)))
             })
-            .map(|m| m.as_str())
+            .map(|m| (m.start(), m.end()))
+            .collect()
+    }
+
+    /// Every IPv4 address on a line as byte spans, with the same rejections
+    /// the normalizer applies (a version number, labels inside a hostname).
+    pub fn ipv4_spans(text: &str) -> Vec<(usize, usize)> {
+        if !text.contains('.') {
+            return Vec::new();
+        }
+        IPV4_REGEX
+            .find_iter(text)
+            .filter(|m| Self::is_ipv4_address(text, m))
+            .map(|m| (m.start(), m.end()))
             .collect()
     }
 

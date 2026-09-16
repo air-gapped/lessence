@@ -301,7 +301,7 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
 ## Reference
 
 - **`references/flags.md`** — Complete flag reference including security limits
-  (`--sanitize-pii`, `--max-line-length`, `--max-lines`), pattern control
+  (`--sanitize`, `--sanitize-pii`, `--max-line-length`, `--max-lines`), pattern control
   (`--threshold`, `--min-collapse`, `--disable-patterns`), and CI integration
   (`--fail-on-pattern`). Consult when needing a flag beyond the core set above.
 - **`references/sources.md`** — Per-claim verification stamps against the repo's

@@ -2083,3 +2083,41 @@ E0901 10:00:01.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:r
 E0901 10:00:02.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list postgresqls.acid.zalan.do in namespace rook
 E0901 10:00:03.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list drivers.csi.ceph.io in namespace rook
 E0901 10:00:04.000000       1 rbac.go:73] Forbidden: system:serviceaccount:ops:reader cannot list cephobjectstores.ceph.rook.io in namespace rook
+
+##CASE lessence-o0w out_present=<HOST>
+##WHY --sanitize host masks a hostname everywhere it appears, in the shown lines and in the
+##WHY  rollup samples, whether the fold read it as a host or left it literal in prose
+##FROM the sanitizer surface decided in lessence-eu3; invented hosts
+##FLAGS --sanitize host
+conn from db-01.example.com established host=db-01.example.com
+conn from db-02.example.com established host=db-02.example.com
+conn from db-03.example.com established host=db-03.example.com
+conn from db-04.example.com established host=db-04.example.com
+
+##CASE lessence-o0w out_present=<IP>
+##WHY --sanitize ip masks addresses in the shown lines and the rollup, and ip is opt-in:
+##WHY  the bare --sanitize-pii never touched addresses and still does not
+##FROM the sanitizer surface decided in lessence-eu3; invented addresses
+##FLAGS --sanitize ip
+peer 10.20.30.1 connected
+peer 10.20.30.2 connected
+peer 10.20.30.3 connected
+peer 10.20.30.4 connected
+
+##CASE lessence-o0w out_present=10.20.30.1 holds-on-base
+##WHY the bare --sanitize-pii keeps exactly today's set: emails and credentials, never addresses
+##FROM the compatibility constraint in lessence-eu3
+##FLAGS --sanitize-pii
+peer 10.20.30.1 connected user=bob@example.com
+peer 10.20.30.2 connected user=bob@example.com
+peer 10.20.30.3 connected user=bob@example.com
+
+##CASE lessence-2fu out_present=<HOST:
+##WHY a pseudonym keeps identity without content: four hosts stay four distinct rollup values,
+##WHY  each shown as a keyed tag, and no hostname appears
+##FROM the sanitizer surface decided in lessence-eu3; invented hosts
+##FLAGS --sanitize host:pseudonym
+conn from db-01.example.com established
+conn from db-02.example.com established
+conn from db-03.example.com established
+conn from db-04.example.com established

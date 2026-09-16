@@ -1,11 +1,9 @@
 use anyhow::Result;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
-use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use crate::config::Config;
@@ -31,66 +29,10 @@ use crate::patterns::{LogLine, StatsBucket, Token, word_spans};
 /// O(n × m) where n = text length, m = email count
 /// Expected overhead: <1% of total line processing time
 pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
-    let mut result = original.to_string();
-    let mut email_ranges = Vec::new();
-
-    // Collect all email token positions
-    for token in tokens {
-        if let Token::Email(email) = token {
-            if email.is_empty() {
-                continue;
-            }
-            // Find all occurrences of this email in original text
-            let mut start = 0;
-            while let Some(pos) = result[start..].find(email) {
-                let abs_pos = start + pos;
-                email_ranges.push((abs_pos, abs_pos + email.len()));
-                let next = abs_pos + email.len();
-                if next <= start {
-                    break; // Defensive: loop must always advance
-                }
-                start = next;
-            }
-        }
-    }
-
-    // Sort ranges in reverse order (replace from end to preserve indices)
-    email_ranges.sort_by_key(|r| std::cmp::Reverse(r.0));
-
-    // Replace each email with <EMAIL> token
-    for (start, end) in email_ranges {
-        result.replace_range(start..end, "<EMAIL>");
-    }
-
-    mask_credentials(&result)
+    Sanitizer::legacy().mask_line(original, tokens)
 }
 
-/// Credential-class value in a `key = value` / `key: value` assignment.
-/// Matches any key ending in a credential word (so `client_secret`,
-/// `access_token`, and `DB_PASSWORD` all match), captures the key and
-/// separator, and masks only the value. Over-masking prose like
-/// `invalid token: expected` is accepted: under --sanitize-pii the
-/// conservative direction is to mask too much, never too little.
-static CREDENTIAL_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|master[_-]?key|access[_-]?key)"?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
-    )
-    .expect("static regex")
-});
-
-/// JSON Web Token: three base64url segments, the first always `eyJ`
-/// (base64 of `{"`). Catches both `Bearer eyJ...` headers and bare JWTs.
-static JWT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+").expect("static regex")
-});
-
-/// Provider-prefixed API keys: `sk-` (OpenAI/Stripe style), `ghp_`/`gho_`/
-/// `ghu_`/`ghs_`/`ghr_` (GitHub), `xox?-` (Slack). The length floor keeps
-/// hyphenated prose like `sk-learn` unmasked.
-static PROVIDER_KEY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|xox[a-z]-[A-Za-z0-9-]{8,})")
-        .expect("static regex")
-});
+use crate::sanitize::{CREDENTIAL_ASSIGNMENT, JWT, PROVIDER_KEY, Sanitizer};
 
 /// Mask credential-class values: assignments to credential-named keys,
 /// JWTs, and provider-prefixed API keys. Runs as part of the single
@@ -138,11 +80,9 @@ pub(crate) fn credential_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
+#[cfg(test)]
 fn mask_credentials(text: &str) -> String {
-    let masked = CREDENTIAL_ASSIGNMENT.replace_all(text, "${1}<SECRET>");
-    let masked = JWT.replace_all(&masked, "<JWT>");
-    let masked = PROVIDER_KEY.replace_all(&masked, "<KEY>");
-    masked.into_owned()
+    Sanitizer::legacy().mask_text(text)
 }
 
 #[derive(Debug)]
@@ -456,6 +396,9 @@ impl LineLocation {
 }
 
 pub struct PatternFolder {
+    /// `--sanitize` / `--sanitize-pii`: the masker every rendered field
+    /// passes through, or `None` when nothing is masked.
+    pub(super) sanitizer: Option<Sanitizer>,
     config: Config,
     normalizer: Normalizer,
     /// Sized rayon pool honoring `--threads N` for N >= 2. `None` for
@@ -1635,10 +1578,10 @@ impl Accumulator {
 struct RollupComputer {
     k: usize,
     distinct_cap: usize,
-    /// `--sanitize-pii`: a VARIES value is counted in its masked form, so
+    /// `--sanitize`: a VARIES value is counted in its masked form, so
     /// `password=FIXVALUEA1` lands in the rollup as `<SECRET>` — the slot
     /// has already dropped the `password=` that the credential mask keys on.
-    sanitize_pii: bool,
+    sanitizer: Option<Sanitizer>,
 }
 
 impl RollupComputer {
@@ -1646,7 +1589,7 @@ impl RollupComputer {
         Self {
             k,
             distinct_cap,
-            sanitize_pii: false,
+            sanitizer: None,
         }
     }
 
@@ -1654,8 +1597,8 @@ impl RollupComputer {
         Self::new(ROLLUP_K, ROLLUP_DISTINCT_CAP)
     }
 
-    fn sanitized(mut self, sanitize_pii: bool) -> Self {
-        self.sanitize_pii = sanitize_pii;
+    fn sanitized(mut self, sanitizer: Option<Sanitizer>) -> Self {
+        self.sanitizer = sanitizer;
         self
     }
 
@@ -1777,8 +1720,8 @@ impl RollupComputer {
                 let masked;
                 let value = match aligned[i] {
                     Some(j) => {
-                        let w = if self.sanitize_pii {
-                            masked = mask_credentials(member[j]);
+                        let w = if let Some(z) = &self.sanitizer {
+                            masked = z.mask_text(member[j]);
                             masked.as_str()
                         } else {
                             member[j]
@@ -2003,7 +1946,7 @@ impl RollupComputer {
 
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
-        let sanitize_pii = config.sanitize_pii;
+        let sanitizer = config.sanitizer();
         let normalizer = Normalizer::new(config.clone());
         let thread_pool = match config.thread_count {
             Some(requested) if requested > 1 => {
@@ -2057,7 +2000,8 @@ impl PatternFolder {
             json_uncomputed_variation_groups: 0,
             json_sampled_entries: 0,
             json_omitted_values_lower_bound: 0,
-            rollup_computer: RollupComputer::with_defaults().sanitized(sanitize_pii),
+            rollup_computer: RollupComputer::with_defaults().sanitized(sanitizer.clone()),
+            sanitizer,
             distill_kept: Vec::new(),
             distill_templates: Vec::new(),
             distill_rates: crate::distill::rates::Rates::new(),
@@ -2515,8 +2459,8 @@ impl PatternFolder {
             let count = group.count();
             // The summary shows original lines, so --sanitize-pii masks
             // the representative here, before any renderer sees it.
-            let representative = if self.config.sanitize_pii {
-                apply_pii_masking(&group.first().original, &group.first().tokens)
+            let representative = if let Some(z) = &self.sanitizer {
+                z.mask_line(&group.first().original, &group.first().tokens)
             } else {
                 group.first().original.clone()
             };

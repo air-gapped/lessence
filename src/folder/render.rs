@@ -18,9 +18,9 @@ use super::{
     BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup,
     InputCompleteness, LineRef, LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD,
     Result, StatsJson, SummaryRecord, TimeRange, Token, VariationCompleteness, Write,
-    apply_pii_masking, first_timestamp_in, group_epoch_range, io, mask_credentials,
-    render_compact_marker, token_type_name,
+    first_timestamp_in, group_epoch_range, io, render_compact_marker, token_type_name,
 };
+use crate::sanitize::Sanitizer;
 
 impl PatternFolder {
     /// Format a group for the configured output mode.
@@ -93,8 +93,8 @@ impl PatternFolder {
         // PII masking applies to rollup samples in every mode: the text
         // compact marker and the JSON `variation` field both surface raw
         // sample values, so both must mask.
-        if self.config.sanitize_pii {
-            mask_rollup_pii(&mut rollup);
+        if let Some(z) = &self.sanitizer {
+            mask_rollup_pii(&mut rollup, z);
         }
         if self.is_json_output() {
             self.format_group_json(group, rollup)
@@ -766,12 +766,13 @@ impl PatternFolder {
     /// tokens and survive normalization, so the credential rules must
     /// still run there.
     fn maybe_mask_pii(&self, line: &str, tokens: &[Token]) -> String {
-        if !self.config.sanitize_pii {
-            line.to_string()
-        } else if self.config.essence_mode {
-            mask_credentials(line)
-        } else {
-            apply_pii_masking(line, tokens)
+        match &self.sanitizer {
+            None => line.to_string(),
+            // Essence mode has already tokenised emails, hosts and
+            // addresses out of the line; what survives normalization is
+            // found by scanning the text.
+            Some(z) if self.config.essence_mode => z.mask_text(line),
+            Some(z) => z.mask_line(line, tokens),
         }
     }
 }
@@ -782,24 +783,38 @@ impl PatternFolder {
 /// well, and every sample then passes through the same credential-class
 /// masking as full lines so no output field can leak what the line
 /// renderer would have masked.
-fn mask_rollup_pii(rollup: &mut GroupRollup) {
-    let emails: Vec<String> = rollup
-        .get("EMAIL")
-        .map(|entry| entry.samples.clone())
-        .unwrap_or_default();
-    for (name, entry) in rollup.iter_mut() {
-        if *name == "EMAIL" {
-            if !entry.samples.is_empty() {
-                entry.samples = vec!["<EMAIL>".to_string()];
+fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
+    // Values of an enabled entity, so a sample of another type that quotes
+    // one (a path holding an email, a message naming a host) masks too.
+    let mut values: Vec<(String, String)> = Vec::new();
+    for (name, entry) in rollup.iter() {
+        if let Some((_, class)) = z.rollup_entity(name) {
+            for sample in &entry.samples {
+                values.push((sample.clone(), z.mask_sample(class, sample)));
             }
-        } else {
-            for sample in &mut entry.samples {
-                for email in &emails {
-                    if sample.contains(email.as_str()) {
-                        *sample = sample.replace(email.as_str(), "<EMAIL>");
-                    }
+        }
+    }
+    for (name, entry) in rollup.iter_mut() {
+        match z.rollup_entity(name) {
+            Some((crate::sanitize::Action::Redact, class)) => {
+                if !entry.samples.is_empty() {
+                    entry.samples = vec![format!("<{class}>")];
                 }
-                *sample = mask_credentials(sample);
+            }
+            Some((crate::sanitize::Action::Pseudonym, class)) => {
+                for sample in &mut entry.samples {
+                    *sample = z.mask_sample(class, sample);
+                }
+            }
+            None => {
+                for sample in &mut entry.samples {
+                    for (value, masked) in &values {
+                        if sample.contains(value.as_str()) {
+                            *sample = sample.replace(value.as_str(), masked);
+                        }
+                    }
+                    *sample = z.mask_text(sample);
+                }
             }
         }
     }

@@ -45,8 +45,11 @@ pub struct Config {
     pub max_line_length: Option<usize>, // --max-line-length: skip lines exceeding this length (default: 1MB)
     pub max_lines: Option<usize>,       // --max-lines: stop processing after this many lines
     pub sanitize_pii: bool, // --sanitize-pii: mask email addresses in output (default: false)
+    /// `--sanitize`: which entities are masked and how. `None` with
+    /// `sanitize_pii` set means the legacy set (email + credential, redacted).
+    pub sanitize: Option<crate::sanitize::Sanitizer>,
     pub top_n: Option<usize>, // --top N: show only N most frequent patterns
-    pub stats_json: bool,   // --stats-json: emit JSON stats to stderr
+    pub stats_json: bool,     // --stats-json: emit JSON stats to stderr
     pub fail_pattern: Option<String>, // --fail-on-pattern: exit 1 when regex matches input
     /// --frame-continuations: attach indented continuation lines to the record
     /// above them, so a stack trace folds as one event instead of one per frame.
@@ -95,9 +98,10 @@ impl Default for Config {
             max_line_length: Some(DEFAULT_MAX_LINE_LENGTH), // 1MB default line length limit
             max_lines: None,                                // No line count limit by default
             sanitize_pii: false, // Disabled by default (backward compatibility)
-            top_n: None,         // No top-N filtering by default
-            stats_json: false,   // No JSON stats by default
-            fail_pattern: None,  // No fail pattern by default
+            sanitize: None,
+            top_n: None,                // No top-N filtering by default
+            stats_json: false,          // No JSON stats by default
+            fail_pattern: None,         // No fail pattern by default
             frame_continuations: false, // Opt-in: one record per physical line by default
             explain: false,
             distill: None,
@@ -185,6 +189,14 @@ pub const PATTERN_REGISTRY: &[PatternEntry] = &[
 ];
 
 impl Config {
+    /// The sanitizer this run masks with: the explicit `--sanitize` set, or
+    /// the legacy email + credential set when only `--sanitize-pii` is on.
+    pub fn sanitizer(&self) -> Option<crate::sanitize::Sanitizer> {
+        self.sanitize
+            .clone()
+            .or_else(|| self.sanitize_pii.then(crate::sanitize::Sanitizer::legacy))
+    }
+
     /// Enable or disable one user-facing pattern group by name, expanding
     /// it to its detector gates via [`PATTERN_REGISTRY`]. Returns `false`
     /// when the name is not a registered pattern group.
