@@ -234,7 +234,7 @@ static REQUEST_TARGET: LazyLock<Regex> = LazyLock::new(|| {
 /// The status code that follows a quoted request line in an access log:
 /// `... HTTP/1.1" 404 332`. The capture is its first digit — the class.
 static REQUEST_STATUS_CLASS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#" HTTP/[0-9.]+" ([1-5])\d\d\b"#)
+    Regex::new(r#" HTTP/[0-9.]+" ([1-5])(\d\d)\b"#)
         .expect("request-status anchor pattern must compile")
 });
 
@@ -301,9 +301,22 @@ static FIELD_METHOD: LazyLock<Regex> = LazyLock::new(|| {
 /// An HTTP status in a structured record: `"DownstreamStatus":500`,
 /// `status=404`, `"status_code": 302`. The capture is the class digit.
 static FIELD_STATUS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])\d\d\b"#)
+    Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])(\d\d)\b"#)
         .expect("field status anchor pattern must compile")
 });
+
+/// The class and full code span come from the same match for hashing and
+/// rendering. Keep only the class as identity: 200 and 204 still agree.
+fn http_status_anchors<'a>(
+    original: &'a str,
+    pattern: &'a Regex,
+) -> impl Iterator<Item = (std::ops::Range<usize>, &'a str)> + 'a {
+    pattern.captures_iter(original).map(|caps| {
+        let class = caps.get(1).expect("status class capture");
+        let rest = caps.get(2).expect("remaining status digits");
+        (class.start()..rest.end(), class.as_str())
+    })
+}
 
 /// The request path of a structured HTTP record — only read when the record
 /// also names a method, so a file path in some other record is not mistaken
@@ -428,8 +441,8 @@ fn anchor_hash(original: &str) -> u64 {
         // quoted sentence keeps its words (lessence-7lj) the shared UA tokens
         // outvote the one status token and 2xx and 4xx re-merge. The class
         // is identity, so it is matched here, never scored.
-        for caps in REQUEST_STATUS_CLASS.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+        for (_, class) in http_status_anchors(original, &REQUEST_STATUS_CLASS) {
+            class.hash(&mut hasher);
             found = true;
         }
     }
@@ -514,8 +527,8 @@ fn anchor_hash(original: &str) -> u64 {
         }
     }
     if original.contains("tatus") || original.contains("TATUS") {
-        for caps in FIELD_STATUS.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+        for (_, class) in http_status_anchors(original, &FIELD_STATUS) {
+            class.hash(&mut hasher);
             found = true;
         }
     }
@@ -744,20 +757,57 @@ fn render_pod_prefix(matched: &str) -> String {
 /// detector — `PathDetector` in particular — can swallow it before it can be
 /// rendered as its skeleton. Mirrors exactly what `anchor_hash` reads: a
 /// request target on an `HTTP/` line, a `FIELD_PATH` value on a record that
-/// also names a method, and a `[pod/<pod>/<container>]` kubectl prefix. A
-/// file path elsewhere is untouched.
+/// also names a method, a `[pod/<pod>/<container>]` kubectl prefix, and each
+/// anchored HTTP status class. A file path elsewhere is untouched.
 ///
-/// Returns the sentinel-substituted line plus the (sentinel, rendered span)
-/// pairs to splice back in once every detector has run.
-type AnchoredSpan = (usize, usize, fn(&str) -> String);
-fn protect_anchored_spans(original: &str) -> (String, Vec<(String, String)>) {
+/// Keeps the substituted line, the spans to restore after detection, and
+/// the status-class facts hidden from detectors by those substitutions.
+enum AnchorRender {
+    Route,
+    PodPrefix,
+    HttpStatus,
+    StatusField,
+}
+
+impl AnchorRender {
+    fn render(&self, text: &str) -> String {
+        match self {
+            Self::Route => render_route(text),
+            Self::PodPrefix => render_pod_prefix(text),
+            Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
+            Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
+        }
+    }
+}
+
+struct ProtectedAnchors {
+    text: String,
+    renders: Vec<(String, String)>,
+    statuses: Vec<ProtectedStatus>,
+}
+
+struct ProtectedStatus {
+    code: String,
+    is_http: bool,
+}
+
+type AnchoredSpan = (usize, usize, AnchorRender);
+fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
     let mut spans: Vec<AnchoredSpan> = Vec::new();
+    let mut statuses = Vec::new();
 
     if original.contains("HTTP/") {
         for caps in REQUEST_TARGET.captures_iter(original) {
             if let Some(m) = caps.get(1) {
-                spans.push((m.start(), m.end(), render_route));
+                spans.push((m.start(), m.end(), AnchorRender::Route));
             }
+        }
+        for (span, _) in http_status_anchors(original, &REQUEST_STATUS_CLASS) {
+            statuses.push(ProtectedStatus {
+                code: original[span.clone()].to_string(),
+                is_http: true,
+            });
+            spans.push((span.start, span.end, AnchorRender::HttpStatus));
         }
     }
 
@@ -773,40 +823,67 @@ fn protect_anchored_spans(original: &str) -> (String, Vec<(String, String)>) {
         if has_method {
             for caps in FIELD_PATH.captures_iter(original) {
                 if let Some(m) = caps.get(1) {
-                    spans.push((m.start(), m.end(), render_route));
+                    spans.push((m.start(), m.end(), AnchorRender::Route));
                 }
             }
+        }
+    }
+
+    if original.contains("tatus") || original.contains("TATUS") {
+        for (span, _) in http_status_anchors(original, &FIELD_STATUS) {
+            statuses.push(ProtectedStatus {
+                code: original[span.clone()].to_string(),
+                is_http: false,
+            });
+            spans.push((span.start, span.end, AnchorRender::StatusField));
         }
     }
 
     if original.starts_with("[pod/") {
         for caps in KUBECTL_PREFIX.captures_iter(original) {
             if let Some(m) = caps.get(0) {
-                spans.push((m.start(), m.end(), render_pod_prefix));
+                spans.push((m.start(), m.end(), AnchorRender::PodPrefix));
             }
         }
     }
 
     if spans.is_empty() {
-        return (original.to_string(), Vec::new());
+        return ProtectedAnchors {
+            text: original.to_string(),
+            renders: Vec::new(),
+            statuses,
+        };
     }
 
     spans.sort_unstable_by_key(|&(start, end, _)| (start, end));
     let mut result = String::with_capacity(original.len());
-    let mut renders = Vec::with_capacity(spans.len());
+    let mut renders: Vec<(String, String)> = Vec::with_capacity(spans.len());
     let mut cursor = 0;
     for (i, (start, end, render)) in spans.into_iter().enumerate() {
         if start < cursor {
+            // A status field can itself occur inside an anchored route's
+            // query. The route skeleton drops queries, but that must not
+            // hide another identity the anchor matcher keeps.
+            if matches!(render, AnchorRender::HttpStatus | AnchorRender::StatusField)
+                && let Some((_, rendered)) = renders.last_mut()
+            {
+                rendered.push(' ');
+                rendered.push_str(&render.render(&original[start..end]));
+            }
             continue; // overlapping match — already covered
         }
         result.push_str(&original[cursor..start]);
         let sentinel = format!("\u{0}A{i}\u{0}");
-        renders.push((sentinel.clone(), render(&original[start..end])));
+        renders.push((sentinel.clone(), render.render(&original[start..end])));
         result.push_str(&sentinel);
         cursor = end;
     }
     result.push_str(&original[cursor..]);
-    (result, renders)
+    ProtectedAnchors {
+        text: result,
+        renders,
+        statuses,
+    }
 }
 
 impl Normalizer {
@@ -821,7 +898,8 @@ impl Normalizer {
         // An anchored span (see `anchor_hash`) must render as its skeleton,
         // not `<PATH>` — otherwise the split it forces is invisible in the
         // shown line. Protect its exact span before any detector runs...
-        let (mut normalized, anchored_renders) = protect_anchored_spans(&original);
+        let protected = protect_anchored_spans(&original);
+        let mut normalized = protected.text;
         let mut tokens = Vec::with_capacity(8);
 
         // Walk the detector ordering table; each enabled detector replaces
@@ -847,9 +925,19 @@ impl Normalizer {
 
         // ...then splice the rendered skeleton back in, now that no detector
         // can consume it.
-        for (sentinel, rendered) in &anchored_renders {
+        for (sentinel, rendered) in &protected.renders {
             if normalized.contains(sentinel.as_str()) {
                 normalized = normalized.replace(sentinel.as_str(), rendered);
+            }
+        }
+        for status in protected.statuses {
+            if status.is_http && self.config.normalize_http_status {
+                tokens.push(Token::HttpStatusClass(format!("{}xx", &status.code[..1])));
+            } else if self.config.normalize_durations {
+                // Structured status fields previously contributed numeric
+                // facts. Keep exact codes in that rollup: showing a class
+                // must not discard the distinction between 200 and 204.
+                tokens.push(Token::Number(status.code));
             }
         }
 
@@ -1135,6 +1223,109 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_status_anchor_classes_remain_visible_and_codes_within_a_class_agree() {
+        let normalizer = Normalizer::new(Config::default());
+        for (shape, marker) in [
+            (
+                r#"method=GET path="/health" status=CODE bytes=120"#,
+                "STATUS",
+            ),
+            (
+                r#"{"RequestMethod":"GET","RequestPath":"/health","DownstreamStatus":CODE,"msg":"served"}"#,
+                "STATUS",
+            ),
+            (
+                r#"10.0.0.1 - - [01/Jan/2026:00:00:00 +0000] "GET /health HTTP/1.1" CODE 120 "-""#,
+                "HTTP_STATUS",
+            ),
+            (r#"method=GET path="/health?status=CODE""#, "STATUS"),
+        ] {
+            let run = |code| {
+                normalizer
+                    .normalize_line(shape.replace("CODE", code))
+                    .unwrap()
+            };
+            let a = run("200");
+            let b = run("204");
+            let c = run("503");
+            assert_eq!(a.anchor, b.anchor, "{shape}");
+            assert_ne!(a.anchor, c.anchor, "{shape}");
+            assert_eq!(a.normalized, b.normalized, "{shape}");
+            assert_ne!(a.normalized, c.normalized, "{shape}");
+            assert!(
+                a.normalized.contains(&format!("<{marker}_2XX>")),
+                "{}",
+                a.normalized
+            );
+            assert!(
+                c.normalized.contains(&format!("<{marker}_5XX>")),
+                "{}",
+                c.normalized
+            );
+            if marker == "STATUS" {
+                assert!(
+                    a.tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Number(n) if n == "200"))
+                );
+                assert!(
+                    b.tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Number(n) if n == "204"))
+                );
+            } else {
+                assert!(
+                    a.tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::HttpStatusClass(c) if c == "2xx"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn process_status_class_is_visible_without_claiming_it_is_http() {
+        let line = Normalizer::new(Config::default())
+            .normalize_line(
+                "systemd[1]: worker.service: Main process exited, code=exited, status=127/NOTFOUND"
+                    .into(),
+            )
+            .unwrap();
+        assert!(
+            line.normalized.contains("status=<STATUS_1XX>"),
+            "{}",
+            line.normalized
+        );
+        assert!(!line.normalized.contains("<HTTP_STATUS_"));
+        assert!(
+            line.tokens
+                .iter()
+                .any(|t| matches!(t, Token::Number(n) if n == "127"))
+        );
+        assert!(
+            !line
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::HttpStatusClass(_)))
+        );
+    }
+
+    #[test]
+    fn non_status_numbers_do_not_gain_http_anchor_markers() {
+        let normalizer = Normalizer::new(Config::default());
+        for text in [
+            "status=600",
+            "status=20",
+            "status=2000",
+            "request_count=200",
+        ] {
+            let line = normalizer.normalize_line(text.into()).unwrap();
+            assert_eq!(line.anchor, 0, "{text}");
+            assert!(!line.normalized.contains("<HTTP_STATUS_"), "{text}");
+        }
+    }
 
     // ---- route hashing/rendering: hash_route and render_route must agree ----
 
@@ -2205,6 +2396,9 @@ mod tests {
             r#"127.0.0.1 - - [25/Dec/2023:10:15:30 +0000] "POST /api/login HTTP/1.1" 401 256"#;
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_http_status = false, input);
+        // Disabling a detector does not erase an identity the anchor still
+        // matches; class visibility is independent of token collection.
+        assert!(off.normalized.contains("<HTTP_STATUS_4XX>"));
         assert!(
             on.tokens
                 .iter()

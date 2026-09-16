@@ -165,11 +165,22 @@ worse than either folding or splitting honestly would have been.
 
 Enforcement lives in `tests/integration/test_constitutional_compliance.rs`:
 
-- `a_route_split_is_visible` and `a_pod_prefix_split_is_visible` gate the two
-  classes that are closed;
+- `a_route_split_is_visible`, `a_pod_prefix_split_is_visible`, and
+  `an_http_status_class_split_is_visible` gate the closed route, pod-prefix,
+  and HTTP-status classes;
 - `invisible_anchor_splits` (`#[ignore]`, reports but does not gate) catalogues
   the rest. Run it with:
   `cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture`
+
+Status identity is shown in place as `<STATUS_2XX>` in structured fields and
+`<HTTP_STATUS_2XX>` in quoted HTTP responses, using the same match for hashing
+and rendering. Generic fields also cover process exit codes; they retain
+their numeric facts without being labelled HTTP. Codes within a class still
+agree. A status field inside a protected route query is retained
+as a class marker beside the route skeleton. The status gate checks every
+distilled corpus containing an HTTP status anchor; the route gate no longer
+excludes status-class differences. The historical table below predates this
+fix (`lessence-a8t.1`) and the completed streaming fixes.
 
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):

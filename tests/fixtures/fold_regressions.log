@@ -4214,3 +4214,23 @@ filler event nmbaaa
 filler event ombaaa
 filler event pmbaaa
 filler event qmbaaa
+
+##CASE lessence-a8t.1 template_present=<STATUS_2XX>
+##WHY The status class that separates events must stay visible after normalization.
+##FROM invented logfmt HTTP event
+method=GET path="/health" status=200 bytes=120
+
+##CASE lessence-a8t.1 template_present=<STATUS_5XX>
+##WHY The status class that separates events must stay visible after normalization.
+##FROM invented json HTTP event
+{"RequestMethod":"GET","RequestPath":"/health","DownstreamStatus":503,"msg":"served"}
+
+##CASE lessence-a8t.1 template_present=<STATUS_5XX>
+##WHY The status class that separates events must stay visible after normalization.
+##FROM invented query HTTP event
+method=GET path="/health?status=503"
+
+##CASE lessence-a8t.1 template_present=status=<STATUS_1XX>
+##WHY Generic status anchors can be process exit codes and must not be labelled HTTP.
+##FROM invented systemd exit event
+systemd[1]: worker.service: Main process exited, code=exited, status=127/NOTFOUND

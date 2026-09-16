@@ -408,33 +408,84 @@ fn invisible_anchor_splits() {
     // Deliberately no assert: this test reports, it does not gate.
 }
 
-/// An HTTP status class (2xx/4xx/5xx) is matched, never scored — the same
-/// mechanism as a route (`normalize::FIELD_STATUS`, `REQUEST_STATUS_CLASS`),
-/// deliberately so a 200 and a 500 for the same route are two events. It
-/// renders as `<NUMBER>`, which is the "status fields" class
-/// `invisible_anchor_splits` already carries and this fix did not touch;
-/// finding it here would fail the route gate for a defect that is not the
-/// route's.
-fn status_class(line: &str) -> std::collections::BTreeSet<char> {
+/// HTTP status identity, in the same order the anchor reads it. A set of
+/// digits would lose the difference between (downstream=2xx, upstream=5xx)
+/// and (downstream=5xx, upstream=2xx).
+fn http_status_signature(line: &str) -> Vec<char> {
     static STATUS_CLASS: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])\d\d\b"#)
             .expect("status-class regex must compile")
     });
-    STATUS_CLASS
-        .captures_iter(line)
-        .filter_map(|c| c.get(1))
-        .map(|m| m.as_str().chars().next().expect("regex captured one digit"))
-        .collect()
+    static REQUEST_CLASS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#" HTTP/[0-9.]+" ([1-5])\d\d\b"#)
+            .expect("request status-class regex must compile")
+    });
+    let mut classes = Vec::new();
+    for pattern in [
+        line.contains("HTTP/").then_some(&*REQUEST_CLASS),
+        (line.contains("tatus") || line.contains("TATUS")).then_some(&*STATUS_CLASS),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        classes.extend(
+            pattern
+                .captures_iter(line)
+                .filter_map(|c| c.get(1))
+                .map(|m| m.as_str().chars().next().expect("regex captured one digit")),
+        );
+    }
+    classes
+}
+
+#[test]
+fn an_http_status_class_split_is_visible() {
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir);
+    let mut corpora: Vec<_> = std::fs::read_dir("examples/distilled")
+        .expect("distilled corpora must be readable")
+        .map(|entry| entry.expect("read corpus entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "log"))
+        .collect();
+    corpora.sort();
+    assert!(!corpora.is_empty(), "missing distilled corpora");
+    let mut checked = 0;
+    for corpus in corpora {
+        let text = std::fs::read_to_string(&corpus).expect("read distilled corpus");
+        if !text
+            .lines()
+            .any(|line| !http_status_signature(line).is_empty())
+        {
+            continue;
+        }
+        checked += 1;
+        let offenders: Vec<_> = offender_groups(&corpus)
+            .into_iter()
+            .filter(|(_, lines)| {
+                lines
+                    .iter()
+                    .map(|line| http_status_signature(line))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    > 1
+            })
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{} hides HTTP status identities: {offenders:?}",
+            corpus.display()
+        );
+    }
+    assert!(checked > 0, "missing HTTP status corpora");
 }
 
 /// The route-anchor fix's gate: on the two HTTP access-log corpora whose
 /// anchor is the request route (`normalize::anchor_hash`'s route-skeleton
 /// arm), an anchor split must never print the same template twice. This is
-/// the one anchor class this fix closed; `invisible_anchor_splits` above
-/// carries every class not yet fixed. No allow-list of tolerated shapes —
-/// the only exclusion is the status-class mechanism above, which is a
-/// different, already-catalogued anchor, not a shape this test looks away
-/// from; any offender not fully explained by it is a real failure.
+/// `invisible_anchor_splits` above carries other classes. Status-class
+/// visibility is now fixed too, so these corpora need no exclusions.
 #[test]
 fn a_route_split_is_visible() {
     for name in ["k8s_traefik.log", "nginx_sample.log"] {
@@ -443,17 +494,8 @@ fn a_route_split_is_visible() {
             return;
         };
         drop(dir);
-        if !path.exists() {
-            continue;
-        }
-        let offenders: Vec<(String, Vec<String>)> = offender_groups(&path)
-            .into_iter()
-            .filter(|(_, lines)| {
-                let classes: std::collections::BTreeSet<char> =
-                    lines.iter().flat_map(|l| status_class(l)).collect();
-                classes.len() <= 1
-            })
-            .collect();
+        assert!(path.exists(), "missing corpus {}", path.display());
+        let offenders = offender_groups(&path);
         assert!(
             offenders.is_empty(),
             "{}: {} route-anchor split(s) invisible on the shown line: {:?}",
