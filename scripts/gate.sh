@@ -258,21 +258,32 @@ done
 modes_json_rows=()
 modes_table_rows=()
 modes_fail=0
+# A release-check baseline can predate --explain (v0.4.5 has no such
+# flag). Then the baseline side is unknown: the new binary's count is
+# printed for reading and nothing is judged.
+base_has_modes=1
+if ! "$(pwd)/$base_bin" --explain --threads 1 /dev/null >/dev/null 2>&1; then
+    base_has_modes=0
+fi
 for name in "${distilled_corpora[@]}"; do
     f="examples/distilled/${name}.log"
     e_new="$(mktemp)"; j_new="$(mktemp)"; e_base="$(mktemp)"; j_base="$(mktemp)"
     golden_of "$f" --explain "$new_bin" > "$e_new"
     golden_of "$f" --format=json "$new_bin" > "$j_new"
-    golden_of "$f" --explain "$base_bin" > "$e_base"
-    golden_of "$f" --format=json "$base_bin" > "$j_base"
     d_new="$(comm -3 "$e_new" "$j_new" | wc -l | tr -d ' ')"
-    d_base="$(comm -3 "$e_base" "$j_base" | wc -l | tr -d ' ')"
+    if [ "$base_has_modes" -eq 1 ]; then
+        golden_of "$f" --explain "$base_bin" > "$e_base"
+        golden_of "$f" --format=json "$base_bin" > "$j_base"
+        d_base="$(comm -3 "$e_base" "$j_base" | wc -l | tr -d ' ')"
+    else
+        d_base="null"
+    fi
     rm -f "$e_new" "$j_new" "$e_base" "$j_base"
-    if [ "$d_new" -ne 0 ] || [ "$d_base" -ne 0 ]; then
+    if [ "$d_new" -ne 0 ] || { [ "$d_base" != "0" ] && [ "$d_base" != "null" ]; }; then
         modes_json_rows+=("{\"corpus\": \"${name}\", \"base\": ${d_base}, \"new\": ${d_new}}")
         modes_table_rows+=("$(printf '%-24s explain/json rows differing: base=%s new=%s' "$name" "$d_base" "$d_new")")
     fi
-    if [ "$d_base" -eq 0 ] && [ "$d_new" -ne 0 ]; then
+    if [ "$d_base" = "0" ] && [ "$d_new" -ne 0 ]; then
         modes_fail=1
     fi
 done
