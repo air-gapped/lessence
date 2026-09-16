@@ -507,6 +507,32 @@ fn call_site_traceback_and_program_splits_are_visible() {
     }
 }
 
+#[test]
+fn systemd_unit_splits_are_visible() {
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir);
+    for name in [
+        "epyc_7days_journalctl.log",
+        "host_fedora_journal.log",
+        "host_fedora_user_journal.log",
+        "host_pi_dmesg.log",
+    ] {
+        let path = std::path::Path::new("examples/distilled").join(name);
+        assert!(path.exists(), "missing corpus {}", path.display());
+        let offenders: Vec<_> = offender_groups(&path)
+            .into_iter()
+            .filter(|(_, lines)| lines.iter().any(|line| line.contains("systemd[")))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "{} hides systemd units: {offenders:?}",
+            path.display()
+        );
+    }
+}
+
 /// The hardware corpora had dozens of different PCI identities hidden
 /// behind the same numeric/path templates. They must all stay visible.
 #[test]

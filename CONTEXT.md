@@ -198,6 +198,15 @@ fixed unit, so varying path text around it cannot erase part of the address.
 `pci_address_splits_are_visible` gates the two
 hardware corpora that carried this invisible-anchor class.
 
+Systemd unit subjects now show the unit skeleton used by the anchor
+(`lessence-a8t.4`): `modprobe@loop.service` stays distinct from
+`modprobe@fuse.service`, while `session-482.scope` and `session-629.scope`
+both show `session-<N>.scope`. Opaque hex/UUID runs show `<ID>`, including
+systemd's escaped UUIDs. Exact names whose instances were replaced remain
+in the `NAME` facts. Hashing and rendering consume one shared parser;
+mount/device units and messages about starting a unit keep their existing
+unanchored behavior. `systemd_unit_splits_are_visible` gates this class.
+
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
 

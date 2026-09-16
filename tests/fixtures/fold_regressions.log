@@ -4296,3 +4296,15 @@ method=GET path="/devices/0000:21:00.0?peer=0000:21:00.0"
 Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw0: USB HID v2.10 Keyboard [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input0
 Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw1: USB HID v2.10 Mouse [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input1
 Sep 16 10:20:30 testhost kernel: hid-generic 0003:1001:AA10.0001: input,hidraw0: USB HID v2.10 Keyboard [Invented Hardware Remote Input Controller Device] on usb-0000:2a:00.3-4.2/input0
+
+##CASE lessence-a8t.4 template_present=modprobe@loop.service
+##WHY The module instance distinguishes anchored services and must remain visible.
+##FROM invented systemd unit subjects
+Sep 16 11:20:30 testhost systemd[1]: modprobe@loop.service: Deactivated successfully.
+Sep 16 11:20:31 testhost systemd[1]: modprobe@fuse.service: Deactivated successfully.
+
+##CASE lessence-a8t.4 template_present=dbus-:<N>.<N>-org.example.Viewer@<N>.service
+##WHY A shared unit identity must survive differing numeric instances in the living template.
+##FROM invented systemd bus service subjects
+Sep 16 11:20:30 testhost systemd[1]: dbus-:1.4-org.example.Viewer@31.service: Deactivated successfully.
+Sep 16 11:20:31 testhost systemd[1]: dbus-:1.8-org.example.Viewer@43.service: Deactivated successfully.

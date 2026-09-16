@@ -490,20 +490,13 @@ fn anchor_hash(original: &str, pci: &[regex::Match<'_>]) -> u64 {
             found = true;
         }
     }
-    if original.contains("systemd[") {
-        for caps in SYSTEMD_UNIT_SUBJECT.captures_iter(original) {
-            // `cri-containerd-<hash>.scope` and `<uuid>-rootfs.mount` are one
-            // unit kind each, not thousands: hash the skeleton, as for routes.
-            let unit = caps.get(1).map_or("", |m| m.as_str());
-            // systemd escapes `-` in unit names as `\x2d`; undo it so a uuid
-            // is one id run.
-            if unit.contains("\\x2d") {
-                hash_skeleton(&unit.replace("\\x2d", "-"), &mut hasher);
-            } else {
-                hash_skeleton(unit, &mut hasher);
-            }
-            found = true;
-        }
+    for unit in systemd_units(original) {
+        visit_unit_skeleton(unit.as_str(), |part| match part {
+            UnitPart::Byte(byte) => byte.hash(&mut hasher),
+            UnitPart::Id => "<id>".hash(&mut hasher),
+            UnitPart::Number => "<d>".hash(&mut hasher),
+        });
+        found = true;
     }
     if original.starts_with("type=") {
         for caps in AUDIT_RECORD_TYPE.captures_iter(original) {
@@ -604,16 +597,40 @@ fn pod_skeleton(pod: &str) -> &str {
     keep
 }
 
-/// Hash a name with its instance ids removed: a run holding 8+ hex digits
+fn systemd_units(original: &str) -> impl Iterator<Item = regex::Match<'_>> {
+    original
+        .contains("systemd[")
+        .then(|| SYSTEMD_UNIT_SUBJECT.captures_iter(original))
+        .into_iter()
+        .flatten()
+        .filter_map(|caps| caps.get(1))
+}
+
+enum UnitPart {
+    Byte(u8),
+    Id,
+    Number,
+}
+
+/// Visit a unit name with its instance ids removed: a run holding 8+ hex digits
 /// (a hash, a uuid with its hyphens) hashes as `<id>`, every other digit run
 /// as `<d>`, all else as itself. `cri-containerd-9f3e...a1.scope` and
 /// `session-1234.scope` thus name their kind, not their instance.
-fn hash_skeleton(text: &str, hasher: &mut AHasher) {
+/// Hashing and rendering consume these same parts. Only the ASCII unit
+/// grammar calls this; systemd's escaped hyphen is decoded before scanning.
+fn visit_unit_skeleton(text: &str, mut visit: impl FnMut(UnitPart)) {
+    let decoded;
+    let text = if text.contains("\\x2d") {
+        decoded = text.replace("\\x2d", "-");
+        &decoded
+    } else {
+        text
+    };
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
         if !(bytes[i].is_ascii_hexdigit() || bytes[i] == b'-') {
-            bytes[i].hash(hasher);
+            visit(UnitPart::Byte(bytes[i]));
             i += 1;
             continue;
         }
@@ -624,22 +641,32 @@ fn hash_skeleton(text: &str, hasher: &mut AHasher) {
             i += 1;
         }
         if hex >= 8 {
-            "<id>".hash(hasher);
+            visit(UnitPart::Id);
             continue;
         }
         let mut in_digits = false;
         for &byte in &bytes[start..i] {
             if byte.is_ascii_digit() {
                 if !in_digits {
-                    "<d>".hash(hasher);
+                    visit(UnitPart::Number);
                     in_digits = true;
                 }
             } else {
                 in_digits = false;
-                byte.hash(hasher);
+                visit(UnitPart::Byte(byte));
             }
         }
     }
+}
+
+fn render_systemd_unit(unit: &str) -> String {
+    let mut rendered = String::with_capacity(unit.len());
+    visit_unit_skeleton(unit, |part| match part {
+        UnitPart::Byte(byte) => rendered.push(char::from(byte)),
+        UnitPart::Id => rendered.push_str("<ID>"),
+        UnitPart::Number => rendered.push_str("<N>"),
+    });
+    rendered
 }
 
 /// A route segment's identity — shared by `hash_route` (matched exactly)
@@ -780,7 +807,7 @@ fn render_pod_prefix(matched: &str) -> String {
 /// detector — `PathDetector` in particular — can swallow it before it can be
 /// rendered as its identity. Uses the same matches as `anchor_hash` for
 /// request targets, `FIELD_PATH` values on records that name a method,
-/// `[pod/<pod>/<container>]` prefixes, status classes, PCI addresses, and
+/// `[pod/<pod>/<container>]` prefixes, status classes, PCI addresses, systemd units, and
 /// exact call-site/frame/program identities.
 /// A file path elsewhere is untouched.
 ///
@@ -794,6 +821,7 @@ enum AnchorRender {
     Exact,
     KlogCallSite,
     PciAddress,
+    SystemdUnit,
 }
 
 impl AnchorRender {
@@ -803,6 +831,7 @@ impl AnchorRender {
             Self::PodPrefix => render_pod_prefix(text),
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
+            Self::SystemdUnit => render_systemd_unit(text),
             Self::Exact | Self::KlogCallSite | Self::PciAddress => text.to_string(),
         }
     }
@@ -812,6 +841,7 @@ struct ProtectedAnchors {
     text: String,
     renders: Vec<(String, String)>,
     statuses: Vec<ProtectedStatus>,
+    unit_names: Vec<String>,
 }
 
 struct ProtectedStatus {
@@ -823,6 +853,7 @@ type AnchoredSpan = (usize, usize, AnchorRender);
 fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> ProtectedAnchors {
     let mut spans: Vec<AnchoredSpan> = Vec::new();
     let mut statuses = Vec::new();
+    let mut unit_names = Vec::new();
 
     if original.contains("HTTP/") {
         for caps in REQUEST_TARGET.captures_iter(original) {
@@ -870,6 +901,14 @@ fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> Protected
     for address in pci {
         spans.push((address.start(), address.end(), AnchorRender::PciAddress));
     }
+    for unit in systemd_units(original) {
+        spans.push((unit.start(), unit.end(), AnchorRender::SystemdUnit));
+        // The template shows a kind, but the exact instance names still
+        // belong in the facts when the skeleton hides part of them.
+        if render_systemd_unit(unit.as_str()) != unit.as_str() {
+            unit_names.push(unit.as_str().to_string());
+        }
+    }
 
     // These anchors match their literal identity, unlike route/status
     // skeletons. Restore that same identity after generic path/number
@@ -909,6 +948,7 @@ fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> Protected
             text: original.to_string(),
             renders: Vec::new(),
             statuses,
+            unit_names,
         };
     }
 
@@ -929,6 +969,7 @@ fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> Protected
                     | AnchorRender::Exact
                     | AnchorRender::KlogCallSite
                     | AnchorRender::PciAddress
+                    | AnchorRender::SystemdUnit
             ) && let Some((_, rendered)) = renders.last_mut()
             {
                 let identity = render.render(&original[start..end]);
@@ -968,6 +1009,7 @@ fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> Protected
         text: result,
         renders,
         statuses,
+        unit_names,
     }
 }
 
@@ -1026,6 +1068,7 @@ impl Normalizer {
                 tokens.push(Token::Number(status.code));
             }
         }
+        tokens.extend(protected.unit_names.into_iter().map(Token::Name));
 
         // Anchors come from the raw line: normalization has just erased the
         // very fields they identify.
@@ -1309,6 +1352,71 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn systemd_unit_rendering_matches_its_anchor_identity() {
+        let units = [
+            ("modprobe@loop.service", "modprobe@loop.service"),
+            ("modprobe@fuse.service", "modprobe@fuse.service"),
+            ("session-482.scope", "session-<N>.scope"),
+            ("session-629.scope", "session-<N>.scope"),
+            (
+                "dbus-:1.4-org.example.Viewer@31.service",
+                "dbus-:<N>.<N>-org.example.Viewer@<N>.service",
+            ),
+            (
+                "dbus-:1.8-org.example.Viewer@43.service",
+                "dbus-:<N>.<N>-org.example.Viewer@<N>.service",
+            ),
+            (
+                "dbus-:1.8-org.example.Editor@43.service",
+                "dbus-:<N>.<N>-org.example.Editor@<N>.service",
+            ),
+            (
+                r"run-worker-12345678\x2dabcd\x2d4abc\x2d8abc\x2d123456789abc.scope",
+                "run-worker<ID>.scope",
+            ),
+            (
+                "run-worker-23456789-bbcd-4bbc-8bbc-23456789abcd.scope",
+                "run-worker<ID>.scope",
+            ),
+        ];
+        let mut lines = Vec::new();
+        for (unit, shown) in units {
+            assert_eq!(render_systemd_unit(unit), shown);
+            let line = normalize(&format!("systemd[1]: {unit}: Deactivated successfully."));
+            assert!(line.normalized.contains(shown), "{}", line.normalized);
+            assert_ne!(line.anchor, 0);
+            if shown != unit {
+                assert!(
+                    line.tokens
+                        .iter()
+                        .any(|t| matches!(t, Token::Name(name) if name == unit)),
+                    "{}",
+                    line.normalized
+                );
+            }
+            lines.push((line, shown));
+        }
+        for (a, shown_a) in &lines {
+            for (b, shown_b) in &lines {
+                assert_eq!(a.anchor == b.anchor, shown_a == shown_b);
+            }
+        }
+    }
+
+    #[test]
+    fn systemd_unit_protection_only_matches_anchored_subjects() {
+        for line in [
+            "systemd[1]: Starting worker.service - background worker...",
+            "systemd[1]: tmp-cache.mount: Deactivated successfully.",
+            "systemd[1]: dev-cache.device: Deactivated successfully.",
+            "worker[1]: modprobe@loop.service: Deactivated successfully.",
+        ] {
+            assert!(systemd_units(line).next().is_none(), "{line}");
+            assert_eq!(normalize(line).anchor, 0, "{line}");
+        }
+    }
 
     #[test]
     fn pci_identity_is_visible_in_messages_and_paths() {
