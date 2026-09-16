@@ -37,7 +37,9 @@ if [ -n "${RELEASE_CHECK_SKIP_MUTANTS:-}" ]; then
     echo "RELEASE_CHECK_SKIP_MUTANTS=1 — skipping mutants" >&2
 else
     diff_file="$(mktemp)"
-    git diff "${last_tag}..HEAD" -- 'src/folder/**/*.rs' src/normalize.rs 'src/patterns/**/*.rs' > "$diff_file"
+    # Git pathspecs are not shell globs: '**/*.rs' matches nothing here, so
+    # the directories are named literally (lessence-xr6, second finding).
+    git diff "${last_tag}..HEAD" -- src/folder src/normalize.rs src/patterns > "$diff_file"
     echo "Running cargo mutants --in-diff ${last_tag}..HEAD..." >&2
     # A previous run's outcomes must not be read as this run's (lessence-xr6).
     rm -rf mutants.out
