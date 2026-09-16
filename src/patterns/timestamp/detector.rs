@@ -286,7 +286,7 @@ impl UnifiedTimestampDetector {
         // Find all possible matches
         for pattern in patterns() {
             for regex_match in pattern.regex.find_iter(text) {
-                if !Self::is_plausible(text, regex_match.start(), regex_match.end()) {
+                if !Self::is_plausible(text, regex_match.start(), regex_match.end(), pattern.name) {
                     continue;
                 }
                 all_matches.push(TimestampMatch {
@@ -322,10 +322,19 @@ impl UnifiedTimestampDetector {
     /// A bare epoch in seconds — ten digits, no fraction, plain or in
     /// brackets — is a timestamp only as the line's first token: anywhere
     /// else (`id=1700000000`, `size 1727676930 bytes`) it is a number.
-    fn is_plausible(text: &str, start: usize, end: usize) -> bool {
+    fn is_plausible(text: &str, start: usize, end: usize, pattern_name: &str) -> bool {
         let b = text.as_bytes();
         let m = &b[start..end];
-        if m.iter().all(u8::is_ascii_digit) && start > 0 && matches!(b[start - 1], b'-' | b'_') {
+        // A numeric epoch must cover the whole number. A decimal's
+        // fractional digits can have exactly the length of a ms/us/ns
+        // epoch; likewise an epoch-shaped integer prefix is not a
+        // timestamp when its decimal fraction was not matched.
+        if m.iter().all(u8::is_ascii_digit)
+            && ((start > 0 && matches!(b[start - 1], b'-' | b'_'))
+                || (pattern_name.starts_with("unix-timestamp")
+                    && ((start > 0 && b[start - 1] == b'.')
+                        || (end + 1 < b.len() && b[end] == b'.' && b[end + 1].is_ascii_digit()))))
+        {
             return false;
         }
         let inner = match (m.first(), m.last()) {
@@ -1323,6 +1332,46 @@ mod shapes_2026_08_29 {
         assert_eq!(r, "PT30M15S scheduled backup running");
         assert!(t.is_empty());
         assert!(super::patterns().iter().all(|p| p.name != "duration"));
+    }
+
+    #[test]
+    fn epoch_sized_decimal_parts_are_not_timestamps() {
+        for value in [
+            "2.1437169999999",
+            "2.1437169999999997",
+            "2.1437169999999997123",
+            ".1437169999999997",
+            "-2.1437169999999997",
+            "1437169999999.5",
+            "1437169999999997.5",
+            "1437169999999997123.5",
+        ] {
+            // A genuine timestamp elsewhere must not change classification.
+            for prefix in ["", "2026-09-16T04:00:00Z "] {
+                let line = format!("{prefix}latency={value}");
+                let (shown, tokens) = UnifiedTimestampDetector::detect_and_replace(&line);
+                assert!(
+                    shown.ends_with(&format!("latency={value}")),
+                    "{line} -> {shown}"
+                );
+                assert_eq!(tokens.len(), usize::from(!prefix.is_empty()), "{line}");
+            }
+        }
+        for line in [
+            "1789550000 request completed",
+            "[1789550000] request completed",
+            "stamp=@1789550000.123456789",
+            "stamp=1789550000.123456789",
+            "stamp=1789550000123",
+            "stamp=1789550000123456",
+            "stamp=1789550000123456789",
+            // Compact calendar dates are a distinct, date-bearing format.
+            "version=0.20260916120000-build",
+        ] {
+            let (shown, tokens) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(shown.contains("<TIMESTAMP>"), "{line} -> {shown}");
+            assert_eq!(tokens.len(), 1, "{line}");
+        }
     }
 
     #[test]

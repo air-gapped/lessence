@@ -1521,6 +1521,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decimal_measurements_keep_their_whole_value() {
+        let n = Normalizer::new(Config::default());
+        for value in [
+            "3.1789551111111",
+            "3.1789551111111111",
+            "3.1789551111111111111",
+            "1789551111111.25",
+        ] {
+            let line = n
+                .normalize_line(format!(r#"{{"elapsed_ms":{value}}}"#))
+                .unwrap();
+            assert_eq!(line.normalized, r#"{"elapsed_ms":<DECIMAL>}"#);
+            assert!(
+                line.tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Duration(v) if v == value))
+            );
+            assert!(!line.tokens.iter().any(|t| matches!(t, Token::Timestamp(_))));
+        }
+    }
+
+    #[test]
     fn prose_request_identity_preserves_method_and_route() {
         let n = Normalizer::new(Config::default());
         let norm = |text: &str| n.normalize_line(text.to_string()).unwrap();

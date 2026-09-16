@@ -4421,3 +4421,24 @@ worker sent PATCH https://worker.example/items/91?view=wide
 worker sent DELETE HTTP request: /items/42
 worker sent DELETE HTTP request: /items/73
 worker sent DELETE HTTP request: /items/91
+
+##CASE lessence-a8t.11 template_present="elapsed_ms":<DECIMAL>
+##WHY The fractional digits of a measurement are not a timestamp even when their length matches an epoch format.
+##FROM invented measurement records
+{"level":"info","msg":"operation finished","elapsed_ms":3.1789551111111}
+{"level":"info","msg":"operation finished","elapsed_ms":3.1789551111111111}
+{"level":"info","msg":"operation finished","elapsed_ms":3.1789551111111111111}
+
+##CASE lessence-a8t.11 template_present=elapsed=<DECIMAL>
+##WHY An epoch-shaped integer prefix must not be tokenized separately from its unmatched decimal fraction.
+##FROM invented measurement records
+operation finished elapsed=1789551111111.25
+operation finished elapsed=1789551111111111.25
+operation finished elapsed=1789551111111111111.25
+
+##CASE lessence-a8t.11 template_present=worker completed <DURATION_FIELD> scope=steady
+##WHY A long decimal fraction in a duration field must not leave a timestamp suffix outside the duration token.
+##FROM invented duration records
+worker completed jobDuration=3.1789551111111111 scope=steady
+worker completed jobDuration=4.275 scope=steady
+worker completed jobDuration=5.625 scope=steady

@@ -992,3 +992,44 @@ fn prose_http_requests_preserve_methods_routes_and_counts() {
     }
     assert_eq!(actual, expected, "per-method and route line counts");
 }
+
+#[test]
+fn command_timings_remain_decimal_measurements() {
+    let path = "examples/distilled/k8s_argocd_aux.log";
+    let Some(file) = crate::common::require_example(path) else {
+        return;
+    };
+    drop(file);
+    let timing = regex::Regex::new(r#""time_ms":([0-9]+\.[0-9]+)"#).unwrap();
+    let input = std::fs::read_to_string(path).expect("read execution corpus");
+    let expected = input.lines().filter(|line| timing.is_match(line)).count() as u64;
+    assert!(expected > 0, "missing command timing records");
+    assert!(
+        timing
+            .captures_iter(&input)
+            .any(|c| c[1].split_once('.').unwrap().1.len() == 16),
+        "missing long decimal regression shape"
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--explain", "--threads", "1", path])
+        .output()
+        .expect("run execution corpus");
+    assert!(output.status.success());
+    let mut actual = 0;
+    for line in str::from_utf8(&output.stdout).unwrap().lines() {
+        let group: serde_json::Value = serde_json::from_str(line).unwrap();
+        if group["type"] != "group" || !timing.is_match(group["first"]["line"].as_str().unwrap()) {
+            continue;
+        }
+        assert!(timing.is_match(group["last"]["line"].as_str().unwrap()));
+        assert!(
+            group["normalized"]
+                .as_str()
+                .unwrap()
+                .contains(r#""time_ms":<DECIMAL>}"#),
+            "{group}"
+        );
+        actual += group["count"].as_u64().unwrap();
+    }
+    assert_eq!(actual, expected, "all command timing lines accounted for");
+}

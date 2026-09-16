@@ -265,6 +265,14 @@ When closing a class, follow the shape of the two already closed: render the
 anchor's identity as text, from a helper the hasher and the renderer **share**,
 so what is grouped on and what is shown cannot drift.
 
+Decimal measurements cannot donate a digit-only substring to the timestamp
+detector (`lessence-a8t.11`). Numeric epoch candidates touching a preceding decimal
+point or an unmatched following fractional part are rejected. Legitimate
+fractional-second epochs and whole ms/us/ns epochs retain their existing
+recognition policy. `command_timings_remain_decimal_measurements` checks
+that every ArgoCD command timing remains a decimal, with all lines accounted
+for. The normalizer retains the complete measurement as one duration token.
+
 ## The binary archive
 
 `make install` keeps a copy of every binary it puts on PATH, under
