@@ -923,3 +923,72 @@ fn a_pod_prefix_split_is_visible() {
         );
     }
 }
+
+/// Inspect the message schema independently of the production recognizer.
+/// Every request's method/route and its count must survive, including rare
+/// state-changing requests among routine polling.
+#[test]
+fn prose_http_requests_preserve_methods_routes_and_counts() {
+    use std::collections::BTreeMap;
+    let path = "examples/distilled/k8s_postgres_operator.log";
+    let Some(file) = crate::common::require_example(path) else {
+        return;
+    };
+    drop(file);
+    fn identity(line: &str) -> Option<(String, String)> {
+        let (_, record) = line.split_once("] ")?;
+        let value: serde_json::Value = serde_json::from_str(record).ok()?;
+        let message = value["msg"].as_str()?.strip_prefix("making ")?;
+        let (method, target) = message.split_once(" http request: ")?;
+        let (_, rest) = target.split_once("://")?;
+        let (_, route) = rest.split_once('/')?;
+        Some((method.to_string(), format!("/{route}")))
+    }
+    let input = std::fs::read_to_string(path).expect("read operator corpus");
+    let mut expected = BTreeMap::<(String, String), u64>::new();
+    for key in input.lines().filter_map(identity) {
+        *expected.entry(key).or_default() += 1;
+    }
+    assert!(expected.keys().any(|(method, _)| method == "POST"));
+    assert!(expected.keys().any(|(method, _)| method == "GET"));
+    assert!(expected.len() >= 4, "request route coverage disappeared");
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--explain", "--threads", "1", path])
+        .output()
+        .expect("run corpus");
+    assert!(output.status.success());
+    let mut actual = BTreeMap::<(String, String), u64>::new();
+    for line in str::from_utf8(&output.stdout).unwrap().lines() {
+        let group: serde_json::Value = serde_json::from_str(line).unwrap();
+        if group["type"] != "group" {
+            continue;
+        }
+        let Some(key) = identity(group["first"]["line"].as_str().unwrap()) else {
+            continue;
+        };
+        assert_eq!(
+            identity(group["last"]["line"].as_str().unwrap()),
+            Some(key.clone())
+        );
+        let shown = group["normalized"].as_str().unwrap();
+        assert!(
+            shown.contains(&format!(
+                "making {} http request: http://<HOST>{}\"",
+                key.0, key.1
+            )),
+            "{group}"
+        );
+        for sample in group["variation"]["PATH"]["samples"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            let url = sample.as_str().unwrap();
+            let (_, rest) = url.split_once("://").expect("full request URL in facts");
+            let (_, route) = rest.split_once('/').unwrap();
+            assert_eq!(format!("/{route}"), key.1);
+        }
+        *actual.entry(key).or_default() += group["count"].as_u64().unwrap();
+    }
+    assert_eq!(actual, expected, "per-method and route line counts");
+}

@@ -232,6 +232,67 @@ static REQUEST_TARGET: LazyLock<Regex> = LazyLock::new(|| {
         .expect("request-target anchor pattern must compile")
 });
 
+/// Prose requests name the protocol explicitly, or put a full HTTP URL
+/// immediately after the method. This does not reinterpret bare verbs or
+/// change the separate quoted access-log grammar.
+static PROSE_REQUEST: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?:^|[\s"'(])({REQUEST_METHODS})[ \t]+(?:(?i:https?)[ \t]+request:?[ \t]+((?:https?://[^\s"'\\]+|/[^\s"'\\]*))|(https?://[^\s"'\\]+))"#
+    ))
+    .expect("prose HTTP request pattern must compile")
+});
+
+struct ProseRequest {
+    method: std::ops::Range<usize>,
+    target: std::ops::Range<usize>,
+}
+
+fn prose_requests(text: &str) -> impl Iterator<Item = ProseRequest> + '_ {
+    (text.contains("://") || text.contains("request"))
+        .then(|| PROSE_REQUEST.captures_iter(text))
+        .into_iter()
+        .flatten()
+        .filter(|caps| {
+            let method = caps.get(1).unwrap();
+            // Absolute-form access requests already have their own route
+            // grammar, just like origin-form requests. Do not double-anchor
+            // them or change their existing method-folding policy.
+            !(caps.get(3).is_some()
+                && text[..method.start()].ends_with('"')
+                && text[caps.get(0).unwrap().end()..].starts_with(" HTTP/"))
+        })
+        .map(|caps| {
+            let target = caps.get(2).or_else(|| caps.get(3)).unwrap();
+            let trimmed = target.as_str().trim_end_matches([')', ']', ',', '.', ';']);
+            ProseRequest {
+                method: caps.get(1).unwrap().range(),
+                target: target.start()..target.start() + trimmed.len(),
+            }
+        })
+}
+
+/// The authority identifies an instance, not the route. Retain the scheme
+/// and route skeleton in the template; keep the full URL in PATH facts.
+fn prose_target_parts(target: &str) -> (&str, &str) {
+    if let Some((scheme, rest)) = target.split_once("://") {
+        let start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+        let path = &rest[start..];
+        (scheme, if path.starts_with('/') { path } else { "/" })
+    } else {
+        ("", target)
+    }
+}
+
+fn render_prose_target(target: &str) -> String {
+    let (scheme, path) = prose_target_parts(target);
+    let route = render_route(path);
+    if scheme.is_empty() {
+        route
+    } else {
+        format!("{scheme}://<HOST>{route}")
+    }
+}
+
 // A rendered request can already have a varying method, and its route
 // can carry other protected identities beside it. Keep the opening and
 // closing quotes and HTTP/ prefix outside varying method/version slots.
@@ -503,7 +564,12 @@ fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
 /// lines therefore group exactly as they did before.
 ///
 /// Anchors are read from the raw line, before normalization erases them.
-fn anchor_hash(original: &str, pci: &[regex::Match<'_>], options: &[regex::Match<'_>]) -> u64 {
+fn anchor_hash(
+    original: &str,
+    pci: &[regex::Match<'_>],
+    options: &[regex::Match<'_>],
+    requests: &[ProseRequest],
+) -> u64 {
     let mut hasher = AHasher::default();
     let mut found = false;
 
@@ -522,6 +588,14 @@ fn anchor_hash(original: &str, pci: &[regex::Match<'_>], options: &[regex::Match
             class.hash(&mut hasher);
             found = true;
         }
+    }
+
+    for request in requests {
+        original[request.method.clone()].hash(&mut hasher);
+        let (scheme, route) = prose_target_parts(&original[request.target.clone()]);
+        scheme.hash(&mut hasher);
+        hash_route(route, &mut hasher);
+        found = true;
     }
 
     // A PCI address needs both separators; the pair is rare enough together to
@@ -875,6 +949,7 @@ fn render_pod_prefix(matched: &str) -> String {
 /// the status-class facts hidden from detectors by those substitutions.
 enum AnchorRender {
     Route,
+    ProseTarget,
     PodPrefix,
     HttpStatus,
     StatusField,
@@ -888,6 +963,7 @@ impl AnchorRender {
     fn render(&self, text: &str) -> String {
         match self {
             Self::Route => render_route(text),
+            Self::ProseTarget => render_prose_target(text),
             Self::PodPrefix => render_pod_prefix(text),
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
@@ -914,10 +990,24 @@ fn protect_anchored_spans(
     original: &str,
     pci: &[regex::Match<'_>],
     options: &[regex::Match<'_>],
+    requests: &[ProseRequest],
 ) -> ProtectedAnchors {
     let mut spans: Vec<AnchoredSpan> = Vec::new();
     let mut statuses = Vec::new();
     let mut unit_names = Vec::new();
+
+    for request in requests {
+        spans.push((
+            request.method.start,
+            request.method.end,
+            AnchorRender::Exact,
+        ));
+        spans.push((
+            request.target.start,
+            request.target.end,
+            AnchorRender::ProseTarget,
+        ));
+    }
 
     if original.contains("HTTP/") {
         for caps in REQUEST_TARGET.captures_iter(original) {
@@ -1097,7 +1187,8 @@ impl Normalizer {
         // shown line. Protect its exact span before any detector runs...
         let pci: Vec<_> = pci_addresses(&original).collect();
         let options: Vec<_> = cli_option_names(&original).collect();
-        let protected = protect_anchored_spans(&original, &pci, &options);
+        let requests: Vec<_> = prose_requests(&original).collect();
+        let protected = protect_anchored_spans(&original, &pci, &options, &requests);
         let mut normalized = protected.text;
         let mut tokens = Vec::with_capacity(8);
 
@@ -1143,7 +1234,12 @@ impl Normalizer {
 
         // Anchors come from the raw line: normalization has just erased the
         // very fields they identify.
-        let anchor = anchor_hash(&original, &pci, &options);
+        tokens.extend(
+            requests
+                .iter()
+                .map(|request| Token::Path(original[request.target.clone()].to_string())),
+        );
+        let anchor = anchor_hash(&original, &pci, &options, &requests);
 
         // Fold the anchor into the line hash so the folder's exact-hash group
         // index cannot attach this line to a group with a different anchor.
@@ -1423,6 +1519,64 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prose_request_identity_preserves_method_and_route() {
+        let n = Normalizer::new(Config::default());
+        let norm = |text: &str| n.normalize_line(text.to_string()).unwrap();
+        let first = norm("making GET http request: http://10.2.3.4:8080/items/42?view=one");
+        let same = norm("making GET http request: http://worker.example:9000/items/71?view=two");
+        assert_eq!(first.anchor, same.anchor);
+        assert_eq!(
+            first.normalized,
+            "making GET http request: http://<HOST>/items/<N>"
+        );
+        assert_eq!(first.normalized, same.normalized);
+        assert!(
+            first.tokens.iter().any(
+                |t| matches!(t, Token::Path(p) if p == "http://10.2.3.4:8080/items/42?view=one")
+            )
+        );
+        for text in [
+            "making POST http request: http://10.2.3.4:8080/items/42",
+            "making GET http request: http://10.2.3.4:8080/health/42",
+            "making GET http request: https://10.2.3.4:8080/items/42",
+        ] {
+            assert_ne!(first.anchor, norm(text).anchor, "{text}");
+        }
+        for (text, shown) in [
+            (
+                "sent PATCH https://worker.example/items/92?x=y.",
+                "PATCH https://<HOST>/items/<N>.",
+            ),
+            (
+                "making DELETE HTTP request: /items/42",
+                "DELETE HTTP request: /items/<N>",
+            ),
+            ("GET http request: /", "GET http request: /"),
+            ("GET http://worker.example?ready=yes", "GET http://<HOST>/"),
+        ] {
+            let line = norm(text);
+            assert!(line.normalized.contains(shown), "{}", line.normalized);
+            assert_ne!(line.anchor, 0);
+        }
+        for text in [
+            "GET the http manual",
+            "TARGET http://worker.example/items",
+            "read http://worker.example/items",
+            "DELETE /tmp/items",
+        ] {
+            assert_eq!(norm(text).anchor, 0, "{text}");
+        }
+        // Access logs retain their existing route/status policy in both
+        // origin-form and absolute-form targets.
+        for target in ["/items", "http://localhost/items"] {
+            let get = norm(&format!("\"GET {target} HTTP/1.1\" 200 5"));
+            let post = norm(&format!("\"POST {target} HTTP/1.1\" 200 5"));
+            assert_eq!(get.anchor, post.anchor);
+            assert!(get.normalized.contains(target));
+        }
+    }
 
     #[test]
     fn systemd_unit_rendering_matches_its_anchor_identity() {

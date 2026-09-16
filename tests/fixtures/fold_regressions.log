@@ -4388,3 +4388,36 @@ level=info msg="  --map-session-limit='262144'" subsys=daemon
 {"args":"[depot --mode alpha]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}
 {"args":"[depot --mode beta]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}
 {"args":"[depot --mode alpha]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}
+
+##CASE lessence-a8t.10 groups=4
+##WHY Prose HTTP methods and routes are event identities; varying hosts must not mix polling with state changes.
+##FROM invented HTTP request records
+{"level":"debug","msg":"making GET http request: http://10.4.5.6:8008/settings","component":"controller"}
+{"level":"debug","msg":"making POST http request: http://10.4.5.6:8008/settings","component":"controller"}
+{"level":"debug","msg":"making GET http request: http://10.4.5.6:8008/promote","component":"controller"}
+{"level":"debug","msg":"making POST http request: http://10.4.5.6:8008/promote","component":"controller"}
+{"level":"debug","msg":"making GET http request: http://10.4.5.7:8008/settings","component":"controller"}
+{"level":"debug","msg":"making POST http request: http://10.4.5.7:8008/settings","component":"controller"}
+{"level":"debug","msg":"making GET http request: http://10.4.5.7:8008/promote","component":"controller"}
+{"level":"debug","msg":"making POST http request: http://10.4.5.7:8008/promote","component":"controller"}
+
+##CASE lessence-a8t.10 template_present=GET http request: http://<HOST>/items/<N>
+##WHY HTTP prose keeps a visible route skeleton while numeric IDs, hosts and query values vary.
+##FROM invented HTTP request records
+worker sent GET http request: http://10.3.4.5:8080/items/42?view=wide
+worker sent GET http request: http://10.3.4.6:8080/items/73?view=narrow
+worker sent GET http request: http://worker.example:9000/items/91?view=wide
+
+##CASE lessence-a8t.10 template_present=PATCH https://<HOST>/items/<N>
+##WHY A method immediately followed by an HTTP URL identifies a request even without a request label.
+##FROM invented HTTP request records
+worker sent PATCH https://worker.example/items/42?view=wide
+worker sent PATCH https://worker.example/items/73?view=narrow
+worker sent PATCH https://worker.example/items/91?view=wide
+
+##CASE lessence-a8t.10 template_present=DELETE HTTP request: /items/<N>
+##WHY An explicit HTTP request label makes an origin-form target a route, not a generic file path.
+##FROM invented HTTP request records
+worker sent DELETE HTTP request: /items/42
+worker sent DELETE HTTP request: /items/73
+worker sent DELETE HTTP request: /items/91

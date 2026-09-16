@@ -5698,3 +5698,50 @@ fn retained_merge_caps_new_values_but_not_duplicates_at_capacity() {
     assert!(*capped);
     assert_eq!(*known, ["a".into(), "b".into(), "z".into()].into());
 }
+
+#[test]
+fn prose_requests_keep_methods_routes_and_full_url_facts() {
+    let mut f = make_folder();
+    for host in ["10.4.5.6:8008", "10.4.5.7:8008", "worker.example:8080"] {
+        for (method, route) in [
+            ("GET", "settings"),
+            ("POST", "settings"),
+            ("GET", "promote"),
+            ("POST", "promote"),
+        ] {
+            f.process_line(&format!(r#"{{"level":"debug","msg":"making {method} http request: http://{host}/{route}","component":"controller","time":"2026-09-16T06:01:00Z"}}"#)).unwrap();
+        }
+    }
+    assert_eq!(f.buffer.len(), 4);
+    for group in &f.buffer {
+        assert_eq!(group.count(), 3);
+        assert!(
+            !group.template().contains("<VARIES>"),
+            "{}",
+            group.template()
+        );
+        assert!(group.template().contains("http://<HOST>/"));
+        let rollup = f.rollup_computer.compute(group);
+        assert_eq!(rollup["PATH"].samples.len(), 3);
+    }
+}
+
+#[test]
+fn short_prose_request_keeps_identity_when_neighboring_fields_vary() {
+    let mut f = make_folder();
+    for worker in ["cedar", "birch", "cedar"] {
+        f.process_line(&format!(r#"{{"request":"GET http://worker.example/items/42","worker":"{worker}","level":"info","message":"request finished"}}"#)).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let group = &f.buffer[0];
+    assert!(
+        group
+            .template()
+            .contains(r#""request":"GET http://<HOST>/items/<N>""#),
+        "{}",
+        group.template()
+    );
+    let rollup = f.rollup_computer.compute(group);
+    assert_eq!(rollup[VARIES].samples, [r#""cedar""#, r#""birch""#]);
+    assert_eq!(rollup[VARIES].counts, Some(vec![2, 1]));
+}

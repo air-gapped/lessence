@@ -226,6 +226,14 @@ facts count the methods themselves. This changes template construction,
 not which requests may join. The route visibility gate includes the
 rook-ceph corpus that exposed this final request-target class.
 
+Prose HTTP requests also carry method and route identities (`lessence-a8t.10`):
+`GET http request: URL` and a method immediately followed by a full HTTP URL
+use the same capture for hashing and protection. The authority is variable,
+rendered as `<HOST>`; routes use the existing numeric/opaque-ID skeleton and
+omit queries. Full targets remain in `PATH` facts. The corpus gate
+`prose_http_requests_preserve_methods_routes_and_counts` checks each method
+and route's input/output total, so a rare POST cannot hide among GET polling.
+
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
 
