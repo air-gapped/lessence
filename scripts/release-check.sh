@@ -53,12 +53,13 @@ else
         || mutants_rc=$?
     rm -f "$diff_file"
     outcomes="mutants.out/outcomes.json"
-    # cargo mutants exits 0 (all caught), 2 (missed), 3 (timeouts) or 4
-    # (unviable) after a complete run; anything else means it did not
-    # finish, and a partial or malformed outcomes.json must not be read as
-    # a score (lessence-xr6).
+    # cargo mutants exits 0 (all caught), 2 (missed) or 3 (timeouts) after
+    # a complete run. 4 is the baseline failing before any mutant ran, 1, 5
+    # and 6 are usage and diff errors, 70 is internal (mutants.rs/exit-codes);
+    # none of those, nor a partial or malformed outcomes.json, may be read
+    # as a score (lessence-xr6).
     case "$mutants_rc" in
-        0|2|3|4) mutants_complete=1 ;;
+        0|2|3) mutants_complete=1 ;;
         *) mutants_complete=0 ;;
     esac
     if [ "$mutants_complete" -eq 0 ] || [ ! -f "$outcomes" ] \
