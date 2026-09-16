@@ -383,7 +383,15 @@ now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 golden_json="$(IFS=,; echo "${golden_json_rows[*]:-}")"
 modes_json="$(IFS=,; echo "${modes_json_rows[*]:-}")"
-vacuous_json="$(printf '"%s",' "${vacuous[@]:-}" | sed 's/,$//')"
+# Headers are arbitrary text (a case may assert on `\e[`); JSON-escape each
+# one, and an empty list is `[]`, not `[""]` (lessence-f1o).
+vacuous_json=""
+if [ "${#vacuous[@]}" -gt 0 ]; then
+    vacuous_json="$(printf '%s\n' "${vacuous[@]}" | python3 -c '
+import json, sys
+print(",".join(json.dumps(l.rstrip("\n")) for l in sys.stdin))
+')"
+fi
 cases_new_failing_on_base=$((n_new - ${#vacuous[@]}))
 
 cat > "$GATE_DIR/gate.json" <<JSON

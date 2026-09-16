@@ -26,7 +26,9 @@ GATE_BASE="$last_tag" ./scripts/gate.sh || gate_status="FAIL"
 MUTANTS_MEM_MAX="${MUTANTS_MEM_MAX:-48G}"
 MUTANTS_TIMEOUT_MULT="${MUTANTS_TIMEOUT_MULT:-3}"
 MUTANTS_JOBS="${MUTANTS_JOBS:-8}"
-MUTANTS_FILES=(-f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs')
+# src/folder/ is a directory since the split; naming src/folder.rs excluded
+# every folder change from the run (lessence-xr6).
+MUTANTS_FILES=(-f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**/*.rs')
 
 mutation_score="skipped"
 mutants_caught=0
@@ -35,18 +37,38 @@ if [ -n "${RELEASE_CHECK_SKIP_MUTANTS:-}" ]; then
     echo "RELEASE_CHECK_SKIP_MUTANTS=1 — skipping mutants" >&2
 else
     diff_file="$(mktemp)"
-    git diff "${last_tag}..HEAD" -- src/folder.rs src/normalize.rs 'src/patterns/**/*.rs' > "$diff_file"
+    # Git pathspecs are not shell globs: '**/*.rs' matches nothing here, so
+    # the directories are named literally (lessence-xr6, second finding).
+    git diff "${last_tag}..HEAD" -- src/folder src/normalize.rs src/patterns > "$diff_file"
     echo "Running cargo mutants --in-diff ${last_tag}..HEAD..." >&2
-    systemd-run --scope -p "MemoryMax=${MUTANTS_MEM_MAX}" nice -n 19 \
+    # A previous run's outcomes must not be read as this run's (lessence-xr6).
+    rm -rf mutants.out
+    # A user-scope unit caps memory the same way and needs no polkit
+    # prompt, so the run also works from a non-interactive session.
+    mutants_rc=0
+    systemd-run --user --scope -p "MemoryMax=${MUTANTS_MEM_MAX}" nice -n 19 \
         env PROPTEST_CASES=32 PROPTEST_MAX_SHRINK_ITERS=100 \
         cargo mutants -j "$MUTANTS_JOBS" --timeout-multiplier "$MUTANTS_TIMEOUT_MULT" \
         "${MUTANTS_FILES[@]}" -C --lib --in-diff "$diff_file" \
-        || true
+        || mutants_rc=$?
     rm -f "$diff_file"
     outcomes="mutants.out/outcomes.json"
-    if [ -f "$outcomes" ]; then
-        mutants_caught="$(jq '[.outcomes[] | select(.scenario.Mutant and .summary=="Caught")] | length' "$outcomes" 2>/dev/null || echo 0)"
-        mutants_total="$(jq '[.outcomes[] | select(.scenario.Mutant)] | length' "$outcomes" 2>/dev/null || echo 0)"
+    # cargo mutants exits 0 (all caught), 2 (missed) or 3 (timeouts) after
+    # a complete run. 4 is the baseline failing before any mutant ran, 1, 5
+    # and 6 are usage and diff errors, 70 is internal (mutants.rs/exit-codes);
+    # none of those, nor a partial or malformed outcomes.json, may be read
+    # as a score (lessence-xr6).
+    case "$mutants_rc" in
+        0|2|3) mutants_complete=1 ;;
+        *) mutants_complete=0 ;;
+    esac
+    if [ "$mutants_complete" -eq 0 ] || [ ! -f "$outcomes" ] \
+        || ! jq -e '.outcomes | type == "array"' "$outcomes" >/dev/null 2>&1; then
+        mutation_score="failed (rc=${mutants_rc}, no complete outcomes)"
+        gate_status="FAIL"
+    else
+        mutants_caught="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant and .summary=="CaughtMutant")] | length' "$outcomes")"
+        mutants_total="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant)] | length' "$outcomes")"
         if [ "$mutants_total" -gt 0 ]; then
             mutation_score="$(awk -v c="$mutants_caught" -v t="$mutants_total" 'BEGIN{printf "%.1f", c/t*100}')"
         else
