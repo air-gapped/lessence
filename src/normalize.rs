@@ -289,6 +289,18 @@ static TRACEBACK_FRAME: LazyLock<Regex> = LazyLock::new(|| {
         .expect("traceback frame anchor pattern must compile")
 });
 
+/// Captures in these grammars are exactly the fields the anchor hashes.
+/// Share their byte spans with rendering so an identity is never re-parsed
+/// with a looser rule after the normal detectors have run.
+fn exact_anchor_fields<'a>(
+    original: &'a str,
+    pattern: &'a Regex,
+) -> impl Iterator<Item = regex::Match<'a>> + 'a {
+    pattern
+        .captures_iter(original)
+        .flat_map(|caps| (1..caps.len()).filter_map(move |i| caps.get(i)))
+}
+
 /// A method in a structured record: `"RequestMethod":"POST"`, `method=GET`,
 /// `"grpc.method":"GenerateManifest"`. A field named `…method` names what
 /// was called — the access-log request line's counterpart in JSON/logfmt,
@@ -460,8 +472,8 @@ fn anchor_hash(original: &str) -> u64 {
     // klog's call site, systemd's unit, auditd's record type. Each is one
     // token out of many, so similarity alone merges across them.
     if original.contains(".go:") {
-        for caps in KLOG_CALL_SITE.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+        for field in exact_anchor_fields(original, &KLOG_CALL_SITE) {
+            field.as_str().hash(&mut hasher);
             found = true;
         }
     }
@@ -487,22 +499,20 @@ fn anchor_hash(original: &str) -> u64 {
         }
     }
     if original.contains("caller") {
-        for caps in STRUCTURED_CALLER.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+        for field in exact_anchor_fields(original, &STRUCTURED_CALLER) {
+            field.as_str().hash(&mut hasher);
             found = true;
         }
     }
     if original.contains(".go:") {
-        for caps in MESSAGE_CALL_SITE.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+        for field in exact_anchor_fields(original, &MESSAGE_CALL_SITE) {
+            field.as_str().hash(&mut hasher);
             found = true;
         }
     }
     if original.contains("File \"") {
-        for caps in TRACEBACK_FRAME.captures_iter(original) {
-            for i in 1..=3 {
-                caps.get(i).map_or("", |m| m.as_str()).hash(&mut hasher);
-            }
+        for field in exact_anchor_fields(original, &TRACEBACK_FRAME) {
+            field.as_str().hash(&mut hasher);
             found = true;
         }
     }
@@ -533,8 +543,8 @@ fn anchor_hash(original: &str) -> u64 {
         }
     }
     if original.contains("exe=") || original.contains("comm=") || original.contains("\"binary\"") {
-        for caps in PROGRAM_FIELD.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+        for field in exact_anchor_fields(original, &PROGRAM_FIELD) {
+            field.as_str().hash(&mut hasher);
             found = true;
         }
     }
@@ -758,7 +768,8 @@ fn render_pod_prefix(matched: &str) -> String {
 /// rendered as its skeleton. Mirrors exactly what `anchor_hash` reads: a
 /// request target on an `HTTP/` line, a `FIELD_PATH` value on a record that
 /// also names a method, a `[pod/<pod>/<container>]` kubectl prefix, and each
-/// anchored HTTP status class. A file path elsewhere is untouched.
+/// anchored status class, and exact call-site/frame/program identities.
+/// A file path elsewhere is untouched.
 ///
 /// Keeps the substituted line, the spans to restore after detection, and
 /// the status-class facts hidden from detectors by those substitutions.
@@ -767,6 +778,8 @@ enum AnchorRender {
     PodPrefix,
     HttpStatus,
     StatusField,
+    Exact,
+    KlogCallSite,
 }
 
 impl AnchorRender {
@@ -776,6 +789,7 @@ impl AnchorRender {
             Self::PodPrefix => render_pod_prefix(text),
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
+            Self::Exact | Self::KlogCallSite => text.to_string(),
         }
     }
 }
@@ -839,6 +853,31 @@ fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
         }
     }
 
+    // These anchors match their literal identity, unlike route/status
+    // skeletons. Restore that same identity after generic path/number
+    // detectors would otherwise erase the distinction between events.
+    if original.contains(".go:") {
+        for field in exact_anchor_fields(original, &KLOG_CALL_SITE) {
+            spans.push((field.start(), field.end(), AnchorRender::KlogCallSite));
+        }
+    }
+    for pattern in [
+        original.contains("caller").then_some(&*STRUCTURED_CALLER),
+        original.contains(".go:").then_some(&*MESSAGE_CALL_SITE),
+        original.contains("File \"").then_some(&*TRACEBACK_FRAME),
+        (original.contains("exe=")
+            || original.contains("comm=")
+            || original.contains("\"binary\""))
+        .then_some(&*PROGRAM_FIELD),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        for field in exact_anchor_fields(original, pattern) {
+            spans.push((field.start(), field.end(), AnchorRender::Exact));
+        }
+    }
+
     if original.starts_with("[pod/") {
         for caps in KUBECTL_PREFIX.captures_iter(original) {
             if let Some(m) = caps.get(0) {
@@ -861,19 +900,37 @@ fn protect_anchored_spans(original: &str) -> ProtectedAnchors {
     let mut cursor = 0;
     for (i, (start, end, render)) in spans.into_iter().enumerate() {
         if start < cursor {
-            // A status field can itself occur inside an anchored route's
+            // An identity can itself occur inside an anchored route's
             // query. The route skeleton drops queries, but that must not
             // hide another identity the anchor matcher keeps.
-            if matches!(render, AnchorRender::HttpStatus | AnchorRender::StatusField)
-                && let Some((_, rendered)) = renders.last_mut()
+            if matches!(
+                render,
+                AnchorRender::HttpStatus
+                    | AnchorRender::StatusField
+                    | AnchorRender::Exact
+                    | AnchorRender::KlogCallSite
+            ) && let Some((_, rendered)) = renders.last_mut()
             {
-                rendered.push(' ');
-                rendered.push_str(&render.render(&original[start..end]));
+                let identity = render.render(&original[start..end]);
+                if matches!(render, AnchorRender::HttpStatus | AnchorRender::StatusField)
+                    || !rendered.contains(&identity)
+                {
+                    rendered.push(' ');
+                    rendered.push_str(&identity);
+                }
             }
             continue; // overlapping match — already covered
         }
         result.push_str(&original[cursor..start]);
-        let sentinel = format!("\u{0}A{i}\u{0}");
+        // ProcessDetector needs to recognize the PID column immediately
+        // before a protected klog call site. A distinct sentinel preserves
+        // that grammar without exposing the site to path/number detectors.
+        let kind = if matches!(render, AnchorRender::KlogCallSite) {
+            'K'
+        } else {
+            'A'
+        };
+        let sentinel = format!("\u{0}{kind}{i}\u{0}");
         renders.push((sentinel.clone(), render.render(&original[start..end])));
         result.push_str(&sentinel);
         cursor = end;
@@ -1225,6 +1282,102 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nested_status_identities_keep_their_multiplicity() {
+        let normalizer = Normalizer::new(Config::default());
+        let one = normalizer
+            .normalize_line(r#"method=GET path="/health?status=200""#.into())
+            .unwrap();
+        let two = normalizer
+            .normalize_line(r#"method=GET path="/health?status=200&status=204""#.into())
+            .unwrap();
+        assert_ne!(one.anchor, two.anchor);
+        assert_ne!(one.normalized, two.normalized);
+        assert_eq!(two.normalized.matches("<STATUS_2XX>").count(), 2);
+    }
+
+    #[test]
+    fn exact_anchor_identity_survives_path_and_number_detection() {
+        let normalizer = Normalizer::new(Config::default());
+        for (shape, identity) in [
+            (
+                r#"E0916 09:12:35.123456       8 controller.go:137] "Unhandled Error" err="context deadline exceeded""#,
+                "controller.go:137",
+            ),
+            (
+                r#"{"caller":"worker/task.go:137","msg":"operation completed"}"#,
+                "worker/task.go:137",
+            ),
+            (
+                r#"caller=/opt/src/worker.go:137 msg="operation completed""#,
+                "/opt/src/worker.go:137",
+            ),
+            (
+                "I0916 09:12:35.123456       8 reflector.go:137] local.dev/worker/task.go:241: forcing resync",
+                "local.dev/worker/task.go:241",
+            ),
+            (
+                r#"  File "/opt/app/worker.py", line 137, in stream"#,
+                r#"File "/opt/app/worker.py", line 137, in stream"#,
+            ),
+            (
+                r#"{"binary":"/usr/local/bin/worker","pid":123,"event":"exec"}"#,
+                "/usr/local/bin/worker",
+            ),
+            (
+                r#"exe="/usr/local/bin/worker" uid=1000 event=exec"#,
+                "/usr/local/bin/worker",
+            ),
+        ] {
+            let line = normalizer.normalize_line(shape.into()).unwrap();
+            assert_ne!(line.anchor, 0, "{shape}");
+            assert!(
+                line.normalized.contains(identity),
+                "{} must show {identity}",
+                line.normalized
+            );
+            assert!(!line.normalized.contains('\0'), "{}", line.normalized);
+        }
+    }
+
+    #[test]
+    fn a_protected_klog_site_keeps_its_pid_column_and_respects_detector_flags() {
+        let raw = "E0916 09:12:35.123456       8 controller.go:137] request complete";
+        let line = Normalizer::new(Config::default())
+            .normalize_line(raw.into())
+            .unwrap();
+        assert!(
+            line.normalized.contains("<PID> controller.go:137]"),
+            "{}",
+            line.normalized
+        );
+        assert!(line.tokens.iter().any(|t| matches!(t, Token::Pid(8))));
+        let config = Config {
+            normalize_pids: false,
+            ..Config::default()
+        };
+        let off = Normalizer::new(config).normalize_line(raw.into()).unwrap();
+        assert!(!off.tokens.iter().any(|t| matches!(t, Token::Pid(_))));
+        assert!(off.normalized.contains("controller.go:137]"));
+    }
+
+    #[test]
+    fn frame_line_and_function_are_visible_even_with_the_same_file() {
+        let normalizer = Normalizer::new(Config::default());
+        let lines: Vec<_> = [
+            r#"  File "/opt/app/worker.py", line 137, in stream"#,
+            r#"  File "/opt/app/worker.py", line 241, in stream"#,
+            r#"  File "/opt/app/worker.py", line 137, in poll"#,
+        ]
+        .into_iter()
+        .map(|s| normalizer.normalize_line(s.into()).unwrap())
+        .collect();
+        for pair in lines.windows(2) {
+            assert_ne!(pair[0].anchor, pair[1].anchor);
+            assert_ne!(pair[0].normalized, pair[1].normalized);
+        }
+    }
+
+    #[test]
     fn http_status_anchor_classes_remain_visible_and_codes_within_a_class_agree() {
         let normalizer = Normalizer::new(Config::default());
         for (shape, marker) in [
@@ -1391,14 +1544,14 @@ mod tests {
     }
 
     #[test]
-    fn file_path_in_non_http_line_stays_path() {
-        // Guard against scope creep: a file path (no HTTP/, no method field)
-        // must keep the ordinary `<PATH>` treatment, not the route skeleton.
+    fn ordinary_file_paths_stay_paths_but_program_identity_is_visible() {
+        // A program field already anchors the event and must stay visible.
+        // An unrelated file path must keep the ordinary `<PATH>` treatment.
         let normalizer = Normalizer::new(Config::default());
         let line = normalizer
             .normalize_line(r#"exe="/usr/bin/sudo""#.to_string())
             .unwrap();
-        assert_eq!(line.normalized, r#"exe="<PATH>""#);
+        assert_eq!(line.normalized, r#"exe="/usr/bin/sudo""#);
 
         let line = normalizer
             .normalize_line("workerEnv.init() ok /var/log/app/42/status".to_string())

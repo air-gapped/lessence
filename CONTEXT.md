@@ -168,6 +168,8 @@ Enforcement lives in `tests/integration/test_constitutional_compliance.rs`:
 - `a_route_split_is_visible`, `a_pod_prefix_split_is_visible`, and
   `an_http_status_class_split_is_visible` gate the closed route, pod-prefix,
   and HTTP-status classes;
+- `call_site_traceback_and_program_splits_are_visible` gates the call-site,
+  Python-frame, and program-field classes on their affected corpora;
 - `invisible_anchor_splits` (`#[ignore]`, reports but does not gate) catalogues
   the rest. Run it with:
   `cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture`
@@ -181,6 +183,12 @@ as a class marker beside the route skeleton. The status gate checks every
 distilled corpus containing an HTTP status anchor; the route gate no longer
 excludes status-class differences. The historical table below predates this
 fix (`lessence-a8t.1`) and the completed streaming fixes.
+
+Exact call-site, Python-frame and program-field identities now stay literal
+in the template (`lessence-a8t.2`): a frame keeps its file, line and function,
+and `exe=`/`"binary":` fields keep the program path. The hasher and renderer
+read the same capture spans. An ordinary path outside these anchored
+grammars still becomes `<PATH>`.
 
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):

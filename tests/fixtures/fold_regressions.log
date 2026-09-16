@@ -4234,3 +4234,38 @@ method=GET path="/health?status=503"
 ##WHY Generic status anchors can be process exit codes and must not be labelled HTTP.
 ##FROM invented systemd exit event
 systemd[1]: worker.service: Main process exited, code=exited, status=127/NOTFOUND
+
+##CASE lessence-a8t.2 template_present=controller.go:137
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+E0916 09:12:35.123456       8 controller.go:137] "Unhandled Error" err="context deadline exceeded"
+
+##CASE lessence-a8t.2 template_present=worker/task.go:137
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+{"caller":"worker/task.go:137","msg":"operation completed"}
+
+##CASE lessence-a8t.2 template_present=/opt/src/worker.go:137
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+caller=/opt/src/worker.go:137 msg="operation completed"
+
+##CASE lessence-a8t.2 template_present=local.dev/worker/task.go:241
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+I0916 09:12:35.123456       8 reflector.go:137] local.dev/worker/task.go:241: forcing resync
+
+##CASE lessence-a8t.2 template_present=/opt/app/worker.py
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+  File "/opt/app/worker.py", line 137, in stream
+
+##CASE lessence-a8t.2 template_present=/usr/local/bin/worker
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+{"binary":"/usr/local/bin/worker","pid":123,"event":"exec"}
+
+##CASE lessence-a8t.2 template_present=/usr/local/bin/worker
+##WHY The exact identity that prevents these events from joining must remain visible.
+##FROM invented call-site, traceback or program event
+exe="/usr/local/bin/worker" uid=1000 event=exec

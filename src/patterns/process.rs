@@ -27,9 +27,12 @@ static THREAD_NAME_REGEX: LazyLock<Regex> =
 // The klog header's pid column: `E0910 00:02:39.914326       1 status.go:71]`.
 // By the time this runs the timestamp and the call site are placeholders;
 // the number between them is a pid whatever its digit count (`1` in a
-// container, `114343` on a node), so the slot says so.
-static KLOG_PID_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(<TIMESTAMP>\s+)(\d+)( [A-Za-z0-9_]+\.go:<LINE>\])").unwrap());
+// container, `114343` on a node), so the slot says so. `\0K<index>\0`
+// is the normalizer's protected klog call-site sentinel; it carries the
+// same grammar while the original site is kept for visible rendering.
+static KLOG_PID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(<TIMESTAMP>\s+)(\d+)( (?:[A-Za-z0-9_]+\.go:<LINE>|\x00K\d+\x00)\])").unwrap()
+});
 
 pub struct ProcessDetector;
 
@@ -38,7 +41,7 @@ impl ProcessDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        if result.contains(".go:<LINE>]") {
+        if result.contains(".go:<LINE>]") || result.contains("\0K") {
             super::fold_matches(&mut result, &mut tokens, &KLOG_PID_REGEX, |caps| {
                 Some((
                     Token::Pid(caps[2].parse().unwrap_or(0)),

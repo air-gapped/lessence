@@ -481,6 +481,32 @@ fn an_http_status_class_split_is_visible() {
     assert!(checked > 0, "missing HTTP status corpora");
 }
 
+/// These corpora exercise klog call sites, Python traceback frames and
+/// structured program fields. Each used to contain distinct anchored
+/// groups whose visible templates were identical. No exceptions remain.
+#[test]
+fn call_site_traceback_and_program_splits_are_visible() {
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir);
+    for name in [
+        "apiserver_production.log",
+        "k8s_grafana.log",
+        "k8s_json_sample.log",
+        "k8s_tetragon.log",
+    ] {
+        let path = std::path::Path::new("examples/distilled").join(name);
+        assert!(path.exists(), "missing corpus {}", path.display());
+        let offenders = offender_groups(&path);
+        assert!(
+            offenders.is_empty(),
+            "{} hides event identities: {offenders:?}",
+            path.display()
+        );
+    }
+}
+
 /// The route-anchor fix's gate: on the two HTTP access-log corpora whose
 /// anchor is the request route (`normalize::anchor_hash`'s route-skeleton
 /// arm), an anchor split must never print the same template twice. This is
