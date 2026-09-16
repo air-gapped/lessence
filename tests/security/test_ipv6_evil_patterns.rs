@@ -159,10 +159,7 @@ fn test_pre_filter_rejects_obviously_malformed() {
 
     for (sample, description) in &malformed {
         let check = NetworkDetector::is_plausible_ipv6(sample);
-        assert!(
-            !check.is_plausible,
-            "Pre-filter should reject '{description}'"
-        );
+        assert!(!check, "Pre-filter should reject '{description}'");
     }
 }
 
@@ -176,6 +173,6 @@ fn test_pre_filter_passes_structurally_valid() {
 
     for (sample, description) in &valid {
         let check = NetworkDetector::is_plausible_ipv6(sample);
-        assert!(check.is_plausible, "Pre-filter should pass '{description}'");
+        assert!(check, "Pre-filter should pass '{description}'");
     }
 }

@@ -31,44 +31,28 @@ fn disable_patterns_help() -> String {
     )
 }
 
-fn validate_min_collapse(s: &str) -> Result<usize, String> {
+fn validate_count(s: &str, minimum: usize, hint: &str) -> Result<usize, String> {
     let value = s
         .parse::<usize>()
         .map_err(|_| format!("invalid number: '{s}'"))?;
-
-    // A collapsed group emits three lines (first / summary / last), so
-    // lines_saved = count - 3 only makes sense for groups of 3+. Values
-    // below 3 would EXPAND a 2-line group and underflow lines_saved.
-    if value < 3 {
-        return Err(format!(
-            "'{value}' must be at least 3 (minimum meaningful folding group)"
-        ));
+    if value < minimum {
+        return Err(format!("'{value}' must be at least {minimum}{hint}"));
     }
     Ok(value)
+}
+
+fn validate_min_collapse(s: &str) -> Result<usize, String> {
+    // A collapsed group emits first / summary / last: fewer than three
+    // input lines would expand the log and underflow lines_saved.
+    validate_count(s, 3, " (minimum meaningful folding group)")
 }
 
 fn validate_threads(s: &str) -> Result<usize, String> {
-    let value = s
-        .parse::<usize>()
-        .map_err(|_| format!("invalid number: '{s}'"))?;
-
-    if value < 1 {
-        return Err(format!(
-            "'{value}' must be at least 1 (use --threads 1 for single-threaded mode)"
-        ));
-    }
-    Ok(value)
+    validate_count(s, 1, " (use --threads 1 for single-threaded mode)")
 }
 
 fn validate_max_lines(s: &str) -> Result<usize, String> {
-    let value = s
-        .parse::<usize>()
-        .map_err(|_| format!("invalid number: '{s}'"))?;
-
-    if value < 1 {
-        return Err(format!("'{value}' must be at least 1"));
-    }
-    Ok(value)
+    validate_count(s, 1, "")
 }
 
 /// Validate `--format` at the CLI boundary and return the canonical
@@ -277,13 +261,7 @@ impl Cli {
 }
 
 fn validate_members(s: &str) -> Result<usize, String> {
-    let value = s
-        .parse::<usize>()
-        .map_err(|_| format!("invalid number: '{s}'"))?;
-    if value < 1 {
-        return Err(format!("'{value}' must be at least 1"));
-    }
-    Ok(value)
+    validate_count(s, 1, "")
 }
 
 /// The full clap command — single source of truth for the doc-contract tests.

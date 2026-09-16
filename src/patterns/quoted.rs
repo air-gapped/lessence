@@ -139,41 +139,22 @@ impl QuotedStringDetector {
         let quoted_content = &quoted_string[1..quoted_string.len() - 1]; // Remove quotes
         let mut normalized_content = quoted_content.to_string();
 
-        // Apply EXACT same pattern detection order as main pipeline
-        // This ensures consistency and prevents order-dependent bugs
-
-        // 1. TIMESTAMPS (highest priority - most specific format)
-        let (new_normalized, _) = UnifiedTimestampDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
-
-        // 2. PATHS (including full URLs - must run early to preserve URL structure)
-        let (new_normalized, _) = PathDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
-
-        // 3. UUIDs (MUST run BEFORE hashes to prevent UUID fragmentation!)
-        let (new_normalized, _) = UuidDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
-
-        // 4. NETWORK patterns (IPs, ports, FQDNs)
-        let (new_normalized, _) =
-            NetworkDetector::detect_and_replace(&normalized_content, true, true, true);
-        normalized_content = new_normalized;
-
-        // 5. HASHES (must run AFTER UUIDs)
-        let (new_normalized, _) = HashDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
-
-        // 6. PROCESS IDs
-        let (new_normalized, _) = ProcessDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
-
-        // 7. DURATIONS & measurements (including integers)
-        let (new_normalized, _) = DurationDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
-
-        // 8. NAMES (hyphenated component names - generic patterns last)
-        let (new_normalized, _) = NameDetector::detect_and_replace(&normalized_content);
-        normalized_content = new_normalized;
+        // Preserve the nested cascade's ordering: paths before network,
+        // UUIDs before hashes, and generic measurements/names last.
+        type Detector = fn(&str) -> (String, Vec<Token>);
+        let detectors: [Detector; 8] = [
+            UnifiedTimestampDetector::detect_and_replace,
+            PathDetector::detect_and_replace,
+            UuidDetector::detect_and_replace,
+            |s| NetworkDetector::detect_and_replace(s, true, true, true),
+            HashDetector::detect_and_replace,
+            ProcessDetector::detect_and_replace,
+            DurationDetector::detect_and_replace,
+            NameDetector::detect_and_replace,
+        ];
+        for detect in detectors {
+            normalized_content = detect(&normalized_content).0;
+        }
 
         // Escaped JSON FIRST (highest priority): a blob, not a sentence. A
         // sentence that merely contains an escape (`args=\u0026{…}`, or a

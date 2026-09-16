@@ -2,32 +2,6 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// Result of IPv6 pre-filter validation determining whether to proceed to regex execution
-///
-/// The pre-filter performs lightweight structural validation to protect against ReDoS attacks
-/// by rejecting obviously malformed patterns before they reach the complex IPv6 regex.
-/// This provides defense-in-depth with <1% performance overhead while maintaining 100%
-/// detection accuracy for legitimate IPv6 addresses.
-#[derive(Debug, Clone)]
-pub struct PlausibilityCheck {
-    /// Whether the string passes structural validation and should proceed to regex
-    pub is_plausible: bool,
-}
-
-impl PlausibilityCheck {
-    /// Create a PlausibilityCheck indicating the input should proceed to regex validation
-    pub fn plausible() -> Self {
-        Self { is_plausible: true }
-    }
-
-    /// Create a PlausibilityCheck indicating the input should be rejected
-    pub fn rejected(_reason: &str) -> Self {
-        Self {
-            is_plausible: false,
-        }
-    }
-}
-
 // IPv4 address
 static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -139,7 +113,7 @@ impl NetworkDetector {
         let text = m.as_str();
         let parses = |s: &str| {
             let core = s.split('%').next().unwrap_or("");
-            Self::is_plausible_ipv6(core).is_plausible && core.parse::<std::net::Ipv6Addr>().is_ok()
+            Self::is_plausible_ipv6(core) && core.parse::<std::net::Ipv6Addr>().is_ok()
         };
         if parses(text) {
             Some(text.len())
@@ -323,14 +297,7 @@ impl NetworkDetector {
                 if Self::in_longer_colon_chain(&result, &cap.get(0).unwrap())
                     || !Self::port_stands_alone(&result, &cap.get(0).unwrap())
                     || full_match.ends_with(']')
-                    || hostname.ends_with(".go")
-                    || hostname.ends_with(".rs")
-                    || hostname.ends_with(".py")
-                    || hostname.ends_with(".js")
-                    || hostname.ends_with(".java")
-                    || hostname.ends_with(".c")
-                    || hostname.ends_with(".cpp")
-                    || hostname.ends_with(".h")
+                    || Self::is_port_source_file(hostname)
                 {
                     continue;
                 }
@@ -354,14 +321,7 @@ impl NetworkDetector {
                     if Self::in_longer_colon_chain(&result, &caps.get(0).unwrap())
                         || !Self::port_stands_alone(&result, &caps.get(0).unwrap())
                         || full_match.ends_with(']')
-                        || hostname.ends_with(".go")
-                        || hostname.ends_with(".rs")
-                        || hostname.ends_with(".py")
-                        || hostname.ends_with(".js")
-                        || hostname.ends_with(".java")
-                        || hostname.ends_with(".c")
-                        || hostname.ends_with(".cpp")
-                        || hostname.ends_with(".h")
+                        || Self::is_port_source_file(hostname)
                     {
                         return full_match.to_string();
                     }
@@ -460,6 +420,12 @@ impl NetworkDetector {
 
     /// `checkpoint.go`, `main.rs`, `app.py`: a source file, whose `:123`
     /// is a line number and never a port.
+    fn is_port_source_file(name: &str) -> bool {
+        [".go", ".rs", ".py", ".js", ".java", ".c", ".cpp", ".h"]
+            .iter()
+            .any(|ext| name.ends_with(ext))
+    }
+
     fn is_source_file(name: &str) -> bool {
         const SOURCE_EXTS: &[&str] = &[
             ".go", ".rs", ".py", ".js", ".ts", ".java", ".c", ".cc", ".cpp", ".h", ".rb", ".php",
@@ -676,7 +642,7 @@ impl NetworkDetector {
     /// * `input` - The string to validate as a potential IPv6 address
     ///
     /// # Returns
-    /// * `PlausibilityCheck` - Contains validation result and optional rejection reason
+    /// `true` when the input should proceed to full IPv6 validation.
     ///
     /// # Performance
     /// - Rejects malformed patterns in <10ms
@@ -689,21 +655,21 @@ impl NetworkDetector {
     ///
     /// // Valid IPv6 - passes pre-filter
     /// let check = NetworkDetector::is_plausible_ipv6("2001:db8::1");
-    /// assert!(check.is_plausible);
+    /// assert!(check);
     ///
     /// // Invalid - too short
     /// let check = NetworkDetector::is_plausible_ipv6(":");
-    /// assert!(!check.is_plausible);
+    /// assert!(!check);
     /// ```
-    pub fn is_plausible_ipv6(input: &str) -> PlausibilityCheck {
+    pub fn is_plausible_ipv6(input: &str) -> bool {
         let len = input.len();
 
         if len < 2 {
-            return PlausibilityCheck::rejected("too_short");
+            return false;
         }
 
         if len > 100 {
-            return PlausibilityCheck::rejected("too_long");
+            return false;
         }
 
         let mut has_colon = false;
@@ -714,19 +680,19 @@ impl NetworkDetector {
                 ':' => has_colon = true,
                 '.' => {}
                 '0'..='9' | 'a'..='f' | 'A'..='F' => has_hex = true,
-                _ => return PlausibilityCheck::rejected("invalid_characters"),
+                _ => return false,
             }
         }
 
         if !has_colon {
-            return PlausibilityCheck::rejected("no_colons");
+            return false;
         }
 
         if !has_hex && input != "::" {
-            return PlausibilityCheck::rejected("no_hex_digits");
+            return false;
         }
 
-        PlausibilityCheck::plausible()
+        true
     }
 
     #[inline]
@@ -798,28 +764,28 @@ mod tests {
 
     #[test]
     fn plausible_ipv6_empty_rejected() {
-        assert!(!NetworkDetector::is_plausible_ipv6("").is_plausible);
+        assert!(!NetworkDetector::is_plausible_ipv6(""));
     }
 
     #[test]
     fn plausible_ipv6_too_short() {
-        assert!(!NetworkDetector::is_plausible_ipv6("x").is_plausible);
+        assert!(!NetworkDetector::is_plausible_ipv6("x"));
     }
 
     #[test]
     fn plausible_ipv6_too_long() {
         let long = "a".repeat(101);
-        assert!(!NetworkDetector::is_plausible_ipv6(&long).is_plausible);
+        assert!(!NetworkDetector::is_plausible_ipv6(&long));
     }
 
     #[test]
     fn plausible_ipv6_no_colons() {
-        assert!(!NetworkDetector::is_plausible_ipv6("abcdef").is_plausible);
+        assert!(!NetworkDetector::is_plausible_ipv6("abcdef"));
     }
 
     #[test]
     fn plausible_ipv6_valid() {
-        assert!(NetworkDetector::is_plausible_ipv6("2001:db8::1").is_plausible);
+        assert!(NetworkDetector::is_plausible_ipv6("2001:db8::1"));
     }
 
     // ---- has_network_indicators: per-condition tests ----
@@ -1150,13 +1116,13 @@ mod tests {
     #[test]
     fn plausible_ipv6_len_exactly_2() {
         // len == 2 is the minimum accepted length; "::" is 2 chars and valid
-        assert!(NetworkDetector::is_plausible_ipv6("::").is_plausible);
+        assert!(NetworkDetector::is_plausible_ipv6("::"));
     }
 
     #[test]
     fn plausible_ipv6_len_exactly_1() {
         // len == 1 is below the boundary, must be rejected
-        assert!(!NetworkDetector::is_plausible_ipv6(":").is_plausible);
+        assert!(!NetworkDetector::is_plausible_ipv6(":"));
     }
 
     #[test]
@@ -1170,7 +1136,7 @@ mod tests {
         }
         assert_eq!(s.len(), 100);
         assert!(
-            NetworkDetector::is_plausible_ipv6(&s).is_plausible,
+            NetworkDetector::is_plausible_ipv6(&s),
             "len=100 should be accepted"
         );
     }
@@ -1185,7 +1151,7 @@ mod tests {
         s.push('a');
         assert_eq!(s.len(), 101);
         assert!(
-            !NetworkDetector::is_plausible_ipv6(&s).is_plausible,
+            !NetworkDetector::is_plausible_ipv6(&s),
             "len=101 should be rejected"
         );
     }
@@ -1196,7 +1162,7 @@ mod tests {
     fn plausible_ipv6_ipv4_mapped() {
         // IPv4-mapped IPv6 address contains dots — the '.' match arm must accept them
         assert!(
-            NetworkDetector::is_plausible_ipv6("::ffff:192.168.1.1").is_plausible,
+            NetworkDetector::is_plausible_ipv6("::ffff:192.168.1.1"),
             "IPv4-mapped IPv6 should be plausible"
         );
     }
@@ -1205,7 +1171,7 @@ mod tests {
     fn plausible_ipv6_dots_only_with_colon() {
         // Dots + colons but no hex digits and not "::" — should be rejected (no hex)
         assert!(
-            !NetworkDetector::is_plausible_ipv6(":..:..").is_plausible,
+            !NetworkDetector::is_plausible_ipv6(":..:.."),
             "dots and colons without hex digits should be rejected"
         );
     }
@@ -1216,7 +1182,7 @@ mod tests {
     fn plausible_ipv6_double_colon_special_case() {
         // "::" has no hex digits but IS the special case — must be accepted
         assert!(
-            NetworkDetector::is_plausible_ipv6("::").is_plausible,
+            NetworkDetector::is_plausible_ipv6("::"),
             ":: should be accepted even without hex digits"
         );
     }
@@ -1225,7 +1191,7 @@ mod tests {
     fn plausible_ipv6_colons_only_not_double_colon() {
         // ":::" has colons and no hex but is NOT "::" — should be rejected
         assert!(
-            !NetworkDetector::is_plausible_ipv6(":::").is_plausible,
+            !NetworkDetector::is_plausible_ipv6(":::"),
             "::: should be rejected: has no hex and is not ::"
         );
     }
@@ -1233,7 +1199,7 @@ mod tests {
     #[test]
     fn plausible_ipv6_invalid_char() {
         assert!(
-            !NetworkDetector::is_plausible_ipv6("20g1:db8::1").is_plausible,
+            !NetworkDetector::is_plausible_ipv6("20g1:db8::1"),
             "non-hex letter should be rejected"
         );
     }

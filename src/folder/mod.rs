@@ -560,6 +560,14 @@ pub struct FoldingStats {
 }
 
 impl FoldingStats {
+    fn compression_ratio(&self) -> f64 {
+        if self.total_lines == 0 {
+            0.0
+        } else {
+            self.lines_saved as f64 / self.total_lines as f64 * 100.0
+        }
+    }
+
     /// Classify one raw input line's format and severity for the briefing,
     /// from its already-detected tokens (falling back to a bounded raw-byte
     /// scan for level only when no token answers it — see
@@ -1593,13 +1601,8 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
 }
 
 fn seed_for_group(normalized: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0100_0000_01b3;
-    let mut h: u64 = FNV_OFFSET;
-    for b in normalized.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(FNV_PRIME);
-    }
+    let mut h = FNV_OFFSET;
+    fnv1a_fold(&mut h, normalized.as_bytes());
     h
 }
 
@@ -2812,40 +2815,19 @@ impl PatternFolder {
         let total_patterns = sorted.len();
         const DEFAULT_SUMMARY_CAP: usize = 30;
 
-        // Apply limit: explicit --top N, --fit budget, or default cap of 30
-        let (display, was_capped, fit_truncated): (Vec<_>, bool, usize) = if let Some(0) = top_n {
-            // --top 0 means show all (no limit, --fit still applies)
-            if let Some(budget) = fit_budget {
-                if sorted.len() > budget {
-                    let show = budget.saturating_sub(1);
-                    let remaining = sorted.len() - show;
-                    (sorted.into_iter().take(show).collect(), false, remaining)
-                } else {
-                    (sorted, false, 0)
-                }
-            } else {
-                (sorted, false, 0)
-            }
-        } else if let Some(n) = top_n {
-            (sorted.into_iter().take(n).collect(), false, 0)
-        } else if let Some(budget) = fit_budget {
-            // --fit replaces the default cap with terminal height
-            if sorted.len() > budget {
+        // Explicit positive --top takes precedence over --fit. Otherwise
+        // fit replaces the default cap; --top 0 disables only that cap.
+        let (limit, was_capped, fit_truncated) = match (top_n, fit_budget) {
+            (Some(n), _) if n > 0 => (n, false, 0),
+            (_, Some(budget)) if total_patterns > budget => {
                 let show = budget.saturating_sub(1);
-                let remaining = sorted.len() - show;
-                (sorted.into_iter().take(show).collect(), false, remaining)
-            } else {
-                (sorted, false, 0)
+                (show, false, total_patterns - show)
             }
-        } else if total_patterns > DEFAULT_SUMMARY_CAP {
-            (
-                sorted.into_iter().take(DEFAULT_SUMMARY_CAP).collect(),
-                true,
-                0,
-            )
-        } else {
-            (sorted, false, 0)
+            (Some(0), _) | (_, Some(_)) => (total_patterns, false, 0),
+            _ => (DEFAULT_SUMMARY_CAP, total_patterns > DEFAULT_SUMMARY_CAP, 0),
         };
+        sorted.truncate(limit);
+        let display = sorted;
 
         Ok((display, total_patterns, was_capped, fit_truncated))
     }

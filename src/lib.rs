@@ -9,6 +9,7 @@ pub mod distill;
 pub mod folder;
 pub mod ingest;
 pub mod normalize;
+pub mod output;
 pub mod patterns;
 pub mod sanitize;
 

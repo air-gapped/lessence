@@ -31,8 +31,8 @@ impl HttpStatusDetector {
         let mut tokens = Vec::new();
 
         // Apply HTTP status detection in order of specificity
-        Self::apply_access_log_pattern(&mut result, &mut tokens);
-        Self::apply_http_status_pattern(&mut result, &mut tokens);
+        Self::apply_status_pattern(&mut result, &mut tokens, &ACCESS_LOG_STATUS_REGEX);
+        Self::apply_status_pattern(&mut result, &mut tokens, &HTTP_STATUS_REGEX);
         Self::apply_proxy_pattern(&mut result, &mut tokens);
 
         (result, tokens)
@@ -51,31 +51,8 @@ impl HttpStatusDetector {
             || text.contains("\" 5")
     }
 
-    #[cfg_attr(test, mutants::skip)] // HTTP_STATUS_REGEX (line 9) matches the same inputs — redundant coverage
-    fn apply_access_log_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = ACCESS_LOG_STATUS_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let status_code = caps.get(1).unwrap().as_str();
-                if let Ok(status) = status_code.parse::<u16>() {
-                    let class = Self::classify_status_code(status);
-                    tokens.push(Token::HttpStatusClass(class.clone()));
-                    format!(
-                        "{}<HTTP_STATUS_{}>{}",
-                        &caps.get(0).unwrap().as_str()
-                            [..caps.get(1).unwrap().start() - caps.get(0).unwrap().start()],
-                        class.to_uppercase(),
-                        &caps.get(0).unwrap().as_str()
-                            [caps.get(1).unwrap().end() - caps.get(0).unwrap().start()..]
-                    )
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
-    }
-
-    fn apply_http_status_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = HTTP_STATUS_REGEX
+    fn apply_status_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
+        *text = regex
             .replace_all(text, |caps: &regex::Captures| {
                 let status_code = caps.get(1).unwrap().as_str();
                 if let Ok(status) = status_code.parse::<u16>() {

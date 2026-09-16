@@ -19,6 +19,7 @@ use lessence::cli::{self, Cli};
 use lessence::config::{self, Config};
 use lessence::folder::PatternFolder;
 use lessence::ingest::{self, Event, Ingestor};
+use lessence::output::write_output;
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -303,16 +304,6 @@ fn main() -> Result<()> {
     }
 
     Ok(())
-}
-
-/// A reader closing its pipe is a successful early stop; other output
-/// failures must reach the caller. Shared by incremental, top-N and final output.
-fn write_output(writer: &mut impl Write, args: std::fmt::Arguments<'_>) -> Result<()> {
-    match writer.write_fmt(args) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
-        Err(e) => Err(e.into()),
-    }
 }
 
 /// JSON reports always end with a summary record; text reports choose

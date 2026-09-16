@@ -361,13 +361,7 @@ impl PatternFolder {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
         let mut write_line = |s: String| -> Result<()> {
-            match writeln!(handle, "{s}") {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    std::process::exit(0);
-                }
-                Err(e) => Err(e.into()),
-            }
+            crate::output::write_output(&mut handle, format_args!("{s}\n"))
         };
         for (count, representative) in &display {
             write_line(Self::format_summary_line(*count, representative, max_width))?;
@@ -400,23 +394,9 @@ impl PatternFolder {
     /// Writes to `writer` (stdout in the main binary path) and ends with
     /// a trailing newline so the JSONL stream terminates cleanly.
     pub fn print_summary_json(&self, writer: &mut impl io::Write, elapsed: Duration) -> Result<()> {
-        let compression_ratio = if self.stats.total_lines > 0 {
-            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
-        } else {
-            0.0
-        };
         let record = SummaryRecord {
             record_type: "summary",
-            stats: StatsJson {
-                input_lines: self.stats.total_lines,
-                output_lines: self.stats.output_lines,
-                compression_ratio,
-                collapsed_groups: self.stats.collapsed_groups,
-                lines_saved: self.stats.lines_saved,
-                patterns_detected: self.stats.patterns_detected,
-                elapsed_ms: elapsed.as_millis() as u64,
-                pattern_hits: self.stats.pattern_hits(),
-            },
+            stats: self.build_stats_json(elapsed),
             completeness: {
                 let group_total = self.json_groups_total.unwrap_or(self.json_groups_emitted);
                 let groups_complete = self.json_omitted_by_top == 0
@@ -584,11 +564,7 @@ impl PatternFolder {
 
     /// Build the JSON stats structure (testable, no I/O).
     pub(super) fn build_stats_json(&self, elapsed: Duration) -> StatsJson {
-        let compression_ratio = if self.stats.total_lines > 0 {
-            (self.stats.lines_saved as f64 / self.stats.total_lines as f64) * 100.0
-        } else {
-            0.0
-        };
+        let compression_ratio = self.stats.compression_ratio();
 
         StatsJson {
             input_lines: self.stats.total_lines,
@@ -627,20 +603,10 @@ impl PatternFolder {
         let compressed_lines = self.stats.output_lines;
         // Same definition as every other mode: lines saved by folding
         // over total input lines.
-        let compression_ratio = if original_lines > 0 {
-            (self.stats.lines_saved as f64 / original_lines as f64) * 100.0
-        } else {
-            0.0
-        };
+        let compression_ratio = self.stats.compression_ratio();
 
         let mut write_line = |s: String| -> Result<()> {
-            match writeln!(writer, "{s}") {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
-                    std::process::exit(0);
-                }
-                Err(e) => Err(e.into()),
-            }
+            crate::output::write_output(writer, format_args!("{s}\n"))
         };
 
         write_line("# Log Analysis".to_string())?;
@@ -702,7 +668,7 @@ impl PatternFolder {
         first_tokens: &[Token],
         last_tokens: &[Token],
     ) -> Vec<String> {
-        let mut types = std::collections::HashSet::new();
+        let mut types = std::collections::BTreeSet::new();
 
         // Kinds with `variation_compares_values == false` vary by
         // presence, not by value, so they compare under a fixed value.
@@ -717,10 +683,10 @@ impl PatternFolder {
         };
 
         // Create maps of token types to values for first and last
-        let mut first_values: std::collections::HashMap<&str, Vec<String>> =
-            std::collections::HashMap::new();
-        let mut last_values: std::collections::HashMap<&str, Vec<String>> =
-            std::collections::HashMap::new();
+        let mut first_values: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut last_values: std::collections::BTreeMap<&str, Vec<String>> =
+            std::collections::BTreeMap::new();
 
         for token in first_tokens {
             let (token_type, value) = get_token_info(token);
@@ -733,7 +699,7 @@ impl PatternFolder {
         }
 
         // Find token types that actually vary between first and last
-        let all_types: std::collections::HashSet<&str> = first_values
+        let all_types: std::collections::BTreeSet<&str> = first_values
             .keys()
             .chain(last_values.keys())
             .copied()
@@ -754,9 +720,7 @@ impl PatternFolder {
             }
         }
 
-        let mut result: Vec<String> = types.into_iter().collect();
-        result.sort();
-        result
+        types.into_iter().collect()
     }
 
     /// Apply PII masking to a line when the run asks for it. Outside

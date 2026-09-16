@@ -215,12 +215,9 @@ impl PathDetector {
         let has_extension =
             path.contains('.') && path.split('/').next_back().unwrap_or("").contains('.');
         let has_multiple_segments = path.matches('/').count() > 1;
-        let has_common_dirs = path.contains("/var/")
-            || path.contains("/usr/")
-            || path.contains("/etc/")
-            || path.contains("/home/")
-            || path.contains("/opt/")
-            || path.contains("/tmp/");
+        let has_common_dirs = ["/var/", "/usr/", "/etc/", "/home/", "/opt/", "/tmp/"]
+            .iter()
+            .any(|dir| path.contains(dir));
 
         has_extension || has_multiple_segments || has_common_dirs
     }

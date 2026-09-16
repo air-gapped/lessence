@@ -283,13 +283,10 @@ impl KeyValueDetector {
         }
 
         // Boolean values
-        if lower_value == "true"
-            || lower_value == "false"
-            || lower_value == "enabled"
-            || lower_value == "disabled"
-            || lower_value == "on"
-            || lower_value == "off"
-        {
+        if matches!(
+            lower_value.as_str(),
+            "true" | "false" | "enabled" | "disabled" | "on" | "off"
+        ) {
             return "boolean".to_string();
         }
 
@@ -354,14 +351,7 @@ impl KeyValueDetector {
     }
 
     fn is_ip_address(value: &str) -> bool {
-        // Simple IPv4 pattern
-        let parts: Vec<&str> = value.split('.').collect();
-        if parts.len() == 4 {
-            return parts.iter().all(|&part| part.parse::<u8>().is_ok());
-        }
-
-        // Simple IPv6 check
-        value.contains(':') && value.chars().all(|c| c.is_ascii_hexdigit() || c == ':')
+        value.parse::<std::net::IpAddr>().is_ok()
     }
 }
 
@@ -961,7 +951,10 @@ mod tests {
 
     #[test]
     fn ip_addr_invalid_ipv4() {
-        assert!(!KeyValueDetector::is_ip_address("999.999.999.999"));
+        for value in ["999.999.999.999", "1.2.3.4.", "01.2.3.4", "::::", "ab:cd"] {
+            assert!(!KeyValueDetector::is_ip_address(value), "{value}");
+        }
+        assert!(KeyValueDetector::is_ip_address("::ffff:192.0.2.1"));
     }
 
     #[test]
