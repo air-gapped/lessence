@@ -71,7 +71,11 @@ fi
 
 echo "Building working tree..." >&2
 cargo build --release >/dev/null
-new_bin="target/release/lessence"
+# The new-case harness runs `cargo test` below, which can rebuild the binary
+# with dev-dependency feature unification. Measure the release build whose
+# hash we record, not whichever executable that harness leaves in target/.
+new_bin="$GATE_DIR/working-tree-lessence"
+cp target/release/lessence "$new_bin"
 
 base_sha="$(sha256sum "$base_bin" | awk '{print $1}')"
 new_sha="$(sha256sum "$new_bin" | awk '{print $1}')"

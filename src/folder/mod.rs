@@ -129,14 +129,20 @@ struct PatternGroup {
 /// every member the group had at eviction time (`RollupComputer::seed`,
 /// identical arithmetic to a normal flush), then extended one rejoining
 /// member at a time (`RollupComputer::accumulate_tokens` /
-/// `accumulate_varies`) — never rescanned, so memory stays bounded by the
-/// per-type `distinct_cap` regardless of how many more members arrive.
+/// `accumulate_retained_varies`). Unequal-length normalized forms are
+/// counted under `distinct_cap` and aligned once against the final template.
 /// Finalised into a `GroupRollup` exactly once, at actual emission.
 #[derive(Debug, Default)]
 struct RetainedState {
     per_type: BTreeMap<&'static str, (Accumulator, bool)>,
     varies: HashMap<String, usize>,
     varies_capped: bool,
+    /// Equal-length members align positionally, even as literals widen.
+    positional_members: usize,
+    /// Unequal-length members need LCS alignment against the final template.
+    /// Count their normalized forms, bounded by the same distinct cap.
+    realign: BTreeMap<String, usize>,
+    realign_capped: bool,
 }
 
 /// First whitespace token at which two normalized lines disagree. Tokenizes
@@ -239,31 +245,31 @@ impl PatternGroup {
     }
 
     /// Rejoin a member into a group that has already been evicted from the
-    /// live buffer (lessence-940). Only ever called with a line whose hash
-    /// equals this group's founding representative — the sole way a line
-    /// finds a retained group again is the exact-hash fast path — so the
-    /// member's normalized text is always identical to `first().normalized`
-    /// and the template can never gain a new varying slot here (that only
-    /// happens through the similarity scan, which never sees retained
-    /// groups). `lines` is kept at its truncated [first, last] shape; the
-    /// rollup accumulator is extended by one member, never rescanned.
+    /// live buffer. A similar member can introduce a new varying slot:
+    /// its former literal held for every earlier positional member, so seed
+    /// that value with their count before adding the new member (lessence-3ck).
+    /// `lines` stays at its truncated [first, last] shape.
     fn retained_rejoin(
         &mut self,
         line: LogLine,
         location: LineLocation,
         rollup_computer: &RollupComputer,
     ) {
+        if line.hash != self.first().hash {
+            let edits = varying_spans(&self.template, &line.normalized);
+            if let Some(state) = &mut self.retained {
+                rollup_computer.accumulate_new_varies(&self.template, &edits, state);
+            }
+            for (at, len) in edits.into_iter().rev() {
+                self.template.replace_range(at..at + len, VARIES_MARK);
+            }
+        }
         self.count += 1;
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
         if let Some(state) = &mut self.retained {
             rollup_computer.accumulate_tokens(std::slice::from_ref(&line), &mut state.per_type);
-            rollup_computer.accumulate_varies(
-                std::slice::from_ref(&line),
-                &self.template,
-                &mut state.varies,
-                &mut state.varies_capped,
-            );
+            rollup_computer.accumulate_retained_varies(&line, &self.template, state);
         }
         if self.lines.len() < 2 {
             self.lines.push(line);
@@ -314,12 +320,9 @@ impl PatternGroup {
             rollup_computer.merge_retained(state, from);
         } else {
             rollup_computer.accumulate_tokens(&other.lines, &mut state.per_type);
-            rollup_computer.accumulate_varies(
-                &other.lines,
-                &self.template,
-                &mut state.varies,
-                &mut state.varies_capped,
-            );
+            for line in &other.lines {
+                rollup_computer.accumulate_retained_varies(line, &self.template, state);
+            }
         }
         let first = self.lines[0].clone();
         let last = if other_is_later {
@@ -468,6 +471,7 @@ pub struct PatternFolder {
     /// eviction would discard) or in the ranked modes (they never evict).
     /// Drained and emitted once each, at `finish()`.
     retained: ahash::AHashMap<u64, PatternGroup>,
+    retained_index: retained_index::RetainedIndex,
     /// How many times a group could not be retained because
     /// `RETAINED_TEMPLATE_CAP` was already full when it evicted — it was
     /// emitted immediately instead, exactly as before this feature, and so
@@ -1682,13 +1686,26 @@ impl RollupComputer {
     /// `∅`, so an absence is visible.
     ///
     /// Shared the same way `accumulate_tokens` is: a full-group scan seeds
-    /// `varies`, and a rejoining member (always identical in normalized
-    /// text to the group's founder — the only way a line finds a retained
-    /// group again — so `template`'s slot set cannot change here) extends
-    /// it one line at a time.
+    /// `varies`; retained positional members extend it one line at a time.
+    /// Retained unequal-length forms are aligned against the final template.
     fn accumulate_varies(
         &self,
         lines: &[LogLine],
+        template: &str,
+        varies: &mut HashMap<String, usize>,
+        varies_capped: &mut bool,
+    ) {
+        self.accumulate_varies_counted(
+            lines.iter().map(|line| (line.normalized.as_str(), 1)),
+            template,
+            varies,
+            varies_capped,
+        );
+    }
+
+    fn accumulate_varies_counted<'a>(
+        &self,
+        lines: impl Iterator<Item = (&'a str, usize)>,
         template: &str,
         varies: &mut HashMap<String, usize>,
         varies_capped: &mut bool,
@@ -1708,10 +1725,10 @@ impl RollupComputer {
         if slots.is_empty() {
             return;
         }
-        for line in lines {
-            let member: Vec<&str> = unit_spans(&line.normalized)
+        for (normalized, count) in lines {
+            let member: Vec<&str> = unit_spans(normalized)
                 .into_iter()
-                .map(|(at, len)| &line.normalized[at..at + len])
+                .map(|(at, len)| &normalized[at..at + len])
                 .collect();
             let Some(aligned) = align_words(&tmpl_words, &member) else {
                 continue;
@@ -1735,12 +1752,84 @@ impl RollupComputer {
                     None => "∅",
                 };
                 if let Some(n) = varies.get_mut(value) {
-                    *n += 1;
+                    *n += count;
                 } else if varies.len() < self.distinct_cap {
-                    varies.insert(value.to_string(), 1);
+                    varies.insert(value.to_string(), count);
                 } else {
                     *varies_capped = true;
                 }
+            }
+        }
+    }
+
+    fn accumulate_retained_varies(
+        &self,
+        line: &LogLine,
+        template: &str,
+        state: &mut RetainedState,
+    ) {
+        if unit_spans(&line.normalized).len() == unit_spans(template).len() {
+            state.positional_members += 1;
+            self.accumulate_varies(
+                std::slice::from_ref(line),
+                template,
+                &mut state.varies,
+                &mut state.varies_capped,
+            );
+        } else {
+            self.retain_realign_form(state, &line.normalized, 1);
+        }
+    }
+
+    fn retain_realign_form(&self, state: &mut RetainedState, form: &str, count: usize) {
+        if let Some(n) = state.realign.get_mut(form) {
+            *n += count;
+        } else if state.realign.len() < self.distinct_cap {
+            state.realign.insert(form.to_string(), count);
+        } else {
+            state.realign_capped = true;
+        }
+    }
+
+    /// A newly varying slot was a literal shared by all positional members.
+    /// Account for those discarded members without inventing a sample or
+    /// retaining their raw lines. Existing varying slots are never edited
+    /// by `varying_spans`, so their accumulated counts remain untouched.
+    fn accumulate_new_varies(
+        &self,
+        template: &str,
+        edits: &[(usize, usize)],
+        state: &mut RetainedState,
+    ) {
+        if edits.is_empty() {
+            return;
+        }
+        let units = unit_spans(template);
+        for &(at, len) in edits {
+            let &(start, width) = units
+                .iter()
+                .find(|&&(start, width)| start <= at && at + len <= start + width)
+                .expect("a varying edit is inside one template unit");
+            let unit = &template[start..start + width];
+            let masked;
+            let value = if let Some(z) = &self.sanitizer {
+                masked = z.mask_text(unit);
+                masked.as_str()
+            } else {
+                unit
+            };
+            let value = value
+                .strip_prefix(&template[start..at])
+                .and_then(|v| v.strip_suffix(&template[at + len..start + width]))
+                .unwrap_or(value);
+            if let Some(n) = state.varies.get_mut(value) {
+                *n += state.positional_members;
+            } else if state.varies.len() < self.distinct_cap {
+                state
+                    .varies
+                    .insert(value.to_string(), state.positional_members);
+            } else {
+                state.varies_capped = true;
             }
         }
     }
@@ -1778,26 +1867,37 @@ impl RollupComputer {
     fn seed(&self, group: &PatternGroup) -> RetainedState {
         let mut state = RetainedState::default();
         self.accumulate_tokens(&group.lines, &mut state.per_type);
-        self.accumulate_varies(
-            &group.lines,
-            group.template(),
-            &mut state.varies,
-            &mut state.varies_capped,
-        );
+        for line in &group.lines {
+            self.accumulate_retained_varies(line, group.template(), &mut state);
+        }
         state
     }
 
     /// Finalise a retained group's accumulator into a `GroupRollup`, at
     /// actual emission — the one point a retained group is rendered.
-    /// `template` is the group's (fixed, post-retention) template;
+    /// `template` is the group's final template;
     /// `seed_key` reproduces the same per-group sample-draw seed `compute`
     /// uses (the founding line's normalized text).
     fn finalize_retained(
         &self,
-        state: RetainedState,
+        mut state: RetainedState,
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
+        if state.realign_capped {
+            // Unknown alignments can affect any VARIES value's count. Do
+            // not label partial counts as exact: expose an empty, capped
+            // variation entry. Token rollups and the group count survive.
+            state.varies.clear();
+            state.varies_capped = true;
+        } else {
+            self.accumulate_varies_counted(
+                state.realign.iter().map(|(text, &n)| (text.as_str(), n)),
+                template,
+                &mut state.varies,
+                &mut state.varies_capped,
+            );
+        }
         self.finalize(
             state.per_type,
             state.varies,
@@ -1811,6 +1911,11 @@ impl RollupComputer {
     /// union of each token type's distinct set and the sum of each varying
     /// word's count, under the same `distinct_cap` a single group obeys.
     fn merge_retained(&self, into: &mut RetainedState, from: RetainedState) {
+        into.positional_members += from.positional_members;
+        into.realign_capped |= from.realign_capped;
+        for (form, n) in from.realign {
+            self.retain_realign_form(into, &form, n);
+        }
         for (name, (acc, capped)) in from.per_type {
             let entry = into
                 .per_type
@@ -2006,6 +2111,7 @@ impl PatternFolder {
             distill_templates: Vec::new(),
             distill_rates: crate::distill::rates::Rates::new(),
             retained: ahash::AHashMap::new(),
+            retained_index: retained_index::RetainedIndex::default(),
             json_retention_cap_hits: 0,
         }
     }
@@ -2189,12 +2295,48 @@ impl PatternFolder {
             // event that happens to read alike (`Synchronization … succeeded`
             // beside `Connection … lost.`). One differing word is a name or
             // a value and folds; two are a different sentence.
-            self.buffer.iter().position(|group| {
-                let first = group.first();
-                self.normalizer.are_similar(&normalized_line, first)
-                    && plain_word_diffs(&normalized_line.normalized, &first.normalized)
-                        <= MAX_PLAIN_WORD_DIFFS
-            })
+            let retained_match = if self.retained.is_empty() {
+                None
+            } else {
+                self.retained_index
+                    .candidates(&normalized_line, self.config.threshold)
+                    .into_iter()
+                    .filter_map(|key| {
+                        let group = self.retained.get(&key)?;
+                        (self.normalizer.are_similar(&normalized_line, group.first())
+                            && plain_word_diffs(
+                                &normalized_line.normalized,
+                                &group.first().normalized,
+                            ) <= MAX_PLAIN_WORD_DIFFS)
+                            .then_some((group.position, key))
+                    })
+                    .min_by_key(|&(position, _)| position)
+            };
+            let before = retained_match.map_or(usize::MAX, |(position, _)| position);
+            // The live buffer remains in founder order after removals.
+            // A matching retained founder rules out every newer live one.
+            let live_match = self
+                .buffer
+                .iter()
+                .take_while(|g| g.position < before)
+                .position(|group| {
+                    let first = group.first();
+                    self.normalizer.are_similar(&normalized_line, first)
+                        && plain_word_diffs(&normalized_line.normalized, &first.normalized)
+                            <= MAX_PLAIN_WORD_DIFFS
+                });
+            if live_match.is_none()
+                && let Some((_, key)) = retained_match
+            {
+                let loc = location
+                    .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
+                self.retained
+                    .get_mut(&key)
+                    .expect("indexed retained group")
+                    .retained_rejoin(normalized_line, loc, &self.rollup_computer);
+                return;
+            }
+            live_match
         };
 
         // --distill needs every member's input line number, since the
@@ -2410,7 +2552,7 @@ impl PatternFolder {
     /// `self.retained`, keyed by its founding hash, with `lines` truncated
     /// to `[first, last]` and a seeded rollup accumulator in place of the
     /// member list the flush threshold exists to bound; the caller emits
-    /// nothing now; a later exact-hash match rejoins it directly
+    /// nothing now; a later exact or indexed similarity match rejoins it
     /// (`cluster_line_at`) and it is drained and formatted once, at
     /// `finish()`. Declines — handing `group` straight back — for
     /// --distill (needs every member's raw line to choose distilled
@@ -2435,6 +2577,9 @@ impl PatternFolder {
             vec![first, group.last().clone()]
         };
         group.retained = Some(state);
+        if !self.retained.contains_key(&key) {
+            self.retained_index.insert(group.first());
+        }
         self.retained.insert(key, group);
         Retention::Kept
     }
@@ -2539,6 +2684,7 @@ impl PatternFolder {
         self.group_index.clear();
         let mut groups: Vec<PatternGroup> = std::mem::take(&mut self.buffer);
         groups.extend(std::mem::take(&mut self.retained).into_values());
+        self.retained_index = retained_index::RetainedIndex::default();
         groups.sort_by_key(|group| group.position);
         let groups = self.merge_converged(groups);
 
@@ -2805,6 +2951,7 @@ impl PatternFolder {
 }
 
 mod render;
+mod retained_index;
 
 #[cfg(test)]
 mod tests;

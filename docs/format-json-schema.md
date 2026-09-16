@@ -114,7 +114,7 @@ Each value records both the bounded data and how to interpret its counts:
 | `distinct_count` | integer | Number of distinct values seen for this token type across the group's lines. When `capped: true`, this is a lower bound (`≥ ROLLUP_DISTINCT_CAP`). |
 | `distinct_count_kind` | `"exact"` \| `"lower_bound"` | Explicit interpretation of `distinct_count`. |
 | `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically (`VARIES`: by count, most frequent first, rarest last). Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>`, email values embedded in other types' samples are masked as well, and credential-class values in samples are masked (`<SECRET>`/`<JWT>`/`<KEY>`). |
-| `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation and further distinct values were dropped. `false` means `distinct_count` is exact. |
+| `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation. `distinct_count` is then a lower bound. This also covers retained unequal-length shapes; see below. `false` means `distinct_count` is exact. |
 | `sample_counts` | array of integers | `VARIES` only: how many of the group's lines carried each entry of `samples`, same order. Absent on every other type. |
 | `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
 | `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |
@@ -311,8 +311,8 @@ lessence --format json pipeline.log \
 
 ### "Which patterns hit the cap?"
 
-A capped entry means "≥ ROLLUP_DISTINCT_CAP and possibly much more."
-These are the high-cardinality patterns worth investigating:
+A capped entry means at least `distinct_count` distinct values; the full
+variation was not retained. These patterns are worth investigating:
 
 ```bash
 lessence --format json prod.log \
@@ -325,6 +325,14 @@ lessence --format json prod.log \
 
 ## Known limitations
 
+- **Retained unequal-length shapes have a cap.** Similar lines rejoin a
+  retained group after eviction using the same founder matching rule as
+  live groups. Most value counts accumulate directly. Members whose word
+  count differs need alignment against the final template; up to 64
+  distinct normalized forms are kept with occurrence counts. Beyond that,
+  `VARIES` reports `capped: true`, a zero lower bound, and empty `samples`
+  and `sample_counts`, because partial counts would be misleading. The
+  group's occurrence count and other token rollups remain available.
 - **`time_range` is not chronologically ordered.** It's based on
   first-line/last-line input positions, not parsed timestamp
   comparison. For most logs this matches chronology; for merged

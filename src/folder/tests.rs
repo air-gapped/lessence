@@ -576,6 +576,144 @@ fn eviction_word(i: usize) -> String {
 }
 
 #[test]
+fn eviction_preserves_founder_order_and_nontransitive_membership() {
+    let a = "worker process alpha started successfully at 10.0.0.1";
+    let b = "worker process beta started successfully at 10.0.0.2";
+    let c = "worker process beta stopped successfully at 10.0.0.3";
+    let run = |explain| {
+        let mut folder = PatternFolder::new(Config {
+            explain,
+            thread_count: Some(1),
+            output_format: "json".into(),
+            ..Config::default()
+        });
+        for _ in 0..3 {
+            folder.process_line(a).unwrap();
+        }
+        for i in 0..1_005 {
+            folder
+                .process_line(&format!("filler event {}", eviction_word(i)))
+                .unwrap();
+        }
+        if !explain {
+            assert!(!folder.retained.is_empty(), "exercise an actual eviction");
+        }
+        // B matches A and C, but A and C differ in two plain words. B must
+        // rejoin A even after eviction; it cannot found a group with C.
+        for line in [c, c, c, b, b, b] {
+            folder.process_line(line).unwrap();
+        }
+        folder
+            .finish()
+            .unwrap()
+            .iter()
+            .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
+            .filter(|v| v["normalized"].as_str().unwrap().starts_with("worker"))
+            .map(|v| {
+                (
+                    v["normalized"].clone(),
+                    v["count"].clone(),
+                    v["variation"].clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let expected = run(true);
+    assert_eq!(expected.len(), 2);
+    assert_eq!(expected[0].1, 6);
+    assert_eq!(expected[1].1, 3);
+    assert_eq!(run(false), expected);
+}
+
+#[test]
+fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
+    // Include a slot already varying before eviction, new slots after it,
+    // preserved key delimiters, quoted units, missing words, and masking.
+    let sequences: &[&[&str]] = &[
+        &[
+            "worker alpha status=ready",
+            "worker beta status=ready",
+            "worker alpha status=waiting",
+        ],
+        &[
+            "worker alpha status=(ready)",
+            "worker beta status=(ready)",
+            "worker alpha status=(waiting)",
+        ],
+        &[
+            "worker name=\"alpha one\" done",
+            "worker name=\"beta two\" done",
+            "worker name=\"alpha one\" failed",
+        ],
+        &[
+            "worker alpha ready now",
+            "worker beta ready now",
+            "worker alpha now",
+        ],
+        &[
+            "worker alpha ready now",
+            "worker alpha now",
+            "worker beta ready now",
+        ],
+        &[
+            "worker password=abcdef ready",
+            "worker password=abcdef ready",
+            "worker password=ghijkl ready",
+        ],
+    ];
+    for &texts in sequences {
+        for sanitize in [false, true] {
+            let computer =
+                RollupComputer::with_defaults().sanitized(sanitize.then(Sanitizer::legacy));
+            let make = |s: &str| LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s));
+            let mut full = PatternGroup::new(make(texts[0]), 0);
+            let mut retained = PatternGroup::new(make(texts[0]), 0);
+            for (i, text) in texts.iter().enumerate().skip(1).take(1) {
+                full.add_line(make(text), i);
+                retained.add_line(make(text), i);
+            }
+            retained.retained = Some(computer.seed(&retained));
+            for (i, text) in texts.iter().enumerate().skip(2) {
+                full.add_line(make(text), i);
+                retained.retained_rejoin(
+                    make(text),
+                    LineLocation::new(SourceId::STDIN, i),
+                    &computer,
+                );
+            }
+            assert_eq!(retained.template, full.template);
+            let actual = computer.finalize_retained(
+                retained.retained.take().unwrap(),
+                &retained.template,
+                &retained.first().normalized,
+            );
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(computer.compute(&full)).unwrap(),
+                "sanitize={sanitize}, texts={texts:?}",
+            );
+        }
+    }
+}
+
+#[test]
+fn retained_alignment_cap_reports_unknown_counts_instead_of_partial_counts() {
+    let computer = RollupComputer::new(2, 2);
+    let mut group = PatternGroup::new(make_line("worker alpha ready now", vec![]), 0);
+    let mut state = computer.seed(&group);
+    for text in ["worker alpha now", "worker ready now", "worker now"] {
+        computer.accumulate_retained_varies(&make_line(text, vec![]), &group.template, &mut state);
+    }
+    assert_eq!(state.realign.len(), 2);
+    assert!(state.realign_capped);
+    group.template = "worker <VARIES> <VARIES> now".into();
+    let rollup = computer.finalize_retained(state, &group.template, &group.first().normalized);
+    assert!(rollup[VARIES].capped);
+    assert!(rollup[VARIES].samples.is_empty());
+    assert_eq!(rollup[VARIES].counts, Some(vec![]));
+}
+
+#[test]
 fn pii_masking_empty_email_does_not_loop() {
     // Defensive: empty email string would cause infinite loop without guard
     let tokens = vec![Token::Email(String::new())];
