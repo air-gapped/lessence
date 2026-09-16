@@ -1362,11 +1362,55 @@ fn word_unit_spans(s: &str) -> Vec<(usize, usize)> {
     units
 }
 
-/// Template units keep each PCI identity atomic, even inside a path.
+/// Template units keep quoted HTTP request fields separate and each PCI
+/// identity atomic, even inside a path.
 /// Splitting byte spans inserts no whitespace into the shown template.
 /// The join policy still uses the original word units below.
 pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
-    let units = word_unit_spans(s);
+    let mut units = word_unit_spans(s);
+    if s.contains("HTTP/") {
+        let requests: Vec<_> = crate::normalize::quoted_request_templates(s).collect();
+        if !requests.is_empty() {
+            let mut boundaries: Vec<_> = requests
+                .iter()
+                .flat_map(|(request, protocol)| {
+                    let quote = usize::from(request.as_str().ends_with('"'));
+                    [request.start() + 1, protocol.end(), request.end() - quote]
+                })
+                .collect();
+            // An empty version puts the version boundary and closing
+            // quote at the same byte. Matches and their cuts are ordered.
+            boundaries.dedup();
+            let mut split = Vec::with_capacity(units.len() + requests.len() * 5);
+            let (mut request_index, mut boundary_index) = (0, 0);
+            for (at, len) in units {
+                while request_index < requests.len() && requests[request_index].0.end() <= at {
+                    request_index += 1;
+                }
+                if request_index == requests.len() || requests[request_index].0.start() >= at + len
+                {
+                    split.push((at, len));
+                    continue;
+                }
+                for (word_at, word_len) in word_spans(&s[at..at + len]) {
+                    let start = at + word_at;
+                    let end = start + word_len;
+                    let mut cursor = start;
+                    while boundary_index < boundaries.len() && boundaries[boundary_index] <= start {
+                        boundary_index += 1;
+                    }
+                    while boundary_index < boundaries.len() && boundaries[boundary_index] < end {
+                        let boundary = boundaries[boundary_index];
+                        split.push((cursor, boundary - cursor));
+                        cursor = boundary;
+                        boundary_index += 1;
+                    }
+                    split.push((cursor, end - cursor));
+                }
+            }
+            units = split;
+        }
+    }
     let mut pci = crate::normalize::pci_addresses(s).peekable();
     if pci.peek().is_none() {
         return units;

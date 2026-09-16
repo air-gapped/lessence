@@ -226,10 +226,34 @@ pub struct Normalizer {
 
 /// A quoted HTTP request line: `"GET /metrics HTTP/1.1"`. The capture is the
 /// request target.
+const REQUEST_METHODS: &str = "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT";
 static REQUEST_TARGET: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT) ([^"\s]*) HTTP/"#)
+    Regex::new(&format!(r#""(?:{REQUEST_METHODS}) ([^"\s]*) HTTP/"#))
         .expect("request-target anchor pattern must compile")
 });
+
+// A rendered request can already have a varying method, and its route
+// can carry other protected identities beside it. Keep the opening and
+// closing quotes and HTTP/ prefix outside varying method/version slots.
+// Like the anchor, accept a truncated version or missing closing quote.
+static REQUEST_TEMPLATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#""(?:{REQUEST_METHODS}|<VARIES>) [^"\r\n]*? (HTTP/)[^"\s]*"?"#
+    ))
+    .expect("request-template pattern must compile")
+});
+
+/// Whole rendered request and its HTTP/ prefix; uses the anchor's methods
+/// while allowing the template's method slot to have become `<VARIES>`.
+pub(crate) fn quoted_request_templates(
+    text: &str,
+) -> impl Iterator<Item = (regex::Match<'_>, regex::Match<'_>)> {
+    text.contains("HTTP/")
+        .then(|| REQUEST_TEMPLATE.captures_iter(text))
+        .into_iter()
+        .flatten()
+        .map(|caps| (caps.get(0).unwrap(), caps.get(1).unwrap()))
+}
 
 /// The status code that follows a quoted request line in an access log:
 /// `... HTTP/1.1" 404 332`. The capture is its first digit — the class.

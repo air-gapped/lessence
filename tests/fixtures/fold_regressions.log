@@ -4308,3 +4308,19 @@ Sep 16 11:20:31 testhost systemd[1]: modprobe@fuse.service: Deactivated successf
 ##FROM invented systemd bus service subjects
 Sep 16 11:20:30 testhost systemd[1]: dbus-:1.4-org.example.Viewer@31.service: Deactivated successfully.
 Sep 16 11:20:31 testhost systemd[1]: dbus-:1.8-org.example.Viewer@43.service: Deactivated successfully.
+
+##CASE lessence-a8t.5 template_present=/api/items/<N>
+##WHY Varying HTTP methods must not erase the shared anchored request target.
+##FROM invented access requests
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "GET /api/items/42 HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "POST /api/items/42 HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "PUT /api/items/42 HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "GET /api/items/42 HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+
+##CASE lessence-a8t.5 template_present=/health
+##WHY Varying HTTP methods must not erase the shared anchored request target.
+##FROM invented access requests
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "GET /health HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "POST /health HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "PUT /health HTTP/1.1" 200 2048 "-" "invented-client/2.0"
+10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "GET /health HTTP/1.1" 200 2048 "-" "invented-client/2.0"

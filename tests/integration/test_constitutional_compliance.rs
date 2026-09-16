@@ -569,14 +569,14 @@ fn pci_address_splits_are_visible() {
     }
 }
 
-/// The route-anchor fix's gate: on the two HTTP access-log corpora whose
+/// The route-anchor fix's gate: on the HTTP access-log corpora whose
 /// anchor is the request route (`normalize::anchor_hash`'s route-skeleton
-/// arm), an anchor split must never print the same template twice. This is
+/// arm), an anchor split must never print the same template twice.
 /// `invisible_anchor_splits` above carries other classes. Status-class
 /// visibility is now fixed too, so these corpora need no exclusions.
 #[test]
 fn a_route_split_is_visible() {
-    for name in ["k8s_traefik.log", "nginx_sample.log"] {
+    for name in ["k8s_traefik.log", "nginx_sample.log", "k8s_rook_ceph.log"] {
         let path = std::path::Path::new("examples/distilled").join(name);
         let Some(dir) = crate::common::require_example("examples/distilled") else {
             return;

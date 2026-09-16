@@ -207,6 +207,13 @@ in the `NAME` facts. Hashing and rendering consume one shared parser;
 mount/device units and messages about starting a unit keep their existing
 unanchored behavior. `systemd_unit_splits_are_visible` gates this class.
 
+Quoted HTTP requests keep method, route and protocol version as separate
+template fields (`lessence-a8t.5`). When methods vary, the template shows
+`"<VARIES> /route HTTP/<DECIMAL>"`; the route stays visible and the `VARIES`
+facts count the methods themselves. This changes template construction,
+not which requests may join. The route visibility gate includes the
+rook-ceph corpus that exposed this final request-target class.
+
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
 

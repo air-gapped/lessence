@@ -5287,6 +5287,81 @@ fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
 }
 
 #[test]
+fn request_route_survives_repeated_method_and_version_variation() {
+    let mut template = r#"request="GET /health HTTP/1" done"#.to_string();
+    for member in [
+        r#"request="POST /health HTTP/2" done"#,
+        r#"request="PUT /health HTTP/3" done"#,
+        r#"request="GET /health HTTP/1" done"#,
+    ] {
+        for (at, len) in varying_spans(&template, member).into_iter().rev() {
+            template.replace_range(at..at + len, VARIES_MARK);
+        }
+        assert_eq!(template, r#"request="<VARIES> /health HTTP/<VARIES>" done"#);
+    }
+    assert_eq!(unit_spans(r#"controller="crt configmap" done"#).len(), 2);
+    // The raw anchor accepts a request prefix even if the log ended
+    // before its closing quote or protocol version.
+    for suffix in ["HTTP/1", "HTTP/", "HTTP/\""] {
+        let first = format!("\"GET /health {suffix}");
+        let next = format!("\"POST /health {suffix}");
+        let mut template = first.clone();
+        for (at, len) in varying_spans(&first, &next).into_iter().rev() {
+            template.replace_range(at..at + len, VARIES_MARK);
+        }
+        assert_eq!(template, format!("\"<VARIES> /health {suffix}"));
+        assert!(unit_spans(&template).iter().all(|&(_, len)| len > 0));
+    }
+}
+
+#[test]
+fn separate_quoted_requests_keep_their_own_targets() {
+    let first = r#"request="GET /health HTTP/1" prior="POST /metrics HTTP/1""#;
+    let next = r#"request="POST /health HTTP/2" prior="PUT /metrics HTTP/2""#;
+    let mut template = first.to_string();
+    for (at, len) in varying_spans(first, next).into_iter().rev() {
+        template.replace_range(at..at + len, VARIES_MARK);
+    }
+    assert_eq!(
+        template,
+        r#"request="<VARIES> /health HTTP/<VARIES>" prior="<VARIES> /metrics HTTP/<VARIES>""#
+    );
+}
+
+#[test]
+fn varying_request_methods_keep_routes_out_of_the_varies_rollup() {
+    let mut f = make_folder();
+    for method in ["GET", "POST", "PUT", "GET"] {
+        f.process_line(&format!(
+            r#"10.20.30.40 - client [16/Sep/2026:11:20:30 +0000] "{method} /api/items/42 HTTP/1.1" 200 2048 "-" "invented-client/2.0""#
+        )).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let template = f.buffer[0].template();
+    assert!(
+        template.contains(r#""<VARIES> /api/items/<N> HTTP/<DECIMAL>""#),
+        "{template}"
+    );
+    let rollup = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(rollup[VARIES].samples, ["GET", "POST", "PUT"]);
+    assert_eq!(rollup[VARIES].counts, Some(vec![2, 1, 1]));
+}
+
+#[test]
+fn request_atoms_preserve_nested_pci_addresses_and_status_markers() {
+    let first = r#""GET /devices/<N> 0000:2a:00.3 <STATUS_2XX> HTTP/1""#;
+    let next = r#""POST /devices/<N> 0000:2a:00.3 <STATUS_2XX> HTTP/2""#;
+    let mut template = first.to_string();
+    for (at, len) in varying_spans(first, next).into_iter().rev() {
+        template.replace_range(at..at + len, VARIES_MARK);
+    }
+    assert_eq!(
+        template,
+        r#""<VARIES> /devices/<N> 0000:2a:00.3 <STATUS_2XX> HTTP/<VARIES>""#
+    );
+}
+
+#[test]
 fn pci_identity_survives_variation_on_either_side_without_added_spaces() {
     let address = "0000:2a:00.3";
     for (first, next) in [
