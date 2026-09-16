@@ -5403,3 +5403,67 @@ fn a_retained_group_absorbs_a_converging_live_group() {
     assert_eq!(record["count"], 6);
     assert_eq!(record["variation"]["VARIES"]["distinct_count"], 8);
 }
+
+#[test]
+fn retained_merge_keeps_known_values_from_capped_sets() {
+    let computer = RollupComputer::new(3, 3);
+    for (old_capped, incoming_capped) in [(false, true), (true, false), (true, true)] {
+        let mut into = RetainedState::default();
+        let mut from = RetainedState::default();
+        into.per_type.insert(
+            "UUID",
+            (Accumulator::Values(["a".into()].into()), old_capped),
+        );
+        into.per_type
+            .insert("NUMBER", (Accumulator::Hashes([1].into()), old_capped));
+        from.per_type.insert(
+            "UUID",
+            (
+                Accumulator::Values(["b".into(), "c".into()].into()),
+                incoming_capped,
+            ),
+        );
+        from.per_type.insert(
+            "NUMBER",
+            (Accumulator::Hashes([2, 3].into()), incoming_capped),
+        );
+        computer.merge_retained(&mut into, from);
+        for (acc, capped) in into.per_type.values() {
+            assert_eq!(
+                acc.len(),
+                3,
+                "retain known values even when the union is incomplete"
+            );
+            assert!(*capped);
+        }
+    }
+}
+
+#[test]
+fn retained_merge_caps_new_values_but_not_duplicates_at_capacity() {
+    let computer = RollupComputer::new(3, 3);
+    let state = |values: &[&str]| {
+        let mut state = RetainedState::default();
+        state.per_type.insert(
+            "UUID",
+            (
+                Accumulator::Values(values.iter().map(ToString::to_string).collect()),
+                false,
+            ),
+        );
+        state
+    };
+    let mut into = state(&["a", "b", "c"]);
+    computer.merge_retained(&mut into, state(&["a", "b", "c"]));
+    assert!(
+        !into.per_type["UUID"].1,
+        "no new distinct value was dropped"
+    );
+    let mut into = state(&["z"]);
+    computer.merge_retained(&mut into, state(&["c", "b", "a"]));
+    let (Accumulator::Values(known), capped) = &into.per_type["UUID"] else {
+        panic!("value set")
+    };
+    assert!(*capped);
+    assert_eq!(*known, ["a".into(), "b".into(), "z".into()].into());
+}

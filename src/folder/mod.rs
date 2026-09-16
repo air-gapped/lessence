@@ -1924,12 +1924,17 @@ impl RollupComputer {
             if capped {
                 entry.1 = true;
             }
-            if entry.1 {
-                continue;
-            }
             match (&mut entry.0, acc) {
                 (Accumulator::Values(s), Accumulator::Values(other)) => {
+                    // Capped means some values are unknown, not that the
+                    // known ones may be discarded. Sort before filling any
+                    // remaining room so samples do not depend on hash order.
+                    let mut other: Vec<_> = other.into_iter().collect();
+                    other.sort_unstable();
                     for v in other {
+                        if s.contains(&v) {
+                            continue;
+                        }
                         if s.len() >= self.distinct_cap {
                             entry.1 = true;
                             break;
@@ -1938,7 +1943,12 @@ impl RollupComputer {
                     }
                 }
                 (Accumulator::Hashes(s), Accumulator::Hashes(other)) => {
+                    let mut other: Vec<_> = other.into_iter().collect();
+                    other.sort_unstable();
                     for v in other {
+                        if s.contains(&v) {
+                            continue;
+                        }
                         if s.len() >= self.distinct_cap {
                             entry.1 = true;
                             break;
