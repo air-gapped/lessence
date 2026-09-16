@@ -900,6 +900,7 @@ fn hash_token_value_matches_value_string_for_all_variants() {
         Token::Path("/var/log/app.log".into()),
         Token::Json(r#"{"key":"val"}"#.into()),
         Token::Duration("3.5s".into()),
+        Token::CpuQuantity("750m".into()),
         Token::Size("2MB".into()),
         Token::Number("42".into()),
         Token::HttpStatus(404),
@@ -963,6 +964,7 @@ fn is_sample_worthy_covers_all_token_variants() {
         (Token::HttpStatusClass("2xx".into()), true),
         (Token::BracketContext(vec!["err".into()]), true),
         (Token::Json("{}".into()), true),
+        (Token::CpuQuantity("750m".into()), true),
         // Count-only types (false)
         (Token::Timestamp("ts".into()), false),
         (Token::Port(80), false),
@@ -1007,7 +1009,7 @@ fn is_sample_worthy_covers_all_token_variants() {
     // Update this count if Token gains new variants.
     assert_eq!(
         all_tokens.len(),
-        26,
+        27,
         "Token enum may have new variants — update this test"
     );
 }
@@ -1031,6 +1033,7 @@ fn token_type_name_covers_all_variants() {
         Token::Path("/p".into()),
         Token::Json("{}".into()),
         Token::Duration("1s".into()),
+        Token::CpuQuantity("750m".into()),
         Token::Size("1K".into()),
         Token::Number("1".into()),
         Token::HttpStatus(200),
@@ -5744,4 +5747,31 @@ fn short_prose_request_keeps_identity_when_neighboring_fields_vary() {
     let rollup = f.rollup_computer.compute(group);
     assert_eq!(rollup[VARIES].samples, [r#""cedar""#, r#""birch""#]);
     assert_eq!(rollup[VARIES].counts, Some(vec![2, 1]));
+}
+
+#[test]
+fn cpu_quantity_rollup_keeps_values_separate_from_time() {
+    let mut f = make_folder();
+    for cpu in ["750m", "1250m", "750m"] {
+        f.process_line(&format!(
+            r#"{{"cpu":"{cpu}","timeout":"20m","message":"resource configuration"}}"#
+        ))
+        .unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    let group = &f.buffer[0];
+    assert!(group.template().contains("<CPU_QUANTITY>"));
+    let rollup = f.rollup_computer.compute(group);
+    assert_eq!(rollup["CPU_QUANTITY"].samples, ["1250m", "750m"]);
+    assert_eq!(rollup["CPU_QUANTITY"].distinct_count, 2);
+    assert_eq!(f.stats.cpu_quantities, 3);
+    assert_eq!(f.stats.durations, 3);
+    f.finish().unwrap();
+    let briefing = f.build_briefing();
+    assert!(
+        briefing
+            .tokens
+            .iter()
+            .any(|t| t.class == "cpu_quantities" && t.occurrences == 3)
+    );
 }

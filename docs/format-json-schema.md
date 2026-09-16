@@ -103,6 +103,12 @@ Two record types, discriminated by the `type` field:
 
 ### `variation` sub-schema
 
+CPU resource fields expressed in millicpu use `CPU_QUANTITY` in
+`token_types` and `variation`. Their exact textual values (for example
+`750m`) are sample-worthy; existing sample caps and completeness fields apply.
+The summary's `pattern_hits.cpu_quantities` and briefing token class
+`cpu_quantities` count these values separately from durations.
+
 Each key is a token type name (UPPERCASE, matching `token_types`).
 Types are sorted alphabetically (BTreeMap iteration order) for
 deterministic diffs across runs.

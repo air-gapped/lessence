@@ -4442,3 +4442,24 @@ operation finished elapsed=1789551111111111111.25
 worker completed jobDuration=3.1789551111111111 scope=steady
 worker completed jobDuration=4.275 scope=steady
 worker completed jobDuration=5.625 scope=steady
+
+##CASE lessence-a8t.9 template_present=cpu=<CPU_QUANTITY>
+##WHY A CPU field with a millicpu suffix is a resource quantity, while a neighboring minute duration remains a duration.
+##FROM invented CPU resource records
+resource configuration cpu=750m timeout=20m worker=cedar
+resource configuration cpu=1250m timeout=30m worker=cedar
+resource configuration cpu=750m timeout=40m worker=cedar
+
+##CASE lessence-a8t.9 template_present="cpu":"<CPU_QUANTITY>"
+##WHY JSON CPU field context must survive until the millicpu value is classified, instead of being read as minutes.
+##FROM invented JSON resource records
+{"cpu":"750m","memory":"512Mi","wait":"20m","message":"resource configuration"}
+{"cpu":"1250m","memory":"768Mi","wait":"30m","message":"resource configuration"}
+{"cpu":"750m","memory":"512Mi","wait":"40m","message":"resource configuration"}
+
+##CASE lessence-a8t.9 out_present=CPU_QUANTITY
+##WHY Backslash-escaped resource configuration fields carry the same CPU unit as ordinary fields.
+##FROM invented escaped resource records
+{"msg":"resources {\\cpu\\:\\750m\\,\\memory\\:\\512Mi\\} waited 20m"}
+{"msg":"resources {\\cpu\\:\\1250m\\,\\memory\\:\\768Mi\\} waited 30m"}
+{"msg":"resources {\\cpu\\:\\750m\\,\\memory\\:\\512Mi\\} waited 40m"}

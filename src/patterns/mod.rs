@@ -36,6 +36,7 @@ pub enum Token {
     Path(String),
     Json(String),
     Duration(String),
+    CpuQuantity(String),
     Size(String),
     Number(String),
     HttpStatus(u16),
@@ -89,6 +90,7 @@ pub(crate) enum StatsBucket {
     Uuids,
     Pids,
     Durations,
+    CpuQuantities,
     HttpStatus,
     Sizes,
     Percentages,
@@ -165,6 +167,12 @@ impl Token {
             Token::Path(_) => facts("PATH", "path", StatsBucket::Paths, true),
             Token::Json(_) => facts("JSON", "json", StatsBucket::Json, true),
             Token::Duration(_) => facts("DURATION", "duration", StatsBucket::Durations, false),
+            Token::CpuQuantity(_) => facts(
+                "CPU_QUANTITY",
+                "cpu_quantity",
+                StatsBucket::CpuQuantities,
+                true,
+            ),
             Token::Size(_) => facts("SIZE", "size", StatsBucket::Sizes, false),
             Token::Number(_) => facts("NUMBER", "number", StatsBucket::Percentages, false),
             Token::HttpStatus(_) => {
@@ -233,6 +241,7 @@ impl Token {
             | Token::Path(s)
             | Token::Json(s)
             | Token::Duration(s)
+            | Token::CpuQuantity(s)
             | Token::Size(s)
             | Token::Number(s)
             | Token::QuotedString(s)

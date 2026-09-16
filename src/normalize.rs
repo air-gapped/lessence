@@ -42,6 +42,14 @@ struct DetectorEntry {
 /// generic catch-alls last (names, quoted strings). Comments carry the
 /// pairwise ordering constraints that must survive any reordering.
 static DETECTOR_ORDER: &[DetectorEntry] = &[
+    // CPU quantities: field + millicpu unit before JSON/key-value and
+    // minute-duration passes can consume the value or its field context.
+    DetectorEntry {
+        enabled: |c| c.normalize_durations,
+        prefilter: Some(|_, _, s| s.contains('m') && (s.contains("cpu") || s.contains("CPU"))),
+        defers_to_kubernetes: None,
+        run: |_, s| DurationDetector::cpu_quantities(s),
+    },
     // TIMESTAMPS: most specific formats, highest priority.
     DetectorEntry {
         enabled: |c| c.normalize_timestamps,
@@ -1519,6 +1527,47 @@ impl Normalizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cpu_quantities_survive_the_full_detector_pipeline() {
+        let n = Normalizer::new(Config::default());
+        for text in [
+            "limits cpu 750m memory 512Mi waited 20m",
+            r#"{"cpu":"750m","memory":"512Mi","wait":"20m"}"#,
+            r#"{"msg":"resources {\"cpu\":\"750m\",\"memory\":\"512Mi\"} waited 20m"}"#,
+            r#"{"msg":"resources {\\cpu\\:\\750m\\,\\memory\\:\\512Mi\\} waited 20m"}"#,
+        ] {
+            let line = n.normalize_line(text.to_string()).unwrap();
+            assert!(
+                line.normalized.contains("<CPU_QUANTITY>"),
+                "{}",
+                line.normalized
+            );
+            assert_eq!(
+                line.tokens
+                    .iter()
+                    .filter(|t| matches!(t, Token::CpuQuantity(_)))
+                    .count(),
+                1
+            );
+            assert!(
+                line.tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::CpuQuantity(v) if v == "750m"))
+            );
+            assert!(
+                !line
+                    .tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Duration(v) if v.contains("750m")))
+            );
+            assert!(
+                line.normalized.contains("<DURATION>"),
+                "{}",
+                line.normalized
+            );
+        }
+    }
 
     #[test]
     fn decimal_measurements_keep_their_whole_value() {

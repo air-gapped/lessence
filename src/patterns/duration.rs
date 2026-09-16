@@ -2,6 +2,16 @@ use super::Token;
 use regex::{Captures, Regex};
 use std::sync::LazyLock;
 
+// A CPU field carrying millicpu is a resource quantity, not minutes.
+// Accept plain, JSON and backslash-escaped field delimiters. A field name
+// alone is insufficient for unitless values, which can also name CPU IDs.
+static CPU_QUANTITY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"\b(?:cpu|CPU)(?:[\\"']*\s*[:=]\s*[\\"']*|[ \t]+)([0-9]+(?:\.[0-9]+)?m)(?:$|[\s,}\]"'\\])"#,
+    )
+    .expect("CPU quantity field pattern must compile")
+});
+
 // Decimal numbers (like 3.488101038, 254547.69971015)
 // Match decimal numbers that are likely durations or measurements
 static DECIMAL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d+\.\d+\b").unwrap());
@@ -116,6 +126,26 @@ impl DurationDetector {
             .any(|w| w.iter().all(u8::is_ascii_digit))
     }
 
+    /// Called before generic detectors in the full pipeline, and here for
+    /// direct duration detection. The placeholder makes later passes inert.
+    pub fn cpu_quantities(text: &str) -> (String, Vec<Token>) {
+        if !text.contains('m') || !(text.contains("cpu") || text.contains("CPU")) {
+            return (text.to_string(), Vec::new());
+        }
+        let mut tokens = Vec::new();
+        let result = CPU_QUANTITY.replace_all(text, |caps: &Captures| {
+            let whole = caps.get(0).unwrap();
+            let quantity = caps.get(1).unwrap();
+            tokens.push(Token::CpuQuantity(quantity.as_str().to_string()));
+            format!(
+                "{}<CPU_QUANTITY>{}",
+                &whole.as_str()[..quantity.start() - whole.start()],
+                &whole.as_str()[quantity.end() - whole.start()..]
+            )
+        });
+        (result.into_owned(), tokens)
+    }
+
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         // FAST PATH: Skip if no duration indicators
         if !text.contains('.')
@@ -137,8 +167,7 @@ impl DurationDetector {
             return (text.to_string(), Vec::new());
         }
 
-        let mut result = text.to_string();
-        let mut tokens = Vec::new();
+        let (mut result, mut tokens) = Self::cpu_quantities(text);
 
         if Self::has_iso_duration_indicators(&result) {
             for found in ISO_DURATION_REGEX.find_iter(&result) {
@@ -300,6 +329,60 @@ mod tests {
 
     fn fold(text: &str) -> String {
         DurationDetector::detect_and_replace(text).0
+    }
+
+    #[test]
+    fn cpu_quantities_are_not_minutes() {
+        for (line, shown) in [
+            (
+                "cpu=750m waited 20m",
+                "cpu=<CPU_QUANTITY> waited <DURATION>",
+            ),
+            (
+                "limits cpu 750m memory 512Mi",
+                "limits cpu <CPU_QUANTITY> memory <SIZE>",
+            ),
+            (
+                r#"{"cpu":"750m","wait":"20m"}"#,
+                r#"{"cpu":"<CPU_QUANTITY>","wait":"<DURATION>"}"#,
+            ),
+            (
+                r#"cpu\":\"750m\" wait=20m"#,
+                r#"cpu\":\"<CPU_QUANTITY>\" wait=<DURATION>"#,
+            ),
+            (
+                r"\\cpu\\:\\750m\\, wait=20m",
+                r"\\cpu\\:\\<CPU_QUANTITY>\\, wait=<DURATION>",
+            ),
+        ] {
+            let (result, tokens) = DurationDetector::detect_and_replace(line);
+            assert_eq!(result, shown, "{line}");
+            assert!(
+                tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::CpuQuantity(v) if v == "750m"))
+            );
+            assert!(
+                !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Duration(v) if v == "750m"))
+            );
+        }
+        for line in [
+            "waited 20m",
+            "CPU time: 20m",
+            "cpu_duration=20m",
+            "notcpu=20m",
+            "cpu=20ms",
+            "CPU: 1 PID: 123",
+            "cpu=45%",
+        ] {
+            let (_, tokens) = DurationDetector::detect_and_replace(line);
+            assert!(
+                !tokens.iter().any(|t| matches!(t, Token::CpuQuantity(_))),
+                "{line}"
+            );
+        }
     }
 
     #[test]
@@ -618,7 +701,7 @@ mod shapes_2026_08_29 {
             ),
             (
                 "limits cpu 500m memory 256Mi",
-                "limits cpu <DURATION> memory <SIZE>",
+                "limits cpu <CPU_QUANTITY> memory <SIZE>",
             ),
             (
                 r#""took":"2.000786944s","x":"119.448684ms""#,

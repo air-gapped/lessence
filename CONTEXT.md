@@ -265,6 +265,15 @@ When closing a class, follow the shape of the two already closed: render the
 anchor's identity as text, from a helper the hasher and the renderer **share**,
 so what is grouped on and what is shown cannot drift.
 
+CPU fields with millicpu values (`lessence-a8t.9`) are recognized before
+JSON/key-value and duration detectors erase the field/unit distinction.
+They render as `<CPU_QUANTITY>`, retain exact value samples, and contribute
+to a separate `cpu_quantities` statistic. Plain and escaped field delimiters
+share one recognizer; unrelated minute durations on the same line still
+normalize normally. Unitless CPU fields are ambiguous with processor IDs
+and retain their existing behavior. The owned corpus gate checks all CPU
+fields in the operator's configuration diffs, their samples and hit counts.
+
 Decimal measurements cannot donate a digit-only substring to the timestamp
 detector (`lessence-a8t.11`). Numeric epoch candidates touching a preceding decimal
 point or an unmatched following fractional part are rejected. Legitimate

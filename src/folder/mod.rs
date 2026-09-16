@@ -519,6 +519,7 @@ pub struct FoldingStats {
     pub uuids: usize,
     pub pids: usize,
     pub durations: usize,
+    pub cpu_quantities: usize,
     pub http_status: usize,
     pub sizes: usize,
     pub percentages: usize,
@@ -605,7 +606,7 @@ impl FoldingStats {
     /// briefing's `tokens` list. Distinct from `pattern_counters`'s
     /// human-readable labels — these are the stable machine names the
     /// bead specifies.
-    fn token_classes(&self) -> [(&'static str, StatsBucket, usize); 22] {
+    fn token_classes(&self) -> [(&'static str, StatsBucket, usize); 23] {
         [
             ("timestamps", StatsBucket::Timestamps, self.timestamps),
             ("ips", StatsBucket::Ips, self.ips),
@@ -617,6 +618,11 @@ impl FoldingStats {
             ("paths", StatsBucket::Paths, self.paths),
             ("json", StatsBucket::Json, self.json),
             ("durations", StatsBucket::Durations, self.durations),
+            (
+                "cpu_quantities",
+                StatsBucket::CpuQuantities,
+                self.cpu_quantities,
+            ),
             ("sizes", StatsBucket::Sizes, self.sizes),
             ("percentages", StatsBucket::Percentages, self.percentages),
             (
@@ -657,6 +663,7 @@ impl FoldingStats {
             StatsBucket::Uuids => self.uuids += 1,
             StatsBucket::Pids => self.pids += 1,
             StatsBucket::Durations => self.durations += 1,
+            StatsBucket::CpuQuantities => self.cpu_quantities += 1,
             StatsBucket::HttpStatus => self.http_status += 1,
             StatsBucket::Sizes => self.sizes += 1,
             StatsBucket::Percentages => self.percentages += 1,
@@ -684,6 +691,7 @@ impl FoldingStats {
             uuids: self.uuids,
             pids: self.pids,
             durations: self.durations,
+            cpu_quantities: self.cpu_quantities,
             http_status: self.http_status,
             sizes: self.sizes,
             percentages: self.percentages,
@@ -724,6 +732,7 @@ struct PatternHits {
     uuids: usize,
     pids: usize,
     durations: usize,
+    cpu_quantities: usize,
     http_status: usize,
     sizes: usize,
     percentages: usize,
@@ -1094,6 +1103,7 @@ fn hash_token_value(token: &Token) -> u64 {
         | Token::Path(s)
         | Token::Json(s)
         | Token::Duration(s)
+        | Token::CpuQuantity(s)
         | Token::Size(s)
         | Token::Number(s)
         | Token::QuotedString(s)

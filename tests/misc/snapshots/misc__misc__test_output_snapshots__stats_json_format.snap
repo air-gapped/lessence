@@ -12,6 +12,7 @@ expression: normalized
   "output_lines": 4,
   "pattern_hits": {
     "brackets": 0,
+    "cpu_quantities": 0,
     "durations": 0,
     "emails": 0,
     "fqdns": 0,

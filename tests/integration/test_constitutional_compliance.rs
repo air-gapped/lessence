@@ -1033,3 +1033,77 @@ fn command_timings_remain_decimal_measurements() {
     }
     assert_eq!(actual, expected, "all command timing lines accounted for");
 }
+
+#[test]
+fn cpu_resources_keep_quantity_values_in_configuration_diffs() {
+    let path = "examples/distilled/k8s_postgres_operator.log";
+    let Some(file) = crate::common::require_example(path) else {
+        return;
+    };
+    drop(file);
+    let input = std::fs::read_to_string(path).expect("read operator corpus");
+    let cpu = regex::Regex::new(r"\bcpu:([0-9]+m)").unwrap();
+    let clean = |s: &str| s.replace(['\\', '"'], "");
+    let expected_values: std::collections::BTreeSet<String> = cpu
+        .captures_iter(&clean(&input))
+        .map(|c| c[1].to_string())
+        .collect();
+    let input_lines = input
+        .lines()
+        .filter(|line| cpu.is_match(&clean(line)))
+        .count() as u64;
+    let input_quantities = cpu.captures_iter(&clean(&input)).count() as u64;
+    // Check every source line before clustering can legitimately replace a
+    // changing configuration body with <VARIES>. The rollup below must still
+    // expose the exact CPU values even when that happens.
+    let normalizer = lessence::normalize::Normalizer::new(lessence::Config::default());
+    for (index, raw) in input.lines().enumerate() {
+        let expected = cpu.captures_iter(&clean(raw)).count();
+        if expected == 0 {
+            continue;
+        }
+        let line = normalizer.normalize_line(raw.to_string()).unwrap();
+        let normalized = clean(&line.normalized);
+        assert_eq!(
+            normalized.matches("cpu:<CPU_QUANTITY>").count(),
+            expected,
+            "CPU fields on source line {}",
+            index + 1
+        );
+        assert!(!normalized.contains("cpu:<DURATION>"));
+    }
+    assert!(
+        input_lines > 0 && expected_values.len() >= 2,
+        "missing CPU resource shapes"
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--explain", "--threads", "1", path])
+        .output()
+        .expect("run operator corpus");
+    assert!(output.status.success());
+    let mut counted = 0;
+    let mut quantities = 0;
+    let mut values = std::collections::BTreeSet::new();
+    for line in str::from_utf8(&output.stdout).unwrap().lines() {
+        let row: serde_json::Value = serde_json::from_str(line).unwrap();
+        if row["type"] == "summary" {
+            quantities = row["pattern_hits"]["cpu_quantities"].as_u64().unwrap();
+            continue;
+        }
+        if row["type"] != "group" || !cpu.is_match(&clean(row["first"]["line"].as_str().unwrap())) {
+            continue;
+        }
+        assert!(cpu.is_match(&clean(row["last"]["line"].as_str().unwrap())));
+        let normalized = clean(row["normalized"].as_str().unwrap());
+        assert!(!normalized.contains("cpu:<DURATION>"));
+        let facts = &row["variation"]["CPU_QUANTITY"];
+        assert_eq!(facts["samples_complete"], true, "{row}");
+        for value in facts["samples"].as_array().unwrap() {
+            values.insert(value.as_str().unwrap().to_string());
+        }
+        counted += row["count"].as_u64().unwrap();
+    }
+    assert_eq!(counted, input_lines);
+    assert_eq!(quantities, input_quantities);
+    assert_eq!(values, expected_values);
+}
