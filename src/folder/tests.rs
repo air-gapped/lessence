@@ -5467,3 +5467,45 @@ fn retained_merge_caps_new_values_but_not_duplicates_at_capacity() {
     assert!(*capped);
     assert_eq!(*known, ["a".into(), "b".into(), "z".into()].into());
 }
+
+/// When two groups merge, the shown last line is the later of the two
+/// groups' last members, whichever group founded first (kills the
+/// comparison mutants in `absorb`).
+#[test]
+fn a_merged_group_shows_the_later_last_line() {
+    let stem = "svc node ready check pass level info region east";
+    let last_line_no = |tails: &[&str]| {
+        let mut f = make_folder_json();
+        for tail in tails {
+            f.process_line(&format!("{stem} {tail}")).unwrap();
+        }
+        let out = f.finish().unwrap();
+        assert_eq!(out.len(), 1, "{out:?}");
+        let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+        record["last"]["line_no"].as_u64().unwrap()
+    };
+    // Founder A first; A's last member (6) is later than B's (4).
+    assert_eq!(
+        last_line_no(&[
+            "alpha state one",
+            "beta state two",
+            "delta state two",
+            "beta state four",
+            "gamma state one",
+            "alpha state three",
+        ]),
+        6
+    );
+    // Founder A first; B's last member (6) is later than A's (4).
+    assert_eq!(
+        last_line_no(&[
+            "alpha state one",
+            "beta state two",
+            "gamma state one",
+            "alpha state three",
+            "delta state two",
+            "beta state four",
+        ]),
+        6
+    );
+}
