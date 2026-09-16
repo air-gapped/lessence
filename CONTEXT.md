@@ -153,7 +153,7 @@ Two facts that matter when judging a diff:
 
 ## Anchors: the invariant
 
-`anchor_hash` (`src/normalize.rs`) reads 14 classes of field from the raw line
+`anchor_hash` (`src/normalize.rs`) reads identity fields from the raw line
 and folds their hash into the line hash, so two lines whose anchor values differ
 can never join one group — matched, never scored. A 200 and a 500 for the same
 route are two events however alike the rest of the line reads.
@@ -170,6 +170,9 @@ Enforcement lives in `tests/integration/test_constitutional_compliance.rs`:
   and HTTP-status classes;
 - `call_site_traceback_and_program_splits_are_visible` gates the call-site,
   Python-frame, and program-field classes on their affected corpora;
+- `audit_syscall_outcomes_stay_visible_and_separate` checks that raw audit
+  syscall records keep `success=yes` and `success=no` separate and visible,
+  with all input lines accounted for under their outcome;
 - `invisible_anchor_splits` (`#[ignore]`, reports but does not gate) catalogues
   the rest. Run it with:
   `cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture`

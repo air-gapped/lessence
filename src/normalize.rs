@@ -399,6 +399,16 @@ static AUDIT_RECORD_TYPE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^type=([A-Z_]+) msg=audit\(").expect("audit type anchor pattern must compile")
 });
 
+/// The outcome in a raw audit syscall header is event identity. Match the
+/// fixed header grammar so `success=no` inside a quoted argument or prose
+/// cannot become an outcome. Keep the field visible using this same capture.
+static AUDIT_SYSCALL_OUTCOME: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^type=SYSCALL msg=audit\([0-9]+\.[0-9]+:[0-9]+\): arch=[0-9a-fA-F]+ syscall=[0-9]+ (success=(?:yes|no))(?: |$)",
+    )
+    .expect("audit syscall outcome anchor pattern must compile")
+});
+
 /// A syslog/journal host: the word between a line-leading normalized
 /// timestamp and the program tag — `<TIMESTAMP> gw-core dnsmasq[<PID>]:`,
 /// `<TIMESTAMP> usw-lab-2 daemon.err syslogd:`. The tag is `word:`
@@ -525,6 +535,12 @@ fn anchor_hash(original: &str, pci: &[regex::Match<'_>]) -> u64 {
     if original.starts_with("type=") {
         for caps in AUDIT_RECORD_TYPE.captures_iter(original) {
             caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
+            found = true;
+        }
+    }
+    if original.starts_with("type=SYSCALL ") {
+        for field in exact_anchor_fields(original, &AUDIT_SYSCALL_OUTCOME) {
+            field.as_str().hash(&mut hasher);
             found = true;
         }
     }
@@ -943,6 +959,9 @@ fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> Protected
         }
     }
     for pattern in [
+        original
+            .starts_with("type=SYSCALL ")
+            .then_some(&*AUDIT_SYSCALL_OUTCOME),
         original.contains("caller").then_some(&*STRUCTURED_CALLER),
         original.contains(".go:").then_some(&*MESSAGE_CALL_SITE),
         original.contains("File \"").then_some(&*TRACEBACK_FRAME),
@@ -3295,6 +3314,47 @@ mod tests {
         // `type=` must open the line: a key=value elsewhere is not a record type.
         let prose = normalize("event type=CRED_ACQ msg=audit(1.0:1): done");
         assert_eq!(prose.anchor, 0);
+    }
+
+    #[test]
+    fn audit_syscall_outcomes_are_visible_identities() {
+        let header = "type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42";
+        let yes = normalize(&format!("{header} success=yes exit=0"));
+        let no = normalize(&format!("{header} success=no exit=-2"));
+        assert_ne!(yes.anchor, no.anchor);
+        assert!(yes.normalized.contains("success=yes"));
+        assert!(no.normalized.contains("success=no"));
+        // The outcome is identity, not the particular return value or timestamp.
+        let another = normalize(
+            "type=SYSCALL msg=audit(1789430999.456:912): arch=c000003e syscall=42 success=yes exit=4",
+        );
+        assert_eq!(yes.anchor, another.anchor);
+        assert_eq!(
+            no.anchor,
+            normalize(&format!("{header} success=no exit=-13")).anchor
+        );
+    }
+
+    #[test]
+    fn audit_outcome_needs_the_syscall_header_position() {
+        for line in [
+            "event success=yes exit=0",
+            "event type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=yes exit=0",
+            "type=EXECVE msg=audit(1789430400.123:801): argc=1 a0=\"success=yes\"",
+            "type=SYSCALL msg=audit(1789430400.123:801): note=\"arch=c000003e syscall=42 success=yes\"",
+            "type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=yesplease",
+            "type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=yes,no",
+        ] {
+            assert!(
+                !AUDIT_SYSCALL_OUTCOME.is_match(line),
+                "false outcome identity: {line}"
+            );
+            assert_eq!(
+                normalize(line).anchor,
+                normalize(&line.replace("success=yes", "success=no")).anchor,
+                "outcome-like prose must not change identity: {line}"
+            );
+        }
     }
 
     /// Most lines carry no anchor at all and must group exactly as before.

@@ -481,6 +481,71 @@ fn an_http_status_class_split_is_visible() {
     assert!(checked > 0, "missing HTTP status corpora");
 }
 
+/// Outcomes can disappear inside one group without producing duplicate
+/// templates. Check the actual syscall corpus, including outcome line totals.
+#[test]
+fn audit_syscall_outcomes_stay_visible_and_separate() {
+    use std::collections::BTreeMap;
+    use std::io::Read;
+
+    let Some(mut file) = crate::common::require_example("examples/distilled/linux_auditd.log")
+    else {
+        return;
+    };
+    let mut text = String::new();
+    file.read_to_string(&mut text).expect("read audit corpus");
+    let outcome = |line: &str| {
+        line.split_ascii_whitespace()
+            .find(|field| field.starts_with("success="))
+            .expect("syscall must carry an outcome")
+            .to_string()
+    };
+    let mut expected = BTreeMap::<String, u64>::new();
+    for line in text
+        .lines()
+        .filter(|line| line.starts_with("type=SYSCALL "))
+    {
+        *expected.entry(outcome(line)).or_default() += 1;
+    }
+    assert!(expected.get("success=yes").is_some_and(|n| *n > 0));
+    assert!(expected.get("success=no").is_some_and(|n| *n > 0));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--explain",
+            "--threads",
+            "1",
+            "examples/distilled/linux_auditd.log",
+        ])
+        .output()
+        .expect("run audit corpus");
+    assert!(output.status.success());
+    let mut actual = BTreeMap::<String, u64>::new();
+    for record in str::from_utf8(&output.stdout).unwrap().lines() {
+        let group: serde_json::Value = serde_json::from_str(record).expect("valid explain record");
+        if group["type"] != "group" {
+            continue;
+        }
+        let first = group["first"]["line"].as_str().unwrap();
+        if !first.starts_with("type=SYSCALL ") {
+            continue;
+        }
+        let shown = outcome(group["normalized"].as_str().unwrap());
+        assert!(
+            matches!(shown.as_str(), "success=yes" | "success=no"),
+            "{group}"
+        );
+        assert_eq!(shown, outcome(first), "{group}");
+        assert_eq!(
+            shown,
+            outcome(group["last"]["line"].as_str().unwrap()),
+            "{group}"
+        );
+        *actual.entry(shown).or_default() += group["count"].as_u64().unwrap();
+    }
+    assert_eq!(actual, expected, "each outcome retains every input line");
+}
+
 /// These corpora exercise klog call sites, Python traceback frames and
 /// structured program fields. Each used to contain distinct anchored
 /// groups whose visible templates were identical. No exceptions remain.
