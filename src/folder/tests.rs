@@ -5078,6 +5078,91 @@ fn variation_types_presence_only_kinds_compare_fixed() {
 // ---- template honesty (hosts/k8s study 2026-08-29) ----
 
 #[test]
+fn command_options_keep_operations_apart_and_trace_variation_truthful() {
+    let mut f = make_folder();
+    for worker in ["cedar", "birch", "cedar"] {
+        for (operation, option, argument) in [
+            ("inspect", "-t", "aabbccddeeff00112233445566778899aabbccdd"),
+            (
+                "restore",
+                "--force",
+                "11223344556677889900aabbccddeeff11223344",
+            ),
+            (
+                "compare",
+                "--names",
+                "aabbccddeeff00112233445566778899aabbccdd..11223344556677889900aabbccddeeff11223344",
+            ),
+        ] {
+            f.process_line(&format!(
+                r#"[pod/repo-worker-6789bcdf7-x2z4w/worker] {{"args":"[depot {operation} {option} {argument}]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:00Z","time_ms":4.5,"worker":"{worker}"}}"#
+            )).unwrap();
+        }
+    }
+    assert_eq!(f.buffer.len(), 3);
+    for group in &f.buffer {
+        assert_eq!(group.count(), 3);
+        let template = group.template();
+        assert!(
+            template.contains(r#""operation_name":"exec depot""#),
+            "{template}"
+        );
+        assert!(template.contains(r#""worker":<VARIES>"#), "{template}");
+        let rollup = f.rollup_computer.compute(group);
+        assert_eq!(rollup[VARIES].samples, [r#""cedar""#, r#""birch""#]);
+        assert_eq!(rollup[VARIES].counts, Some(vec![2, 1]));
+        assert!(
+            rollup["PATH"]
+                .samples
+                .iter()
+                .all(|value| !value.starts_with('-'))
+        );
+    }
+}
+
+#[test]
+fn quoted_command_arguments_vary_without_erasing_option_names() {
+    let mut f = make_folder();
+    for option in ["--mode", "--scope"] {
+        for value in ["alpha", "beta", "alpha"] {
+            f.process_line(&format!(
+                r#"{{"args":"[depot {option} {value}]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}}"#
+            ))
+            .unwrap();
+        }
+    }
+    assert_eq!(f.buffer.len(), 2);
+    for (group, option) in f.buffer.iter().zip(["--mode", "--scope"]) {
+        assert_eq!(
+            group.template(),
+            format!(
+                r#"{{"args":"[depot {option} <VARIES>]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}}"#
+            )
+        );
+        let rollup = f.rollup_computer.compute(group);
+        assert_eq!(rollup[VARIES].samples, ["alpha", "beta"]);
+        assert_eq!(rollup[VARIES].counts, Some(vec![2, 1]));
+    }
+    assert_eq!(unit_spans(r#"controller="crt configmap" done"#).len(), 2);
+}
+
+#[test]
+fn repeated_option_names_survive_arguments_of_different_lengths() {
+    let first = r#"{"msg":"depot --mode alpha extra --mode beta","note":"steady"}"#;
+    let mut template = first.to_string();
+    for member in [
+        r#"{"msg":"depot --mode alpha --mode gamma","note":"steady"}"#,
+        r#"{"msg":"depot --mode alpha extra --mode delta","note":"steady"}"#,
+    ] {
+        for (at, len) in varying_spans(&template, member).into_iter().rev() {
+            template.replace_range(at..at + len, VARIES_MARK);
+        }
+        assert_eq!(template.matches("--mode").count(), 2, "{template}");
+        assert!(template.ends_with(r#"","note":"steady"}"#), "{template}");
+    }
+}
+
+#[test]
 fn a_placeholder_against_a_plain_word_varies_too() {
     // usw_dmesg: `creating proc entry for system.info` founded the group and
     // ten bare words joined it (system.info is literal since lessence-c2f,

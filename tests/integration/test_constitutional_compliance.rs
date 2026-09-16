@@ -546,6 +546,175 @@ fn audit_syscall_outcomes_stay_visible_and_separate() {
     assert_eq!(actual, expected, "each outcome retains every input line");
 }
 
+/// Compare every execution message and Trace command with the input, rather
+/// than merely checking that the previously mixed group gained a split.
+#[test]
+fn execution_commands_preserve_options_operations_and_counts() {
+    use std::collections::BTreeMap;
+    use std::io::Read;
+
+    let Some(mut file) = crate::common::require_example("examples/distilled/k8s_argocd_aux.log")
+    else {
+        return;
+    };
+    let command = regex::Regex::new(r#""(args|msg)":"(\[?git [^"]*)""#).unwrap();
+    let revision = regex::Regex::new(r"\b[0-9a-f]{32,40}\b").unwrap();
+    let signature = |line: &str| {
+        command.captures(line).map(|caps| {
+            (
+                caps[1].to_string(),
+                revision.replace_all(&caps[2], "<HASH>").into_owned(),
+            )
+        })
+    };
+    let mut text = String::new();
+    file.read_to_string(&mut text)
+        .expect("read execution corpus");
+    let mut expected = BTreeMap::new();
+    for line in text.lines() {
+        if let Some(key) = signature(line) {
+            *expected.entry(key).or_insert(0u64) += 1;
+        }
+    }
+    assert!(expected.keys().any(|(field, _)| field == "args"));
+    assert!(expected.keys().any(|(field, _)| field == "msg"));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args([
+            "--explain",
+            "--threads",
+            "1",
+            "examples/distilled/k8s_argocd_aux.log",
+        ])
+        .output()
+        .expect("run execution corpus");
+    assert!(output.status.success());
+    let mut actual = BTreeMap::new();
+    for record in str::from_utf8(&output.stdout).unwrap().lines() {
+        let group: serde_json::Value = serde_json::from_str(record).expect("valid explain record");
+        if group["type"] != "group" {
+            continue;
+        }
+        let Some(first) = signature(group["first"]["line"].as_str().unwrap()) else {
+            continue;
+        };
+        let shown = group["normalized"].as_str().unwrap();
+        assert_eq!(signature(shown), Some(first.clone()), "{group}");
+        assert_eq!(
+            signature(group["last"]["line"].as_str().unwrap()),
+            Some(first.clone()),
+            "{group}"
+        );
+        if first.0 == "args" {
+            assert!(shown.contains(r#""operation_name":"exec git""#), "{group}");
+        }
+        for sample in group["variation"]["VARIES"]["samples"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            assert_ne!(sample, "∅", "execution fields are present: {group}");
+        }
+        for sample in group["variation"]["PATH"]["samples"]
+            .as_array()
+            .into_iter()
+            .flatten()
+        {
+            assert!(
+                !sample.as_str().unwrap().starts_with('-'),
+                "an option is not a path: {group}"
+            );
+        }
+        *actual.entry(first).or_insert(0u64) += group["count"].as_u64().unwrap();
+    }
+    assert_eq!(actual, expected, "each command retains every input line");
+}
+
+/// CLI option names are read independently from the input and shown template.
+fn cli_option_signature(line: &str) -> Vec<&str> {
+    static OPTION: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#"(?:^|[\s"'])(--[A-Za-z][A-Za-z0-9_-]*|-[A-Za-z]\b)"#).unwrap()
+    });
+    OPTION
+        .captures_iter(line)
+        .map(|caps| caps.get(1).unwrap().as_str())
+        .collect()
+}
+
+#[test]
+fn cli_option_identities_stay_visible_in_every_corpus() {
+    use std::collections::BTreeMap;
+
+    let Some(dir) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    drop(dir);
+    let mut checked = 0;
+    for entry in std::fs::read_dir("examples/distilled").expect("read corpora") {
+        let path = entry.expect("corpus entry").path();
+        if path.extension().is_none_or(|extension| extension != "log") {
+            continue;
+        }
+        let input = std::fs::read_to_string(&path).expect("read corpus");
+        if !input
+            .lines()
+            .any(|line| !cli_option_signature(line).is_empty())
+        {
+            continue;
+        }
+        let mut expected_counts = BTreeMap::<Vec<String>, u64>::new();
+        for line in input.lines() {
+            let names = cli_option_signature(line);
+            if !names.is_empty() {
+                *expected_counts
+                    .entry(names.into_iter().map(str::to_string).collect())
+                    .or_default() += 1;
+            }
+        }
+        let mut actual_counts = BTreeMap::<Vec<String>, u64>::new();
+        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+            .args(["--explain", "--threads", "1"])
+            .arg(&path)
+            .output()
+            .expect("run option corpus");
+        assert!(output.status.success());
+        for record in str::from_utf8(&output.stdout).unwrap().lines() {
+            let group: serde_json::Value =
+                serde_json::from_str(record).expect("valid explain record");
+            if group["type"] != "group" {
+                continue;
+            }
+            let expected = cli_option_signature(group["first"]["line"].as_str().unwrap());
+            if expected.is_empty() {
+                continue;
+            }
+            checked += 1;
+            assert_eq!(
+                cli_option_signature(group["normalized"].as_str().unwrap()),
+                expected,
+                "{}: {group}",
+                path.display()
+            );
+            assert_eq!(
+                cli_option_signature(group["last"]["line"].as_str().unwrap()),
+                expected,
+                "{}: {group}",
+                path.display()
+            );
+            *actual_counts
+                .entry(expected.into_iter().map(str::to_string).collect())
+                .or_default() += group["count"].as_u64().unwrap();
+        }
+        assert_eq!(
+            actual_counts,
+            expected_counts,
+            "{}: option line totals",
+            path.display()
+        );
+    }
+    assert!(checked > 0, "missing CLI option corpus groups");
+}
+
 /// These corpora exercise klog call sites, Python traceback frames and
 /// structured program fields. Each used to contain distinct anchored
 /// groups whose visible templates were identical. No exceptions remain.

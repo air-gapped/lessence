@@ -409,6 +409,22 @@ static AUDIT_SYSCALL_OUTCOME: LazyLock<Regex> = LazyLock::new(|| {
     .expect("audit syscall outcome anchor pattern must compile")
 });
 
+/// Option names are keys; their values may vary, their spelling may not.
+/// A single dash before a whole word remains prose (for example -sdown).
+static CLI_OPTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?:^|[\s"'])(--[A-Za-z][A-Za-z0-9_-]*|-[A-Za-z]\b)"#)
+        .expect("CLI option anchor pattern must compile")
+});
+
+pub(crate) fn cli_option_names(original: &str) -> impl Iterator<Item = regex::Match<'_>> {
+    original
+        .contains('-')
+        .then(|| CLI_OPTION.captures_iter(original))
+        .into_iter()
+        .flatten()
+        .filter_map(|caps| caps.get(1))
+}
+
 /// A syslog/journal host: the word between a line-leading normalized
 /// timestamp and the program tag — `<TIMESTAMP> gw-core dnsmasq[<PID>]:`,
 /// `<TIMESTAMP> usw-lab-2 daemon.err syslogd:`. The tag is `word:`
@@ -487,7 +503,7 @@ fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
 /// lines therefore group exactly as they did before.
 ///
 /// Anchors are read from the raw line, before normalization erases them.
-fn anchor_hash(original: &str, pci: &[regex::Match<'_>]) -> u64 {
+fn anchor_hash(original: &str, pci: &[regex::Match<'_>], options: &[regex::Match<'_>]) -> u64 {
     let mut hasher = AHasher::default();
     let mut found = false;
 
@@ -512,6 +528,10 @@ fn anchor_hash(original: &str, pci: &[regex::Match<'_>]) -> u64 {
     // keep the scan off most lines.
     for address in pci {
         address.as_str().hash(&mut hasher);
+        found = true;
+    }
+    for option in options {
+        option.as_str().hash(&mut hasher);
         found = true;
     }
 
@@ -890,7 +910,11 @@ struct ProtectedStatus {
 }
 
 type AnchoredSpan = (usize, usize, AnchorRender);
-fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> ProtectedAnchors {
+fn protect_anchored_spans(
+    original: &str,
+    pci: &[regex::Match<'_>],
+    options: &[regex::Match<'_>],
+) -> ProtectedAnchors {
     let mut spans: Vec<AnchoredSpan> = Vec::new();
     let mut statuses = Vec::new();
     let mut unit_names = Vec::new();
@@ -940,6 +964,9 @@ fn protect_anchored_spans(original: &str, pci: &[regex::Match<'_>]) -> Protected
 
     for address in pci {
         spans.push((address.start(), address.end(), AnchorRender::PciAddress));
+    }
+    for option in options {
+        spans.push((option.start(), option.end(), AnchorRender::Exact));
     }
     for unit in systemd_units(original) {
         spans.push((unit.start(), unit.end(), AnchorRender::SystemdUnit));
@@ -1069,7 +1096,8 @@ impl Normalizer {
         // not `<PATH>` — otherwise the split it forces is invisible in the
         // shown line. Protect its exact span before any detector runs...
         let pci: Vec<_> = pci_addresses(&original).collect();
-        let protected = protect_anchored_spans(&original, &pci);
+        let options: Vec<_> = cli_option_names(&original).collect();
+        let protected = protect_anchored_spans(&original, &pci, &options);
         let mut normalized = protected.text;
         let mut tokens = Vec::with_capacity(8);
 
@@ -1115,7 +1143,7 @@ impl Normalizer {
 
         // Anchors come from the raw line: normalization has just erased the
         // very fields they identify.
-        let anchor = anchor_hash(&original, &pci);
+        let anchor = anchor_hash(&original, &pci, &options);
 
         // Fold the anchor into the line hash so the folder's exact-hash group
         // index cannot attach this line to a group with a different anchor.
@@ -3355,6 +3383,21 @@ mod tests {
                 "outcome-like prose must not change identity: {line}"
             );
         }
+    }
+
+    #[test]
+    fn cli_option_names_are_identity_but_values_are_not() {
+        let first = normalize(r#"{"msg":"worker --mode alpha -t 120"}"#);
+        let second = normalize(r#"{"msg":"worker --mode beta -t 240"}"#);
+        let other = normalize(r#"{"msg":"worker --scope alpha -t 120"}"#);
+        assert_eq!(first.anchor, second.anchor);
+        assert_ne!(first.anchor, other.anchor);
+        assert!(first.normalized.contains("--mode"));
+        assert!(first.normalized.contains("-t"));
+        assert_eq!(normalize("event -sdown master example").anchor, 0);
+        assert_eq!(normalize("event -namespace example").anchor, 0);
+        let numeric_name = normalize("worker --http1234-port=4567");
+        assert!(numeric_name.normalized.contains("--http1234-port="));
     }
 
     /// Most lines carry no anchor at all and must group exactly as before.

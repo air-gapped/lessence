@@ -1240,6 +1240,7 @@ fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
     };
     let mut edits = Vec::new();
     let mut same_pci_identity = None;
+    let mut same_option_identity = None;
     for (i, &(at, len)) in spans.iter().enumerate() {
         let r = tmpl[i];
         if r.contains(VARIES_MARK) || aligned[i].is_some_and(|j| mem[j] == r) {
@@ -1256,6 +1257,17 @@ fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
                 crate::normalize::pci_addresses(template)
                     .map(|m| m.as_str())
                     .eq(crate::normalize::pci_addresses(member).map(|m| m.as_str()))
+            })
+        {
+            continue;
+        }
+        if crate::normalize::cli_option_names(r)
+            .next()
+            .is_some_and(|m| m.start() == 0 && m.end() == r.len())
+            && *same_option_identity.get_or_insert_with(|| {
+                crate::normalize::cli_option_names(template)
+                    .map(|m| m.as_str())
+                    .eq(crate::normalize::cli_option_names(member).map(|m| m.as_str()))
             })
         {
             continue;
@@ -1362,7 +1374,67 @@ fn word_unit_spans(s: &str) -> Vec<(usize, usize)> {
     units
 }
 
-/// Template units keep quoted HTTP request fields separate and each PCI
+/// Split option names and their enclosing quote delimiters into stable atoms.
+/// A short quoted command is otherwise one value: changing its argument
+/// would erase the option too. Keeping the quotes also keeps later JSON
+/// fields outside that value when the argument becomes <VARIES>.
+fn cli_option_units(s: &str, units: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    let options: Vec<_> = crate::normalize::cli_option_names(s).collect();
+    if options.is_empty() {
+        return units;
+    }
+    let mut ranges: Vec<_> = options.iter().map(regex::Match::range).collect();
+    let mut boundaries: Vec<_> = options.iter().flat_map(|m| [m.start(), m.end()]).collect();
+    let (mut opening, mut escaped, mut option_index) = (None, false, 0);
+    for (at, byte) in s.bytes().enumerate() {
+        if byte == b'"' && !escaped {
+            if let Some(start) = opening.take() {
+                while option_index < options.len() && options[option_index].start() < start {
+                    option_index += 1;
+                }
+                if option_index < options.len() && options[option_index].end() <= at {
+                    ranges.push(start..at + 1);
+                    boundaries.extend([start, start + 1, at, at + 1]);
+                }
+            } else {
+                opening = Some(at);
+            }
+        }
+        escaped = byte == b'\\' && !escaped;
+    }
+    ranges.sort_unstable_by_key(|range| range.start);
+    boundaries.sort_unstable();
+    boundaries.dedup();
+    let mut split = Vec::with_capacity(units.len() + boundaries.len());
+    let (mut range_index, mut boundary_index) = (0, 0);
+    for (at, len) in units {
+        while range_index < ranges.len() && ranges[range_index].end <= at {
+            range_index += 1;
+        }
+        if range_index == ranges.len() || ranges[range_index].start >= at + len {
+            split.push((at, len));
+            continue;
+        }
+        for (word_at, word_len) in word_spans(&s[at..at + len]) {
+            let start = at + word_at;
+            let end = start + word_len;
+            let mut cursor = start;
+            while boundary_index < boundaries.len() && boundaries[boundary_index] <= start {
+                boundary_index += 1;
+            }
+            while boundary_index < boundaries.len() && boundaries[boundary_index] < end {
+                let boundary = boundaries[boundary_index];
+                split.push((cursor, boundary - cursor));
+                cursor = boundary;
+                boundary_index += 1;
+            }
+            split.push((cursor, end - cursor));
+        }
+    }
+    split
+}
+
+/// Template units keep quoted CLI/HTTP fields separate and each PCI
 /// identity atomic, even inside a path.
 /// Splitting byte spans inserts no whitespace into the shown template.
 /// The join policy still uses the original word units below.
@@ -1411,6 +1483,7 @@ pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
             units = split;
         }
     }
+    units = cli_option_units(s, units);
     let mut pci = crate::normalize::pci_addresses(s).peekable();
     if pci.peek().is_none() {
         return units;

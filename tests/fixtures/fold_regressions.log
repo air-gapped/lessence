@@ -4340,3 +4340,51 @@ type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=yes
 type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=no exit=-2 a0=3 a1=7fff11223344 a2=6e a3=40 items=1 ppid=2345 pid=3456 auid=1000 uid=1000 gid=1000 euid=0 suid=0 fsuid=0 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="helper" exe="/usr/bin/helper" key=(null)
 type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=yes exit=0 a0=3 a1=7fff11223344 a2=6e a3=40 items=1 ppid=2345 pid=3456 auid=1000 uid=1000 gid=1000 euid=0 suid=0 fsuid=0 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="helper" exe="/usr/bin/helper" key=(null)
 type=SYSCALL msg=audit(1789430400.123:801): arch=c000003e syscall=42 success=no exit=-2 a0=3 a1=7fff11223344 a2=6e a3=40 items=1 ppid=2345 pid=3456 auid=1000 uid=1000 gid=1000 euid=0 suid=0 fsuid=0 egid=1000 sgid=1000 fsgid=1000 tty=pts0 ses=3 comm="helper" exe="/usr/bin/helper" key=(null)
+
+##CASE lessence-a8t.8 groups=2
+##WHY Option names carry meaning: erasing both the short and long options merged two different operations.
+##FROM invented depot execution records
+{"dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","execID":"a12f3","level":"info","msg":"depot inspect -t aabbccddeeff00112233445566778899aabbccdd","time":"2026-09-16T06:00:00Z"}
+{"dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","execID":"b45d6","level":"info","msg":"depot restore --force aabbccddeeff00112233445566778899aabbccdd","time":"2026-09-16T06:00:01Z"}
+{"dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","execID":"c78a9","level":"info","msg":"depot inspect -t 11223344556677889900aabbccddeeff11223344","time":"2026-09-16T06:00:02Z"}
+{"dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","execID":"e01b2","level":"info","msg":"depot restore --force 11223344556677889900aabbccddeeff11223344","time":"2026-09-16T06:00:03Z"}
+
+##CASE lessence-a8t.8 groups=3
+##WHY Command traces with different operations and options must stay distinct while repetitions of each still fold.
+##FROM invented depot execution records
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot inspect -t aabbccddeeff00112233445566778899aabbccdd]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:00Z","time_ms":4.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot restore --force 11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:01Z","time_ms":5.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot compare --names aabbccddeeff00112233445566778899aabbccdd..11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:02Z","time_ms":6.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot inspect -t aabbccddeeff00112233445566778899aabbccdd]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:03Z","time_ms":7.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot restore --force 11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:04Z","time_ms":8.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot compare --names aabbccddeeff00112233445566778899aabbccdd..11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:05Z","time_ms":9.5}
+
+##CASE lessence-a8t.8 out_absent=∅
+##WHY No argument is missing: merging different command forms must not turn every variation sample into an absent value.
+##FROM invented depot execution records
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot inspect -t aabbccddeeff00112233445566778899aabbccdd]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:00Z","time_ms":4.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot restore --force 11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:01Z","time_ms":5.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot compare --names aabbccddeeff00112233445566778899aabbccdd..11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:02Z","time_ms":6.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot inspect -t aabbccddeeff00112233445566778899aabbccdd]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:03Z","time_ms":7.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot restore --force 11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:04Z","time_ms":8.5}
+[pod/repo-worker-6789bcdf7-x2z4w/worker] {"args":"[depot compare --names aabbccddeeff00112233445566778899aabbccdd..11223344556677889900aabbccddeeff11223344]","dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","level":"info","msg":"Trace","operation_name":"exec depot","time":"2026-09-16T06:01:05Z","time_ms":9.5}
+
+##CASE lessence-a8t.8 groups=3
+##WHY A startup option dump names distinct configuration keys even when every value is a number.
+##FROM invented option records
+level=info msg="  --agent-check-port='8123'" subsys=daemon
+level=info msg="  --map-entry-limit='524288'" subsys=daemon
+level=info msg="  --map-session-limit='262144'" subsys=daemon
+level=info msg="  --agent-check-port='8123'" subsys=daemon
+level=info msg="  --map-entry-limit='524288'" subsys=daemon
+level=info msg="  --map-session-limit='262144'" subsys=daemon
+level=info msg="  --agent-check-port='8123'" subsys=daemon
+level=info msg="  --map-entry-limit='524288'" subsys=daemon
+level=info msg="  --map-session-limit='262144'" subsys=daemon
+
+##CASE lessence-a8t.8 template_present=[depot --mode <VARIES>]
+##WHY A varying argument must keep the option identity and the closing quoted-command boundary visible.
+##FROM invented option records
+{"args":"[depot --mode alpha]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}
+{"args":"[depot --mode beta]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}
+{"args":"[depot --mode alpha]","context":"stable","level":"info","msg":"Trace","operation_name":"exec depot"}

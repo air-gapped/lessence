@@ -193,6 +193,15 @@ and `exe=`/`"binary":` fields keep the program path. The hasher and renderer
 read the same capture spans. An ordinary path outside these anchored
 grammars still becomes `<PATH>`.
 
+CLI option names are no longer erased by the path detector (`lessence-a8t.8`).
+Recognized `--long-options` and single-letter `-f` options are matched
+identities, with their values left variable. Hashing and rendering use the
+same capture; template alignment keeps each name and enclosing quote intact
+when arguments vary. Single-dash words such as `-sdown` remain prose.
+No command-name vocabulary is involved. `execution_commands_preserve_options_operations_and_counts`
+checks every Git execution message and Trace command in the ArgoCD corpus,
+including option spelling and per-command input/output counts.
+
 PCI addresses now retain their exact `domain:bus:device.function` text
 (`lessence-a8t.3`). Hashing and rendering use the same recognizer. An address
 inside a rendered route is shown beside its skeleton, with repeated

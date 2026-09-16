@@ -65,15 +65,6 @@ static SYSLOG_PATH_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(/[A-Za-z0-9_./~-]+)\[\d+\]:").expect("Failed to compile syslog path tag regex")
 });
 
-// CLI flags: `--flag-name` or a one-letter `-f`. A single dash before a
-// word — sentinel's `-sdown`, Go's `-namespace` — is a sign or a word, not
-// a flag; read as one, `+sdown` and `-sdown` became one <FLAG> and the
-// polarity of a failover vanished from the line.
-static CLI_FLAG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\s(?:--[a-zA-Z][a-zA-Z0-9\-_]*|-[a-zA-Z]\b)")
-        .expect("Failed to compile CLI flag regex")
-});
-
 // JSON-like structures and embedded objects
 // Matches {key:value...} or escaped JSON \"{}\"
 static JSON_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
@@ -120,14 +111,9 @@ impl PathDetector {
             })
             .to_string();
 
-        // Replace CLI flags (like --flag-name)
-        result = CLI_FLAG
-            .replace_all(&result, |caps: &regex::Captures| {
-                let flag = caps.get(0).unwrap().as_str();
-                tokens.push(Token::Path(flag.trim().to_string()));
-                " <FLAG>".to_string()
-            })
-            .to_string();
+        // CLI option names are keys, not variable paths. Leave their
+        // spelling intact: erasing -t / --force can make distinct commands
+        // look like a sentence with only one differing word.
 
         // Replace source file:line patterns (before other path detection)
         // This normalizes file.go:1234] to file.go:<LINE>]
@@ -783,12 +769,13 @@ mod shapes_2026_08_29 {
     use super::*;
 
     #[test]
-    fn a_single_dash_before_a_word_is_not_a_flag() {
+    fn option_names_and_signed_words_are_not_paths() {
         let (r, _) = PathDetector::detect_and_replace("x # -sdown master mymaster y");
         assert_eq!(r, "x # -sdown master mymaster y");
-        let (r, _) =
+        let (r, tokens) =
             PathDetector::detect_and_replace("run --namespace kube-system -n foo -namespace bar");
-        assert_eq!(r, "run <FLAG> kube-system <FLAG> foo -namespace bar");
+        assert_eq!(r, "run --namespace kube-system -n foo -namespace bar");
+        assert!(tokens.is_empty());
     }
 
     #[test]
