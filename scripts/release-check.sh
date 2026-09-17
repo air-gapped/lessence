@@ -19,7 +19,9 @@ last_tag="$(git describe --tags --abbrev=0)"
 
 echo "Running gate against $last_tag..." >&2
 gate_status="PASS"
-GATE_BASE="$last_tag" ./scripts/gate.sh || gate_status="FAIL"
+# Vacuity is judged per commit by the pre-commit gate; against the tag it
+# is only a count (see gate.sh, lessence-km2).
+GATE_BASE="$last_tag" GATE_VACUOUS_INFORMATIONAL=1 ./scripts/gate.sh || gate_status="FAIL"
 
 # ── mutants --in-diff on <last-tag>..HEAD ───────────────────────────────
 

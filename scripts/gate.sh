@@ -341,7 +341,14 @@ fi
 
 verdict="PASS"
 fail_reasons=()
-if [ "${#vacuous[@]}" -gt 0 ]; then
+# A vacuous case is a per-commit property: the case must fail on the build
+# it was committed against, and that is judged here with GATE_BASE=HEAD.
+# Against an older baseline (release-check sets GATE_BASE to the last tag)
+# a case that passes only says the tag never had that defect — it was
+# introduced and fixed in between, or the case guards behaviour the tag
+# already had. release-check sets GATE_VACUOUS_INFORMATIONAL=1 so those
+# are counted and printed, not failed (lessence-km2).
+if [ "${#vacuous[@]}" -gt 0 ] && [ -z "${GATE_VACUOUS_INFORMATIONAL:-}" ]; then
     verdict="FAIL"
     fail_reasons+=("vacuous new case(s): ${vacuous[*]}")
 fi
@@ -358,7 +365,11 @@ fi
 
 echo ""
 echo "gate: $GATE_BASE ($base_commit) vs working tree"
-echo "cases: ${n_new} new, ${#vacuous[@]} vacuous"
+if [ -n "${GATE_VACUOUS_INFORMATIONAL:-}" ]; then
+    echo "cases: ${n_new} new since ${GATE_BASE}, ${#vacuous[@]} already pass on it (informational)"
+else
+    echo "cases: ${n_new} new, ${#vacuous[@]} vacuous"
+fi
 echo "golden: ${#distilled_corpora[@]} corpora, ${#golden_table_rows[@]} changed"
 for row in "${golden_table_rows[@]}"; do
     echo "  $row"

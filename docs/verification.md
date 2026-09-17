@@ -31,7 +31,10 @@ No target other than `make distill` reads an original corpus.
    baseline binary (`LESSENCE_BIN`, `LESSENCE_FIXTURE` overrides in
    `tests/integration/test_fold_regressions.rs`). A new block that passes on
    the baseline and lacks `holds-on-base` in its header is vacuous → FAIL,
-   headers listed.
+   headers listed. With `GATE_VACUOUS_INFORMATIONAL=1` (set by
+   `release-check.sh`, whose baseline is the last tag) the count is printed
+   and listed in `gate.json` but does not fail: against a tag, passing only
+   means the tag never had that defect.
 5. Golden: for each distilled corpus, the new binary's `--explain` inventory
    (`count<TAB>template` per group, sorted) is compared to `<name>.golden`.
    Changed corpora are printed (templates added / removed / recounted) and

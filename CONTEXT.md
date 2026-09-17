@@ -60,6 +60,19 @@ Other terms as this repo uses them:
 3. `--explain` and `--format json` **disagreeing on a corpus where the
    baseline agreed exactly** (the `modes` line; see below).
 
+**Vacuity is a per-commit property.** The check runs with `GATE_BASE=HEAD`
+before every commit, so a `##CASE` added since the check existed failed on
+the build it was committed against (or says `holds-on-base`); cases older
+than the rule were never proven that way. `make release-check` runs
+the same gate against the last tag, and there a case that passes on the tag
+means only that the tag never had the defect: it appeared and was fixed in
+between, or the case predates the rule and guards behaviour the tag already
+had. On 2026-09-17, 52 of 200 cases were in that state against v0.4.5, every
+one of them run by the v0.4.5 binary with exit 0 and satisfied by its output
+(`lessence-km2`). release-check therefore counts them and prints the count;
+it does not fail on them, and re-running the tag check cannot make a case
+vacuous that the commit-time check accepted.
+
 **A golden change never fails the gate.** Changed goldens are printed for a
 human or agent to read and judge. So this line:
 
