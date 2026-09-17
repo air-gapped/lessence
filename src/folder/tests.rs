@@ -2003,6 +2003,8 @@ fn explain_first_diff_reports_a_surplus_token_when_one_line_is_a_prefix() {
         .unwrap();
     assert_eq!(diff.ours, "retrying");
     assert_eq!(diff.theirs, "");
+    let normalized = &f.buffer.last().unwrap().first().normalized;
+    assert_eq!(&normalized[diff.at..], "retrying");
 }
 
 #[test]
@@ -5917,4 +5919,253 @@ fn two_retained_groups_keep_the_later_last_line() {
     assert_eq!(record["first"]["line_no"], 1);
     assert_eq!(record["last"]["line_no"], 6);
     assert_eq!(record["count"], 6);
+}
+
+// ---- e8v: render.rs survivors — summary completeness, briefing span, markdown ----
+
+fn summary_json(f: &PatternFolder) -> serde_json::Value {
+    let mut buf = Vec::new();
+    f.print_summary_json(&mut buf, std::time::Duration::ZERO)
+        .unwrap();
+    serde_json::from_slice(&buf).unwrap()
+}
+
+/// A clean run: every completeness flag true, nothing omitted, nothing
+/// sampled (kills the `== 0` → `!= 0` mutants in print_summary_json and
+/// the `>= 0` ones on the omitted_values kind).
+#[test]
+fn a_clean_json_run_reports_complete_everywhere() {
+    let mut f = make_folder_json();
+    for _ in 0..3 {
+        f.process_line("worker heartbeat ok").unwrap();
+    }
+    f.finish().unwrap();
+    let v = summary_json(&f);
+    let c = &v["completeness"];
+    assert_eq!(c["complete"], true, "{c}");
+    assert_eq!(c["input"]["complete"], true, "{c}");
+    assert_eq!(c["groups"]["complete"], true, "{c}");
+    assert_eq!(c["variation_values"]["complete"], true, "{c}");
+    assert_eq!(c["variation_values"]["capped_entries"], 0, "{c}");
+    assert_eq!(c["variation_values"]["sampled_entries"], 0, "{c}");
+    assert_eq!(c["variation_values"]["uncomputed_groups"], 0, "{c}");
+    assert_eq!(
+        c["variation_values"]["omitted_values"]["kind"], "exact",
+        "{c}"
+    );
+    assert_eq!(c["variation_values"]["omitted_values"]["value"], 0, "{c}");
+}
+
+/// Groups below min_collapse carry no computed variation; the summary
+/// counts them and declares the omitted values unknown (kills the
+/// `uncomputed += 1` → `*=` mutant and the `> 0` kind selection).
+#[test]
+fn uncomputed_variation_groups_make_omitted_values_unknown() {
+    let mut f = make_folder_json();
+    f.process_line("alpha event").unwrap();
+    f.process_line("bravo event").unwrap();
+    f.finish().unwrap();
+    let v = summary_json(&f);
+    let c = &v["completeness"];
+    assert_eq!(c["variation_values"]["uncomputed_groups"], 2, "{c}");
+    assert_eq!(
+        c["variation_values"]["omitted_values"]["kind"], "unknown",
+        "{c}"
+    );
+    assert_eq!(c["variation_values"]["complete"], false, "{c}");
+    assert_eq!(c["groups"]["complete"], true, "{c}");
+    assert_eq!(c["input"]["complete"], true, "{c}");
+    assert_eq!(c["complete"], false, "{c}");
+}
+
+/// One entry with more distinct values than samples, one without: exactly
+/// one entry is "sampled", exactly one value is omitted, and the count is
+/// exact (kills the `capped || omitted > 0` family and the two `+=`
+/// counters in format_group_json).
+#[test]
+fn a_sampled_but_uncapped_entry_is_counted_once_with_its_exact_omission() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east state";
+    for w in ["w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8"] {
+        f.process_line(&format!("{stem} {w}")).unwrap();
+    }
+    let other = "job queue drain step retry limit reached worker slot";
+    for w in ["a1", "a2", "a1"] {
+        f.process_line(&format!("{other} {w}")).unwrap();
+    }
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 2, "{out:?}");
+    let v = summary_json(&f);
+    let c = &v["completeness"]["variation_values"];
+    assert_eq!(c["capped_entries"], 0, "{c}");
+    assert_eq!(c["sampled_entries"], 1, "{c}");
+    assert_eq!(c["omitted_values"]["kind"], "exact", "{c}");
+    assert_eq!(c["omitted_values"]["value"], 1, "{c}");
+    assert_eq!(c["complete"], false, "{c}");
+    assert_eq!(v["completeness"]["groups"]["complete"], true, "{v}");
+    assert_eq!(v["completeness"]["complete"], false, "{v}");
+}
+
+/// More distinct values than the rollup cap: the entry is capped and the
+/// omitted count becomes a lower bound (kills `capped_entries += 1` →
+/// `-=`/`*=` and the `capped > 0` kind selection).
+#[test]
+fn a_capped_entry_makes_omitted_values_a_lower_bound() {
+    let mut f = make_folder_json();
+    for i in 0..=ROLLUP_DISTINCT_CAP {
+        f.process_line(&format!(
+            "request 550e8400-e29b-41d4-a716-4466554{i:05} accepted"
+        ))
+        .unwrap();
+    }
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let v = summary_json(&f);
+    let c = &v["completeness"]["variation_values"];
+    assert_eq!(c["capped_entries"], 1, "{c}");
+    assert_eq!(c["sampled_entries"], 1, "{c}");
+    assert_eq!(c["omitted_values"]["kind"], "lower_bound", "{c}");
+    assert_eq!(c["complete"], false, "{c}");
+}
+
+/// Only the --top cap omits: groups are incomplete, input and variation
+/// stay complete, and the run is incomplete (kills the `&&` → `||` splits
+/// of the groups conjunction where the left side is false).
+#[test]
+fn a_top_omission_alone_makes_groups_and_the_run_incomplete() {
+    let mut f = make_folder_json();
+    for _ in 0..3 {
+        f.process_line("alpha event").unwrap();
+    }
+    for _ in 0..3 {
+        f.process_line("bravo event").unwrap();
+    }
+    let (_shown, total, _coverage, _fit) = f.finish_top_n(1, None, false).unwrap();
+    assert_eq!(total, 2);
+    let v = summary_json(&f);
+    let c = &v["completeness"];
+    assert_eq!(c["groups"]["omitted_by_top"]["value"], 1, "{c}");
+    assert_eq!(c["groups"]["complete"], false, "{c}");
+    assert_eq!(c["input"]["complete"], true, "{c}");
+    assert_eq!(c["variation_values"]["complete"], true, "{c}");
+    assert_eq!(c["complete"], false, "{c}");
+}
+
+/// Only an overlong line was skipped: input is incomplete, groups and
+/// variation complete, the run incomplete (kills the input conjunction's
+/// `&&` → `||` and `== 0` → `!= 0` where the other term is true).
+#[test]
+fn an_overlong_skip_alone_makes_input_and_the_run_incomplete() {
+    let mut f = make_folder_json();
+    for _ in 0..3 {
+        f.process_line("alpha event").unwrap();
+    }
+    f.finish().unwrap();
+    let report = crate::ingest::IngestReport {
+        fail_pattern_matched: false,
+        overlong_lines_skipped: 1,
+        continuation_lines_absorbed: 0,
+        max_lines_reached: false,
+    };
+    f.absorb_ingest_report(&report, false);
+    let v = summary_json(&f);
+    let c = &v["completeness"];
+    assert_eq!(c["input"]["complete"], false, "{c}");
+    assert_eq!(c["input"]["skipped_overlong_lines"]["value"], 1, "{c}");
+    assert_eq!(
+        c["input"]["unprocessed_after_max_lines"]["kind"], "exact",
+        "{c}"
+    );
+    assert_eq!(c["input"]["failed_sources"]["kind"], "exact", "{c}");
+    assert_eq!(c["groups"]["complete"], true, "{c}");
+    assert_eq!(c["variation_values"]["complete"], true, "{c}");
+    assert_eq!(c["complete"], false, "{c}");
+}
+
+/// Ten lines over a five-second span: the briefing's rate is exactly two
+/// lines per second and the histogram exists (kills the `(Some, Some)`
+/// arm deletions, the `d > 0` guard → false, and `/` → `%`/`*`).
+#[test]
+fn the_briefing_rate_is_lines_over_the_span_in_seconds() {
+    let mut f = make_folder_json();
+    for s in [0, 1, 1, 2, 2, 3, 3, 4, 4, 5] {
+        f.process_line(&format!("2025-01-01 10:00:0{s} worker tick"))
+            .unwrap();
+    }
+    f.finish().unwrap();
+    let b = f.build_briefing();
+    assert_eq!(b.lines, 10);
+    assert_eq!(b.span.duration_seconds, Some(5), "{:?}", b.span);
+    assert_eq!(b.span.lines_per_second, Some(2.0), "{:?}", b.span);
+    assert!(b.histogram.is_some());
+}
+
+/// Two lines at the same instant: a zero-second span has no rate (kills
+/// the `d > 0` guard → true and `>` → `==`/`>=`, which would divide by
+/// zero into infinity).
+#[test]
+fn a_zero_second_span_has_no_rate() {
+    let mut f = make_folder_json();
+    f.process_line("2025-01-01 10:00:00 worker tick").unwrap();
+    f.process_line("2025-01-01 10:00:00 worker tock").unwrap();
+    f.finish().unwrap();
+    let b = f.build_briefing();
+    assert_eq!(b.span.duration_seconds, Some(0), "{:?}", b.span);
+    assert_eq!(b.span.lines_per_second, None, "{:?}", b.span);
+}
+
+/// One JSON line and one plain line: the format mix is mixed, and the
+/// counts add up (kills `json + logfmt + plain` → `-`).
+#[test]
+fn a_json_and_a_plain_line_make_the_format_mix_mixed() {
+    let mut f = make_folder_json();
+    f.process_line(r#"{"level":"info","msg":"started","port":8080}"#)
+        .unwrap();
+    f.process_line("plain text line without structure").unwrap();
+    f.process_line("Alloc=25451 TotalAlloc=99852 Sys=81560")
+        .unwrap();
+    f.finish().unwrap();
+    let b = f.build_briefing();
+    assert_eq!(
+        (b.format.json, b.format.logfmt, b.format.plain),
+        (1, 1, 1),
+        "{:?}",
+        b.format
+    );
+    assert!(b.format.mixed, "{:?}", b.format);
+}
+
+/// A single unfolded line that happens to contain `+` is not a folded
+/// entry (kills `contains('+') && contains("similar")` → `||`).
+#[test]
+fn an_unfolded_markdown_entry_with_a_plus_is_not_marked_folded() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        output_format: "markdown".to_string(),
+        ..Config::default()
+    });
+    f.process_line("sum a+b done").unwrap();
+    f.finish().unwrap();
+    let mut buf = Vec::new();
+    f.emit_markdown(&mut buf).unwrap();
+    let doc = String::from_utf8(buf).unwrap();
+    assert!(doc.contains("```\nsum a+b done\n```"), "{doc}");
+    assert!(!doc.contains("(Folded)"), "{doc}");
+}
+
+#[test]
+fn an_unsampled_variation_entry_keeps_the_sampled_count_zero() {
+    let mut f = make_folder_json();
+    for word in ["first", "second", "first"] {
+        f.process_line(&format!(
+            "job queue drain step retry limit reached worker slot {word}"
+        ))
+        .unwrap();
+    }
+    assert_eq!(f.finish().unwrap().len(), 1);
+    let summary = summary_json(&f);
+    let variation = &summary["completeness"]["variation_values"];
+    assert_eq!(variation["sampled_entries"], 0, "{summary}");
+    assert_eq!(variation["omitted_values"]["value"], 0, "{summary}");
+    assert_eq!(variation["complete"], true, "{summary}");
 }

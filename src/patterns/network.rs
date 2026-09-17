@@ -1605,3 +1605,170 @@ mod shapes_2026_08_29 {
         assert_eq!(r, "creating proc entry for system.info");
     }
 }
+
+/// Boundary and glue rules of the network detector, written against the
+/// survivors of the 2026-09-16 release mutation sweep (lessence-e8v). Each
+/// test names the candidates it is meant to kill; that is a hypothesis
+/// until the mutants are re-run against it.
+#[cfg(test)]
+mod e8v_2026_09_17 {
+    use super::*;
+
+    fn net(line: &str) -> (String, Vec<Token>) {
+        NetworkDetector::detect_and_replace(line, true, true, true)
+    }
+
+    fn has_ip(t: &[Token]) -> bool {
+        t.iter()
+            .any(|t| matches!(t, Token::IPv4(_) | Token::IPv6(_)))
+    }
+
+    fn has_port(t: &[Token]) -> bool {
+        t.iter().any(|t| matches!(t, Token::Port(_)))
+    }
+
+    /// in_dotted_name, `before` branch (77:43, 77:71): a dotted name that
+    /// ENDS in four octets keeps them as labels.
+    #[test]
+    fn four_octets_ending_a_dotted_name_are_labels() {
+        let (r, t) = net("a.12.51.100.77 done");
+        assert_eq!(r, "a.12.51.100.77 done");
+        assert!(!has_ip(&t), "{t:?}");
+    }
+
+    /// in_dotted_name, `after` branch (79:70): an address followed by a
+    /// sentence dot is an address; the dot belongs to the sentence.
+    #[test]
+    fn an_address_before_a_sentence_dot_is_an_address() {
+        let (r, t) = net("peer 10.0.0.1. retry");
+        assert_eq!(r, "peer <IP>. retry");
+        assert!(has_ip(&t), "{t:?}");
+    }
+
+    /// in_dotted_name bound (79:25): an address followed by a dot at the
+    /// very end of the input must not read past the buffer.
+    #[test]
+    fn an_address_with_a_trailing_dot_at_end_of_input_does_not_panic() {
+        let (r, t) = net("peer 10.0.0.1.");
+        assert_eq!(r, "peer <IP>.");
+        assert!(has_ip(&t), "{t:?}");
+    }
+
+    /// fqdn_stands_alone, `after` glue (96:29, 98:17): a name glued to a
+    /// path stays literal even with host= evidence in front of it.
+    #[test]
+    fn a_keyed_name_glued_to_a_path_stays_literal() {
+        let (r, t) = net("host=docker.io/library/nginx up");
+        assert_eq!(r, "host=docker.io/library/nginx up");
+        assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
+    }
+
+    /// fqdn_stands_alone, `\x` escape glue (98:32, 98:58): a name continued
+    /// by a systemd escape stays literal even with host= evidence.
+    #[test]
+    fn a_keyed_name_continued_by_a_systemd_escape_stays_literal() {
+        let (r, t) = net(r"host=kubernetes.io\x2dfoo up");
+        assert_eq!(r, r"host=kubernetes.io\x2dfoo up");
+        assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
+    }
+
+    /// ipv6_len glue (108:32, 109:13, 109:25): an IPv6-shaped run glued to
+    /// a letter on either side is not an address.
+    #[test]
+    fn an_ipv6_run_glued_to_letters_on_one_side_stays_literal() {
+        for line in ["x2001:db8::1 up", "2001:db8::1x up"] {
+            let (r, t) = net(line);
+            assert_eq!(r, line);
+            assert!(!has_ip(&t), "{line}: {t:?}");
+        }
+        // and the same run standing alone is one
+        let (r, t) = net("2001:db8::1 up");
+        assert_eq!(r, "<IP> up");
+        assert!(has_ip(&t), "{t:?}");
+    }
+
+    /// port_stands_alone (156:9, 158:23, 158:72, 158:87 ×2, 159:32, 160:16)
+    /// and the port-skip chains in detect_and_replace (298:21, 299:21,
+    /// 322:25, 323:25): each rejection alone must keep a `host:NN` shape
+    /// literal. Ports only, so FQDN folding cannot mask the assertion.
+    /// `xlocalhost:80` — glued by a letter (PORT_REGEX's `localhost`
+    /// alternative, so the letter is outside the match); `x_a.b:80` — glued
+    /// by `_`; `a.b:12:zz` — followed by `:` with no hex after it, so only
+    /// the line-ref guard fires; `ab:db.local:80` — a hex pair and colon
+    /// before the host, so only the colon-chain guard fires;
+    /// `main.go:12` — only the source-file guard fires.
+    #[test]
+    fn a_port_shape_is_kept_literal_by_each_rejection_alone() {
+        for line in [
+            "xlocalhost:80 ok",
+            "x_a.b:80 ok",
+            "a.b:12:zz ok",
+            "ab:db.local:80 ok",
+            "main.go:12 ok",
+        ] {
+            let (r, t) = NetworkDetector::detect_and_replace(line, false, true, false);
+            assert_eq!(r, line);
+            assert!(!has_port(&t), "{line}: {t:?}");
+        }
+        // and the plain shapes are ports
+        for (line, want) in [
+            ("foo.bar:80 ok", "foo.bar:<PORT> ok"),
+            ("localhost:80 ok", "localhost:<PORT> ok"),
+        ] {
+            let (r, t) = NetworkDetector::detect_and_replace(line, false, true, false);
+            assert_eq!(r, want);
+            assert!(has_port(&t), "{line}: {t:?}");
+        }
+    }
+
+    /// detect_and_replace 189:26: with addresses disabled, a MAC stays
+    /// literal even though it has the shape.
+    #[test]
+    fn a_mac_stays_literal_when_addresses_are_disabled() {
+        // Dotted text passes the FQDN prefilter even with address detection disabled.
+        let line = "link aa:bb:cc:dd:ee:ff example.com";
+        let (r, t) = NetworkDetector::detect_and_replace(line, false, false, true);
+        assert_eq!(r, line);
+        assert!(!t.iter().any(|t| matches!(t, Token::Mac(_))), "{t:?}");
+    }
+
+    #[test]
+    fn mac_boundaries_distinguish_hex_chains_from_sentence_colons() {
+        for (line, expected) in [
+            ("a:aa:bb:cc:dd:ee:ff", "a:aa:bb:cc:dd:ee:ff"),
+            ("aa:bb:cc:dd:ee:ff:ab", "aa:bb:cc:dd:ee:ff:ab"),
+            ("aa:bb:cc:dd:ee:ff:", "<MAC>:"),
+            ("aa:bb:cc:dd:ee:ff:zz", "<MAC>:zz"),
+        ] {
+            let (result, tokens) = NetworkDetector::detect_and_replace(line, true, false, false);
+            assert_eq!(result, expected, "{line}");
+            assert_eq!(
+                tokens.iter().any(|token| matches!(token, Token::Mac(_))),
+                expected.contains("<MAC>"),
+                "{line}: {tokens:?}"
+            );
+        }
+    }
+
+    /// fqdn_has_endpoint_evidence bounds (563:24, 563:20): a name followed
+    /// by a lone `:` at the end of the input must not read past the buffer
+    /// and is not a host.
+    #[test]
+    fn a_name_before_a_lone_colon_at_end_of_input_does_not_panic() {
+        let (r, t) =
+            NetworkDetector::detect_and_replace("connect example.com:", false, false, true);
+        assert_eq!(r, "connect example.com:");
+        assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
+    }
+
+    /// fqdn_has_endpoint_evidence key walk-back (592:21): a name at column
+    /// 0 has nothing before it, and must not underflow looking for a key.
+    #[test]
+    fn a_name_with_no_preceding_key_stays_literal() {
+        for line in ["example.com up", "=example.com up"] {
+            let (r, t) = NetworkDetector::detect_and_replace(line, false, false, true);
+            assert_eq!(r, line);
+            assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
+        }
+    }
+}

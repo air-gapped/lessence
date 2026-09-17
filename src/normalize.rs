@@ -4041,3 +4041,40 @@ mod syslog_host_tests_2026_08_29 {
         assert!(line.normalized.contains("<FQDN>"), "{}", line.normalized);
     }
 }
+
+/// Threshold 0 admits unanchored pairs without shared tokens (lessence-e8v). The needed-LCS seed in
+/// `are_similar` is `ceil((threshold * total) / 200)`; with the product
+/// replaced by a sum it becomes `ceil(total / 200) >= 1` at threshold 0,
+/// and two equal-length lines that share no token — LCS 0 — would be
+/// refused. Written against the survivor at the seed line; a hypothesis
+/// until that mutant fails.
+#[cfg(test)]
+mod threshold_zero_2026_09_17 {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::float_cmp)] // Disjoint tokens have an exactly zero LCS score.
+    fn at_threshold_zero_disjoint_unanchored_lines_are_similar() {
+        let normalizer = Normalizer::new(Config {
+            threshold: 0,
+            ..Config::default()
+        });
+        // Plain words only: no detector fires, no anchor, distinct hashes.
+        let a = normalizer
+            .normalize_line("alpha bravo charlie delta".to_string())
+            .unwrap();
+        let b = normalizer
+            .normalize_line("echo foxtrot golf hotel".to_string())
+            .unwrap();
+        assert_ne!(a.hash, b.hash);
+        assert_eq!(a.anchor, b.anchor, "plain words carry no anchor");
+        assert_eq!(normalizer.similarity_score(&a, &b), 0.0);
+        assert!(
+            normalizer.are_similar(&a, &b),
+            "threshold 0 must accept a pair with nothing in common"
+        );
+        // and the default threshold still refuses them
+        let strict = Normalizer::new(Config::default());
+        assert!(!strict.are_similar(&a, &b));
+    }
+}

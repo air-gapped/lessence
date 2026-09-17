@@ -803,3 +803,24 @@ fn markdown_code_fence(content: &str) -> String {
     let fence = "`".repeat((longest_run + 1).max(3));
     format!("{fence}\n{content}\n{fence}")
 }
+
+#[cfg(test)]
+mod fence_tests {
+    use super::markdown_code_fence;
+
+    /// The fence is three backticks for content without any, and always
+    /// one longer than the longest run inside the content, so the content
+    /// cannot close it (kills the constant-return, `==` → `!=`, `+=` and
+    /// `+ 1` → `* 1` mutants).
+    #[test]
+    fn the_fence_is_always_longer_than_any_run_in_the_content() {
+        assert_eq!(markdown_code_fence("abc"), "```\nabc\n```");
+        let one = markdown_code_fence("a`b");
+        assert!(one.starts_with("```\n"), "{one}");
+        assert!(!one.starts_with("````"), "{one}");
+        let four = markdown_code_fence("````");
+        assert!(four.starts_with("`````\n"), "{four}");
+        assert!(!four.starts_with("``````"), "{four}");
+        assert!(four.ends_with("\n`````"), "{four}");
+    }
+}

@@ -45,15 +45,26 @@ exclude_re = [
     # are_similar multiset bound: these mutations push the bound above any
     # admissible threshold (<= 100) so the reject never fires — decisions
     # unchanged, only the DP shortcut is lost.
-    'normalize.rs:380:21: replace \* with \+',
-    'normalize.rs:380:66: replace / with \*',
-    'normalize.rs:380:75: replace \* with \+',
+    '^src/normalize\.rs:1493:21: replace \* with \+ in Normalizer::are_similar$',
+    '^src/normalize\.rs:1493:66: replace / with \* in Normalizer::are_similar$',
+    '^src/normalize\.rs:1493:75: replace \* with \+ in Normalizer::are_similar$',
     # are_similar needed-LCS seed: ceil((T*total)/200) is only a starting
-    # point — these mutations can only undershoot it (product >= sum on the
-    # admissible domain), and the step-up loop below walks `need` to the
-    # same authoritative value either way.
-    'normalize.rs:392:40: replace \* with \+',
-    'normalize.rs:392:40: replace \* with /',
+    # point — division by total (>= 2) can only undershoot it, and the
+    # step-up loop walks `need` to the same authoritative value. Addition
+    # is NOT equivalent at threshold 0; keep that mutant testable. The
+    # bounds above need exact locations because their * -> + mutations
+    # share a function name with this non-equivalent seed mutation.
+    '^src/normalize\.rs:1505:40: replace \* with / in Normalizer::are_similar$',
+
+    # lessence-e8v: widened prefilters only add inert detector calls.
+    # cpu_quantities and the bracket detector repeat their own guards;
+    # PCI_ADDRESS itself requires both the colon and the dot-digit shape.
+    '^src/normalize\.rs:49:51: replace && with \|\|$',
+    '^src/normalize\.rs:149:29: replace && with \|\|$',
+    '^src/normalize\.rs:347:9: replace && with \|\| in pci_addresses$',
+    # At format_total == 0, nonnegative dominant_count < 0.0 is false
+    # regardless of the first guard, so mixed remains false.
+    '^src/folder/render\.rs:481:34: replace > with >= in PatternFolder::build_briefing$',
 
     # --- lessence-e8v: merge_retained's Counted arm is unreachable ---
     # A `Counted` accumulator only exists after `finalize` inserts the
