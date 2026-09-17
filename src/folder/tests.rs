@@ -6349,7 +6349,7 @@ fn plain_word_diffs_count_sentence_words_not_values() {
 fn the_compact_marker_ellipsis_means_more_values_than_shown() {
     let entry = |distinct: usize, samples: &[&str]| VariationEntry {
         distinct_count: distinct,
-        samples: samples.iter().map(|s| s.to_string()).collect(),
+        samples: samples.iter().map(ToString::to_string).collect(),
         capped: false,
         counts: Some(vec![1; samples.len()]),
     };
@@ -6374,8 +6374,10 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
     assert!(state.realign_capped);
     assert_eq!(state.realign.len(), 1);
 
-    let mut state = RetainedState::default();
-    state.positional_members = 3;
+    let mut state = RetainedState {
+        positional_members: 3,
+        ..RetainedState::default()
+    };
     state.varies.insert("old".to_string(), 2);
     rc.accumulate_new_varies("a old b", &[(2, 3)], &mut state);
     assert_eq!(state.varies["old"], 5);
@@ -6383,12 +6385,16 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
     assert!(state.varies_capped, "{:?}", state.varies);
     assert_eq!(state.varies.len(), 1);
 
-    let mut into = RetainedState::default();
-    into.positional_members = 2;
+    let mut into = RetainedState {
+        positional_members: 2,
+        ..RetainedState::default()
+    };
     into.varies.insert("v".to_string(), 2);
-    let mut from = RetainedState::default();
-    from.positional_members = 3;
-    from.realign_capped = true;
+    let mut from = RetainedState {
+        positional_members: 3,
+        realign_capped: true,
+        ..RetainedState::default()
+    };
     from.varies.insert("v".to_string(), 3);
     from.varies.insert("w".to_string(), 1);
     rc.merge_retained(&mut into, from);
@@ -6447,4 +6453,213 @@ fn anchor_mismatch_is_set_only_when_the_anchors_differ() {
     f.process_line("req took 333 sec").unwrap();
     assert_eq!(f.buffer.len(), 2);
     assert!(!f.buffer[1].nearest.as_ref().unwrap().anchor_mismatch);
+}
+
+/// Second pass on the e8v folder-half survivors. Equal-length pairs let the
+/// redundant `r`/`w` bounds in shared_affixes shadow each other, so every
+/// case here binds on one side only. 1187:52 (right at the cap), 1227:37/54,
+/// 1233:18/27/31, 1234:19/28/32.
+#[test]
+fn shared_affix_bounds_bind_on_the_shorter_side() {
+    let big: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS).collect();
+    assert!(align_words(&big[..MAX_ALIGN_WORDS - 1], &big).is_some());
+    // prefix cap: the whole shorter word is never a prefix
+    assert_eq!(shared_affixes("k=", "k=x"), (0, 0));
+    assert_eq!(shared_affixes("k=x", "k="), (0, 0));
+    // suffix bound: brackets stop one short of the shorter word
+    assert_eq!(shared_affixes("]]", "]]]"), (0, 1));
+    assert_eq!(shared_affixes("]]]", "]]"), (0, 1));
+    // prefix and suffix together, so `prefix + suffix` is not `prefix * suffix`
+    assert_eq!(shared_affixes("f(())", "f((x))"), (3, 1));
+    assert_eq!(shared_affixes("f((x))", "f(())"), (3, 1));
+}
+
+/// align_words 1199:27: a dropped left word must still let the table see
+/// the match below it. Without it `a` aligns to the trailing `a` instead
+/// of `b` reaching `b`.
+#[test]
+fn word_alignment_drops_a_left_word_to_reach_a_later_match() {
+    assert_eq!(
+        align_words(&["a", "a"], &["b", "a", "a"]).unwrap(),
+        vec![Some(1), Some(2)]
+    );
+    assert_eq!(
+        align_words(&["a", "a"], &["b", "a", "b"]).unwrap(),
+        vec![None, Some(1)]
+    );
+    assert_eq!(
+        align_words(&["a"], &["b", "b", "a"]).unwrap(),
+        vec![Some(2)]
+    );
+    assert_eq!(
+        align_words(&["a", "z", "b"], &["b", "a"]).unwrap(),
+        vec![None, None, Some(0)]
+    );
+    assert_eq!(
+        align_words(&["a", "b"], &["x", "a", "b", "a", "b"]).unwrap(),
+        vec![Some(1), Some(2)]
+    );
+}
+
+/// plain_word_diffs 1592: an unaligned left unit the right side has
+/// elsewhere is not a difference.
+#[test]
+fn a_repeated_left_unit_is_not_a_plain_word_diff() {
+    assert_eq!(plain_word_diffs("p q q", "p q"), 0);
+    assert_eq!(plain_word_diffs("p q x.y", "p q"), 0);
+}
+
+/// unit_spans 1477/1489/1520/1527, cli_option_units 1410-1449: the exact
+/// spans, measured on the clean build and reviewed against the intended
+/// cuts. A request is quote, method, path, `HTTP/`, version, quote; an
+/// option name is cut from its `=value`; an escaped quote stays inside its
+/// string; a PCI address is one atom. Any boundary off by one moves,
+/// empties or drops one of these.
+#[test]
+fn unit_spans_are_non_empty_ordered_and_reach_every_request_and_option() {
+    let pinned = [
+        (
+            r#"a "GET /x HTTP/1.1" b "POST /y HTTP/2" c"#,
+            vec![
+                (0, 1),
+                (2, 1),
+                (3, 3),
+                (7, 2),
+                (10, 5),
+                (15, 3),
+                (18, 1),
+                (20, 1),
+                (22, 1),
+                (23, 4),
+                (28, 2),
+                (31, 5),
+                (36, 1),
+                (37, 1),
+                (39, 1),
+            ],
+        ),
+        (
+            r#"a="--x=1 --y=2" b"#,
+            vec![
+                (0, 2),
+                (2, 1),
+                (3, 3),
+                (6, 2),
+                (9, 3),
+                (12, 2),
+                (14, 1),
+                (16, 1),
+            ],
+        ),
+        (
+            r#"a="q \" --z=3" b"#,
+            vec![
+                (0, 2),
+                (2, 1),
+                (3, 1),
+                (5, 2),
+                (8, 3),
+                (11, 2),
+                (13, 1),
+                (15, 1),
+            ],
+        ),
+        ("dev 0000:21:00.0 up", vec![(0, 3), (4, 12), (17, 2)]),
+        ("0000:21:00.0", vec![(0, 12)]),
+        (
+            "path /sys/0000:21:00.0/0000:21:00.1/x",
+            vec![(0, 4), (5, 5), (10, 12), (22, 1), (23, 12), (35, 2)],
+        ),
+        (
+            r#"req "GET /api/v1/items HTTP/1.1" 200"#,
+            vec![
+                (0, 3),
+                (4, 1),
+                (5, 3),
+                (9, 13),
+                (23, 5),
+                (28, 3),
+                (31, 1),
+                (33, 3),
+            ],
+        ),
+        (
+            r#"msg="  --bpf-lb-mode=snat" subsys=daemon"#,
+            vec![(0, 4), (4, 1), (7, 13), (20, 5), (25, 1), (27, 13)],
+        ),
+    ];
+    for (s, expected) in pinned {
+        let spans = unit_spans(s);
+        let mut last_end = 0;
+        for &(at, len) in &spans {
+            assert!(len > 0, "empty span at {at} in {s:?}: {spans:?}");
+            assert!(at >= last_end, "out of order in {s:?}: {spans:?}");
+            last_end = at + len;
+        }
+        assert_eq!(spans, expected, "{s:?}");
+    }
+    fn texts(s: &str) -> Vec<&str> {
+        unit_spans(s)
+            .into_iter()
+            .map(|(at, len)| &s[at..at + len])
+            .collect()
+    }
+    assert!(texts(r#"a "GET /x HTTP/1.1" b "POST /y HTTP/2" c"#).contains(&"/y"));
+    assert!(texts(r#"a="q \" --z=3" b"#).contains(&"--z"));
+    // Long quoted values are split into words before option boundaries.
+    // Their final word must still be separated from the closing quote.
+    let last_word = texts(r#"a="--x b c y""#);
+    assert!(last_word.contains(&"y") && last_word.contains(&"\""));
+    assert!(!last_word.contains(&"y\""));
+    let after_quote = texts(r#"a="--x b c d "tail"#);
+    assert!(after_quote.contains(&"\"") && after_quote.contains(&"tail"));
+    assert!(!after_quote.contains(&"\"tail"));
+}
+
+/// cli_option_units 1415:65, 1429:27 and unit_spans 1477:37, 1489:42 (x3):
+/// the cut after a closing quote, the advancing range and request cursors,
+/// and the skip loop that clears stale boundaries. Each input reaches one
+/// boundary the pinned vectors do not: a word glued to the closing quote,
+/// a short quoted value after the string, an unterminated request before
+/// another, and a doubled opening quote that puts a second word after the
+/// closing quote inside one unit. The last two panic under the mutants,
+/// so any assertion kills them; the first three assert the cut itself.
+#[test]
+fn unit_boundaries_hold_for_glued_stale_and_doubled_quotes() {
+    fn texts(s: &str) -> Vec<&str> {
+        let spans = unit_spans(s);
+        let mut last_end = 0;
+        for &(at, len) in &spans {
+            assert!(len > 0, "empty span at {at} in {s:?}: {spans:?}");
+            assert!(at >= last_end, "out of order in {s:?}: {spans:?}");
+            last_end = at + len;
+        }
+        spans
+            .into_iter()
+            .map(|(at, len)| &s[at..at + len])
+            .collect()
+    }
+    // 1415:65 — the closing quote is cut from the word glued behind it
+    let glued = texts(r#"a="--x"tail"#);
+    assert!(
+        glued.contains(&"tail") && !glued.contains(&"\"tail"),
+        "{glued:?}"
+    );
+    // 1429:27 — the range cursor moves past the option string, so the
+    // short quoted value after it stays one unit
+    let after_option = texts(r#"a="--x" m="p q""#);
+    assert!(after_option.contains(&"m=\"p q\""), "{after_option:?}");
+    // 1477:37 — the request cursor moves past the request likewise
+    let after_request = texts(r#""GET /x HTTP/1.1" m="p q""#);
+    assert!(after_request.contains(&"m=\"p q\""), "{after_request:?}");
+    // 1489:42 == and > — an unterminated request leaves a boundary at the
+    // end of its version; the skip loop must clear it before the next
+    // request's first word or the cut underflows
+    let stale = texts(r#"x "GET /a HTTP/1.1 "POST /b HTTP/1.1" y"#);
+    assert!(stale.contains(&"/a") && stale.contains(&"/b"), "{stale:?}");
+    // 1489:42 <= — a doubled opening quote leaves `z"` inside the unit that
+    // holds the closing quote, and the skip loop runs again with every
+    // boundary consumed
+    let doubled = texts(r#"""GET /x HTTP/1.1" z""#);
+    assert!(doubled.contains(&"/x"), "{doubled:?}");
 }

@@ -73,4 +73,11 @@ exclude_re = [
     # its `+=` cannot be observed.
     'delete match arm \(Accumulator::Counted\(m\), Accumulator::Counted\(other\)\) in RollupComputer::merge_retained',
     'folder/mod.rs:2140:50: replace \+= with',
+
+    # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
+    # down >= max(down, right) and down >= right choose the same branch.
+    '^src/folder/mod\.rs:1210:54: replace \+ with \* in align_words$',
+    # An opening quote and an option's leading dash cannot occupy the same
+    # byte, so option.start() == opening_quote is impossible.
+    '^src/folder/mod\.rs:1410:85: replace < with <= in cli_option_units$',
 ]
