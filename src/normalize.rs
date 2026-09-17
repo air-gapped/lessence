@@ -4078,3 +4078,230 @@ mod threshold_zero_2026_09_17 {
         assert!(!strict.are_similar(&a, &b));
     }
 }
+
+/// The 23 normalize.rs survivors of the release mutation sweep that a
+/// lib test can reach (lessence-e8v). Each test names its candidates; the
+/// mapping is a hypothesis until the mutants fail.
+#[cfg(test)]
+mod e8v_normalize_2026_09_17 {
+    use super::*;
+
+    fn normalize_with(config: Config, line: &str) -> LogLine {
+        Normalizer::new(config)
+            .normalize_line(line.to_string())
+            .unwrap()
+    }
+
+    fn normalize(line: &str) -> LogLine {
+        normalize_with(Config::default(), line)
+    }
+
+    /// 49:73: the CPU-quantity prefilter must fire on lowercase `cpu`
+    /// alone; a narrowed gate would let `500m` fall through to the
+    /// minute-duration pass.
+    #[test]
+    fn a_lowercase_cpu_field_reaches_the_cpu_quantity_pass() {
+        // As a key-value pair: if the early CPU pass is skipped, the
+        // key-value pass consumes the value first and the quantity is lost.
+        let line = normalize("resources cpu=500m memory=256Mi");
+        assert!(
+            line.normalized.contains("<CPU_QUANTITY>"),
+            "{}",
+            line.normalized
+        );
+        assert!(
+            !line.normalized.contains("cpu=<KEY_VALUE>"),
+            "{}",
+            line.normalized
+        );
+    }
+
+    /// 179:39: the structured detector is enabled by either half. Through
+    /// the pipeline only the JSON half is reachable (the key-value pass
+    /// rewrites logfmt first), so with key-value disabled a JSON record
+    /// must still yield its structured token.
+    #[test]
+    fn a_json_record_is_still_structured_with_key_value_disabled() {
+        let cfg = Config {
+            normalize_key_value: false,
+            ..Config::default()
+        };
+        let line = normalize_with(
+            cfg,
+            r#"{"level":"info","component":"core","msg":"started"}"#,
+        );
+        assert!(
+            line.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "{:?}",
+            line.tokens
+        );
+    }
+
+    /// 181:32, 181:78: each half of the structured prefilter is gated by
+    /// its own flag; a disabled half must not run on its shape.
+    #[test]
+    fn a_disabled_structured_half_does_not_run_on_its_shape() {
+        let no_json = Config {
+            normalize_json: false,
+            ..Config::default()
+        };
+        let json = normalize_with(
+            no_json,
+            r#"{"level":"info","component":"core","msg":"started"}"#,
+        );
+        assert!(
+            !json
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "{:?}",
+            json.tokens
+        );
+        let no_kv = Config {
+            normalize_key_value: false,
+            ..Config::default()
+        };
+        let logfmt = normalize_with(no_kv, r#"level=info component=core msg="started""#);
+        assert!(
+            !logfmt
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. })),
+            "{:?}",
+            logfmt.tokens
+        );
+    }
+
+    /// 124:17: a kernel-uptime line never enters the syslog host pass, even
+    /// when its third word ends in a colon like a program tag.
+    #[test]
+    fn a_kernel_uptime_line_has_no_syslog_host() {
+        let line = normalize("[    5.450000] usb usb1: New USB bus registered");
+        assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
+    }
+
+    /// 170:29: the log-module detector runs only on bracketed lines. A
+    /// bracket-free `facility.level daemon:` line that carries an indicator
+    /// word (`ERROR`) and a known daemon would match the syslog pattern if
+    /// the gate let it through; today it does not, and this pins that.
+    #[test]
+    fn a_bracket_free_module_shape_is_left_alone() {
+        for line in [
+            "daemon.err sshd: ERROR bad key from peer",
+            "daemon.info mod_agent: ready",
+        ] {
+            let l = normalize(line);
+            assert!(
+                !l.tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::LogWithModule { .. })),
+                "{line}: {:?}",
+                l.tokens
+            );
+            assert!(
+                !l.normalized.contains("<LOG_WITH_MODULE>"),
+                "{line}: {}",
+                l.normalized
+            );
+        }
+    }
+
+    /// 220:21: an escaped quote inside a quoted value does not end the
+    /// value, so a `=` after it is still quoted. The string opens the line
+    /// so no unquoted assignment precedes it, and the escaped quote is
+    /// unbalanced so a toggle would flip the state.
+    #[test]
+    fn an_escaped_quote_does_not_end_a_quoted_value() {
+        assert!(!has_unquoted_eq(r#""a \"b c=d""#));
+        assert!(has_unquoted_eq(r#""a b" c=d"#));
+    }
+
+    /// 349:41: the PCI prefilter looks at the byte after a dot; a line
+    /// whose first byte is a dot must not index before the start.
+    #[test]
+    fn a_leading_dot_with_a_colon_does_not_panic_the_pci_prefilter() {
+        let line = normalize(".5 a:b done");
+        assert!(!line.normalized.is_empty());
+    }
+
+    /// 516:5, 519:17, 519:20, 520:17, 520:20, 521:17, 522:17: the
+    /// `facility.level` shape is two non-empty lowercase labels and
+    /// nothing else. Through the pipeline only the true shape and a
+    /// trailing-dot word reach the syslog host pass (a dotted lookalike is
+    /// taken as a host by the network pass first), so the lookalikes are
+    /// judged on the function itself.
+    #[test]
+    fn a_facility_level_word_is_not_a_host_but_lookalikes_are() {
+        let shape = normalize("Aug 29 08:40:15 daemon.info syslogd: started");
+        assert!(!shape.normalized.contains("<HOST>"), "{}", shape.normalized);
+        assert!(!shape.normalized.contains("<FQDN>"), "{}", shape.normalized);
+        let bare = normalize("Aug 29 08:40:15 daemon. syslogd: started");
+        assert!(bare.normalized.contains("<HOST>"), "{}", bare.normalized);
+
+        assert!(is_facility_level_shape("daemon.info"));
+        assert!(is_facility_level_shape("authpriv.notice"));
+        for lookalike in [
+            "Daemon.info",
+            "daemon.Info",
+            "daemon.a.b",
+            "daemon.",
+            ".info",
+            "daemon",
+        ] {
+            assert!(!is_facility_level_shape(lookalike), "{lookalike}");
+        }
+    }
+
+    /// 533:30, 536:27: a word carrying `:` alone is not a host candidate,
+    /// and a word that merely ends in `>` still is.
+    #[test]
+    fn a_colon_word_is_not_a_host_and_a_trailing_bracket_does_not_disqualify() {
+        let colon = normalize("Aug 29 08:40:15 gw:1 kernel: link up");
+        assert!(!colon.normalized.contains("<HOST>"), "{}", colon.normalized);
+        let angle = normalize("Aug 29 08:40:15 gw> kernel: link up");
+        assert!(angle.normalized.contains("<HOST>"), "{}", angle.normalized);
+    }
+
+    /// 727:30, 729:17: a five-letter or eight-letter human word is not a
+    /// generated segment; only the random alphabet is.
+    #[test]
+    fn human_words_of_generated_lengths_stay_in_the_pod_skeleton() {
+        assert_eq!(pod_skeleton("web-nginx-x7k2q"), "web-nginx");
+        assert_eq!(pod_skeleton("web-frontend-x7k2q"), "web-frontend");
+        assert_eq!(pod_skeleton("web-x7k2q-x7k2q"), "web");
+    }
+
+    /// 1035:35: a lowercase `method=` alone must reach the method anchor,
+    /// so two requests with different methods hash to different anchors.
+    #[test]
+    fn a_lowercase_method_field_alone_reaches_the_method_anchor() {
+        // A method turns the path into a protected route, rendered as its
+        // skeleton rather than tokenised as a path.
+        let line = normalize(r#"method=GET path="/api/v1/items" status=200"#);
+        assert!(!line.normalized.contains("<PATH>"), "{}", line.normalized);
+        assert!(line.normalized.contains("/api/"), "{}", line.normalized);
+    }
+
+    /// 1341:68: two tokens with the same small-int tail shape are one
+    /// token to the similarity metric, so lines differing only there fold.
+    #[test]
+    fn tokens_with_the_same_small_int_tail_shape_are_equal() {
+        let normalizer = Normalizer::new(Config::default());
+        let first = normalizer
+            .normalize_line("job worker1 done ok".into())
+            .unwrap();
+        let second = normalizer
+            .normalize_line("job worker2 done ok".into())
+            .unwrap();
+        assert!(normalizer.are_similar(&first, &second));
+        let third = normalizer
+            .normalize_line("job worker1 done ok".into())
+            .unwrap();
+        let fourth = normalizer
+            .normalize_line("job slot1 done ok".into())
+            .unwrap();
+        assert!(!normalizer.are_similar(&third, &fourth));
+    }
+}
