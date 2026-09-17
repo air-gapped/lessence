@@ -27,7 +27,7 @@
 //! else needs touching.
 
 use super::{DetectionResult, TimestampMatch, Token};
-use regex::Regex;
+use regex::{Regex, RegexSet, RegexSetBuilder};
 use std::sync::LazyLock;
 
 /// One timestamp regex and the score that decides who wins an overlap.
@@ -239,6 +239,17 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
     ]
 });
 
+// Rule out unrelated formats in one scan on ASCII text. On that input,
+// ASCII and Unicode character classes and word boundaries agree. Actual
+// matches still come from the original regexes; non-ASCII input takes the
+// unchanged individual-regex path below.
+static ASCII_CANDIDATES: LazyLock<RegexSet> = LazyLock::new(|| {
+    RegexSetBuilder::new(patterns().iter().map(|pattern| pattern.regex.as_str()))
+        .unicode(false)
+        .build()
+        .expect("ASCII timestamp candidate patterns must compile")
+});
+
 /// The full pattern table, strongest first.
 pub fn patterns() -> &'static [TimestampPattern] {
     &PATTERNS
@@ -283,8 +294,13 @@ impl UnifiedTimestampDetector {
 
         let mut all_matches = Vec::new();
 
-        // Find all possible matches
-        for pattern in patterns() {
+        let candidates = text.is_ascii().then(|| ASCII_CANDIDATES.matches(text));
+        // The set only rules out impossible patterns. Keep the original
+        // regexes, match enumeration, scores and ordering for actual matches.
+        for (index, pattern) in patterns().iter().enumerate() {
+            if candidates.as_ref().is_some_and(|set| !set.matched(index)) {
+                continue;
+            }
             for regex_match in pattern.regex.find_iter(text) {
                 if !Self::is_plausible(text, regex_match.start(), regex_match.end(), pattern.name) {
                     continue;
@@ -688,6 +704,49 @@ mod tests {
         let first = UnifiedTimestampDetector::detect_and_replace(input).0;
         for _ in 0..50 {
             assert_eq!(UnifiedTimestampDetector::detect_and_replace(input).0, first);
+        }
+    }
+
+    #[test]
+    fn one_line_can_contain_dates_with_different_separator_shapes() {
+        let input = "I0901 12:30:00.123456 replay 2025-01-02T03:04:05Z then 03/04/2025 06:07:08 and 05.06.2025 09:10:11";
+        let result = UnifiedTimestampDetector::detect_with_metadata(input);
+        assert_eq!(
+            result.normalized_text,
+            "<TIMESTAMP> replay <TIMESTAMP> then <TIMESTAMP> and <TIMESTAMP>"
+        );
+        assert_eq!(result.matches.len(), 4);
+    }
+
+    #[test]
+    fn ascii_and_unicode_digit_dates_keep_the_same_recognition() {
+        let input = "2025-01-02T03:04:05Z then ٢٠٢٥-٠١-٠٢T٠٣:٠٤:٠٥Z";
+        let result = UnifiedTimestampDetector::detect_with_metadata(input);
+        assert_eq!(result.normalized_text, "<TIMESTAMP> then <TIMESTAMP>");
+        assert_eq!(result.matches.len(), 2);
+        assert_eq!(result.matches[1].original, "٢٠٢٥-٠١-٠٢T٠٣:٠٤:٠٥Z");
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn ascii_candidate_scan_keeps_every_matching_format(
+            prefix in "[ -~]{0,80}",
+            suffix in "[ -~]{0,80}",
+            year in 2000u16..2100,
+            month in 1u8..13,
+            day in 1u8..29,
+        ) {
+            let text = format!(
+                "{prefix} I0901 12:30:00.123456 {year}-{month:02}-{day:02}T03:04:05Z {month}/{day}/{year} 06:07:08 {suffix}"
+            );
+            let candidates = ASCII_CANDIDATES.matches(&text);
+            for (index, pattern) in patterns().iter().enumerate() {
+                proptest::prop_assert_eq!(
+                    candidates.matched(index),
+                    pattern.regex.is_match(&text),
+                    "candidate scan disagreed for {} on {:?}", pattern.name, text
+                );
+            }
         }
     }
 
