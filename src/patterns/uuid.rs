@@ -559,3 +559,48 @@ mod shapes_2026_08_29_ids {
         assert!(matches!(&t[..], [Token::Uuid(v)] if v == "inform42"));
     }
 }
+
+/// The id-field and prose guards and every indicator alone
+/// (lessence-e8v survivors 138, 198-200, 217-219).
+#[cfg(test)]
+mod e8v_indicators_2026_09_18 {
+    use super::*;
+
+    #[test]
+    fn each_indicator_alone_admits_a_line() {
+        for yes in [
+            "x-y",
+            "a\\x2db",
+            "user_id=12345678",
+            "Id=1",
+            "ID=1",
+            "\"id\":1",
+            "\"Id\":1",
+            "\"ID\":1",
+            "req",
+            "request",
+            "trace",
+            "session",
+            "abcdef0123456789abcdef0123456789",
+        ] {
+            assert!(UuidDetector::has_uuid_indicators(yes), "{yes}");
+        }
+        assert!(!UuidDetector::has_uuid_indicators("plain words only"));
+    }
+
+    #[test]
+    fn a_capitalised_id_field_alone_folds_its_value() {
+        let (out, _) = UuidDetector::detect_and_replace("traceId=abc123def456 done");
+        assert!(out.contains("traceId=<UUID>"), "{out}");
+        let (out, _) = UuidDetector::detect_and_replace("sessionID=abc123def456 done");
+        assert!(out.contains("sessionID=<UUID>"), "{out}");
+    }
+
+    #[test]
+    fn a_word_after_request_is_prose_not_an_id() {
+        let (out, _) = UuidDetector::detect_and_replace("request abc done");
+        assert_eq!(out, "request abc done");
+        let (out, _) = UuidDetector::detect_and_replace("req-abc123 done");
+        assert!(out.contains("<UUID>"), "{out}");
+    }
+}

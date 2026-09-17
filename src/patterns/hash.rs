@@ -391,3 +391,38 @@ mod shapes_2026_08_29 {
         assert!(t.is_empty());
     }
 }
+
+/// Boundaries of the hash-shape and colon-chain checks (lessence-e8v
+/// survivors 58, 85-89).
+#[cfg(test)]
+mod e8v_shapes_2026_09_18 {
+    use super::*;
+
+    #[test]
+    fn a_designator_is_under_twelve_characters_and_letters_then_digits() {
+        assert!(!HashDetector::looks_like_hash("ED25519"));
+        assert!(!HashDetector::looks_like_hash("AES128"));
+        assert!(HashDetector::looks_like_hash("F9009C60"));
+        assert!(
+            HashDetector::looks_like_hash("AB1234567890"),
+            "twelve characters is not a designator"
+        );
+        assert!(!HashDetector::looks_like_hash("AB123456789"), "eleven is");
+    }
+
+    #[test]
+    fn a_colon_hex_chain_is_four_pairs_each_followed_by_a_colon() {
+        assert!(HashDetector::has_colon_hex_chain("aa:bb:cc:dd:ee:ff"));
+        assert!(HashDetector::has_colon_hex_chain("x 01:23:45:67:89 y"));
+        for no in [
+            "no chain here",
+            "aaaaaaaa",
+            "a::::b",
+            "ax:ax:ax:ax:",
+            "aa:bb:cc",
+            "aa-bb-cc-dd-ee",
+        ] {
+            assert!(!HashDetector::has_colon_hex_chain(no), "{no}");
+        }
+    }
+}

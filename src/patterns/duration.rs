@@ -726,3 +726,61 @@ mod shapes_2026_08_29 {
         }
     }
 }
+
+/// Boundaries of the dashed-tuple and dotted-version guards and the ISO
+/// duration prefilter (lessence-e8v survivors 106-119, 318-319).
+#[cfg(test)]
+mod e8v_guards_2026_09_18 {
+    use super::*;
+
+    fn run_at<'a>(text: &'a str, needle: &str) -> regex::Match<'a> {
+        let re = Regex::new(&regex::escape(needle)).unwrap();
+        re.find(text).unwrap()
+    }
+
+    #[test]
+    fn a_dashed_tuple_is_seen_on_either_side_and_never_past_the_end() {
+        let yes =
+            |t: &str, n: &str| assert!(DurationDetector::in_dashed_tuple(t, &run_at(t, n)), "{t}");
+        let no =
+            |t: &str, n: &str| assert!(!DurationDetector::in_dashed_tuple(t, &run_at(t, n)), "{t}");
+        yes("1-2-3", "2");
+        yes("2-3", "2");
+        yes("1-2", "2");
+        no("x-2 3", "2");
+        no("2-x", "2");
+        no("2-", "2");
+        no("12-", "12");
+        no("-2", "2");
+        no("2 3", "2");
+    }
+
+    #[test]
+    fn a_dotted_version_is_seen_on_either_side_and_never_past_the_end() {
+        let yes = |t: &str, n: &str| {
+            assert!(DurationDetector::is_dotted_version(t, &run_at(t, n)), "{t}");
+        };
+        let no = |t: &str, n: &str| {
+            assert!(
+                !DurationDetector::is_dotted_version(t, &run_at(t, n)),
+                "{t}"
+            );
+        };
+        yes("3.3.4", "3.3");
+        yes("1.2.3", "2.3");
+        no("x.2.3 5", "2.3");
+        no("1x2.3", "2.3");
+        no("2.3.x", "2.3");
+        no("2.3.", "2.3");
+        no("2.3 x", "2.3");
+    }
+
+    #[test]
+    fn an_iso_duration_needs_a_digit_after_p_or_pt() {
+        assert!(DurationDetector::has_iso_duration_indicators("took P1D"));
+        assert!(DurationDetector::has_iso_duration_indicators("took PT5M"));
+        for no in ["PT", "P", "PTx", "Px", "plain"] {
+            assert!(!DurationDetector::has_iso_duration_indicators(no), "{no}");
+        }
+    }
+}

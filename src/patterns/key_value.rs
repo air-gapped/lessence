@@ -1178,3 +1178,36 @@ mod gate_2026_08_29 {
         assert_eq!(t.len(), 2);
     }
 }
+
+/// The metrics-run bounds, the two-sided gate and the no-pair path of the
+/// general pattern (lessence-e8v survivors 165, 187, 211).
+#[cfg(test)]
+mod e8v_gates_2026_09_18 {
+    use super::*;
+
+    #[test]
+    fn a_numeric_run_folds_only_when_bounded_on_both_sides() {
+        let (bounded, _) =
+            KeyValueDetector::detect_and_replace(r#"stats "NumGC=10 HeapAlloc=5 Sys=7""#);
+        assert!(bounded.contains("NumGC=<KEY_VALUE>"), "{bounded}");
+        let (open, _) =
+            KeyValueDetector::detect_and_replace("NumGC=10 HeapAlloc=5 Sys=7 trailing words");
+        assert!(open.contains("NumGC=10"), "{open}");
+    }
+
+    #[test]
+    fn a_sql_line_is_left_alone_even_with_pairs_on_it() {
+        let line = "SELECT * FROM t WHERE cpu=75% AND memory=60%";
+        let (out, tokens) = KeyValueDetector::detect_and_replace(line);
+        assert_eq!(out, line);
+        assert!(tokens.is_empty(), "{tokens:?}");
+    }
+
+    #[test]
+    fn a_line_whose_only_pair_is_a_duration_is_returned_intact() {
+        // `cpu` opens the gate; the only pair is a duration, which the
+        // duration detector owns, so nothing folds and the line stays whole.
+        let (out, _) = KeyValueDetector::detect_and_replace("cpu duration=272ms");
+        assert_eq!(out, "cpu duration=272ms");
+    }
+}

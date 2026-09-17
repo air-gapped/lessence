@@ -643,3 +643,41 @@ mod tests {
         );
     }
 }
+
+/// The JSON-key veto and its colon lookahead (lessence-e8v survivors
+/// 57, 111-112).
+#[cfg(test)]
+mod e8v_key_veto_2026_09_18 {
+    use super::*;
+
+    #[test]
+    fn a_colon_after_optional_blanks_marks_a_key_and_nothing_else_does() {
+        assert!(followed_by_colon(b":v", 0));
+        assert!(followed_by_colon(b"  :v", 0));
+        assert!(followed_by_colon(b"\t:v", 0));
+        assert!(!followed_by_colon(b" v", 0));
+        assert!(!followed_by_colon(b"", 0));
+        assert!(!followed_by_colon(b"x:", 0));
+    }
+
+    #[test]
+    fn a_quoted_json_key_keeps_its_text_while_its_value_folds() {
+        let (out, _) =
+            QuotedStringDetector::detect_and_replace(r#""abc123xyz": "some value here""#);
+        assert!(out.starts_with(r#""abc123xyz":"#), "{out}");
+        let (out, _) =
+            QuotedStringDetector::detect_and_replace(r#""abc123xyz" : "some value here""#);
+        assert!(out.starts_with(r#""abc123xyz" :"#), "{out}");
+        let (plain, _) = QuotedStringDetector::detect_and_replace(r#"saw "abc123xyz" today"#);
+        assert!(!plain.contains("abc123xyz"), "{plain}");
+    }
+
+    /// The veto covers a shape-folded key and a whole-string replacement
+    /// only; an escaped-JSON blob in key position is a blob, not a key,
+    /// and still folds.
+    #[test]
+    fn an_escaped_blob_in_key_position_still_folds() {
+        let (out, _) = QuotedStringDetector::detect_and_replace(r#""a\:b": 1"#);
+        assert!(out.contains("<ESCAPED_JSON>"), "{out}");
+    }
+}

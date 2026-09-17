@@ -792,3 +792,53 @@ mod shapes_2026_08_29 {
         assert_eq!(r, "x <PATH> y");
     }
 }
+
+/// The syslog-tag overlap and word-glue guards at their edges
+/// (lessence-e8v survivors 240, 244).
+#[cfg(test)]
+mod e8v_guards_2026_09_18 {
+    use super::*;
+
+    fn m<'a>(text: &'a str, needle: &str) -> regex::Match<'a> {
+        Regex::new(&regex::escape(needle))
+            .unwrap()
+            .find(text)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_match_is_in_the_tag_only_when_the_spans_overlap() {
+        //            0123456789012345
+        let text = "abc  tag/x  yz/w";
+        let tag = Some((5, 10));
+        assert!(PathDetector::in_syslog_tag(tag, &m(text, "tag/x")));
+        assert!(PathDetector::in_syslog_tag(tag, &m(text, "g/x")));
+        assert!(!PathDetector::in_syslog_tag(tag, &m(text, "abc")));
+        assert!(!PathDetector::in_syslog_tag(tag, &m(text, "yz/w")));
+        assert!(
+            !PathDetector::in_syslog_tag(tag, &m(text, "abc  ")),
+            "touching the start is not overlap"
+        );
+        assert!(
+            !PathDetector::in_syslog_tag(tag, &m(text, "  yz")),
+            "touching the end is not overlap"
+        );
+        assert!(!PathDetector::in_syslog_tag(None, &m(text, "tag/x")));
+    }
+
+    #[test]
+    fn glue_needs_a_word_character_before_the_match_and_never_looks_before_the_start() {
+        assert!(PathDetector::is_glued_to_word(
+            "x/usr/bin",
+            &m("x/usr/bin", "/usr/bin")
+        ));
+        assert!(!PathDetector::is_glued_to_word(
+            " /usr/bin",
+            &m(" /usr/bin", "/usr/bin")
+        ));
+        assert!(!PathDetector::is_glued_to_word(
+            "/usr/bin",
+            &m("/usr/bin", "/usr/bin")
+        ));
+    }
+}

@@ -336,3 +336,25 @@ mod shapes_2026_08_29 {
         assert!(r.contains("<SUFFIX>"), "{r}");
     }
 }
+
+/// The hyphen fast path (lessence-e8v survivor 48).
+#[cfg(test)]
+mod e8v_fast_path_2026_09_18 {
+    use super::*;
+
+    #[test]
+    fn a_hyphenated_name_without_an_at_sign_is_still_detected() {
+        let line = "pod cebo-model-cache-x7k2q ready";
+        let (out, tokens) = NameDetector::detect_and_replace(line);
+        assert_ne!(out, line, "{tokens:?}");
+        assert!(out.contains("<SUFFIX>"), "{out}");
+    }
+
+    /// The other half of the fast path: a template unit with an `@` and no
+    /// hyphen anywhere must still reach the instance rule.
+    #[test]
+    fn a_template_unit_without_a_hyphen_is_still_detected() {
+        let (out, _) = NameDetector::detect_and_replace("Starting getty@tty1.service now");
+        assert_eq!(out, "Starting getty@<INSTANCE>.service now");
+    }
+}
