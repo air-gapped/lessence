@@ -6196,3 +6196,255 @@ fn an_unsampled_variation_entry_keeps_the_sampled_count_zero() {
     assert_eq!(variation["omitted_values"]["value"], 0, "{summary}");
     assert_eq!(variation["complete"], true, "{summary}");
 }
+
+// ---- e8v folder remainder, Claude's half: word alignment, affixes, units,
+// ---- plain-word diffs, compact marker, retained accumulators, sources ----
+// Every assertion names the survivors it is meant to kill; all of them are
+// hypotheses until the mutants are re-run. Where a function is shown to be
+// unreachable in a branch, the note says so instead of asserting.
+
+/// align_words 1187 (cap), 1193/1197/1199 (table indexing), 1208/1209
+/// (advance), 1210 (tie-break).
+#[test]
+fn word_alignment_is_an_lcs_with_its_documented_tie_break() {
+    let same = align_words(&["a", "b"], &["a", "b"]).unwrap();
+    assert_eq!(same, vec![Some(0), Some(1)]);
+    let skip = align_words(&["a", "b", "c", "d"], &["a", "c", "d"]).unwrap();
+    assert_eq!(skip, vec![Some(0), None, Some(1), Some(2)]);
+    let insert = align_words(&["x", "b", "y"], &["b"]).unwrap();
+    assert_eq!(insert, vec![None, Some(0), None]);
+    // a tie: dropping the left word first is the documented choice
+    let tie = align_words(&["a", "b"], &["b", "a", "c"]).unwrap();
+    assert_eq!(tie, vec![None, Some(0)]);
+    // repeated words align in order, never crossing
+    let rep = align_words(&["k", "v", "k", "w"], &["k", "w"]).unwrap();
+    assert_eq!(rep, vec![Some(0), None, None, Some(1)]);
+    // the cap is inclusive on both sides
+    let big: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS).collect();
+    let bigger: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS + 1).collect();
+    assert!(align_words(&big, &big[..MAX_ALIGN_WORDS - 1]).is_some());
+    assert!(align_words(&bigger, &["w"]).is_none());
+    assert!(align_words(&["w"], &bigger).is_none());
+}
+
+/// shared_affixes 1227 (prefix cap), 1233/1234 (suffix loop bounds).
+#[test]
+fn shared_affixes_keep_the_field_name_and_the_closing_brackets_only() {
+    assert_eq!(shared_affixes("msg=Connecting", "msg=Connected"), (4, 0));
+    assert_eq!(shared_affixes("slot[1]", "slot[2]"), (5, 1));
+    assert_eq!(shared_affixes("on(1)", "on(22)"), (3, 1));
+    assert_eq!(
+        shared_affixes(r#""NodeName":"a""#, r#""NodeName":"b""#),
+        (11, 0)
+    );
+    assert_eq!(shared_affixes("alpha", "beta"), (0, 0));
+    // the prefix stops one short of the whole word, so a value is never empty
+    assert_eq!(shared_affixes("k=", "k="), (0, 0));
+    assert_eq!(shared_affixes("a=x", "a=x"), (2, 0));
+    // the suffix stops one short too, even when every byte is a bracket
+    assert_eq!(shared_affixes("]]]", "]]]"), (0, 2));
+    assert_eq!(shared_affixes("x]]", "y]]"), (0, 2));
+}
+
+/// field_value 1318-1328: a plain key starts with a letter or `_`, holds
+/// only word characters and `-`, and the value is what follows the first
+/// separator (the second byte after `":` for a JSON key).
+#[test]
+fn a_field_value_follows_a_plain_key_and_nothing_else() {
+    assert_eq!(field_value("k=v"), Some("v"));
+    assert_eq!(field_value("k:v"), Some("v"));
+    assert_eq!(field_value("_k=v"), Some("v"));
+    assert_eq!(field_value("a-b=v"), Some("v"));
+    assert_eq!(field_value("a_b=v"), Some("v"));
+    assert_eq!(field_value(r#""k":v"#), Some("v"));
+    assert_eq!(field_value("bare"), Some("bare"));
+    assert_eq!(field_value("9k=v"), None);
+    assert_eq!(field_value("1:S"), None);
+    assert_eq!(field_value("a.b=v"), None);
+    assert_eq!(field_value(r#""9k":v"#), None);
+}
+
+/// data_shaped 1346: a bracketed value needs both brackets.
+#[test]
+fn a_bracketed_value_needs_both_brackets_to_be_data() {
+    assert!(data_shaped("v=[x]"));
+    assert!(data_shaped("v=(x)"));
+    assert!(!data_shaped("v=[x"));
+    assert!(!data_shaped("v=x]"));
+    assert!(!data_shaped("v=(x"));
+    assert!(!data_shaped("v=x)"));
+    assert!(!data_shaped("plain"));
+}
+
+/// unit_spans / cli_option_units 1410-1449, 1477-1527: quoted requests,
+/// CLI option names and PCI addresses become their own units, and the
+/// bytes around them stay in order with nothing lost.
+#[test]
+fn units_cut_requests_options_and_pci_addresses_out_whole() {
+    let texts = |s: &str| -> Vec<String> {
+        unit_spans(s)
+            .into_iter()
+            .map(|(at, len)| s[at..at + len].to_string())
+            .collect()
+    };
+    let covers = |s: &str| {
+        let spans = unit_spans(s);
+        for w in spans.windows(2) {
+            assert!(w[0].0 + w[0].1 <= w[1].0, "overlap in {s:?}: {spans:?}");
+        }
+        let total: usize = spans.iter().map(|(_, l)| l).sum();
+        assert!(total <= s.len(), "{s:?}: {spans:?}");
+    };
+    for s in [
+        r#"req "GET /api/v1/items HTTP/1.1" 200"#,
+        r#"a "GET /x HTTP/1.1" b "POST /y HTTP/2" c"#,
+        "dev 0000:21:00.0 up",
+        "path /sys/0000:21:00.0/0000:21:00.1/x",
+        r#"msg="  --bpf-lb-mode=snat" subsys=daemon"#,
+        r#"a="--x=1 --y=2" b"#,
+        r#"a="q \" --z=3" b"#,
+    ] {
+        covers(s);
+    }
+    assert!(texts("dev 0000:21:00.0 up").contains(&"0000:21:00.0".to_string()));
+    let two = texts("path /sys/0000:21:00.0/0000:21:00.1/x");
+    assert!(
+        two.contains(&"0000:21:00.0".to_string()) && two.contains(&"0000:21:00.1".to_string()),
+        "{two:?}"
+    );
+    let req = texts(r#"req "GET /api/v1/items HTTP/1.1" 200"#);
+    assert!(req.iter().any(|u| u == "/api/v1/items"), "{req:?}");
+    let opt = texts(r#"msg="  --bpf-lb-mode=snat" subsys=daemon"#);
+    assert!(opt.iter().any(|u| u == "--bpf-lb-mode"), "{opt:?}");
+    let opts = texts(r#"a="--x=1 --y=2" b"#);
+    assert!(
+        opts.iter().any(|u| u == "--x") && opts.iter().any(|u| u == "--y"),
+        "{opts:?}"
+    );
+    let esc = texts(r#"a="q \" --z=3" b"#);
+    assert!(esc.iter().any(|u| u == "--z"), "{esc:?}");
+}
+
+/// plain_word_diffs 1544/1545 (data words), 1569/1570 (a unit that gained
+/// words), 1580/1592 (a lone unit the other line has elsewhere).
+#[test]
+fn plain_word_diffs_count_sentence_words_not_values() {
+    assert_eq!(plain_word_diffs("user alice", "user bob"), 1);
+    assert_eq!(plain_word_diffs("user alice", "user 10.0.0.1"), 1);
+    assert_eq!(plain_word_diffs("peer 10.0.0.1", "peer 10.0.0.2"), 0);
+    assert_eq!(plain_word_diffs("p q", "p q x.y"), 0);
+    assert_eq!(plain_word_diffs("p q", "p q q"), 0);
+    assert_eq!(plain_word_diffs("p q", "p q r"), 1);
+    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a b c""#), 1);
+    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a c""#), 1);
+    assert_eq!(
+        plain_word_diffs("Fork CoW for RDB", "Fork CoW for AOF rewrite"),
+        3
+    );
+}
+
+/// render_compact_marker 1704: the ellipsis appears only when more values
+/// exist than samples shown.
+#[test]
+fn the_compact_marker_ellipsis_means_more_values_than_shown() {
+    let entry = |distinct: usize, samples: &[&str]| VariationEntry {
+        distinct_count: distinct,
+        samples: samples.iter().map(|s| s.to_string()).collect(),
+        capped: false,
+        counts: Some(vec![1; samples.len()]),
+    };
+    let mut more = BTreeMap::new();
+    more.insert(VARIES, entry(3, &["a", "b"]));
+    assert!(render_compact_marker(10, &more, None, None, 3, false).contains('…'));
+    let mut all = BTreeMap::new();
+    all.insert(VARIES, entry(2, &["a", "b"]));
+    assert!(!render_compact_marker(10, &all, None, None, 3, false).contains('…'));
+}
+
+/// retain_realign_form 1965, accumulate_new_varies 2005/2006,
+/// merge_retained 2093/2094/2151/2152: counts add, caps hold, flags or.
+#[test]
+fn retained_accumulators_add_counts_and_honour_the_cap() {
+    let rc = RollupComputer::new(3, 1);
+    let mut state = RetainedState::default();
+    rc.retain_realign_form(&mut state, "form", 1);
+    rc.retain_realign_form(&mut state, "form", 1);
+    assert_eq!(state.realign["form"], 2);
+    rc.retain_realign_form(&mut state, "other", 1);
+    assert!(state.realign_capped);
+    assert_eq!(state.realign.len(), 1);
+
+    let mut state = RetainedState::default();
+    state.positional_members = 3;
+    state.varies.insert("old".to_string(), 2);
+    rc.accumulate_new_varies("a old b", &[(2, 3)], &mut state);
+    assert_eq!(state.varies["old"], 5);
+    rc.accumulate_new_varies("a new b", &[(2, 3)], &mut state);
+    assert!(state.varies_capped, "{:?}", state.varies);
+    assert_eq!(state.varies.len(), 1);
+
+    let mut into = RetainedState::default();
+    into.positional_members = 2;
+    into.varies.insert("v".to_string(), 2);
+    let mut from = RetainedState::default();
+    from.positional_members = 3;
+    from.realign_capped = true;
+    from.varies.insert("v".to_string(), 3);
+    from.varies.insert("w".to_string(), 1);
+    rc.merge_retained(&mut into, from);
+    assert_eq!(into.positional_members, 5);
+    assert!(into.realign_capped);
+    assert_eq!(into.varies["v"], 5);
+    assert!(into.varies_capped);
+    assert_eq!(into.varies.len(), 1);
+}
+
+/// take_distilled_rates 2318: the recorded rates leave with the call.
+#[test]
+fn distilled_rates_are_recorded_and_taken() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        distill: Some(3),
+        ..Config::default()
+    });
+    for i in 0..5 {
+        f.process_line(&format!("2025-01-01 10:00:0{i} worker tick"))
+            .unwrap();
+    }
+    f.finish().unwrap();
+    let rates = f.take_distilled_rates();
+    assert!(!rates.is_empty());
+    assert!(f.take_distilled_rates().is_empty(), "taken means gone");
+}
+
+/// source_name 2358: a registered source answers by name, stdin has none.
+#[test]
+fn a_registered_source_has_its_name_and_stdin_has_none() {
+    let mut f = make_folder();
+    let id = f.register_source("app.log".to_string());
+    assert_eq!(f.source_name(id), Some("app.log".to_string()));
+    assert_eq!(f.source_name(SourceId::STDIN), None);
+}
+
+/// nearest_group 2456: anchor_mismatch is the anchors disagreeing, so it
+/// is set for two endpoints and clear for two anchorless lines.
+#[test]
+fn anchor_mismatch_is_set_only_when_the_anchors_differ() {
+    let mut f = explaining_folder();
+    f.process_line(r#"[2026-08-16 14:08:34 +0200] ::ffff - "GET /login/ HTTP/1.1" 200 17450.949"#)
+        .unwrap();
+    f.process_line(r#"[2026-08-16 14:08:31 +0200] ::ffff - "GET /admin/ HTTP/1.1" 200 14502.251"#)
+        .unwrap();
+    assert_eq!(
+        f.buffer.len(),
+        2,
+        "different endpoints found separate groups"
+    );
+    assert!(f.buffer[1].nearest.as_ref().unwrap().anchor_mismatch);
+
+    let mut f = explaining_folder();
+    f.process_line("req took 111 ms").unwrap();
+    f.process_line("req took 333 sec").unwrap();
+    assert_eq!(f.buffer.len(), 2);
+    assert!(!f.buffer[1].nearest.as_ref().unwrap().anchor_mismatch);
+}
