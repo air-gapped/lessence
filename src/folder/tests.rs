@@ -5817,3 +5817,104 @@ fn a_merged_group_shows_the_later_last_line() {
         6
     );
 }
+
+// ---- e8v: survivors in absorb / merge_retained / merge_converged ----
+
+/// Two retained groups that converge: their accumulators merge, and a
+/// varying value both carried is counted once with the summed count
+/// (kills the `+=` and cap mutants in `merge_retained`).
+#[test]
+fn two_retained_groups_merge_their_varies_counts() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    for tail in ["alpha state one", "gamma state one", "alpha state three"] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    for tail in ["beta state two", "delta state two", "beta state four"] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 2, "both groups must be retained");
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 6);
+    let varies = &record["variation"]["VARIES"];
+    assert_eq!(varies["distinct_count"], 8, "{varies}");
+    // `alpha` and `beta` each appear twice across the two groups' slots;
+    // the merged counts must say so.
+    let samples: Vec<&str> = varies["samples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let counts: Vec<u64> = varies["sample_counts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap())
+        .collect();
+    for word in ["alpha", "beta", "one", "two"] {
+        let i = samples
+            .iter()
+            .position(|s| *s == word)
+            .unwrap_or_else(|| panic!("{word}: {varies}"));
+        assert_eq!(counts[i], 2, "{word}: {varies}");
+    }
+}
+
+/// Three groups converging on one template merge into one, not two
+/// (kills the early-return mutant in `merge_converged`).
+#[test]
+fn three_converging_groups_merge_into_one() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    for tail in [
+        "alpha state one",
+        "beta state two",
+        "gamma state three",
+        "delta state one",
+        "alpha state four",
+        "epsilon state two",
+        "beta state five",
+        "zeta state three",
+        "gamma state six",
+    ] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 3, "three founders two words apart");
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 9);
+}
+
+/// Two retained groups merging in founding order: the later group's last
+/// line is the merged group's last line, and first and last show once
+/// each (kills the `lines.len()` and `count` guard mutants on the
+/// retained path of `absorb`).
+#[test]
+fn two_retained_groups_keep_the_later_last_line() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    for tail in ["alpha state one", "gamma state one", "alpha state three"] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    for tail in ["beta state two", "delta state two", "beta state four"] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 2, "both groups must be retained");
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["first"]["line_no"], 1);
+    assert_eq!(record["last"]["line_no"], 6);
+    assert_eq!(record["count"], 6);
+}

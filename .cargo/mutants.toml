@@ -54,4 +54,12 @@ exclude_re = [
     # same authoritative value either way.
     'normalize.rs:392:40: replace \* with \+',
     'normalize.rs:392:40: replace \* with /',
+
+    # --- lessence-e8v: merge_retained's Counted arm is unreachable ---
+    # A `Counted` accumulator only exists after `finalize` inserts the
+    # VARIES entry, and merge_retained runs before finalize, so the arm
+    # that merges two Counted maps never executes: deleting it or changing
+    # its `+=` cannot be observed.
+    'delete match arm \(Accumulator::Counted\(m\), Accumulator::Counted\(other\)\) in RollupComputer::merge_retained',
+    'folder/mod.rs:2140:50: replace \+= with',
 ]
