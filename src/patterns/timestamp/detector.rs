@@ -1440,3 +1440,199 @@ mod shapes_2026_08_29 {
         assert_eq!(r, r#"{"time_micros": <TIMESTAMP>}"#);
     }
 }
+
+/// Boundaries of the timestamp prefilters and the plausibility check,
+/// asserted on the functions themselves so the regex table cannot mask a
+/// changed gate (lessence-e8v). Every input names the survivor line it is
+/// meant to kill; hypotheses until the mutants fail.
+#[cfg(test)]
+mod e8v_prefilters_2026_09_17 {
+    use super::*;
+
+    type D = UnifiedTimestampDetector;
+
+    /// has_ibm_stamp (505-521): two digits, a dot, three digits, whitespace
+    /// of any width, then `hh:`.
+    #[test]
+    fn the_ibm_stamp_shape_at_every_boundary() {
+        assert!(D::has_ibm_stamp("26.213 14:22:07 msg"));
+        assert!(D::has_ibm_stamp("26.213    14:22:07"));
+        assert!(D::has_ibm_stamp("26.213 14:"));
+        assert!(D::has_ibm_stamp("x 26.213 14:22"));
+        for no in [
+            "x26.213 14:22:07",
+            "6.213 14:22:07",
+            "26.21 14:22:07",
+            "26.2134 14:22:07",
+            "26.213x14:22:07",
+            "26.213 1:22",
+            "26.213 14",
+            "26.213 14 22",
+            "26.213",
+            "a.213 14:22",
+            "2a.213 14:22",
+            "26.213 ",
+            "26.213  ",
+            "26.213 1",
+            "26.213 1x:",
+            "26.213      ",
+            "26.213     1",
+        ] {
+            assert!(!D::has_ibm_stamp(no), "{no}");
+        }
+    }
+
+    /// has_compact_stamp (487-488): fourteen digits standing alone, `20`
+    /// then a month 01-12.
+    #[test]
+    fn the_compact_stamp_shape_at_every_boundary() {
+        assert!(D::has_compact_stamp("20260801142207"));
+        assert!(D::has_compact_stamp("20260801142207 rest"));
+        assert!(D::has_compact_stamp("at 20261231000000"));
+        assert!(D::has_compact_stamp("xxxxx 20261231000000 z"));
+        // fourteen characters after a `20` far into the line: the window
+        // must be checked where the stamp is, not at twice the offset
+        assert!(!D::has_compact_stamp("xxxxxxxxxxxxx 202601abcdefgh"));
+        for no in [
+            "x20260801142207",
+            "20260801142207x",
+            "2026080114220",
+            "20261301142207",
+            "20260001142207",
+            "20a60801142207",
+        ] {
+            assert!(!D::has_compact_stamp(no), "{no}");
+        }
+    }
+
+    /// has_kernel_uptime (440-451): `[`, spaces, digits, `.`, exactly six
+    /// digits, `]`; an unterminated stamp at the end of the input must not
+    /// read past it.
+    #[test]
+    fn the_kernel_uptime_shape_at_every_boundary() {
+        assert!(D::has_kernel_uptime("[    0.028586] usb 1-1"));
+        assert!(D::has_kernel_uptime("[4324019.474441]"));
+        assert!(D::has_kernel_uptime("x [0.000001] y"));
+        for no in [
+            "[0.02858]",
+            "[0.0285866]",
+            "[.028586]",
+            "[0.028586",
+            "[0,028586]",
+            "[0.02858a]",
+            "0.028586]",
+            "[ab.028586]",
+            "[",
+            "[   ",
+            "[12",
+            "[ 12",
+        ] {
+            assert!(!D::has_kernel_uptime(no), "{no}");
+        }
+    }
+
+    /// has_klog_header (467-471): a level letter, four digits, a space, at
+    /// the start or after a space; a header cut at the end of the input
+    /// must not read past it.
+    #[test]
+    fn the_klog_header_shape_at_every_boundary() {
+        assert!(D::has_klog_header("I0829 01:12:10.311614"));
+        assert!(D::has_klog_header("[pod/x/y] W0101 rest"));
+        assert!(D::has_klog_header("F1231 x"));
+        for no in [
+            "xI0829 rest",
+            "I082 rest",
+            "I08290 rest",
+            "I0829",
+            "I0829x",
+            "i0829 rest",
+            "I08a9 rest",
+        ] {
+            assert!(!D::has_klog_header(no), "{no}");
+        }
+    }
+
+    /// has_epoch_run (402-410): ten digits starting with 1 followed by a
+    /// fraction anywhere; bare ten digits only opening the line, plain or
+    /// bracketed; 13/16/19 digits anywhere; never glued to a letter.
+    #[test]
+    fn the_epoch_run_shape_at_every_boundary() {
+        for yes in [
+            "1481076984.827",
+            "x 1481076984.8",
+            "x1481076984.5",
+            "1481076984 x",
+            "1481076984",
+            "1481076984.",
+            "[1481076984] x",
+            "x 1481076984123 y",
+            "1481076984123456",
+            "1481076984123456789",
+        ] {
+            assert!(D::has_epoch_run(yes), "{yes}");
+        }
+        for no in [
+            "x 1481076984 y",
+            "id=1481076984",
+            "1481076984x",
+            "14810769841",
+            "148107698",
+            "2481076984.5",
+            "x 1481076984123x",
+            "x 1481076984.x",
+            "21481076984.5",
+            "(1481076984) x",
+        ] {
+            assert!(!D::has_epoch_run(no), "{no}");
+        }
+    }
+
+    /// is_plausible (349-383): the rejections around a numeric candidate —
+    /// a `-`/`_` before it, a fraction it did not cover, a short bare
+    /// number not opening the line, a bracket glued to a word, a hex pair
+    /// on either side — and the boundaries at the end of the input.
+    #[test]
+    fn plausibility_rejections_at_every_boundary() {
+        let p = |text: &str, start: usize, end: usize, name: &str| {
+            D::is_plausible(text, start, end, name)
+        };
+        assert!(p("1700000000 x", 0, 10, "unix-timestamp"));
+        assert!(p("2024-01-01T00:00:00 x", 0, 19, "iso"));
+        assert!(p("1700000000.", 0, 10, "unix-timestamp"));
+        assert!(p("1700000000:ab", 0, 10, "unix-timestamp"));
+        assert!(p("[1700000000] x", 0, 12, "unix-timestamp"));
+        // long candidates that no later rule rejects, so each early rule
+        // stands alone: the fraction rule, the bracket-glue rules and the
+        // hex-pair rules at both ends
+        assert!(p("1700000000.x", 0, 10, "unix-timestamp"));
+        assert!(p("x [1700000000123] y", 2, 17, "unix-timestamp"));
+        assert!(p("1700000000:zz:", 0, 10, "unix-timestamp"));
+        assert!(p("1700000000:zb:", 0, 10, "unix-timestamp"));
+        assert!(p("1700000000:az:", 0, 10, "unix-timestamp"));
+        assert!(p("x [1700000000123] y", 3, 16, "unix-timestamp"));
+        assert!(p("xxxx [1700000000123] y", 6, 19, "unix-timestamp"));
+        assert!(p("az:1700000000123", 3, 16, "unix-timestamp"));
+        assert!(p("za:1700000000123", 3, 16, "unix-timestamp"));
+        for (text, start, end, name) in [
+            ("id-1700000000", 3, 13, "unix-timestamp"),
+            ("id_1700000000", 3, 13, "unix-timestamp"),
+            ("x.1700000000", 2, 12, "unix-timestamp"),
+            ("x 1700000000.5", 2, 12, "unix-timestamp"),
+            ("x 1700000000 y", 2, 12, "unix-timestamp"),
+            ("x [1700000000]", 2, 14, "unix-timestamp"),
+            ("trace[1539274761]", 5, 17, "unix-timestamp"),
+            ("Trace[1310679091]:", 6, 16, "unix-timestamp"),
+            ("ab:1700000000", 3, 13, "unix-timestamp"),
+            ("1700000000:ab:", 0, 10, "unix-timestamp"),
+            ("id-1700000000123", 3, 16, "unix-timestamp"),
+            ("id_1700000000123", 3, 16, "unix-timestamp"),
+            ("Trace[1310679091123]:", 6, 19, "unix-timestamp"),
+            ("x[1700000000123]", 1, 16, "unix-timestamp"),
+            ("z[1700000000123]", 2, 15, "unix-timestamp"),
+            ("ab:1700000000123", 3, 16, "unix-timestamp"),
+            ("zzzzab:1700000000123", 7, 20, "unix-timestamp"),
+        ] {
+            assert!(!p(text, start, end, name), "{text}");
+        }
+    }
+}

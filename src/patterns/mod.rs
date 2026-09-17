@@ -649,3 +649,86 @@ pub(crate) fn has_k8s_component_names(text: &str) -> bool {
         || text.contains("etcd")
         || text.contains("coredns")
 }
+
+/// Token helpers of the similarity metric, at their boundaries
+/// (lessence-e8v): small integers and small-int tails, quoted word spans,
+/// and the overflow path of `SimTokens`.
+#[cfg(test)]
+mod e8v_tokens_2026_09_17 {
+    use super::*;
+
+    /// is_small_int (408): one or two digits, nothing else.
+    #[test]
+    fn a_small_int_is_one_or_two_digits() {
+        assert!(is_small_int("7"));
+        assert!(is_small_int("42"));
+        for no in ["", "123", "1a", "a", "-1"] {
+            assert!(!is_small_int(no), "{no}");
+        }
+    }
+
+    /// small_int_tail (416-426): a token ending in one or two digits, an
+    /// optional `]`/`)` after them, and something before them; the split
+    /// keeps the surroundings.
+    #[test]
+    fn a_small_int_tail_splits_the_surroundings_at_every_boundary() {
+        assert_eq!(small_int_tail("slot[2]"), Some(("slot[", "]")));
+        assert_eq!(small_int_tail("on(12)"), Some(("on(", ")")));
+        assert_eq!(small_int_tail("eth0"), Some(("eth", "")));
+        assert_eq!(small_int_tail("wifi0ap1"), Some(("wifi0ap", "")));
+        assert_eq!(small_int_tail("a12]"), Some(("a", "]")));
+        for none in ["", "]", "12", "1]", "abc", "x123", "x1234", "slot[]", "a1b"] {
+            assert_eq!(small_int_tail(none), None, "{none}");
+        }
+    }
+
+    /// word_spans / words (395-396, 456): inside a quoted string only
+    /// whitespace separates, so a comma or brace stays inside the word; an
+    /// escaped quote does not close the string; the iterator yields every
+    /// word.
+    #[test]
+    fn quoted_values_keep_their_commas_and_escaped_quotes_do_not_close_them() {
+        let plain: Vec<&str> = words("a b  c").collect();
+        assert_eq!(plain, vec!["a", "b", "c"]);
+        let record: Vec<&str> = words(r#"{"a":1,"b":"x,y"}"#).collect();
+        assert_eq!(record, vec![r#""a":1"#, r#""b":"x,y""#]);
+        let escaped: Vec<&str> = words(r#"k="a,\"b\",c" w"#).collect();
+        assert_eq!(escaped, vec![r#"k="a,\"b\",c""#, "w"]);
+        // an odd escaped quote: still one string, the comma stays inside
+        let odd: Vec<&str> = words(r#"k="a,\"b,c" w"#).collect();
+        assert_eq!(odd, vec![r#"k="a,\"b,c""#, "w"]);
+    }
+
+    /// overflow_from (491): a line past the LCS bound but under the
+    /// multiset cap keeps a sorted-hash view; only the cap itself yields
+    /// Unbounded.
+    #[test]
+    fn a_long_line_overflows_to_a_multiset_and_only_the_cap_is_unbounded() {
+        let over: String = (0..(MAX_SIMILARITY_TOKENS + 5))
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match SimTokens::from_normalized(&over) {
+            SimTokens::Overflow { sorted_hashes, .. } => {
+                assert_eq!(sorted_hashes.len(), MAX_SIMILARITY_TOKENS + 5);
+                assert!(sorted_hashes.windows(2).all(|w| w[0] <= w[1]));
+            }
+            other => panic!(
+                "expected Overflow, got {}",
+                match other {
+                    SimTokens::Tokens { .. } => "Tokens",
+                    SimTokens::Unbounded => "Unbounded",
+                    SimTokens::Overflow { .. } => unreachable!(),
+                }
+            ),
+        }
+        let capped: String = (0..=MAX_MULTISET_TOKENS)
+            .map(|i| format!("w{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(matches!(
+            SimTokens::from_normalized(&capped),
+            SimTokens::Unbounded
+        ));
+    }
+}
