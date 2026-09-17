@@ -680,6 +680,11 @@ fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
                     LineLocation::new(SourceId::STDIN, i),
                     &computer,
                 );
+                assert_eq!(
+                    retained.lines.len(),
+                    2,
+                    "retained member window must stay bounded"
+                );
             }
             assert_eq!(retained.template, full.template);
             let actual = computer.finalize_retained(
@@ -5918,7 +5923,29 @@ fn two_retained_groups_keep_the_later_last_line() {
     let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
     assert_eq!(record["first"]["line_no"], 1);
     assert_eq!(record["last"]["line_no"], 6);
+    assert_eq!(record["last"]["line"], format!("{stem} beta state four"));
     assert_eq!(record["count"], 6);
+}
+
+/// When two converging groups come from different sources with the same
+/// line number, founding position is the deterministic tie-breaker. The
+/// later group's last member must remain the retained group's last member.
+#[test]
+fn absorb_uses_position_to_break_equal_source_line_numbers() {
+    let make = |text: &str, source: u32, position: usize| {
+        PatternGroup::new_at(
+            make_line(text, vec![]),
+            position,
+            LineLocation::new(SourceId(source), 4),
+        )
+    };
+    let mut first = make("svc alpha", 1, 0);
+    let second = make("svc beta", 2, 1);
+    first.template = "svc <VARIES>".into();
+    let mut second = second;
+    second.template = first.template.clone();
+    first.absorb(second, &RollupComputer::with_defaults());
+    assert_eq!(first.last().normalized, "svc beta");
 }
 
 // ---- e8v: render.rs survivors — summary completeness, briefing span, markdown ----
