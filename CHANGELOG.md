@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.5.0](https://github.com/air-gapped/lessence/compare/v0.4.5...v0.5.0) (2026-09-18)
+
+
+### Features
+
+* --diff shows which lines fold differently between two lessence builds ([131e79a](https://github.com/air-gapped/lessence/commit/131e79a5dedd208f2ac7aa53320b4e4bd17a23ba))
+* --explain says which group a line came closest to joining, and why not ([792cd21](https://github.com/air-gapped/lessence/commit/792cd216370c2c390a9720cc23d0a9613d70767f))
+* --frame-continuations folds a stack trace as one event ([92c1804](https://github.com/air-gapped/lessence/commit/92c1804421808b91c62b0f6f3e4d768d0b90b090))
+* --sanitize &lt;entity&gt;[:&lt;action&gt;] masks hosts and addresses, and can pseudonymise instead of redact ([51eaaae](https://github.com/air-gapped/lessence/commit/51eaaae1721c7c978785496f8292ae83a23c62aa))
+* --sanitize-pii masks credential-class values (key assignments, JWTs, provider keys) ([997f0bf](https://github.com/air-gapped/lessence/commit/997f0bfe7df8b4241d0beb1db49329c02c486544))
+* --version reports the commit and target the binary was built from ([a6fc881](https://github.com/air-gapped/lessence/commit/a6fc881d253fc3023667971dc129167f08042de9))
+* an orientation briefing replaces the compression report ([0828efa](https://github.com/air-gapped/lessence/commit/0828efaf25b0c7ca9c3d9fbaa07a979b708bcfc5))
+* keep different endpoints and devices in separate groups ([4800408](https://github.com/air-gapped/lessence/commit/4800408a741e01c30dfd8d920cfa6a46f61cbc14))
+* make the bundled skill discoverable by more agents ([986943a](https://github.com/air-gapped/lessence/commit/986943af797762c4c24cddbba08329d60b0bb37a))
+* preserve exact source locations in JSON output ([02d3e33](https://github.com/air-gapped/lessence/commit/02d3e337cfa2a44771e964e6a92118fc1d3d9467))
+* report completeness of JSON output ([fcf0ec6](https://github.com/air-gapped/lessence/commit/fcf0ec6a738380f335bab3a77b525b01e2539bca))
+* the rollup reports words that vary inside a group even when no detector tokenised them ([334bea8](https://github.com/air-gapped/lessence/commit/334bea80c63cc4feb15c1eb7525d9a9854f2c32a))
+
+
+### Bug Fixes
+
+* --explain reports one record per event, not one per eviction ([75134da](https://github.com/air-gapped/lessence/commit/75134da52226805d3dffd79565ff2f2a5cf442be))
+* --format markdown now errors with --top, --summary, --fit, --preflight ([c731e53](https://github.com/air-gapped/lessence/commit/c731e53870dedf6803a5e9b1f94c41e8ac688a62))
+* --format md, MARKDOWN, and JSON aliases now emit their format instead of text ([0d9dd42](https://github.com/air-gapped/lessence/commit/0d9dd42fcd350ab462ad76f4b4a6503ca8aeae49))
+* --preflight now strips terminal escapes like every other mode ([a67e5ed](https://github.com/air-gapped/lessence/commit/a67e5edc40c03a3213ee23b5a3c6b6afd2314993))
+* --sanitize-pii credential masking now applies in --essence mode too ([70735b2](https://github.com/air-gapped/lessence/commit/70735b2c2094ef3e4648c2a30e412c993fe30455))
+* --sanitize-pii now masks emails in every output mode ([8bd8b39](https://github.com/air-gapped/lessence/commit/8bd8b3964587325e4565aa7d2d523d4b034b6916))
+* --summary and --top no longer silently drop patterns past 1000 groups with --threads 1 ([21e1359](https://github.com/air-gapped/lessence/commit/21e1359c88156764161ac8db09f847788ddedb61))
+* --threads N now actually sizes the thread pool ([84629ca](https://github.com/air-gapped/lessence/commit/84629ca67ad2bed08e8edd84f453f5b158e3067d))
+* --threads now caps at available parallelism instead of spawning N raw threads ([25a31ed](https://github.com/air-gapped/lessence/commit/25a31ed562271a9bf4663277d7262f371d896b8e))
+* a 12-hour clock keeps its AM/PM, a compact `20260801142207` stamp and an IBM `26.213 14:22:07` stamp are timestamps on any line, `PT30M15S` is a duration, and a bare epoch is a timestamp only as the line's first token ([843b15e](https://github.com/air-gapped/lessence/commit/843b15e1b582eaa36e0f87e337ef273b812f6312))
+* a bracketed number is a pid only in a tag, `-sdown` is a sign not a flag, `ssh-ed25519` is a word, `3f00b880.mailbox` is an address, `request: tokenreviews` is prose, a program path in the syslog tag stays whole, `daemon.info` is not a domain, a quoted sentence keeps its words, and `slot[1]` folds with `slot[2]` ([48d7dcb](https://github.com/air-gapped/lessence/commit/48d7dcb8dbdb8d0308880064f7c114945e028078))
+* a dotted name is erased as a host only when the line says it is one ([b3c744c](https://github.com/air-gapped/lessence/commit/b3c744cbf29a4efb19f7350f5ac5be4d7069e768))
+* a folded group's line says &lt;VARIES&gt; where its members disagree, and the rollup counts every variant — the one Server Reject among 7,164 Server Busy is visible again ([db41c59](https://github.com/air-gapped/lessence/commit/db41c595c196dece6262423d4fd78e50daf4f921))
+* a JSON string value that is a sentence keeps its words — five gateway tasks were one "msg":&lt;KEY_VALUE&gt; group of 13,590 lines — and a quoted sentence with an escape in it is no longer erased as &lt;ESCAPED_JSON&gt; ([93d0841](https://github.com/air-gapped/lessence/commit/93d0841fdeea080c25e83dc56422a006d6969a62))
+* a klog call site, a systemd unit and an auditd record type are event identity — lines from different ones no longer merge ([3779075](https://github.com/air-gapped/lessence/commit/3779075827602c1c803cc3c81f25f6a05d5ecf58))
+* a kubectl log prefix names its workload and container, so two containers of one pod no longer print the same line ([d3fdf21](https://github.com/air-gapped/lessence/commit/d3fdf21c2b8a350071496ffc49326af97d72df96))
+* a line with no foldable key or unit skips the key-value regexes and a pair is read off its match, so a kubelet log folds as fast as before the word vetoes went ([a46b6f0](https://github.com/air-gapped/lessence/commit/a46b6f0de0b5c65bbfdd8671da8bfb36b73c62b5))
+* a MAC address is one atom (&lt;MAC&gt;) — its last byte is no longer read as a port or a size ([9f7a575](https://github.com/air-gapped/lessence/commit/9f7a575e79dcb81483f0861d1cfd0c7cba6d7893))
+* a message made of key=number pairs is a metrics dump — every value folds and the key stays, so 899 Go memory-stats lines are one line again ([ff7451b](https://github.com/air-gapped/lessence/commit/ff7451bc63f6339486983ea6db4407a0be720743))
+* a quoted sentence is the event, not a variable ([e63820c](https://github.com/air-gapped/lessence/commit/e63820c70e020e1b19f86b1de425794c2e28c29b))
+* a repeated event is one line with one count, not several ([e1cc568](https://github.com/air-gapped/lessence/commit/e1cc568cda7ad2e36826c098ea3dd830192911f9))
+* a route keeps the digit inside a word, so a Kubernetes path reads k8s and not k&lt;N&gt;s ([3745830](https://github.com/air-gapped/lessence/commit/37458303e2455058189c3136ff263a7df6d6becc))
+* a spaced multi-unit duration and a µs value are one duration, `775.5M` and `256Mi` are one size, a `\x2d`-escaped UUID in a systemd unit name is a UUID, an id-named JSON field like `"execID"` folds as an id, a JSON event line is not a key-value line, a klog header is read in any month, and the program in `exe=`, `comm=` and `"binary":` is matched, never scored ([2c744ea](https://github.com/air-gapped/lessence/commit/2c744eaf459479654d23faaa74b24ccbd0cf4090))
+* a syslog program name after facility.level stays visible ([549c524](https://github.com/air-gapped/lessence/commit/549c524232c1482493fd90093ed7529fb7fc31f1))
+* a syslog/journal host between the timestamp and the program tag folds to &lt;HOST&gt;, so one event reported by several devices reads as one group ([5606ff1](https://github.com/air-gapped/lessence/commit/5606ff1adda761ee32d6730027561f72e44234cd))
+* a word elsewhere on the line no longer changes how a field folds ([8a9e15a](https://github.com/air-gapped/lessence/commit/8a9e15af00338e71a37ef4f609b7e36c8460c18b))
+* an access log folds by route, and the route is on the line — a group split by an anchor no longer prints a template identical to its neighbour's ([a5e409e](https://github.com/air-gapped/lessence/commit/a5e409e310c25228980de1ad0a9c135cd627725e))
+* an audit record's sequence counter folds whatever its digit count, and an id field's value is an id whatever its charset ([5758ace](https://github.com/air-gapped/lessence/commit/5758ace98d53f6480ee220e139e33cb890aff9f2))
+* asctime is one timestamp (weekday and year included), the kernel uptime stamp is one shape at any width, a bracket glued to a word is an index, a 16-digit epoch is a time not a hash, and two small integers no longer keep a short line from folding ([7dd3577](https://github.com/air-gapped/lessence/commit/7dd3577ffc6cbaae3a6c044b3f659405081eb744))
+* distinguish CPU resource quantities from minutes ([048abfc](https://github.com/air-gapped/lessence/commit/048abfc185465151b90fb5fcfd31462db3bd337a))
+* fold a field value on its shape, not on how long it happens to be ([2632344](https://github.com/air-gapped/lessence/commit/2632344ee82cf3fbfc38a99beb669096fa755860))
+* fold a JSON field's number whatever its digit count ([92ea725](https://github.com/air-gapped/lessence/commit/92ea725d1fda18e6dda419367945797310460d44))
+* JSON keys keep their name whatever folds them, and --explain names an anchor mismatch ([3921636](https://github.com/air-gapped/lessence/commit/39216369a8eb797ac6b1bac69a79e5c619083018))
+* keep CLI option names visible and separate ([ff14716](https://github.com/air-gapped/lessence/commit/ff147167f570b36e6dd0276e5259bb5871db32c8))
+* keep late variants in their original groups after eviction ([9d978dd](https://github.com/air-gapped/lessence/commit/9d978dde1b1409c3be29168ddbed5ed18a07217a))
+* keep long decimal fractions out of timestamps ([60d90a5](https://github.com/air-gapped/lessence/commit/60d90a5184d74d5e2454a192b36dbe7db3670eaa))
+* keep PCI device addresses visible when log paths vary ([9cc46ec](https://github.com/air-gapped/lessence/commit/9cc46ecc5ee74712bdd97f765ecc905dc6d68d2a))
+* keep prose HTTP methods and routes distinct ([c872001](https://github.com/air-gapped/lessence/commit/c8720016961739f4caace7cfca616745a080cfed))
+* keep request routes visible when HTTP methods vary ([df1405d](https://github.com/air-gapped/lessence/commit/df1405de41469cc8513a71f98f0945768a3f25e9))
+* keep successful and failed audit syscalls separate ([f7b2db7](https://github.com/air-gapped/lessence/commit/f7b2db7da79d2adb50c931701fcd6f6118df51ef))
+* keep top-N JSON output valid for agents ([1492951](https://github.com/air-gapped/lessence/commit/14929514158de49f47f6a679d9ffdab7bfed5a94))
+* Kubernetes pod names fold whatever their kind — the 5-char suffix after a template hash or job number, the namespace in pod="ns/name", and the kube-api-access volume suffix no longer split groups ([d1998a3](https://github.com/air-gapped/lessence/commit/d1998a3b41fc6cfd0791cbd929fbdcec2b14f1f0))
+* long structured records fold again instead of one group each ([65d046f](https://github.com/air-gapped/lessence/commit/65d046fac8d31f654b458da71d3dea0314a418d9))
+* one lines_saved definition across every output mode ([96e2cf8](https://github.com/air-gapped/lessence/commit/96e2cf80e666b193ad062d145a1e1ba1d2c6892d))
+* placeholders replace only what they matched — no invented pid= or request_id= labels — and versions, ssh fingerprints, compressed IPv6, exit statuses, dotted versions and 2025/09/14 dates are read for what they are ([4959f1d](https://github.com/air-gapped/lessence/commit/4959f1dfe60b3678a36eb4cb5c4bc1480640ced0))
+* preserve known values when merging capped rollups ([83828c2](https://github.com/air-gapped/lessence/commit/83828c2b92c7136cf7d9dd517fffb4ff7d3aac38))
+* pseudonym tags are HMAC-SHA256 under a per-run key from the operating system ([688513b](https://github.com/air-gapped/lessence/commit/688513b057a73ce56477c8b1c08e354ec73a8ebc))
+* raise default similarity threshold to 83 — restores HTTP-status and state separation ([f1477b1](https://github.com/air-gapped/lessence/commit/f1477b123b9d93017001b20b4fedc2a9bc58769e))
+* show call sites and programs that distinguish log events ([e820301](https://github.com/air-gapped/lessence/commit/e8203015dbe514a27a434e3950f6100f9fb772dd))
+* show status classes that keep log events separate ([04ef7cd](https://github.com/air-gapped/lessence/commit/04ef7cd2e66d2cccefdd4c936183b9acfc378fb5))
+* show systemd unit identities and retain instance names ([3e9e01a](https://github.com/air-gapped/lessence/commit/3e9e01a553d29f900c2ae6c248dd7cb8094f9238))
+* six token shapes read right — a word:NN: line reference is not a port, 0x22 is not an address, 192-168-7-0-24 is one identifier, ED25519 is not a hash, a bracket chain keeps the space after it, and a URL gives back its closing bracket ([81a8008](https://github.com/air-gapped/lessence/commit/81a8008bd7e9db251615259ed45a2027ba40764e))
+* structured JSON/logfmt messages keep their content instead of collapsing into one group ([21f51de](https://github.com/air-gapped/lessence/commit/21f51de6612bf5f24bfa18abcea4bbd041de086f))
+* the same log always folds the same way ([9da393b](https://github.com/air-gapped/lessence/commit/9da393bedf1bb26915fc183cd05a6717299cf9a2))
+* the shown line holds for every member — a placeholder against a plain word, a shorter member, a quoted value with spaces all become &lt;VARIES&gt; with counts; a line two sentence words apart founds its own group; kubectl container, structured caller, call site, traceback frame, JSON method/status/route and sha256 digests are matched, never scored ([6ffb87c](https://github.com/air-gapped/lessence/commit/6ffb87c77fab028b66ab6fe086b35927fb53005b))
+* two groups that converge on the same template are shown as one line with one count ([729ee4e](https://github.com/air-gapped/lessence/commit/729ee4e553508f8670c78652b887273cd727b0b8))
+* two more timestamp shapes — a dash-joined date-time (2025-06-26-00:45:05.454) and a datetime wrapped in its weekday and zone (Thu 2025-10-30 16:53:44 CET) are one timestamp ([b1cffa9](https://github.com/air-gapped/lessence/commit/b1cffa94c731cf8043e18002219cb6d58723ec1c))
+* ULIDs and Kubernetes group/versions get their own placeholders; label keys, image refs, relative paths and dotted hostnames are one token instead of being cut at the slash ([629183d](https://github.com/air-gapped/lessence/commit/629183d95aaa865e4941b9ead96d863b02f81bfb))
+
+
+### Performance
+
+* avoid repeated timestamp scans on ASCII logs ([5a9e67f](https://github.com/air-gapped/lessence/commit/5a9e67ffa22c4d4e72e9be6408385043f58306b8))
+* cache quoted-string normalization for repeated values ([3f70405](https://github.com/air-gapped/lessence/commit/3f704050f606e6cd157d358ae5a8432ab8d4cbc4))
+
 ## [0.4.5](https://github.com/air-gapped/lessence/compare/v0.4.4...v0.4.5) (2026-06-10)
 
 
