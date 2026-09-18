@@ -10,6 +10,16 @@ cap_lints = true
 # These are structurally impossible to kill — the mutation produces
 # identical results due to redundant guards or regex guarantees.
 exclude_re = [
+    # lessence-e8v: absorb adds two nonempty group counts before this guard.
+    # The sum is at least two; checked overflow traps before either guard.
+    '^src/folder/mod\.rs:336:27: replace match guard self.count > 1 with true in PatternGroup::absorb$',
+    '^src/folder/mod\.rs:336:38: replace > with >= in PatternGroup::absorb$',
+    # unit_spans emits each PCI match as a whole atom. Its cuts preserve PCI
+    # word boundaries, so any isolated match has both start=0 and end=len.
+    '^src/folder/mod\.rs:1273:45: replace && with \|\| in varying_spans$',
+    # RollupComputer uses positive k (production default 7). At len=k,
+    # pop-last, truncate(k-1), push-last is the identity on the sorted vector.
+    '^src/folder/mod\.rs:2204:78: replace > with >= in RollupComputer::finalize$',
     # FQDN_REGEX already guarantees no leading/trailing dots (\b anchor)
     # so the contains('.')/starts_with/ends_with checks are redundant.
     "network.rs:207",
@@ -91,8 +101,8 @@ exclude_re = [
     # check runs on every candidate it returns, so a mutant that only widens
     # the length window or scans more postings returns a superset and the
     # output is identical; only cost changes. (84:56 `- with /` can SHRINK the
-    # set and stays testable.)
-    '^src/folder/retained_index\.rs:68:22: replace \* with \+ in RetainedIndex::candidates$',
+    # set and stays testable; 68:22 `* with +` makes the range invalid at
+    # one token and threshold 100, so it also stays testable.)
     '^src/folder/retained_index\.rs:68:22: replace \* with / in RetainedIndex::candidates$',
     '^src/folder/retained_index\.rs:68:40: replace - with \+ in RetainedIndex::candidates$',
     '^src/folder/retained_index\.rs:72:29: replace \* with \+ in RetainedIndex::candidates$',

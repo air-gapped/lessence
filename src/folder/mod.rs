@@ -2659,8 +2659,7 @@ impl PatternFolder {
         let n = group.lines.len();
         let target = (3 + n.ilog2() as usize).min(16);
         for i in 0..target {
-            let idx = ((i * (n - 1)) as f64 / (target - 1) as f64).round() as usize;
-            chosen.insert(idx.min(n - 1));
+            chosen.insert(distill_sample_index(n, i, target));
         }
 
         self.distill_kept
@@ -3116,6 +3115,13 @@ impl PatternFolder {
     pub fn get_stats(&self) -> &FoldingStats {
         &self.stats
     }
+}
+
+// Keep the rounding and bounds clamp together: at large n, floating-point
+// rounding can put the final sample one past the group's last index.
+fn distill_sample_index(n: usize, i: usize, target: usize) -> usize {
+    let idx = ((i * (n - 1)) as f64 / (target - 1) as f64).round() as usize;
+    idx.min(n - 1)
 }
 
 mod render;

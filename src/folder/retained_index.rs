@@ -96,6 +96,26 @@ mod tests {
     use super::*;
     use crate::{config::Config, normalize::Normalizer};
 
+    /// The length window must admit an exact one-token match at threshold
+    /// 100 (lessence-e8v 68:22): low is ceil(t*n / (200-t)) = 1 and high is
+    /// 1, so the range is 1..=1. A low of 2 would either panic (range start
+    /// above end) or skip the only bucket and lose the founder.
+    #[test]
+    fn candidate_filter_keeps_a_one_token_exact_match_at_threshold_100() {
+        let normalizer = Normalizer::new(Config {
+            threshold: 100,
+            ..Config::default()
+        });
+        let norm = |s: &str| normalizer.normalize_line(s.to_string()).unwrap();
+        let founder = norm("alpha");
+        let line = norm("alpha");
+        assert_eq!(line.sim().sorted_hashes().len(), 1);
+        assert!(normalizer.are_similar(&line, &founder));
+        let mut index = RetainedIndex::default();
+        index.insert(&founder);
+        assert!(index.candidates(&line, 100).contains(&founder.hash));
+    }
+
     #[test]
     fn candidate_filter_never_loses_a_match_with_repeated_tokens_or_length_changes() {
         let texts = [

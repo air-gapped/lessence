@@ -6663,3 +6663,357 @@ fn unit_boundaries_hold_for_glued_stale_and_doubled_quotes() {
     let doubled = texts(r#"""GET /x HTTP/1.1" z""#);
     assert!(doubled.contains(&"/x"), "{doubled:?}");
 }
+
+// The earlier founder can retain the latest member after convergence.
+#[test]
+fn an_earlier_retained_founder_keeps_its_later_last_member() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    for tail in [
+        "alpha state one",
+        "beta state two",
+        "delta state two",
+        "beta state four",
+        "gamma state one",
+        "alpha state three",
+    ] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 2);
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 6);
+    assert_eq!(record["first"]["line_no"], 1);
+    assert_eq!(record["last"]["line_no"], 6);
+    assert_eq!(record["last"]["line"], format!("{stem} alpha state three"));
+}
+
+#[test]
+fn briefing_counts_each_severity_and_logfmt_line() {
+    let mut stats = FoldingStats::default();
+    for level in ["fatal", "info", "debug", "trace"] {
+        let tokens = vec![
+            Token::LogWithModule {
+                level: level.into(),
+                module: "worker".into(),
+            },
+            Token::KeyValuePair {
+                key: "job".into(),
+                value_type: "number".into(),
+            },
+            Token::KeyValuePair {
+                key: "attempt".into(),
+                value_type: "number".into(),
+            },
+        ];
+        stats.record_briefing_line(&tokens, "job=12 attempt=3");
+        stats.record_briefing_line(&tokens, "job=13 attempt=4");
+    }
+    assert_eq!(stats.format_logfmt, 8);
+    assert_eq!(stats.level_lines_with_level, 8);
+    assert_eq!(stats.level_fatal, 2);
+    assert_eq!(stats.level_info, 2);
+    assert_eq!(stats.level_debug, 2);
+    assert_eq!(stats.level_trace, 2);
+}
+
+#[test]
+fn mac_occurrences_and_distinct_values_are_separate_counts() {
+    let mut f = make_folder();
+    for value in [
+        "aa:bb:cc:dd:ee:01",
+        "aa:bb:cc:dd:ee:02",
+        "aa:bb:cc:dd:ee:01",
+    ] {
+        f.count_pattern_types(&[Token::Mac(value.into())]);
+    }
+    assert_eq!(f.stats.macs, 3);
+    assert_eq!(f.stats.cardinality_for(StatsBucket::Macs), (2, true));
+    assert_eq!(f.stats.cardinality_for(StatsBucket::Emails), (0, true));
+}
+
+#[test]
+fn group_epoch_range_uses_both_member_timestamps() {
+    let group = make_group(
+        "event <TIMESTAMP>",
+        vec![
+            vec![Token::Timestamp("2024-01-01T00:00:00Z".into())],
+            vec![Token::Timestamp("2024-01-01T00:00:07Z".into())],
+        ],
+    );
+    assert_eq!(
+        group_epoch_range(&group),
+        (Some(1_704_067_200), Some(1_704_067_207))
+    );
+}
+#[test]
+fn json_variation_samples_are_complete_only_when_exact_and_all_present() {
+    for (distinct_count, capped, complete) in
+        [(1, false, true), (2, false, false), (1, true, false)]
+    {
+        let json = JsonVariationEntry::from(VariationEntry {
+            distinct_count,
+            samples: vec!["alpha".into()],
+            capped,
+            counts: None,
+        });
+        assert_eq!(json.samples_complete, complete);
+    }
+}
+
+#[test]
+fn zero_numeric_tokens_hash_their_canonical_zero_digit() {
+    let mut decimal = FNV_OFFSET;
+    fnv1a_fold_decimal(&mut decimal, 0);
+    let mut text = FNV_OFFSET;
+    fnv1a_fold(&mut text, b"0");
+    assert_eq!(decimal, text);
+    assert_ne!(decimal, FNV_OFFSET);
+}
+
+#[test]
+fn framed_continuations_add_to_input_and_saved_line_totals() {
+    let mut f = make_folder_json();
+    f.stats.total_lines = 7;
+    f.stats.lines_saved = 2;
+    let report = crate::ingest::IngestReport {
+        fail_pattern_matched: false,
+        overlong_lines_skipped: 0,
+        continuation_lines_absorbed: 3,
+        max_lines_reached: false,
+    };
+    f.absorb_ingest_report(&report, false);
+    assert_eq!(f.stats.total_lines, 10);
+    assert_eq!(f.stats.lines_saved, 5);
+    f.absorb_ingest_report(&report, false);
+    assert_eq!(f.stats.total_lines, 13);
+    assert_eq!(f.stats.lines_saved, 8);
+}
+
+/// retain_evicted_group 2763: a retained group with more than one member
+/// keeps its last raw line, and the record shows it.
+#[test]
+fn a_retained_group_still_shows_its_last_line() {
+    let mut f = make_folder_json();
+    let stem = "svc node ready check pass level info region east";
+    f.process_line(&format!("{stem} alpha state one")).unwrap();
+    f.process_line(&format!("{stem} gamma state one")).unwrap();
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 1, "the group must be retained");
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1, "{out:?}");
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 2);
+    assert_eq!(record["first"]["line"], format!("{stem} alpha state one"));
+    assert_eq!(record["last"]["line"], format!("{stem} gamma state one"));
+}
+
+#[test]
+fn retention_declines_and_counts_new_groups_once_the_cap_is_full() {
+    let mut f = make_folder_json();
+    for i in 0..RETAINED_TEMPLATE_CAP + 2 {
+        let mut line = make_line(&format!("event {i}"), vec![]);
+        line.hash = i as u64;
+        let group = PatternGroup::new(line, i + 1);
+        let result = f.retain_evicted_group(group);
+        if i < RETAINED_TEMPLATE_CAP {
+            assert!(matches!(result, Retention::Kept));
+        } else {
+            let Retention::Declined(group) = result else {
+                panic!("a new group must be declined at the retention cap");
+            };
+            assert_eq!(group.first().hash, i as u64);
+            assert_eq!(f.json_retention_cap_hits, i + 1 - RETAINED_TEMPLATE_CAP);
+        }
+    }
+    assert_eq!(f.retained.len(), RETAINED_TEMPLATE_CAP);
+    assert_eq!(f.json_retention_cap_hits, 2);
+    f.process_line("totally alien geometry").unwrap();
+    f.position_counter += 1_000;
+    let out = f
+        .flush_oldest_safe_group()
+        .unwrap()
+        .expect("a full retention table streams evictions");
+    assert!(!out.is_empty());
+    assert_eq!(f.stats.output_lines, out.lines().count());
+    assert_eq!(f.json_groups_emitted, 1);
+}
+
+#[test]
+fn fit_budget_equal_to_group_count_keeps_every_entry() {
+    let mut f = make_folder_json();
+    f.process_line("alpha").unwrap();
+    f.process_line("bravo charlie delta").unwrap();
+    let (out, total, _, truncated) = f.finish_top_n(2, Some(2), false).unwrap();
+    assert_eq!(total, 2);
+    assert_eq!(out.len(), 2);
+    assert_eq!(truncated, 0);
+}
+#[test]
+fn converging_groups_from_one_batch_keep_the_first_groups_last_member_on_a_tie() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: None,
+        output_format: "json".into(),
+        ..Config::default()
+    });
+    let stem = "svc node ready check pass level info region east";
+    for tail in [
+        "alpha state one",
+        "gamma state one",
+        "alpha state three",
+        "beta state two",
+        "delta state two",
+        "beta state four",
+    ] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    f.process_batch().unwrap();
+    assert_eq!(f.buffer.len(), 2);
+    assert_eq!(f.buffer[0].position, f.buffer[1].position);
+    assert_eq!(f.buffer[0].last_line_no, f.buffer[1].last_line_no);
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 1);
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    assert_eq!(record["count"], 6);
+    assert_eq!(record["last"]["line"], format!("{stem} alpha state three"));
+}
+
+#[test]
+fn a_retained_match_precedes_a_live_group_at_the_same_position() {
+    let mut f = make_folder();
+    let stem = "svc node ready check pass level info region east";
+    f.position_counter = 1;
+    let a = f
+        .normalizer
+        .normalize_line(format!("{stem} alpha one"))
+        .unwrap();
+    let key = a.hash;
+    f.cluster_line_at(a, None);
+    let b = f
+        .normalizer
+        .normalize_line(format!("{stem} beta two"))
+        .unwrap();
+    f.cluster_line_at(b, None);
+    assert_eq!(f.buffer.len(), 2);
+    f.position_counter = 200;
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 1);
+    assert!(f.retained.contains_key(&key));
+    assert_eq!(f.buffer.len(), 1);
+    assert_eq!(f.buffer[0].position, f.retained[&key].position);
+    let line = f
+        .normalizer
+        .normalize_line(format!("{stem} alpha two"))
+        .unwrap();
+    f.cluster_line_at(line, None);
+    assert_eq!(f.retained[&key].count(), 2);
+    assert_eq!(f.buffer[0].count(), 1);
+}
+
+#[test]
+fn a_literal_marker_singleton_is_not_duplicated_when_another_source_converges() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 5,
+        ..Config::default()
+    });
+    let stem = "svc node ready check pass level info region east";
+    let literal = format!("{stem} <VARIES> state <VARIES>");
+    f.process_line_at(&literal, Some(SourceId(1)), 5).unwrap();
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 1);
+    f.process_line_at(&format!("{stem} alpha state one"), Some(SourceId(2)), 1)
+        .unwrap();
+    f.process_line_at(&format!("{stem} gamma state one"), Some(SourceId(2)), 2)
+        .unwrap();
+    f.process_line_at(&format!("{stem} alpha state three"), Some(SourceId(2)), 3)
+        .unwrap();
+    assert_eq!(f.retained.values().next().unwrap().count(), 1);
+    assert_eq!(f.buffer.len(), 1);
+    assert_eq!(f.buffer[0].count(), 3);
+    let out = f.finish().unwrap();
+    assert_eq!(
+        out.iter()
+            .flat_map(|s| s.lines())
+            .filter(|line| *line == literal)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_option_identity_survives_a_positional_alignment_shift() {
+    let edits = varying_spans("a --x v", "--x v a");
+    assert!(!edits.is_empty());
+    assert!(
+        edits.iter().all(|&(at, len)| at + len <= 2 || at >= 5),
+        "{edits:?}"
+    );
+}
+
+#[test]
+fn an_option_shaped_suffix_after_pci_still_marks_its_changed_value() {
+    let template = "dev 0000:21:00.0--x=1 up";
+    let mut rendered = template.to_string();
+    let edits = varying_spans(template, "dev 0000:21:00.0--x=2 up");
+    assert!(!edits.is_empty());
+    for (at, len) in edits.into_iter().rev() {
+        rendered.replace_range(at..at + len, VARIES_MARK);
+    }
+    assert_eq!(rendered, "dev 0000:21:00.0--x=<VARIES> up");
+}
+
+#[test]
+fn finishing_json_groups_counts_every_emitted_record() {
+    let mut f = make_folder_json();
+    f.process_line("alpha").unwrap();
+    f.process_line("bravo charlie delta").unwrap();
+    let out = f.finish().unwrap();
+    assert_eq!(out.len(), 2);
+    assert_eq!(f.json_groups_emitted, out.len());
+}
+
+#[test]
+fn distillation_keeps_converging_groups_separate_until_selection() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        distill: Some(1),
+        ..Config::default()
+    });
+    let stem = "svc node ready check pass level info region east";
+    for tail in [
+        "alpha state one",
+        "gamma state one",
+        "alpha state three",
+        "beta state two",
+        "delta state two",
+        "beta state four",
+    ] {
+        f.process_line(&format!("{stem} {tail}")).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2);
+    assert_eq!(f.buffer[0].template(), f.buffer[1].template());
+    f.finish().unwrap();
+    assert_eq!(f.distill_templates.len(), 2);
+}
+
+#[test]
+fn distill_sample_indices_cover_small_groups_evenly() {
+    let indices: Vec<_> = (0..7).map(|i| distill_sample_index(20, i, 7)).collect();
+    assert_eq!(indices, [0, 3, 6, 10, 13, 16, 19]);
+    assert_eq!(distill_sample_index(1, 2, 3), 0);
+}
+
+#[test]
+#[cfg(target_pointer_width = "64")]
+fn distill_sample_index_clamps_floating_point_overshoot() {
+    // No group is allocated: exercise the same arithmetic on its size.
+    let n = 4_503_599_627_370_469;
+    assert_eq!(distill_sample_index(n, 15, 16), n - 1);
+}

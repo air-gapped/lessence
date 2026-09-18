@@ -332,6 +332,61 @@ fn read_vocabulary(path: &PathBuf) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
+    /// distill_take 2619 (the identical-hash skip), 2627 (the template
+    /// replace range) and 2638 (the distinct-form cap). Sixty-four distinct
+    /// forms fill the cap; the sixty-sixth member is the first to mark a
+    /// second slot, so only the template-replay step can pick it. The
+    /// sample points for n = 70 (0, 9, 17, 26, 35, 43, 52, 60, 69) miss
+    /// it, and with two members the floor step adds nothing.
+    #[test]
+    fn a_slot_first_marked_past_the_distinct_cap_is_still_kept() {
+        let stem = "alpha bravo charlie delta echo foxtrot golf hotel";
+        let word = |i: usize| {
+            format!(
+                "k{}{}",
+                (b'a' + (i / 26) as u8) as char,
+                (b'a' + (i % 26) as u8) as char
+            )
+        };
+        let mut lines = vec![format!("{stem} india kzz")];
+        for i in 0..64 {
+            lines.push(format!("{stem} india {}", word(i)));
+        }
+        lines.push(format!("{stem} juliet kzz"));
+        for _ in 0..4 {
+            lines.push(format!("{stem} india kzz"));
+        }
+        assert_eq!(lines.len(), 70);
+        let folded = fold(&cfg(2), &lines).expect("fold");
+        assert_eq!(
+            folded.templates.len(),
+            1,
+            "one group: {:?}",
+            folded.templates
+        );
+        let mut kept = folded.kept.clone();
+        kept.sort_unstable();
+        assert!(
+            kept.contains(&66),
+            "the second slot's first witness: {kept:?}"
+        );
+        let expected: Vec<usize> = (1..=64).chain([66, 70]).collect();
+        assert_eq!(kept, expected);
+    }
+
+    /// The log-scaled sample is
+    /// round(i * (n-1) / (target-1)). For twenty identical lines and one
+    /// member, target is 7 and nothing else selects anything past the
+    /// first line, so the kept set is the sample itself.
+    #[test]
+    fn the_log_scaled_sample_lands_on_its_exact_positions() {
+        let lines: Vec<String> = (0..20).map(|_| "worker finished job".to_string()).collect();
+        let folded = fold(&cfg(1), &lines).expect("fold");
+        let mut kept = folded.kept.clone();
+        kept.sort_unstable();
+        assert_eq!(kept, vec![1, 4, 7, 11, 14, 17, 20]);
+    }
+
     fn cfg(members: usize) -> Config {
         Config {
             distill: Some(members),

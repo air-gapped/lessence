@@ -1251,7 +1251,7 @@ impl Normalizer {
 
         // Fold the anchor into the line hash so the folder's exact-hash group
         // index cannot attach this line to a group with a different anchor.
-        let hash = self.calculate_hash(&normalized) ^ anchor.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        let hash = mix_anchor_hash(self.calculate_hash(&normalized), anchor);
 
         Ok(LogLine::new(original, normalized, tokens, hash).anchored(anchor))
     }
@@ -4315,6 +4315,18 @@ mod e8v_multiset_2026_09_18 {
     use super::*;
 
     #[test]
+    fn cpu_quantities_are_recognized_before_a_path_consumes_the_cpu_label() {
+        let n = Normalizer::new(Config::default());
+        let line = n.normalize_line("/sys/fs/cgroup/cpu 500m".into()).unwrap();
+        assert_eq!(line.normalized, "<PATH> <CPU_QUANTITY>");
+        assert!(
+            line.tokens
+                .iter()
+                .any(|t| matches!(t, Token::CpuQuantity(_)))
+        );
+    }
+
+    #[test]
     fn a_long_line_with_one_widened_value_is_similar_by_token_bag() {
         let n = Normalizer::new(Config::default());
         let tail = (0..crate::patterns::MAX_SIMILARITY_TOKENS + 36)
@@ -4333,5 +4345,27 @@ mod e8v_multiset_2026_09_18 {
         // Under the mutant both are_similar and similarity_score fall back
         // to positional byte overlap, which the 23-byte shift defeats.
         assert!(n.are_similar(&short, &long));
+    }
+}
+
+// For a fixed normalized-text hash, distinct anchors must remain distinct.
+fn mix_anchor_hash(base_hash: u64, anchor: u64) -> u64 {
+    base_hash ^ anchor.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+#[cfg(test)]
+mod anchor_hash_mixing_tests {
+    use super::mix_anchor_hash;
+
+    #[test]
+    fn distinct_anchors_remain_distinct_for_a_fixed_base_hash() {
+        for base_hash in [0, u64::MAX] {
+            let keys = [0, 1, 2].map(|anchor| mix_anchor_hash(base_hash, anchor));
+            for i in 0..keys.len() {
+                for j in i + 1..keys.len() {
+                    assert_ne!(keys[i], keys[j], "base {base_hash}, anchors {i} and {j}");
+                }
+            }
+        }
     }
 }
