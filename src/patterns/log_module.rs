@@ -16,13 +16,6 @@ static NGINX_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     ).unwrap()
 });
 
-// Syslog style: facility.level daemon: message
-static SYSLOG_FACILITY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"([a-zA-Z]+)\.(error|err|warn|warning|info|information|debug|trace|fatal|crit|critical|notice|emerg|emergency|alert)\s+([a-zA-Z][a-zA-Z0-9_-]+):"
-    ).unwrap()
-});
-
 // Framework style: LEVEL [module.component] message
 static FRAMEWORK_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
@@ -52,7 +45,6 @@ impl LogWithModuleDetector {
         // Apply log-with-module detection in order of specificity
         Self::apply_apache_pattern(&mut result, &mut tokens);
         Self::apply_nginx_pattern(&mut result, &mut tokens);
-        Self::apply_syslog_pattern(&mut result, &mut tokens);
         Self::apply_framework_pattern(&mut result, &mut tokens);
         Self::apply_systemd_pattern(&mut result, &mut tokens);
 
@@ -107,24 +99,6 @@ impl LogWithModuleDetector {
                         module: module.to_string(),
                     },
                     format!("[{level}] <LOG_WITH_MODULE>"),
-                )
-            })
-        });
-    }
-
-    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter requires bracket/uppercase indicators that pure syslog inputs (facility.level) never have
-    fn apply_syslog_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        super::fold_matches(text, tokens, &SYSLOG_FACILITY_REGEX, |caps| {
-            let facility = caps.get(1).unwrap().as_str();
-            let level = caps.get(2).unwrap().as_str();
-            let daemon = caps.get(3).unwrap().as_str();
-            Self::is_syslog_daemon(daemon).then(|| {
-                (
-                    Token::LogWithModule {
-                        level: Self::normalize_syslog_level(level),
-                        module: daemon.to_string(),
-                    },
-                    format!("{facility}.{level} <LOG_WITH_MODULE>:"),
                 )
             })
         });
@@ -215,34 +189,6 @@ impl LogWithModuleDetector {
             || module.starts_with("ngx_") && module.contains("module")
     }
 
-    fn is_syslog_daemon(daemon: &str) -> bool {
-        let syslog_daemons = [
-            "kernel",
-            "sshd",
-            "systemd",
-            "cron",
-            "postfix",
-            "nginx",
-            "apache",
-            "mysql",
-            "postgresql",
-            "redis",
-            "docker",
-            "NetworkManager",
-            "dhcpd",
-            "named",
-            "ntpd",
-            "rsyslog",
-            "auditd",
-            "firewalld", // NOTE: "kubelet" removed to prevent Kubernetes pattern theft
-        ];
-
-        syslog_daemons.contains(&daemon) ||
-        daemon.ends_with('d') ||  // Most daemons end with 'd'
-        daemon.contains("_service") ||
-        daemon.contains("-service")
-    }
-
     fn is_framework_module(module: &str) -> bool {
         let framework_patterns = [
             "spring",
@@ -296,15 +242,6 @@ impl LogWithModuleDetector {
             || component.ends_with("_client")
             || component.ends_with("_daemon")
     }
-
-    fn normalize_syslog_level(level: &str) -> String {
-        match level {
-            "err" => "error".to_string(),
-            "emerg" | "emergency" => "emergency".to_string(),
-            "crit" | "critical" => "critical".to_string(),
-            _ => level.to_lowercase(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -336,20 +273,6 @@ mod tests {
             if let Token::LogWithModule { level, module } = &tokens[0] {
                 assert_eq!(level, "error");
                 assert!(module.starts_with("ngx_http"));
-            }
-        }
-    }
-
-    #[test]
-    fn test_syslog_daemon_detection() {
-        let syslog_line = "kern.error kernel: Out of memory condition";
-        let (result, tokens) = LogWithModuleDetector::detect_and_replace(syslog_line);
-
-        if !tokens.is_empty() {
-            assert!(result.contains("<LOG_WITH_MODULE>"));
-            if let Token::LogWithModule { level, module } = &tokens[0] {
-                assert_eq!(level, "error");
-                assert_eq!(module, "kernel");
             }
         }
     }
@@ -387,27 +310,10 @@ mod tests {
         assert!(LogWithModuleDetector::is_apache_module("mod_jk"));
         assert!(LogWithModuleDetector::is_apache_module("mod_ssl"));
         assert!(LogWithModuleDetector::is_nginx_module("ngx_http_core"));
-        assert!(LogWithModuleDetector::is_syslog_daemon("sshd"));
         assert!(LogWithModuleDetector::is_framework_module("spring.web"));
         assert!(LogWithModuleDetector::is_systemd_component(
             "service_manager"
         ));
-    }
-
-    #[test]
-    fn test_syslog_level_normalization() {
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("err"),
-            "error"
-        );
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("crit"),
-            "critical"
-        );
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("info"),
-            "info"
-        );
     }
 
     #[test]
@@ -666,35 +572,6 @@ mod tests {
         assert!(!crate::patterns::has_kubernetes_indicators("plain message"));
     }
 
-    // ---- is_syslog_daemon: per-branch tests ----
-
-    #[test]
-    fn syslog_daemon_known() {
-        assert!(LogWithModuleDetector::is_syslog_daemon("sshd"));
-        assert!(LogWithModuleDetector::is_syslog_daemon("cron"));
-        assert!(LogWithModuleDetector::is_syslog_daemon("postfix"));
-    }
-
-    #[test]
-    fn syslog_daemon_ends_with_d() {
-        assert!(LogWithModuleDetector::is_syslog_daemon("httpd"));
-    }
-
-    #[test]
-    fn syslog_daemon_underscore_service() {
-        assert!(LogWithModuleDetector::is_syslog_daemon("app_service"));
-    }
-
-    #[test]
-    fn syslog_daemon_dash_service() {
-        assert!(LogWithModuleDetector::is_syslog_daemon("app-service"));
-    }
-
-    #[test]
-    fn syslog_daemon_negative() {
-        assert!(!LogWithModuleDetector::is_syslog_daemon("zzz"));
-    }
-
     // ---- is_framework_module: per-branch tests ----
 
     #[test]
@@ -787,48 +664,6 @@ mod tests {
         assert!(!LogWithModuleDetector::is_apache_module("zzz"));
     }
 
-    // ---- normalize_syslog_level: match arm tests ----
-
-    #[test]
-    fn syslog_level_emerg() {
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("emerg"),
-            "emergency"
-        );
-    }
-
-    #[test]
-    fn syslog_level_emergency() {
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("emergency"),
-            "emergency"
-        );
-    }
-
-    #[test]
-    fn syslog_level_err() {
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("err"),
-            "error"
-        );
-    }
-
-    #[test]
-    fn syslog_level_crit() {
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("crit"),
-            "critical"
-        );
-    }
-
-    #[test]
-    fn syslog_level_passthrough() {
-        assert_eq!(
-            LogWithModuleDetector::normalize_syslog_level("INFO"),
-            "info"
-        );
-    }
-
     // ---- Mutant-killing: apply_nginx_pattern (replace with ()) ----
 
     #[test]
@@ -848,8 +683,6 @@ mod tests {
             "nginx pattern should modify text: {result}"
         );
     }
-
-    // Note: apply_syslog_pattern is unreachable behind the pre-filter (marked #[cfg_attr(test, mutants::skip)])
 
     // ---- Mutant-killing: apply_framework_pattern (replace with ()) ----
 

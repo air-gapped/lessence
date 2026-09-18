@@ -4475,3 +4475,9 @@ resource configuration cpu=750m timeout=40m worker=cedar
 ##FROM invented audit controls
 {"process_exit":{"process":{"exec_id":"Z2FtbWE6MTIzNA==","pid":7421,"uid":1000,"cwd":"/opt/cedar","binary":"/usr/bin/probe","arguments":"for worker run check"},"status":0}}
 {"process_exit":{"process":{"exec_id":"ZGVsdGE6MTIz","pid":8822,"uid":1000,"cwd":"/opt/birch","binary":"/usr/bin/probe","arguments":"for worker run check"},"status":0}}
+
+##CASE lessence-ppb template_present=daemon.err sshd:
+##WHY the program after facility.level is event identity (a8t); the log-module detector must not fold it away when a bracket elsewhere on the line lets it run
+##FROM invented syslogd lines
+Aug 29 03:10:07 gw-lab-1 daemon.err sshd: ERROR bad key from peer [id 7]
+Aug 29 03:10:09 gw-lab-1 daemon.err sshd: ERROR bad key from peer [id 9]
