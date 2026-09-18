@@ -80,4 +80,42 @@ exclude_re = [
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
     '^src/folder/mod\.rs:1410:85: replace < with <= in cli_option_units$',
+
+    # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
+    # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded
+    # on the proof written above each entry. Still pending, not excluded:
+    # normalize.rs:49:73 (pipeline-order argument covers probes, not every
+    # detector path) and normalize.rs:1254:53 (weaker hash mixing is not
+    # equivalent behaviour). ---
+    # RetainedIndex::candidates is a sound over-approximation: the similarity
+    # check runs on every candidate it returns, so a mutant that only widens
+    # the length window or scans more postings returns a superset and the
+    # output is identical; only cost changes. (84:56 `- with /` can SHRINK the
+    # set and stays testable.)
+    '^src/folder/retained_index\.rs:68:22: replace \* with \+ in RetainedIndex::candidates$',
+    '^src/folder/retained_index\.rs:68:22: replace \* with / in RetainedIndex::candidates$',
+    '^src/folder/retained_index\.rs:68:40: replace - with \+ in RetainedIndex::candidates$',
+    '^src/folder/retained_index\.rs:72:29: replace \* with \+ in RetainedIndex::candidates$',
+    '^src/folder/retained_index\.rs:72:29: replace \* with / in RetainedIndex::candidates$',
+    '^src/folder/retained_index\.rs:84:56: replace - with \+ in RetainedIndex::candidates$',
+
+    # cpu_quantities' own prefilter: CPU_QUANTITY needs both the cpu word and
+    # the m unit, so widening `||` to `&&` cannot admit or drop a match.
+    '^src/patterns/duration\.rs:132:32: replace \|\| with && in DurationDetector::cpu_quantities$',
+
+    # The quoted-string result cache is transparent: the cache-key length cap
+    # and the admission bound only decide whether an outcome is memoised.
+    '^src/patterns/quoted\.rs:81:53: replace <= with > in QuotedStringDetector::detect_and_replace$',
+    '^src/patterns/quoted\.rs:95:44: replace < with .* in QuotedStringDetector::detect_and_replace$',
+    # shape_folded and whole_replacement are set together in every
+    # normalize_quoted outcome, so `||` and `&&` agree.
+    '^src/patterns/quoted\.rs:112:34: replace \|\| with && in QuotedStringDetector::detect_and_replace$',
+
+    # is_prose runs only after is_likely_id, which requires a digit, while
+    # is_prose requires an all-alphabetic id: it can never be true.
+    '^src/patterns/uuid\.rs:198:9: replace UuidDetector::is_prose -> bool with false$',
+    '^src/patterns/uuid\.rs:200:29: replace - with / in UuidDetector::is_prose$',
+
+    # With last == 0 the `>=` branch assigns text[0..] back to text, byte for byte.
+    '^src/patterns/key_value\.rs:211:17: replace > with >= in KeyValueDetector::apply_general_pattern$',
 ]

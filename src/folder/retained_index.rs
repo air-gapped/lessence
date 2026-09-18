@@ -137,6 +137,36 @@ mod tests {
         }
     }
 
+    /// The proof scans `n - needed + 1` of the rarest postings; a founder
+    /// whose shared tokens are all common ones must still be found
+    /// (lessence-e8v 84:56). At threshold 70 with ten tokens a side,
+    /// needed is 7, so four positions are scanned: the three tokens no
+    /// founder has, then one common token that reaches every founder.
+    #[test]
+    fn candidate_filter_reaches_a_founder_through_its_commonest_tokens() {
+        let line = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
+        let founder = "alpha beta gamma delta epsilon zeta eta xray yankee zulu";
+        let decoys = [
+            "alpha beta gamma delta epsilon zeta eta one two three",
+            "alpha beta gamma delta epsilon zeta eta four five six",
+            "alpha beta gamma delta epsilon zeta eta seven eight nine",
+        ];
+        let normalizer = Normalizer::new(Config {
+            threshold: 70,
+            ..Config::default()
+        });
+        let norm = |s: &str| normalizer.normalize_line(s.to_string()).unwrap();
+        let line = norm(line);
+        let founder = norm(founder);
+        assert!(normalizer.are_similar(&line, &founder));
+        let mut index = RetainedIndex::default();
+        index.insert(&founder);
+        for decoy in decoys {
+            index.insert(&norm(decoy));
+        }
+        assert!(index.candidates(&line, 70).contains(&founder.hash));
+    }
+
     #[test]
     fn candidate_filter_keeps_overflow_and_byte_fallback_matches() {
         let texts = [

@@ -4305,3 +4305,33 @@ mod e8v_normalize_2026_09_17 {
         assert!(!normalizer.are_similar(&third, &fourth));
     }
 }
+
+/// Past MAX_SIMILARITY_TOKENS the decision is the token multiset, not the
+/// byte-positional score (lessence-e8v normalize 1352:9). A long line whose
+/// one early value grows shifts every byte after it: the bag still agrees,
+/// the positions do not.
+#[cfg(test)]
+mod e8v_multiset_2026_09_18 {
+    use super::*;
+
+    #[test]
+    fn a_long_line_with_one_widened_value_is_similar_by_token_bag() {
+        let n = Normalizer::new(Config::default());
+        let tail = (0..crate::patterns::MAX_SIMILARITY_TOKENS + 36)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let short = n
+            .normalize_line(format!("job started for tenant x {tail}"))
+            .unwrap();
+        let long = n
+            .normalize_line(format!(
+                "job started for tenant xxxxxxxxxxxxxxxxxxxxxxxx {tail}"
+            ))
+            .unwrap();
+        assert!(short.sim().sorted_hashes().len() > crate::patterns::MAX_SIMILARITY_TOKENS);
+        // Under the mutant both are_similar and similarity_score fall back
+        // to positional byte overlap, which the 23-byte shift defeats.
+        assert!(n.are_similar(&short, &long));
+    }
+}
