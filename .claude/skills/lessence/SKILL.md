@@ -80,6 +80,8 @@ lessence --summary < app.log          # compact one-line-per-pattern overview (c
 lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
 lessence -q < app.log                 # suppress the briefing (it goes to stderr — stdout is always pipe-clean)
+lessence --frame-continuations < app.log   # a stack trace folds as one event, not one group per frame
+lessence --sanitize host:pseudonym,ip < app.log   # mask hosts and IPs; pseudonym tags keep folding (references/flags.md)
 ```
 
 ## Reading the Output
@@ -93,16 +95,16 @@ document; `--explain`'s summary record carries it as `briefing`. `-q`
 silences only the stderr rendering, never the JSON.
 
 ```
---- lessence briefing: kubelet.log (3,951 lines)
+--- lessence briefing: kubelet.log (4,092 lines)
 span:    E0909 13:07:09.181236 → E0920 14:52:55.728948  (11d 1h, 0.004 lines/s)
-shape:   ▆▁▁▁ ▁ ▁ ▁█▁▁▁▁▁▁ ▁▁▂▁▁▁  busiest 09-14 03:51 +11h 4m holds 1,785 (46.6%)
-format:  plain 3,901 (99%), logfmt 50 (1%)
-levels:  error 1,044 (27.7%), warn 48 (1.3%), info 2,681 (71.1%) — on 3,773 lines (95%)
-top templates (10 of 248, 52.1% of all lines):
-    18%  713  over 10d 13h  <TIMESTAMP>    <PID> reconciler_common.go:<LINE>] "operationExecutor…
+shape:   ▆▁▁▁ ▁ ▁ ▁█▁▁▁▁▁▁▁▁▁▂▁▁▁  busiest 09-14 03:51 +11h 4m holds 1,786 (46.7%)
+format:  plain 4,042 (99%), logfmt 50 (1%)
+levels:  error 1,050 (27.9%), warn 48 (1.3%), info 2,672 (70.9%) — on 3,770 lines (92%)
+top templates (10 of 273, 50.1% of all lines):
+   17.4%  710  over 10d 13h  <TIMESTAMP>    <PID> reconciler_common.go:245] "operationExecutor…
    ...
-rare:    34 templates occur once (0.9% of lines)
-tokens:  quoted_strings 8,090/798, timestamps 6,063/~4,778, uuids 5,352/314, paths 5,294/378, ...
+rare:    35 templates occur once (0.9% of lines)
+tokens:  quoted_strings 8,078/797, timestamps 6,049/~4,718, uuids 5,334/313, kubernetes 4,400/688, ...
 ---
 ```
 
@@ -123,8 +125,8 @@ Read it top to bottom, and let it decide the next command:
   first and the answer last; always check the span column, not just the count.
 - **`tokens:`** — `occurrences/distinct` per class decides whether a class is
   a facet or a correlation key:
-  - **Low distinct relative to occurrences** (`uuids 5,352/314`, kubelet) is a
-    facet: 314 pods, each recurring. Group by it — `jq` the `K8S_POD` samples,
+  - **Low distinct relative to occurrences** (`uuids 5,334/313`, kubelet) is a
+    facet: 313 pods, each recurring. Group by it — `jq` the `K8S_POD` samples,
     or grep one and expect many hits.
   - **Distinct near occurrences** (`uuids 46,662/~46,001`) is a per-request
     correlation key: almost every occurrence is a different value. Pull one
