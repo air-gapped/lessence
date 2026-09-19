@@ -74,4 +74,58 @@ fn test_help_text_structure() {
             || help_text.contains("ARGS:"),
         "Help should contain options section"
     );
+    assert!(
+        help_text.contains("Agent:"),
+        "the agent surface is its own heading, first"
+    );
+}
+
+/// The help speaks to the agent reading it before anything else, the way
+/// herdr's does: an agent that already holds the skill must not fetch it
+/// again, and --skill comes before every folding knob (lessence-blind-test).
+#[test]
+fn test_help_is_agent_first() {
+    for flag in ["--help", "-h"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+            .arg(flag)
+            .output()
+            .expect("lessence binary should exist");
+        let help = String::from_utf8_lossy(&output.stdout);
+        let first = help.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        assert!(
+            first.contains("AI agent"),
+            "{flag}: first line is {first:?}"
+        );
+        assert!(
+            help.contains(
+                "SKIP if a lessence skill is already in your context. Otherwise run: lessence --skill"
+            ),
+            "{flag}"
+        );
+        assert!(help.contains("Humans: lessence --help-human"), "{flag}");
+        let skill = help.find("--skill").expect("--skill listed");
+        let threshold = help.find("--threshold").expect("--threshold listed");
+        assert!(
+            skill < threshold,
+            "{flag}: --skill must come before the fold knobs"
+        );
+    }
+}
+
+/// --help-human is for a person: short, no option table, and it exits
+/// before touching input.
+#[test]
+fn test_help_human() {
+    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--help-human", "/nonexistent/never.log"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("lessence binary should exist");
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("lessence --help"), "{text}");
+    assert!(text.contains("README"), "{text}");
+    assert!(text.contains("--fit"), "{text}");
+    assert!(!text.contains("Usage:"), "{text}");
+    assert!(!text.contains("AI agent"), "{text}");
 }

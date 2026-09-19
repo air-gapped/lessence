@@ -106,112 +106,154 @@ pub const VERSION: &str = concat!(
     ")"
 );
 
+/// The first thing `--help` says. Written for the agent reading it, the way
+/// herdr's help is: an agent that already holds the skill must not fetch it
+/// again, and the machine-readable surface is named before the option list.
+pub const AGENT_HELP: &str = "\
+Are you an AI agent? Use these ONLY IF your task specifically asks you to.
+  SKIP if a lessence skill is already in your context. Otherwise run: lessence --skill
+  Flag reference for agents:   lessence --skill flags
+  Machine-readable output:     --format json (or --json); --explain says why lines fold or split
+  Orientation before folding:  --preflight
+Humans: lessence --help-human";
+
+/// `--help-human`: the short help for a person at a terminal. The full
+/// `--help` is written for agents and is the authoritative flag list.
+pub const HELP_HUMAN: &str = "\
+lessence folds a repetitive log into its distinct events with counts, and keeps every unique line.
+
+  lessence app.log                   fold a file; a briefing of the log comes first, on stderr
+  kubectl logs pod-x | lessence      fold anything on stdin
+  lessence --fit app.log             one-screen overview, no scrolling
+  lessence -q app.log                fold without the briefing
+
+Nothing is dropped silently: every line lessence leaves out is declared in its output.
+
+README and examples:  https://github.com/air-gapped/lessence
+Full reference:       lessence --help   (written for coding agents; its option list is complete
+                      and authoritative for this build)
+";
+
 #[derive(Parser)]
-#[command(author, version = VERSION, about, long_about = None)]
+#[command(author, version = VERSION, about, long_about = None, before_help = AGENT_HELP)]
 pub struct Cli {
-    /// Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting
-    #[arg(long, default_value_t = crate::config::DEFAULT_THRESHOLD, value_parser = clap::value_parser!(u8).range(0..=100))]
-    pub threshold: u8,
-
-    /// Minimum lines before folding (min: 3)
-    #[arg(long, default_value_t = crate::config::DEFAULT_MIN_COLLAPSE, value_parser = validate_min_collapse)]
-    pub min_collapse: usize,
-
-    /// Disable specific pattern groups (comma-separated). The valid-name
-    /// list in the actual help text derives from [`PATTERN_REGISTRY`].
-    #[arg(long, value_delimiter = ',', value_parser = validate_pattern_names, help = disable_patterns_help())]
-    pub disable_patterns: Vec<String>,
-
-    /// Disable statistics output (enabled by default)
-    #[arg(short = 'q', long = "quiet", alias = "no-stats")]
-    pub no_stats: bool,
-
-    /// Preserve ANSI color codes (stripped by default)
-    #[arg(long)]
-    pub preserve_color: bool,
-
-    /// One-line-per-pattern frequency summary (use with --top N for compact overview)
-    #[arg(long)]
-    pub summary: bool,
-
-    /// JSON analysis report to stdout (for automation/CI)
-    #[arg(long)]
-    pub preflight: bool,
-
-    /// Output format: text (default), markdown, json (JSONL for agent consumption)
-    #[arg(long, default_value = crate::config::DEFAULT_OUTPUT_FORMAT)]
-    pub format: String,
-
-    /// Same as --format json
-    #[arg(long, conflicts_with = "format")]
-    pub json: bool,
-
-    /// Enable essence mode (timestamp removal/tokenization for temporal independence)
-    #[arg(long)]
-    pub essence: bool,
-
-    /// Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
-    #[arg(long, value_parser = validate_threads)]
-    pub threads: Option<usize>,
-
-    /// Enable PII sanitization (mask email addresses and sensitive data, default: disabled)
-    #[arg(long)]
-    pub sanitize_pii: bool,
-
-    /// Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
-    #[arg(long, value_name = "ENTITY[:ACTION]", value_delimiter = ',', action = clap::ArgAction::Append)]
-    pub sanitize: Vec<String>,
-
-    /// Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
-    #[arg(long, value_parser = crate::config::parse_size_suffix)]
-    pub max_line_length: Option<usize>,
-
-    /// Maximum number of lines to process (stop after this count, default: no limit)
-    #[arg(long, value_parser = validate_max_lines)]
-    pub max_lines: Option<usize>,
-
-    /// Emit JSON statistics to stderr (replaces human-readable stats)
-    #[arg(long)]
-    pub stats_json: bool,
-
-    /// Show only the N most frequent patterns, sorted by count
-    #[arg(long)]
-    pub top: Option<usize>,
-
-    /// Quick human-readable overview that fits your screen — no scrolling
-    #[arg(long, alias = "human")]
-    pub fit: bool,
-
-    /// Exit 1 if any input line matches this regex (for CI gating)
-    #[arg(long)]
-    pub fail_on_pattern: Option<String>,
-
-    /// Attach indented continuation lines to the record above them, so a stack
-    /// trace folds as one event instead of one group per frame
-    #[arg(long)]
-    pub frame_continuations: bool,
-
-    /// Dev mode: annotate each JSON group record with the existing group it
-    /// scored highest against before founding its own, the score, and the
-    /// first token that differed. Implies --format json.
-    #[arg(long)]
-    pub explain: bool,
-
-    /// Dev mode: run this other lessence binary on the same input and print
-    /// only the groups that fold differently. Exit 1 if anything moved.
-    #[arg(long, value_name = "LESSENCE")]
-    pub diff: Option<std::path::PathBuf>,
-
-    /// Generate shell completion script and exit
-    #[arg(long)]
-    pub completions: Option<clap_complete::Shell>,
-
+    // ---- Agent: the surface an agent reaches for first ----
     /// Print the bundled agent skill and exit: `skill` (SKILL.md, the default)
     /// or `flags` (the complete flag reference). Install with
     /// `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and
     /// `lessence --skill flags > ~/.claude/skills/lessence/references/flags.md`
-    #[arg(long, value_name = "TOPIC", num_args = 0..=1, default_missing_value = "skill")]
+    #[arg(long, value_name = "TOPIC", num_args = 0..=1, default_missing_value = "skill", help_heading = "Agent")]
     pub skill: Option<String>,
+
+    /// Output format: text (default), markdown, json (JSONL for agent consumption)
+    #[arg(long, default_value = crate::config::DEFAULT_OUTPUT_FORMAT, help_heading = "Agent")]
+    pub format: String,
+
+    /// Same as --format json
+    #[arg(long, conflicts_with = "format", help_heading = "Agent")]
+    pub json: bool,
+
+    /// JSON analysis report to stdout (for automation/CI)
+    #[arg(long, help_heading = "Agent")]
+    pub preflight: bool,
+
+    /// Dev mode: annotate each JSON group record with the existing group it
+    /// scored highest against before founding its own, the score, and the
+    /// first token that differed. Implies --format json.
+    #[arg(long, help_heading = "Agent")]
+    pub explain: bool,
+
+    /// Emit JSON statistics to stderr (replaces human-readable stats)
+    #[arg(long, help_heading = "Agent")]
+    pub stats_json: bool,
+
+    // ---- Fold: how lines become groups ----
+    /// Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting
+    #[arg(long, default_value_t = crate::config::DEFAULT_THRESHOLD, value_parser = clap::value_parser!(u8).range(0..=100), help_heading = "Fold")]
+    pub threshold: u8,
+
+    /// Minimum lines before folding (min: 3)
+    #[arg(long, default_value_t = crate::config::DEFAULT_MIN_COLLAPSE, value_parser = validate_min_collapse, help_heading = "Fold")]
+    pub min_collapse: usize,
+
+    /// Disable specific pattern groups (comma-separated). The valid-name
+    /// list in the actual help text derives from [`PATTERN_REGISTRY`].
+    #[arg(long, value_delimiter = ',', value_parser = validate_pattern_names, help = disable_patterns_help(), help_heading = "Fold")]
+    pub disable_patterns: Vec<String>,
+
+    /// Attach indented continuation lines to the record above them, so a stack
+    /// trace folds as one event instead of one group per frame
+    #[arg(long, help_heading = "Fold")]
+    pub frame_continuations: bool,
+
+    /// Enable essence mode (timestamp removal/tokenization for temporal independence)
+    #[arg(long, help_heading = "Fold")]
+    pub essence: bool,
+
+    // ---- Output: what is shown ----
+    /// Disable statistics output (enabled by default)
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        alias = "no-stats",
+        help_heading = "Output"
+    )]
+    pub no_stats: bool,
+
+    /// One-line-per-pattern frequency summary (use with --top N for compact overview)
+    #[arg(long, help_heading = "Output")]
+    pub summary: bool,
+
+    /// Show only the N most frequent patterns, sorted by count
+    #[arg(long, help_heading = "Output")]
+    pub top: Option<usize>,
+
+    /// Quick human-readable overview that fits your screen — no scrolling
+    #[arg(long, alias = "human", help_heading = "Output")]
+    pub fit: bool,
+
+    /// Preserve ANSI color codes (stripped by default)
+    #[arg(long, help_heading = "Output")]
+    pub preserve_color: bool,
+
+    // ---- Limits and safety ----
+    /// Enable PII sanitization (mask email addresses and sensitive data, default: disabled)
+    #[arg(long, help_heading = "Limits and safety")]
+    pub sanitize_pii: bool,
+
+    /// Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
+    #[arg(long, value_name = "ENTITY[:ACTION]", value_delimiter = ',', action = clap::ArgAction::Append, help_heading = "Limits and safety")]
+    pub sanitize: Vec<String>,
+
+    /// Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
+    #[arg(long, value_parser = crate::config::parse_size_suffix, help_heading = "Limits and safety")]
+    pub max_line_length: Option<usize>,
+
+    /// Maximum number of lines to process (stop after this count, default: no limit)
+    #[arg(long, value_parser = validate_max_lines, help_heading = "Limits and safety")]
+    pub max_lines: Option<usize>,
+
+    /// Exit 1 if any input line matches this regex (for CI gating)
+    #[arg(long, help_heading = "Limits and safety")]
+    pub fail_on_pattern: Option<String>,
+
+    /// Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
+    #[arg(long, value_parser = validate_threads, help_heading = "Limits and safety")]
+    pub threads: Option<usize>,
+
+    // ---- Developer ----
+    /// Dev mode: run this other lessence binary on the same input and print
+    /// only the groups that fold differently. Exit 1 if anything moved.
+    #[arg(long, value_name = "LESSENCE", help_heading = "Developer")]
+    pub diff: Option<std::path::PathBuf>,
+
+    /// Generate shell completion script and exit
+    #[arg(long, help_heading = "Developer")]
+    pub completions: Option<clap_complete::Shell>,
+
+    /// Short help for people and exit (this --help is written for agents)
+    #[arg(long, help_heading = "Developer")]
+    pub help_human: bool,
 
     /// Dev mode: write the input back out as a small log that folds the same
     /// way — every group's members, every unfolded line, original order.

@@ -65,6 +65,9 @@ own group. Use the jq workflow below only to project specific fields.
 
 ## This skill and the binary
 
+If this skill is in your context you already have what `lessence --help`
+points to; do not run `lessence --skill` again.
+
 The installed binary is the authority for syntax: `lessence --help` wins over
 anything this text remembers. The skill ships inside the binary and was
 verified against the build that prints it; after upgrading, reinstall it:

@@ -24,6 +24,13 @@ use lessence::output::write_output;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // --help-human is the one help written for a person; it exits before
+    // any input is opened, like --skill.
+    if cli.help_human {
+        io::stdout().write_all(cli::HELP_HUMAN.as_bytes())?;
+        return Ok(());
+    }
+
     // --skill prints the bundled agent skill and exits before any input is
     // opened, so `lessence --skill > file` never waits on stdin.
     if let Some(topic) = &cli.skill {

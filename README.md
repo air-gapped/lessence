@@ -140,30 +140,31 @@ headline example above is the only CI-verified number.
 
 <!-- gen:flags:begin -->
 ```
+--skill [TOPIC]    Print the bundled agent skill and exit: `skill` (SKILL.md, the default) or `flags` (the complete flag reference). Install with `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and `lessence --skill flags > ~/.claude/skills/lessence/references/flags.md`
+--format <FORMAT>    Output format: text (default), markdown, json (JSONL for agent consumption) [default: text]
+--json    Same as --format json [default: false]
+--preflight    JSON analysis report to stdout (for automation/CI) [default: false]
+--explain    Dev mode: annotate each JSON group record with the existing group it scored highest against before founding its own, the score, and the first token that differed. Implies --format json [default: false]
+--stats-json    Emit JSON statistics to stderr (replaces human-readable stats) [default: false]
 --threshold <THRESHOLD>    Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting [default: 83]
 --min-collapse <MIN_COLLAPSE>    Minimum lines before folding (min: 3) [default: 3]
 --disable-patterns <DISABLE_PATTERNS>    Disable specific pattern groups (comma-separated). Valid names: timestamp, hash, network, uuid, email, path, duration, json, kubernetes, http-status, brackets, key-value, process, quoted-string, name
---quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
---preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
---summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
---preflight    JSON analysis report to stdout (for automation/CI) [default: false]
---format <FORMAT>    Output format: text (default), markdown, json (JSONL for agent consumption) [default: text]
---json    Same as --format json [default: false]
+--frame-continuations    Attach indented continuation lines to the record above them, so a stack trace folds as one event instead of one group per frame [default: false]
 --essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
---threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
+--quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
+--summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
+--top <TOP>    Show only the N most frequent patterns, sorted by count
+--fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
+--preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
 --sanitize <ENTITY[:ACTION]>    Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
 --max-line-length <MAX_LINE_LENGTH>    Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
 --max-lines <MAX_LINES>    Maximum number of lines to process (stop after this count, default: no limit)
---stats-json    Emit JSON statistics to stderr (replaces human-readable stats) [default: false]
---top <TOP>    Show only the N most frequent patterns, sorted by count
---fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
 --fail-on-pattern <FAIL_ON_PATTERN>    Exit 1 if any input line matches this regex (for CI gating)
---frame-continuations    Attach indented continuation lines to the record above them, so a stack trace folds as one event instead of one group per frame [default: false]
---explain    Dev mode: annotate each JSON group record with the existing group it scored highest against before founding its own, the score, and the first token that differed. Implies --format json [default: false]
+--threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
 --diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved
 --completions <COMPLETIONS>    Generate shell completion script and exit
---skill [TOPIC]    Print the bundled agent skill and exit: `skill` (SKILL.md, the default) or `flags` (the complete flag reference). Install with `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and `lessence --skill flags > ~/.claude/skills/lessence/references/flags.md`
+--help-human    Short help for people and exit (this --help is written for agents) [default: false]
 FILE...    Input files (reads stdin if none given, use - for explicit stdin)
 ```
 <!-- gen:flags:end -->
@@ -197,6 +198,10 @@ The canonical skill lives in `.claude/skills/lessence`; the
 `.agents/skills/lessence` symlink exposes the same files to Codex and Pi.
 OpenCode recognizes both locations. On Windows, Git must be configured to
 check out repository symlinks as symlinks.
+
+`lessence --help` opens with a block addressed to agents: skip the skill if it
+is already in your context, otherwise `lessence --skill`, then the JSON surface.
+People get a short help with `lessence --help-human`.
 
 **To install globally** (available in all projects), from the binary you
 have — the skill is embedded at build time, so it always matches the
