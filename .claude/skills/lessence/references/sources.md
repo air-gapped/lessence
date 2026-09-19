@@ -5,7 +5,7 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
-verified-at: 3d0e92d7023e73e9bd3676dfb07d74b95efaa9d0
+verified-at: dc87751f143cac696aa1d644fff6f23b0adf3adf
 
 `verified-at` is the main commit this skill was last verified against. The
 release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
@@ -13,7 +13,7 @@ touching `src/` postdates it.
 
 | Claim | Source | Last verified |
 |---|---|---|
-| Flag set, defaults, `--format text\|markdown\|json` | `lessence --help` (build at verified-at, 0.5.0 candidate) | 2026-09-18 |
+| Flag set, defaults, `--format text\|markdown\|json` | `lessence --help` (build at verified-at) | 2026-09-18 |
 | `--summary` default cap of 30 patterns | `src/folder/mod.rs` `DEFAULT_SUMMARY_CAP` (2815) | 2026-09-18 |
 | JSONL group/summary record fields (group: count, first, last, normalized, time_range, token_types, variation; summary carries `briefing` and `completeness`), `samples` ≤7 (`ROLLUP_K`), `capped` at 64 (`ROLLUP_DISTINCT_CAP`), determinism modulo `elapsed_ms` | `docs/format-json-schema.md` + live run on `examples/distilled/kubelet.log` | 2026-09-18 |
 | `--fail-on-pattern` exit 1 on match, exit 2 on invalid regex | `lessence --help` + `src/main.rs` | 2026-09-18 |
@@ -28,3 +28,4 @@ touching `src/` postdates it.
 | Stats footer reports line counts (`input_lines`/`output_lines`); time ranges are per folded group, not in the footer; the briefing precedes the folded output on stderr and `-q` silences it | live run (`--stats-json` keys, default run) | 2026-09-18 |
 | `--frame-continuations` folds a stack trace as one event; `--sanitize ENTITY[:ACTION]` (email, credential, host, ip; redact or pseudonym, HMAC-SHA256 keyed per run or by `LESSENCE_SANITIZE_KEY`); `--diff LESSENCE` dev mode, exit 1 when groups moved | `lessence --help` + `references/flags.md` | 2026-09-18 |
 | Briefing sample in SKILL.md (4,092 lines, 273 templates, 733 folded lines) | live run on `examples/distilled/kubelet.log` at verified-at | 2026-09-18 |
+| `--skill [skill\|flags]` prints the embedded SKILL.md (frontmatter at byte 0, provenance note after it) or references/flags.md and exits 0 before any input is opened; unknown topic exits 2; `--json` equals `--format json` and conflicts with an explicit `--format` and with `--distill`; the `gen:flags` block in flags.md is the binary's own list | tests/integration/test_skill.rs + tests/doc_contract.rs `skill_flags_block` + live run of the build at verified-at | 2026-09-19 |
