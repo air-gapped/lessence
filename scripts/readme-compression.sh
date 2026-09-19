@@ -70,10 +70,10 @@ while IFS='|' read -r name file; do
 done <<< "$ROWS"
 block="<!-- gen:compression:begin -->
 <!-- gen:compression:at $head_sha -->
-Measured on $version (commit $head_sha, binary sha256 $bin_sha…, $(date -u +%Y-%m-%d)) by \`scripts/readme-compression.sh\`
-on production logs that are not distributable. Lines out is the full folded text;
-since 0.5.0 the message text and source line are part of an event's identity, so
-output is larger than older tables showed and hides less.
+<!-- measured $(date -u +%Y-%m-%d) with binary sha256 $bin_sha by scripts/readme-compression.sh -->
+Measured on $version, on production logs that are not distributable. Since 0.5.0
+the message text is part of an event's identity, so output is larger than in
+older tables and hides less.
 
 $table
 <!-- gen:compression:end -->"
