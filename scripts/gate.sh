@@ -294,15 +294,33 @@ GATE_CPU="${GATE_CPU:-$(cut -d- -f1 /sys/devices/cpu_core/cpus 2>/dev/null || ec
 PERF_CORPUS="examples/distilled/kubelet.log"
 [ -f "$PERF_CORPUS" ] || die2 "$PERF_CORPUS missing — run 'make distill' first"
 
+# The default run writes a report. Measure that — the new default is the
+# thing under test — but into a gate-owned directory under target/, never the
+# caller's $XDG_STATE_HOME. Everything here is removed after the measurement;
+# nothing outside "$GATE_REPORTS" is ever touched.
+GATE_REPORTS="$GATE_DIR/reports"
+rm -rf "$GATE_REPORTS"
+mkdir -p "$GATE_REPORTS"
+
+# A release-check baseline can predate --report-dir (v0.4.5 has no such
+# flag). Then its default run writes nothing and takes no flag.
+report_args() {
+    if "$1" --help 2>/dev/null | grep -q -- '--report-dir'; then
+        printf '%s\n%s\n' "--report-dir" "$ROOT/$GATE_REPORTS"
+    fi
+}
+
 perf_instructions() {
     local bin="$1" min="" prev="" spread="0"
     local n_rounds=2
     local i=0
+    local extra=()
+    mapfile -t extra < <(report_args "$bin")
     while [ "$i" -lt "$n_rounds" ]; do
         i=$((i + 1))
         local raw
         raw="$(LC_ALL=C taskset -c "$GATE_CPU" perf stat -e instructions:u,task-clock -x, -- \
-            "$bin" --threads 1 -q "$PERF_CORPUS" 2>&1 >/dev/null)"
+            "$bin" --threads 1 -q "${extra[@]}" "$PERF_CORPUS" 2>&1 >/dev/null)"
         local sum
         sum="$(awk -F, '/instructions\/u/ { if ($1 ~ /^[0-9]+$/) s+=$1 } END { print s+0 }' <<<"$raw")"
         if [ -z "$min" ] || [ "$sum" -lt "$min" ]; then
@@ -317,7 +335,7 @@ perf_instructions() {
     if awk -v s="$spread" 'BEGIN { exit !(s>0.3) }'; then
         local raw sum
         raw="$(LC_ALL=C taskset -c "$GATE_CPU" perf stat -e instructions:u,task-clock -x, -- \
-            "$bin" --threads 1 -q "$PERF_CORPUS" 2>&1 >/dev/null)"
+            "$bin" --threads 1 -q "${extra[@]}" "$PERF_CORPUS" 2>&1 >/dev/null)"
         sum="$(awk -F, '/instructions\/u/ { if ($1 ~ /^[0-9]+$/) s+=$1 } END { print s+0 }' <<<"$raw")"
         if [ "$sum" -lt "$min" ]; then
             min="$sum"
@@ -336,6 +354,129 @@ perf_fail=0
 if awk -v d="$delta_pct" -v t="$GATE_PERF_MAX" 'BEGIN { exit !(d>t) }'; then
     perf_fail=1
 fi
+
+# ── 6b. Peak RSS: the new default and --overview all vs the baseline default
+# The contract's allowance is +32 MiB over the baseline's text default, for
+# the default run and for --overview all alike. This is a measurement, not
+# the bound — the record guard and the N limit are the bound — but a
+# regression past the allowance fails the gate.
+
+RSS_ALLOWANCE_KB=$((32 * 1024))
+
+rss_kb() {
+    local bin="$1"
+    shift
+    local out
+    out="$(mktemp)"
+    local extra=()
+    mapfile -t extra < <(report_args "$bin")
+    /usr/bin/time -v -o "$out" "$bin" --threads 1 -q "${extra[@]}" "$@" "$PERF_CORPUS" \
+        >/dev/null 2>/dev/null || true
+    awk '/Maximum resident set size/ { print $NF }' "$out"
+    rm -f "$out"
+}
+
+rss_ok=1
+if command -v /usr/bin/time >/dev/null 2>&1; then
+    echo "Measuring peak RSS (default and --overview all)..." >&2
+    rss_base="$(rss_kb "$(pwd)/$base_bin")"
+    rss_new="$(rss_kb "$(pwd)/$new_bin")"
+    rss_all="$(rss_kb "$(pwd)/$new_bin" --overview all)"
+else
+    rss_base=null
+    rss_new=null
+    rss_all=null
+fi
+rss_fail=0
+if [ "$rss_base" != "null" ] && [ -n "${rss_base:-}" ]; then
+    for r in "$rss_new" "$rss_all"; do
+        if [ $((r - rss_base)) -gt "$RSS_ALLOWANCE_KB" ]; then
+            rss_fail=1
+        fi
+    done
+else
+    rss_ok=0
+fi
+
+# Everything the gate's own runs wrote, and nothing else.
+rm -rf "$GATE_REPORTS"
+
+# ── 6c. Size: default stdout/stderr bytes and pinned-tokenizer tokens per
+# corpus against the reviewed baseline in tests/fixtures, + max(128, 1%).
+# The report path is replaced by a fixed placeholder before counting, so the
+# baseline does not depend on where the repository sits.
+
+SIZE_BASELINE="tests/fixtures/overview-size-baseline.json"
+size_py='
+import json, os, re, subprocess, sys, tempfile
+
+binary, baseline_path, corpora, bless = sys.argv[1], sys.argv[2], sys.argv[3:-1], sys.argv[-1] == "bless"
+try:
+    import tiktoken
+    enc = tiktoken.get_encoding("cl100k_base")
+    tokens = lambda s: len(enc.encode(s, disallowed_special=()))
+except Exception:
+    enc = None
+    tokens = lambda s: None
+
+baseline = {}
+if os.path.exists(baseline_path):
+    baseline = json.load(open(baseline_path)).get("corpora", {})
+
+measured, rows = {}, []
+# Under target/, not /tmp: /tmp is a tmpfs on most distributions and the
+# filesystem policy rejects it for a report directory.
+os.makedirs("target/gate", exist_ok=True)
+with tempfile.TemporaryDirectory(dir="target/gate") as reports:
+    for path in corpora:
+        name = os.path.basename(path)[:-4]
+        run = subprocess.run([binary, "--threads", "1", "--report-dir", reports, path],
+                             capture_output=True)
+        if run.returncode != 0:
+            sys.exit("size check: %s exited %d: %s"
+                     % (path, run.returncode, run.stderr.decode("utf-8", "replace")[:300]))
+        # The run directory name and the path to it are the one part of the
+        # overview whose size says nothing about the overview.
+        scrub = lambda b: re.sub(re.escape(reports) + r"/run-[0-9-]+-[0-9a-f]{8}/report.jsonl",
+                                 "<REPORT>", b.decode("utf-8", "replace"))
+        out, err = scrub(run.stdout), scrub(run.stderr)
+        measured[name] = {"stdout_bytes": len(out.encode()), "stderr_bytes": len(err.encode()),
+                          "stdout_tokens": tokens(out), "stderr_tokens": tokens(err)}
+
+over = []
+for name, now in sorted(measured.items()):
+    was = baseline.get(name)
+    if not was:
+        continue
+    for field, value in now.items():
+        old = was.get(field)
+        if old is None or value is None:
+            continue
+        allowance = max(128, old // 100)
+        if value > old + allowance:
+            over.append({"corpus": name, "field": field, "baseline": old, "now": value,
+                         "allowance": allowance})
+
+if bless:
+    json.dump({"note": "reviewed size baseline; + max(128, 1%) is the gate allowance",
+               "tokenizer": "tiktoken cl100k_base" if enc else None,
+               "corpora": measured}, open(baseline_path, "w"), indent=2, sort_keys=True)
+    open(baseline_path, "a").write("\n")
+
+print(json.dumps({"tokenizer": "tiktoken cl100k_base" if enc else None,
+                  "baseline": os.path.basename(baseline_path),
+                  "corpora_measured": len(measured), "corpora_baselined": len(baseline),
+                  "over": over}))
+'
+size_corpora=()
+for name in "${distilled_corpora[@]}"; do
+    size_corpora+=("examples/distilled/${name}.log")
+done
+size_json="$(python3 -c "$size_py" "$(pwd)/$new_bin" "$SIZE_BASELINE" "${size_corpora[@]}" \
+    "${GATE_BLESS_SIZE:+bless}")"
+size_over="$(printf '%s' "$size_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["over"]))')"
+size_fail=0
+[ "$size_over" -gt 0 ] && size_fail=1
 
 # ── Verdict ──────────────────────────────────────────────────────────────
 
@@ -360,6 +501,14 @@ if [ "$modes_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("--explain and --format json disagree on a corpus where the baseline agreed")
 fi
+if [ "$rss_fail" -eq 1 ]; then
+    verdict="FAIL"
+    fail_reasons+=("peak RSS over the +32 MiB allowance: base=${rss_base}K default=${rss_new}K --overview all=${rss_all}K")
+fi
+if [ "$size_fail" -eq 1 ]; then
+    verdict="FAIL"
+    fail_reasons+=("default output grew past the reviewed baseline + max(128, 1%) on ${size_over} corpus/field pair(s)")
+fi
 
 # ── Output: table (<=15 lines) ──────────────────────────────────────────────
 
@@ -380,6 +529,14 @@ for row in "${modes_table_rows[@]}"; do
 done
 printf "perf(%s): instructions:u base=%s new=%s delta=%s%% (max %s%%) spread=%s%%\n" \
     "$PERF_CORPUS" "$instr_base" "$instr_new" "$delta_pct" "$GATE_PERF_MAX" "$spread_pct"
+if [ "$rss_ok" -eq 1 ]; then
+    printf "rss: base=%sK default=%sK overview-all=%sK (allowance +%sK)\n" \
+        "$rss_base" "$rss_new" "$rss_all" "$RSS_ALLOWANCE_KB"
+else
+    echo "rss: not measured (/usr/bin/time -v unavailable)"
+fi
+printf "size: %s corpora vs %s, %s over baseline + max(128, 1%%)\n" \
+    "${#distilled_corpora[@]}" "$SIZE_BASELINE" "$size_over"
 echo "verdict: $verdict"
 for r in "${fail_reasons[@]:-}"; do
     [ -n "$r" ] && echo "  - $r"
@@ -417,6 +574,9 @@ cat > "$GATE_DIR/gate.json" <<JSON
   "modes": [${modes_json}],
   "perf": {"cpu": ${GATE_CPU}, "instructions_base": ${instr_base}, "instructions_new": ${instr_new},
            "spread_pct": ${spread_pct}, "delta_pct": ${delta_pct}, "threshold_pct": ${GATE_PERF_MAX}},
+  "rss_kb": {"base_default": ${rss_base:-null}, "new_default": ${rss_new:-null},
+             "new_overview_all": ${rss_all:-null}, "allowance_kb": ${RSS_ALLOWANCE_KB}},
+  "size": ${size_json},
   "verdict": "${verdict}"
 }
 JSON

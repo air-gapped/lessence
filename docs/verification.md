@@ -50,8 +50,24 @@ No target other than `make distill` reads an original corpus.
    <bin> --threads 1 -q examples/distilled/kubelet.log`, base then new, two
    rounds, minimum per binary; a third round if the two differ by > 0.3%.
    `GATE_CPU` = first cpu in `/sys/devices/cpu_core/cpus`. FAIL when
-   `delta_pct > GATE_PERF_MAX` (default 1.0).
-7. Stdout ≤ 15 lines. `gate.json`:
+   `delta_pct > GATE_PERF_MAX` (default 1.0). The measured run is the real
+   default — report written and overview printed — with `--report-dir` set to
+   `target/gate/reports` when the binary supports it, so nothing lands in the
+   caller's state directory; that directory is removed after the measurement
+   and nothing outside it is touched.
+7. Peak RSS (`/usr/bin/time -v`) on the same corpus for the baseline default,
+   the new default and the new `--overview all`. FAIL when either new number
+   is more than 32 MiB over the baseline default. Skipped, and said so, where
+   `/usr/bin/time` is absent.
+8. Size: stdout and stderr bytes and pinned-tokenizer tokens (tiktoken
+   `cl100k_base`) per corpus at default flags, against the reviewed baseline
+   `tests/fixtures/overview-size-baseline.json`. FAIL when any field exceeds
+   its baseline + max(128, 1%). The report path is replaced by `<REPORT>`
+   before counting, so the baseline does not depend on the checkout path.
+   `GATE_BLESS_SIZE=1` rewrites the baseline — a number written by the run
+   that is being judged proves nothing, so re-bless deliberately and read the
+   diff.
+9. Stdout ≤ 15 lines. `gate.json`:
 
 ```json
 { "time": "", "git_head": "", "staged_diff_sha256": "sha256(git diff --cached; git diff)",
@@ -62,6 +78,9 @@ No target other than `make distill` reads an original corpus.
   "modes": [{"corpus": "", "base": 0, "new": 0}],
   "perf": {"cpu": 0, "instructions_base": 0, "instructions_new": 0,
            "spread_pct": 0.0, "delta_pct": 0.0, "threshold_pct": 1.0},
+  "rss_kb": {"base_default": 0, "new_default": 0, "new_overview_all": 0, "allowance_kb": 32768},
+  "size": {"tokenizer": "tiktoken cl100k_base", "baseline": "overview-size-baseline.json",
+           "corpora_measured": 0, "corpora_baselined": 0, "over": []},
   "verdict": "PASS" }
 ```
 

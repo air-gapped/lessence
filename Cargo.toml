@@ -100,7 +100,17 @@ mimalloc = { version = "0.1", default-features = false }
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.30", default-features = false, features = ["fs"] }
 
+[features]
+# Failure-injection seams for the report writer and the overview pass.
+# Off in every distributed build: `cargo build --release` compiles them out
+# entirely. The self dev-dependency below is what turns them on for
+# `cargo test` / `cargo nextest`, and nothing else does.
+test-hooks = []
+
 [dev-dependencies]
+# Self dev-dependency: enables `test-hooks` for the lib and the binary that
+# the integration tests spawn, without it ever reaching a release build.
+lessence = { path = ".", features = ["test-hooks"] }
 # Provides the #[cfg_attr(test, mutants::skip)] marker attribute for cargo-mutants
 mutants = "0.0.4"
 criterion = { version = "0.8", features = ["html_reports"] }

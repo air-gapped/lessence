@@ -122,7 +122,14 @@ truncated capture keeps one of them. `printed < selected` means the byte
 budget stopped the entries early — the report still has every group. The four
 jq recipes at the end query the file by group id; none of them cats it.
 
-`--overview all` prints every group with no budget and no preview cuts.
+An entry declares its omissions in two separate registers: `previewed here`
+is what this screen cut, `report-sampled` on the `variation:` line is what the
+report itself does not hold. `ip=9` is an exact distinct count, `ip>=64` a
+lower bound, and `variation: not recorded` means no rollup was computed for
+that group, or it had nothing to vary.
+
+`--overview all` prints every group with no budget and no preview cuts (it
+streams: peak memory is one record, whatever the group count).
 `--overview 0` prints the locators and recipes only. `--no-report` turns the
 whole thing off and streams the folded text as before — **use it for `tail -f`
 or any source that never reaches EOF**, since the report needs input EOF.

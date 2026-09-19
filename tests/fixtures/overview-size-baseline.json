@@ -1,0 +1,486 @@
+{
+  "corpora": {
+    "apache_error_production": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15557,
+      "stdout_tokens": 5570
+    },
+    "apache_sample": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 2796,
+      "stdout_tokens": 974
+    },
+    "apiserver_production": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15006,
+      "stdout_tokens": 4958
+    },
+    "argocd_controller_production": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 9285,
+      "stdout_tokens": 3186
+    },
+    "argocd_server_production": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6567,
+      "stdout_tokens": 2353
+    },
+    "cilium_full": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14444,
+      "stdout_tokens": 5379
+    },
+    "enhanced_timestamps": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 4480,
+      "stdout_tokens": 1562
+    },
+    "epyc_7days_journalctl": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15425,
+      "stdout_tokens": 5886
+    },
+    "harbor_postgres_primary": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 9419,
+      "stdout_tokens": 3157
+    },
+    "harbor_postgres_replica": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 2100,
+      "stdout_tokens": 771
+    },
+    "hdfs_sample": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6333,
+      "stdout_tokens": 2207
+    },
+    "host_fedora_journal": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15414,
+      "stdout_tokens": 6040
+    },
+    "host_fedora_user_journal": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15558,
+      "stdout_tokens": 5840
+    },
+    "host_pi_dmesg": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 13189,
+      "stdout_tokens": 4593
+    },
+    "host_pi_journal": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14982,
+      "stdout_tokens": 5345
+    },
+    "host_rke2_journal": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15633,
+      "stdout_tokens": 6180
+    },
+    "k8s_argocd_aux": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15171,
+      "stdout_tokens": 5232
+    },
+    "k8s_cert_manager": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14986,
+      "stdout_tokens": 4873
+    },
+    "k8s_cilium_operator": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15299,
+      "stdout_tokens": 5273
+    },
+    "k8s_cloudflared": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 12519,
+      "stdout_tokens": 4543
+    },
+    "k8s_controller_mgr": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15063,
+      "stdout_tokens": 4753
+    },
+    "k8s_coredns": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 7369,
+      "stdout_tokens": 2718
+    },
+    "k8s_etcd": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15041,
+      "stdout_tokens": 5375
+    },
+    "k8s_events_all": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6274,
+      "stdout_tokens": 1816
+    },
+    "k8s_gitlab": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14828,
+      "stdout_tokens": 5378
+    },
+    "k8s_gpu_operator": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15597,
+      "stdout_tokens": 4955
+    },
+    "k8s_grafana": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14260,
+      "stdout_tokens": 4659
+    },
+    "k8s_harbor": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15592,
+      "stdout_tokens": 5995
+    },
+    "k8s_hubble": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6422,
+      "stdout_tokens": 2257
+    },
+    "k8s_json_sample": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14455,
+      "stdout_tokens": 5124
+    },
+    "k8s_keda": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 12328,
+      "stdout_tokens": 4276
+    },
+    "k8s_keycloak": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15175,
+      "stdout_tokens": 5256
+    },
+    "k8s_kube_state_metrics": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15398,
+      "stdout_tokens": 5186
+    },
+    "k8s_litellm": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 8764,
+      "stdout_tokens": 3002
+    },
+    "k8s_metrics_server": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6454,
+      "stdout_tokens": 2167
+    },
+    "k8s_netbox": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15524,
+      "stdout_tokens": 5410
+    },
+    "k8s_oauth2_proxy": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15558,
+      "stdout_tokens": 5783
+    },
+    "k8s_openebs": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15377,
+      "stdout_tokens": 5191
+    },
+    "k8s_postgres_operator": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15585,
+      "stdout_tokens": 5128
+    },
+    "k8s_redis_sentinel": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15207,
+      "stdout_tokens": 5528
+    },
+    "k8s_rook_ceph": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15214,
+      "stdout_tokens": 5511
+    },
+    "k8s_scheduler": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 8957,
+      "stdout_tokens": 2999
+    },
+    "k8s_tetragon": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14618,
+      "stdout_tokens": 5696
+    },
+    "k8s_traefik": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14967,
+      "stdout_tokens": 5150
+    },
+    "k8s_vllm": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15580,
+      "stdout_tokens": 5851
+    },
+    "kubectl_events": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6891,
+      "stdout_tokens": 2197
+    },
+    "kubelet": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15462,
+      "stdout_tokens": 5697
+    },
+    "linux_auditd": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15117,
+      "stdout_tokens": 5176
+    },
+    "linux_auth_secure": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 7156,
+      "stdout_tokens": 2711
+    },
+    "microservices": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 8269,
+      "stdout_tokens": 2784
+    },
+    "nas_dmesg": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 12902,
+      "stdout_tokens": 4617
+    },
+    "nginx_sample": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 4908,
+      "stdout_tokens": 1919
+    },
+    "openssh_brute_force": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15401,
+      "stdout_tokens": 5740
+    },
+    "prometheus": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 8476,
+      "stdout_tokens": 3313
+    },
+    "rancher_production": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14970,
+      "stdout_tokens": 5271
+    },
+    "realistic_repetitive": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 8888,
+      "stdout_tokens": 3054
+    },
+    "security_attacks": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 11290,
+      "stdout_tokens": 3904
+    },
+    "synthetic": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 3337,
+      "stdout_tokens": 1210
+    },
+    "timestamps_40": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 10050,
+      "stdout_tokens": 3434
+    },
+    "uap_dmesg": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14922,
+      "stdout_tokens": 5700
+    },
+    "uap_messages": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15494,
+      "stdout_tokens": 5654
+    },
+    "usw_dmesg": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 11912,
+      "stdout_tokens": 4096
+    },
+    "usw_messages": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15335,
+      "stdout_tokens": 5607
+    },
+    "usw_rc": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 7518,
+      "stdout_tokens": 2495
+    },
+    "uxg_analytic_report": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15473,
+      "stdout_tokens": 5375
+    },
+    "uxg_auth": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 12543,
+      "stdout_tokens": 4715
+    },
+    "uxg_cron": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 5473,
+      "stdout_tokens": 2061
+    },
+    "uxg_daemon": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15282,
+      "stdout_tokens": 5934
+    },
+    "uxg_dmesg_boot": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14052,
+      "stdout_tokens": 4813
+    },
+    "uxg_dnscrypt-proxy": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 6971,
+      "stdout_tokens": 2436
+    },
+    "uxg_error": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15571,
+      "stdout_tokens": 5850
+    },
+    "uxg_journal_7d": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15309,
+      "stdout_tokens": 5770
+    },
+    "uxg_kern": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14369,
+      "stdout_tokens": 5381
+    },
+    "uxg_messages": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 15438,
+      "stdout_tokens": 5690
+    },
+    "uxg_network-init": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 8176,
+      "stdout_tokens": 2913
+    },
+    "uxg_reboot-time": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 3177,
+      "stdout_tokens": 1166
+    },
+    "uxg_updater": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 9879,
+      "stdout_tokens": 3740
+    },
+    "uxg_wan-diag-ipv6": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 3671,
+      "stdout_tokens": 1363
+    },
+    "uxg_wan-diag-port": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 2389,
+      "stdout_tokens": 888
+    },
+    "vllm_embedding_production": {
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 13323,
+      "stdout_tokens": 4346
+    }
+  },
+  "note": "reviewed size baseline; + max(128, 1%) is the gate allowance",
+  "tokenizer": "tiktoken cl100k_base"
+}

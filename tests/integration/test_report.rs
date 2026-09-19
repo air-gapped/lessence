@@ -134,10 +134,10 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
 
         // Acceptance 2: with no transforming options, first.line is the raw
         // source line at line_no.
-        let raw: Vec<&str> = {
-            let text = std::fs::read_to_string(&corpus).unwrap();
-            Box::leak(text.into_boxed_str()).lines().collect()
-        };
+        // Owned and dropped with this iteration: leaking one corpus per
+        // loop turn keeps every corpus in memory to the end of the test.
+        let text = std::fs::read_to_string(&corpus).unwrap();
+        let raw: Vec<&str> = text.lines().collect();
         for g in &ga {
             let line_no = g["first"]["line_no"].as_u64().unwrap() as usize;
             assert_eq!(
@@ -773,4 +773,231 @@ fn fail_on_pattern_still_exits_one_with_a_complete_report() {
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.contains("file: complete"), "{stdout}");
     assert!(report_file(tmp.path()).is_file());
+}
+
+// ---- transformed options: the report is the same JSON those options give ----
+
+/// Acceptance 1 and 3 again, with the options that transform what a record
+/// holds. The report is produced by the same renderer as `--format json`, so
+/// sanitization, continuation framing and escape handling must land in it
+/// identically — parity on default flags alone would not show that.
+#[test]
+fn the_report_matches_format_json_under_the_transforming_options_too() {
+    for options in [
+        vec!["--sanitize-pii"],
+        vec!["--sanitize", "email"],
+        vec!["--frame-continuations"],
+        vec!["--preserve-color"],
+    ] {
+        let tmp = tmpdir();
+        let mut args = options.clone();
+        args.extend(["-q", fixture()]);
+        let run = run_default(tmp.path(), &args);
+        assert!(
+            run.status.success(),
+            "{options:?}: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+        let report = std::fs::read_to_string(report_file(tmp.path())).unwrap();
+
+        let mut json_args = vec!["--format", "json", "-q"];
+        json_args.extend(options.iter().copied());
+        json_args.push(fixture());
+        let json = bin().args(&json_args).output().unwrap();
+        let json = String::from_utf8(json.stdout).unwrap();
+
+        let (a, b) = (records(&report), records(&json));
+        let (ga, gb) = (groups(&a), groups(&b));
+        assert_eq!(ga.len(), gb.len(), "{options:?}: group count differs");
+        assert!(!ga.is_empty(), "{options:?}: no groups at all");
+        for (x, y) in ga.iter().zip(&gb) {
+            assert_eq!(x, y, "{options:?}: a group record differs");
+        }
+        let mut sa = a.last().unwrap().clone();
+        let mut sb = b.last().unwrap().clone();
+        for s in [&mut sa, &mut sb] {
+            s.as_object_mut().unwrap().remove("elapsed_ms");
+        }
+        assert_eq!(sa, sb, "{options:?}: summary differs");
+    }
+}
+
+// ---- a closed reader never changes the exit code ----
+
+/// Run with stdout connected to a pipe whose read end is closed before the
+/// overview is written. Rust ignores SIGPIPE, so the write fails with EPIPE
+/// inside the process — which must be an early stop, not a verdict.
+fn with_closed_reader(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Option<i32> {
+    let mut cmd = bin();
+    cmd.args(["--report-dir", dir.to_str().unwrap()]).args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn");
+    drop(child.stdout.take());
+    child.wait().expect("wait").code()
+}
+
+#[test]
+fn a_closed_reader_keeps_a_successful_run_successful_and_keeps_the_report() {
+    let tmp = tmpdir();
+    assert_eq!(with_closed_reader(tmp.path(), &[], &[fixture()]), Some(0));
+    assert!(report_file(tmp.path()).is_file(), "the artifact survives");
+}
+
+#[test]
+fn a_closed_reader_never_turns_a_determined_failure_into_a_success() {
+    // A failed source, --fail-on-pattern, a directory-fsync failure after
+    // the rename, and an overview pass that cannot read the report: each
+    // exits 1 with the reader gone, exactly as it does with a reader.
+    let cases: Vec<(&str, Vec<(&str, &str)>, Vec<&str>)> = vec![
+        ("failed source", vec![], vec![fixture(), "no/such/file.log"]),
+        (
+            "--fail-on-pattern",
+            vec![],
+            vec!["--fail-on-pattern", ".", fixture()],
+        ),
+        (
+            "directory fsync failure",
+            vec![("LESSENCE_TEST_FAIL_DIR_FSYNC", "1")],
+            vec![fixture()],
+        ),
+        (
+            "overview failure",
+            vec![("LESSENCE_TEST_TRUNCATE_REPORT", "200")],
+            vec![fixture()],
+        ),
+    ];
+    for (name, env, args) in cases {
+        let tmp = tmpdir();
+        assert_eq!(
+            with_closed_reader(tmp.path(), &env, &args),
+            Some(1),
+            "{name}: a broken stdout pipe must not become exit 0"
+        );
+        assert!(
+            report_file(tmp.path()).is_file(),
+            "{name}: the complete report is retained"
+        );
+        assert_no_partial(tmp.path());
+    }
+}
+
+// ---- the early and dev dispatches reject the report flags ----
+
+#[test]
+fn diff_and_the_other_early_modes_reject_a_report_flag_instead_of_ignoring_it() {
+    for args in [
+        vec!["--diff", "/bin/true", "--report-dir", "/tmp/x", fixture()],
+        vec!["--diff", "/bin/true", "--overview", "5", fixture()],
+        vec!["--skill", "--no-report"],
+        vec!["--help-human", "--overview-bytes", "100"],
+        vec!["--completions", "bash", "--report-max-bytes", "1M"],
+    ] {
+        let err = usage_error(&args);
+        assert!(
+            err.contains("default text run"),
+            "{args:?} must be a usage error naming the default text run: {err}"
+        );
+    }
+}
+
+#[test]
+fn a_rejected_combination_names_the_command_that_does_work() {
+    let err = usage_error(&["--format=json", "--overview", "all", fixture()]);
+    assert!(err.contains("--format json"), "{err}");
+    let err = usage_error(&["--format=json", "--no-report", fixture()]);
+    assert!(err.contains("drop --no-report"), "{err}");
+    let err = usage_error(&["--no-report", "--overview", "5", fixture()]);
+    assert!(err.contains("drop --no-report"), "{err}");
+}
+
+// ---- --overview all streams: many groups under a memory cap ----
+
+/// Run this one under a cap, which is the whole point:
+///
+/// ```text
+/// systemd-run --user --scope -p MemoryMax=1G \
+///   cargo test --release --test integration -- --ignored overview_all_streams
+/// ```
+///
+/// 200,000 small groups is a report no `--overview all` may assemble in
+/// memory: the pass streams one record at a time to the writer, so the
+/// resident set is the reader's buffer plus one record whatever the group
+/// count is.
+#[test]
+#[ignore = "memory-cap validation; see the doc comment for the systemd-run invocation"]
+fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
+    use std::io::Write;
+
+    const GROUPS: usize = 200_000;
+    let tmp = tmpdir();
+    let path = tmp.path().join("report.jsonl");
+    {
+        let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+        for id in 0..GROUPS {
+            writeln!(
+                f,
+                r#"{{"type":"group","id":{id},"count":{},"normalized":"group {id} <NUMBER> <PATH>","time_range":{{"first_seen":null,"last_seen":null}},"variation":{{}}}}"#,
+                id % 97 + 1
+            )
+            .unwrap();
+        }
+        writeln!(f, r#"{{"type":"summary","complete":true}}"#).unwrap();
+    }
+
+    /// Counts what was written without keeping it: the assertions need the
+    /// size and the head, not the output.
+    struct Counting {
+        bytes: usize,
+        head: Vec<u8>,
+    }
+    impl Write for Counting {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.bytes += buf.len();
+            if self.head.len() < 4096 {
+                self.head.extend_from_slice(buf);
+            }
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let locator = lessence::overview::Locator {
+        path: &path,
+        file: "complete".to_string(),
+        input: "complete".to_string(),
+        run_id: "run-test",
+        size_bytes: std::fs::metadata(&path).unwrap().len(),
+    };
+    let mut out = Counting {
+        bytes: 0,
+        head: Vec::new(),
+    };
+    lessence::overview::render(
+        &mut out,
+        &path,
+        &locator,
+        lessence::overview::Entries::All,
+        lessence::overview::DEFAULT_BYTES,
+        None,
+    )
+    .expect("--overview all must complete on a 200k-group report");
+    assert!(
+        out.bytes > GROUPS * 20,
+        "every group must have been written: {} bytes",
+        out.bytes
+    );
+    let head = String::from_utf8_lossy(&out.head);
+    assert!(
+        head.contains(&format!("{GROUPS} total, {GROUPS} selected")),
+        "{head}"
+    );
 }

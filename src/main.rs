@@ -24,6 +24,17 @@ use lessence::output::write_output;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // The early and dev dispatches below return before the fold is
+    // configured, so the report flags are validated here rather than after
+    // them: `--diff OLD --report-dir DIR` is a usage error, not a silently
+    // ignored flag.
+    if (cli.help_human || cli.skill.is_some() || cli.completions.is_some() || cli.diff.is_some())
+        && let Err(e) = cli.report_plan(false)
+    {
+        eprintln!("lessence: {e}");
+        std::process::exit(2);
+    }
+
     // --help-human is the one help written for a person; it exits before
     // any input is opened, like --skill.
     if cli.help_human {
@@ -518,10 +529,12 @@ fn finish_report(
         None
     };
 
-    // Test hook, with LESSENCE_TEST_FAIL_WRITE and LESSENCE_TEST_FAIL_DIR_FSYNC
-    // in src/report.rs: truncate the completed report so the overview pass
-    // meets a half record. The contract's failure paths need controlled
-    // fixtures, and a report is only damaged by things a test cannot cause.
+    // Failure-injection seam for the overview pass, alongside the writer
+    // and directory-fsync seams in src/report.rs. Compiled in only under
+    // the `test-hooks` feature, which the self dev-dependency turns on for
+    // `cargo test` and which no distributed build ever enables: nothing
+    // here can truncate a caller's completed report.
+    #[cfg(feature = "test-hooks")]
     if let Ok(bytes) = std::env::var("LESSENCE_TEST_TRUNCATE_REPORT")
         && let Ok(bytes) = bytes.parse::<u64>()
     {
@@ -531,18 +544,23 @@ fn finish_report(
             .set_len(bytes)?;
     }
 
-    let mut stdout = io::stdout();
-    match lessence::overview::render(
+    // A consumer closing stdout is an early stop, never a verdict: the
+    // report is already on disk, and an exit code this run has already
+    // determined survives the broken pipe.
+    let mut stdout = lessence::output::PipeTolerant::new(io::stdout());
+    let failed = already_failing || durability.is_some();
+    let result = lessence::overview::render(
+        &mut stdout,
         spool.final_path(),
         &locator,
         settings.entries,
         settings.budget,
         briefing.as_deref(),
-    ) {
-        Ok(text) => {
-            write_output(&mut stdout, format_args!("{text}"))?;
+    );
+    match result {
+        Ok(()) => {
             stdout.flush()?;
-            if already_failing || durability.is_some() {
+            if failed {
                 std::process::exit(1);
             }
             Ok(())
@@ -550,13 +568,8 @@ fn finish_report(
         Err(e) => {
             // The report is complete and stays. No group is silently
             // omitted: stdout names why the overview could not be built.
-            write_output(
-                &mut stdout,
-                format_args!(
-                    "{}",
-                    lessence::overview::unavailable(&locator, &e.to_string())
-                ),
-            )?;
+            stdout
+                .write_all(lessence::overview::unavailable(&locator, &e.to_string()).as_bytes())?;
             stdout.flush()?;
             std::process::exit(1);
         }

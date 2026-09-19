@@ -124,7 +124,8 @@ Humans: lessence --help-human";
 pub const HELP_HUMAN: &str = "\
 lessence folds a repetitive log into its distinct events with counts, and keeps every unique line.
 
-  lessence app.log                   fold a file; a briefing of the log comes first, on stderr
+  lessence app.log                   fold a file; the overview of the saved report goes to stdout,
+                                     the briefing of the log to stdout with it (stderr with --no-report)
   kubectl logs pod-x | lessence      fold anything on stdin
   lessence --fit app.log             one-screen overview, no scrolling
   lessence -q app.log                fold without the briefing
@@ -225,27 +226,31 @@ pub struct Cli {
     /// Where the default run saves its report (default:
     /// $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else
     /// ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex
-    /// directory per run; the directory grows until you delete it
+    /// directory per run; the directory grows until you delete it (default
+    /// text run only)
     #[arg(long, value_name = "DIR", help_heading = "Output")]
     pub report_dir: Option<PathBuf>,
 
     /// Per-run cap on the report file (default 1G, supports K/M/G). Nothing
-    /// bounds accumulated disk use across runs
+    /// bounds accumulated disk use across runs (default text run only)
     #[arg(long, value_name = "N", value_parser = crate::config::parse_size_suffix, help_heading = "Output")]
     pub report_max_bytes: Option<usize>,
 
     /// Do not save a report: stream today's folded text to stdout and the
     /// briefing to stderr. Use this for `tail -f` and any live source — a
-    /// source that never reaches EOF never gets a report
+    /// source that never reaches EOF never gets a report (default text run
+    /// only)
     #[arg(long, help_heading = "Output")]
     pub no_report: bool,
 
     /// Groups to show in the stdout overview: N (default 40, max 10000), 0
-    /// for none, or `all` for every group with no byte budget
+    /// for none, or `all` for every group with no byte budget (default text
+    /// run only)
     #[arg(long, value_name = "N|all", help_heading = "Output")]
     pub overview: Option<String>,
 
-    /// Byte budget for the whole stdout overview (default 16384)
+    /// Byte budget for the whole stdout overview (default 16384) (default
+    /// text run only)
     #[arg(long, value_name = "B", help_heading = "Output")]
     pub overview_bytes: Option<usize>,
 
@@ -354,12 +359,16 @@ impl Cli {
         if !text_default {
             if let Some(flag) = named.first() {
                 return Err(format!(
-                    "{flag} applies to the default text run only; it has no meaning with this output mode"
+                    "{flag} applies to the default text run, which is the only run that saves a \
+                     report; for machine-readable output use --format json on its own, which \
+                     writes no report and streams every group to stdout"
                 ));
             }
             if self.no_report {
                 return Err(
-                    "--no-report applies to the default text run only; this output mode never writes a report"
+                    "--no-report applies to the default text run, the only run that saves a \
+                     report; this output mode already writes none, so drop --no-report and the \
+                     command works as it stands"
                         .to_string(),
                 );
             }
@@ -369,7 +378,9 @@ impl Cli {
         if self.no_report {
             if let Some(flag) = named.first() {
                 return Err(format!(
-                    "--no-report writes no report; {flag} cannot be combined with it"
+                    "--no-report writes no report, so {flag} has nothing to act on; drop \
+                     --no-report to keep the report and the overview, or drop {flag} to stream \
+                     today's folded text"
                 ));
             }
             return Ok(ReportPlan::Off);

@@ -37,7 +37,11 @@ every group; stdout is a view that declares everything it leaves out.
 | `--overview-bytes B` | `16384` | Byte budget for the whole overview — briefing, locators, entries and recipes together. Usage error with `--overview all`. |
 
 All five apply to the default run only; with any other mode they are a usage
-error, never silently ignored. `LESSENCE_REPORT_DIR` is read only there too.
+error, never silently ignored, and the error names what to run instead.
+`LESSENCE_REPORT_DIR` is read only there too. **There is no report in
+`--format json`:** that mode streams every group to stdout already, so
+`--format json --overview all` is a usage error and plain `--format json` is
+the command that was meant.
 
 **Use `--no-report` for `tail -f` and any live source.** The report needs input
 EOF to write its summary record; a source that never ends never gets a report
@@ -53,10 +57,19 @@ How to read the overview:
    the rest off; the report still has them.
 2. The **entries** are the rarest half and the most frequent half of the
    selection, shown by ascending group id. A template over 1024 bytes and
-   samples over 80 bytes are previewed, and the entry says `previewed:
-   template, samples` when it cut anything.
-3. The **recipes** at the end are jq one-liners against the report by group
-   id — none of them prints the whole file. Reach for those instead of `cat`.
+   samples over 80 bytes are previewed, and the entry says `previewed here:
+   template, samples` when this screen cut anything.
+3. **Two different omissions, never conflated.** `previewed here` is what the
+   screen cut; `report-sampled` on the `variation:` line is what the *report*
+   itself does not hold, because the rollup hit its cap. The count kind is on
+   the line too: `ip=9` is exact, `ip>=64` is a lower bound, `ip~9 (kind
+   unstated)` means the record did not say. A group whose entry reads
+   `variation: not recorded` had no rollup computed, or nothing to vary — the
+   record does not distinguish those, and neither does the overview.
+4. The **recipes** at the end are jq one-liners against the report by group
+   id — none of them prints the whole file, the two listing ones stop at 40
+   rows and say so, and the path is shell-quoted. Reach for those instead of
+   `cat`.
 
 The report directory is never pruned. Delete old `run-*` directories yourself.
 
@@ -190,11 +203,11 @@ sections above explain, this block is the authoritative list.
 --top <TOP>    Show only the N most frequent patterns, sorted by count
 --fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
---report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it
---report-max-bytes <N>    Per-run cap on the report file (default 1G, supports K/M/G). Nothing bounds accumulated disk use across runs
---no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report [default: false]
---overview <N|all>    Groups to show in the stdout overview: N (default 40, max 10000), 0 for none, or `all` for every group with no byte budget
---overview-bytes <B>    Byte budget for the whole stdout overview (default 16384)
+--report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it (default text run only)
+--report-max-bytes <N>    Per-run cap on the report file (default 1G, supports K/M/G). Nothing bounds accumulated disk use across runs (default text run only)
+--no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report (default text run only) [default: false]
+--overview <N|all>    Groups to show in the stdout overview: N (default 40, max 10000), 0 for none, or `all` for every group with no byte budget (default text run only)
+--overview-bytes <B>    Byte budget for the whole stdout overview (default 16384) (default text run only)
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
 --sanitize <ENTITY[:ACTION]>    Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
 --max-line-length <MAX_LINE_LENGTH>    Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)

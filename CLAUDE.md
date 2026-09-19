@@ -17,9 +17,12 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 
 ```bash
 make ci             # fmt + clippy + doc + build + test + deny  (~5 s warm, every commit)
-make gate           # FAILS on exactly three things: a new ##CASE that also passes on the
-                    # HEAD build (vacuous), kubelet instructions over +1%, and --explain vs
-                    # --format json disagreeing on a corpus where the HEAD build agreed. The golden
+make gate           # FAILS on exactly five things: a new ##CASE that also passes on the
+                    # HEAD build (vacuous), kubelet instructions over +1%, --explain vs
+                    # --format json disagreeing on a corpus where the HEAD build agreed,
+                    # peak RSS over +32 MiB (default run and --overview all), and default
+                    # stdout/stderr bytes or tokens over the reviewed size baseline in
+                    # tests/fixtures + max(128, 1%). The golden
                     # diff it prints is material for you to READ, not a verdict — a changed
                     # golden never fails the gate. ≤15 lines, target/gate/gate.json (seconds)
 make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
@@ -85,6 +88,8 @@ not a claim.
 | output changed on purpose | `gate.json` → `golden[]`: templates added / removed / recounted, per corpus. **Read the diff — the gate does not judge it.** A re-bless makes any output "correct", so `golden: 0 changed` straight after `BLESS=1 make distill` proves only that you just wrote those files |
 | not slower | `gate.json` → `perf.delta_pct`: `instructions:u` on distilled kubelet, single thread, one pinned P-core; threshold +1% |
 | a new test can fail | `gate.json` → `cases.new_failing_on_base` |
+| memory did not grow | `gate.json` → `rss_kb`: peak RSS of the default run and `--overview all` vs the baseline's default, allowance +32 MiB |
+| the default output did not bloat | `gate.json` → `size`: stdout/stderr bytes and tiktoken `cl100k_base` tokens per corpus vs `tests/fixtures/overview-size-baseline.json` + max(128, 1%). Same caveat as the goldens — `GATE_BLESS_SIZE=1` makes any size "correct" |
 | mutation score | `mutants.out/outcomes.json` from `make release-check` |
 
 Not evidence: synthetic inputs, wall-clock numbers, a baseline binary you

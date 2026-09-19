@@ -15,6 +15,11 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The one wildcard allowed: the self dev-dependency in Cargo.toml that turns
+# on the `test-hooks` feature for `cargo test` and for no other build. It is
+# a path dependency on this crate, not a registry dependency with an
+# unpinned version.
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

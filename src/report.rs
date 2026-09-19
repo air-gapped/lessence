@@ -159,11 +159,16 @@ pub struct Spool {
     writer: Option<BufWriter<File>>,
     written: u64,
     max_bytes: u64,
-    /// Test hook: `LESSENCE_TEST_FAIL_WRITE=n` makes the n-th record write
-    /// fail, so the failure paths in §4 can be exercised with a controlled
-    /// fixture instead of `/dev/full`. Read once, here, and nowhere else.
+    /// Failure-injection seam, compiled in only under the `test-hooks`
+    /// feature (see Cargo.toml): `LESSENCE_TEST_FAIL_WRITE=n` makes the
+    /// n-th record write fail and `LESSENCE_TEST_FAIL_DIR_FSYNC` fails the
+    /// directory fsync, so the contract's failure paths can be exercised
+    /// with a controlled fixture instead of `/dev/full`. A distributed
+    /// build has neither the fields nor the environment reads.
+    #[cfg(feature = "test-hooks")]
     fail_at_write: Option<u64>,
     writes: u64,
+    #[cfg(feature = "test-hooks")]
     fail_dir_fsync: bool,
 }
 
@@ -251,10 +256,12 @@ impl Spool {
                         writer: Some(BufWriter::new(file)),
                         written: 0,
                         max_bytes,
+                        #[cfg(feature = "test-hooks")]
                         fail_at_write: std::env::var("LESSENCE_TEST_FAIL_WRITE")
                             .ok()
                             .and_then(|v| v.parse().ok()),
                         writes: 0,
+                        #[cfg(feature = "test-hooks")]
                         fail_dir_fsync: std::env::var_os("LESSENCE_TEST_FAIL_DIR_FSYNC").is_some(),
                     });
                 }
@@ -285,6 +292,7 @@ impl Spool {
     /// exhaustion or any write failure; the caller then removes the partial.
     pub fn write_record(&mut self, record: &str) -> Result<()> {
         self.writes += 1;
+        #[cfg(feature = "test-hooks")]
         if self.fail_at_write == Some(self.writes) {
             bail!(
                 "injected write failure at record {} (LESSENCE_TEST_FAIL_WRITE)",
@@ -338,6 +346,9 @@ impl Spool {
         })?;
         // Directory fsync: the rename is what makes the report complete,
         // and only this makes the rename itself durable.
+        #[cfg(not(feature = "test-hooks"))]
+        let dir_fsync = File::open(&self.dir).and_then(|d| d.sync_all());
+        #[cfg(feature = "test-hooks")]
         let dir_fsync = if self.fail_dir_fsync {
             Err(std::io::Error::other(
                 "injected directory fsync failure (LESSENCE_TEST_FAIL_DIR_FSYNC)",

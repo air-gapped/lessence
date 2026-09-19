@@ -7,19 +7,26 @@
 //! two bounded heaps — R rarest and N most frequent, at most 2N entries —
 //! keeping no template, sample or timestamp text; pass 2 seeks to
 //! the selected offsets in ascending id order and renders one record at a
-//! time, cutting previews on the fly. `--overview all` streams records in
-//! report order with no heap and no cuts.
+//! time, cutting previews on the fly. `--overview all` streams records to
+//! the writer in report order, one at a time, with no heap, no offset list
+//! and no assembled output string.
 //!
 //! The reader is bounded: a record longer than [`RECORD_GUARD`] is never
 //! allocated in full. The reader stops at the guard and the pass fails, the
 //! report is retained, and stdout says so. The guard and the N limit are the
 //! bound; a measured RSS number is not.
+//!
+//! Every record is validated, not just the selected ones: a damaged record
+//! anywhere in the file fails the pass instead of being counted and skipped,
+//! and a report without its terminal summary record is damaged by
+//! definition. Validation deserializes into a small fixed struct, so an
+//! unread field is skipped by the parser rather than materialised into a
+//! tree.
 
 use anyhow::{Result, bail};
 use serde::Deserialize;
-use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashSet};
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// No single report record is read into memory beyond this. 16 MiB.
@@ -36,12 +43,25 @@ const TEMPLATE_PREVIEW: usize = 1024;
 const SAMPLE_PREVIEW: usize = 80;
 /// Samples shown per variation entry in a bounded overview.
 const SAMPLES_SHOWN: usize = 3;
+/// Rows the bounded jq recipes stop at, named in the recipe text itself.
+const RECIPE_ROWS: usize = 40;
 
 /// `--overview N | all`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Entries {
     Count(usize),
     All,
+}
+
+/// The four group counts a locator line carries. `None` means the overview
+/// pass never got far enough to know them — they are printed as `unknown`,
+/// never invented as zeroes.
+#[derive(Clone, Copy)]
+struct Counts {
+    total: usize,
+    selected: usize,
+    printed: usize,
+    omitted: usize,
 }
 
 /// Everything the head and tail locator lines report, except the counts,
@@ -57,31 +77,53 @@ pub struct Locator<'a> {
 }
 
 impl Locator<'_> {
-    fn render(&self, total: usize, selected: usize, printed: usize) -> String {
+    fn line(&self, counts: Option<Counts>) -> String {
+        let groups = match counts {
+            Some(c) => format!(
+                "{} total, {} selected, {} printed, {} omitted",
+                c.total, c.selected, c.printed, c.omitted
+            ),
+            None => "unknown (the overview pass could not read the report)".to_string(),
+        };
         format!(
-            "report: {}  file: {}  input: {}  run: {}  size: {} bytes  groups: {total} total, \
-             {selected} selected, {printed} printed, {} omitted\n",
+            "report: {}  file: {}  input: {}  run: {}  size: {} bytes  groups: {groups}\n",
             self.path.display(),
             self.file,
             self.input,
             self.run_id,
             self.size_bytes,
-            total - printed,
         )
     }
 
-    /// The worst-case rendered width of a locator line for this run: every
-    /// count is at most `total`, so rendering with `total` everywhere is an
-    /// upper bound on the final line's length. The reservation uses this so
-    /// the budget can be settled before the printed count is known.
+    fn render(&self, total: usize, selected: usize, printed: usize) -> String {
+        self.line(Some(Counts {
+            total,
+            selected,
+            printed,
+            omitted: total - printed,
+        }))
+    }
+
+    /// A true upper bound on the rendered width of this run's locator line:
+    /// every one of the four counts is at most `total`, so rendering all
+    /// four at `total`'s width is at least as wide as any final line. The
+    /// reservation uses this, so the budget is settled before `printed` is
+    /// known without ever under-reserving.
     fn reserved_len(&self, total: usize) -> usize {
-        self.render(total, total, total).len()
+        self.line(Some(Counts {
+            total,
+            selected: total,
+            printed: total,
+            omitted: total,
+        }))
+        .len()
     }
 }
 
 /// One record as pass 1 needs it: the discriminant, the id and the count.
-/// No template, no samples, no timestamps — pass 2 re-reads the selected
-/// records in full and takes the timestamps from there.
+/// Deserializing into this validates the whole record — serde_json parses
+/// the fields it does not keep rather than building a tree of them — so a
+/// malformed record anywhere fails the pass.
 #[derive(Deserialize)]
 struct Meta {
     #[serde(rename = "type")]
@@ -109,11 +151,43 @@ struct Record {
     variation: BTreeMap<String, Variation>,
 }
 
+/// The report's own uncertainty about a variation entry, kept as the report
+/// states it. `distinct_count` alone would read as exact even when the
+/// rollup hit its cap, and a report that already sampled its own values is
+/// a different fact from this renderer cutting a preview.
 #[derive(Deserialize)]
 struct Variation {
     distinct_count: usize,
     #[serde(default)]
+    distinct_count_kind: Option<String>,
+    #[serde(default)]
     samples: Vec<String>,
+    #[serde(default)]
+    samples_complete: Option<bool>,
+    #[serde(default)]
+    capped: bool,
+}
+
+impl Variation {
+    /// `=n` when the report calls the count exact, `>=n` when it calls it a
+    /// lower bound, `~n` when the record does not say.
+    fn count_text(&self, name: &str) -> String {
+        match self.distinct_count_kind.as_deref() {
+            Some("exact") => format!("{name}={}", self.distinct_count),
+            Some("lower_bound") => format!("{name}>={}", self.distinct_count),
+            _ if self.capped => format!("{name}>={}", self.distinct_count),
+            Some(_) | None => format!("{name}~{} (kind unstated)", self.distinct_count),
+        }
+    }
+
+    /// Did the *report* hold fewer values than the group had? Distinct from
+    /// anything this renderer cuts for the screen.
+    fn report_sampled(&self) -> bool {
+        match self.samples_complete {
+            Some(complete) => !complete,
+            None => self.capped || self.samples.len() < self.distinct_count,
+        }
+    }
 }
 
 /// (id, count, byte offset) — the whole of what
@@ -132,6 +206,29 @@ impl Ord for Entry {
     }
 }
 impl PartialOrd for Entry {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Retention order for the frequent heap. The frequent ranking is count
+/// descending, ties by *ascending* id, so the entry to evict at a tied
+/// cutoff is the one with the largest id — not the smallest, which is what
+/// `Reverse<Entry>` would pop. `Ord` here puts that worst candidate at the
+/// top of a max-heap.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Worst(Entry);
+
+impl Ord for Worst {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other
+            .0
+            .count
+            .cmp(&self.0.count)
+            .then(self.0.id.cmp(&other.0.id))
+    }
+}
+impl PartialOrd for Worst {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -165,33 +262,11 @@ fn read_bounded(reader: &mut impl BufRead, buf: &mut Vec<u8>, start: u64) -> Res
     }
 }
 
-/// Pass 1 needs only `id` and `count`, and the renderer writes them as the
-/// first two fields after the discriminant. Reading them off the front of
-/// the record avoids parsing the whole of it — the templates and samples
-/// are the bulk of a report, and pass 1 keeps none of them.
-///
-/// Conservative by construction: anything that is not exactly this shape,
-/// including a record that does not end in `}` (a truncated last line),
-/// returns `None` and is parsed properly by the caller. A damaged record
-/// therefore still fails the pass instead of being counted and skipped.
-fn group_head(buf: &[u8]) -> Option<(usize, usize)> {
-    if buf.last() != Some(&b'}') {
-        return None;
-    }
-    let rest = buf.strip_prefix(br#"{"type":"group","id":"#)?;
-    let (id, rest) = leading_usize(rest)?;
-    let rest = rest.strip_prefix(br#","count":"#)?;
-    let (count, _) = leading_usize(rest)?;
-    Some((id, count))
-}
-
-fn leading_usize(buf: &[u8]) -> Option<(usize, &[u8])> {
-    let end = buf.iter().position(|b| !b.is_ascii_digit())?;
-    if end == 0 {
-        return None;
-    }
-    let value = std::str::from_utf8(&buf[..end]).ok()?.parse().ok()?;
-    Some((value, &buf[end..]))
+fn open(path: &Path) -> Result<BufReader<std::fs::File>> {
+    Ok(BufReader::with_capacity(
+        256 * 1024,
+        std::fs::File::open(path)?,
+    ))
 }
 
 /// Pass 1: the two bounded heaps plus the total group count.
@@ -200,27 +275,20 @@ struct Pass1 {
     total: usize,
     rarest: Vec<Entry>,
     frequent: Vec<Entry>,
-    /// Report order, only populated for `--overview all`.
-    all: Vec<Entry>,
 }
 
-fn pass1(path: &Path, entries: Entries) -> Result<Pass1> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::with_capacity(256 * 1024, file);
+/// Walk every record in the report, validating each one and the required
+/// terminal summary. `visit` sees (bytes, id, count, offset) for each group
+/// record; the bytes are the pass's one buffer, reused for the next record.
+fn scan(
+    path: &Path,
+    mut visit: impl FnMut(&[u8], usize, usize, u64) -> Result<()>,
+) -> Result<usize> {
+    let mut reader = open(path)?;
     let mut buf = Vec::new();
     let mut offset = 0u64;
     let mut total = 0usize;
-    let want = match entries {
-        Entries::All => 0,
-        Entries::Count(n) => n,
-    };
-    let rare_quota = want.div_ceil(2);
-    // Max-heap bounded to `rare_quota`: the worst element is the largest
-    // count, so popping it keeps the rarest.
-    let mut rare: BinaryHeap<Entry> = BinaryHeap::new();
-    // Min-heap bounded to `want`: popping the smallest keeps the frequent.
-    let mut freq: BinaryHeap<Reverse<Entry>> = BinaryHeap::new();
-    let mut all = Vec::new();
+    let mut saw_summary = false;
     loop {
         let start = offset;
         let n = read_bounded(&mut reader, &mut buf, start)?;
@@ -231,53 +299,64 @@ fn pass1(path: &Path, entries: Entries) -> Result<Pass1> {
         if buf.is_empty() {
             continue;
         }
-        let (id, count) = if let Some(pair) = group_head(&buf) {
-            pair
-        } else {
-            // Not the shape this writer emits: parse it properly. A record
-            // that fails here is a damaged report, and the pass fails
-            // rather than omitting a group.
-            let meta: Meta = serde_json::from_slice(&buf)
-                .map_err(|e| anyhow::anyhow!("parse failed at byte offset {start}: {e}"))?;
-            if meta.record_type != "group" {
-                continue;
+        if saw_summary {
+            bail!("report is damaged: a record follows the summary at byte offset {start}");
+        }
+        // Full-document validation of every record, not a prefix check: a
+        // malformed middle in a record this pass does not select is still a
+        // damaged report, and a damaged report never renders as a success.
+        let meta: Meta = serde_json::from_slice(&buf)
+            .map_err(|e| anyhow::anyhow!("parse failed at byte offset {start}: {e}"))?;
+        match meta.record_type.as_str() {
+            "group" => {
+                total += 1;
+                visit(&buf, meta.id, meta.count, start)?;
             }
-            (meta.id, meta.count)
-        };
-        total += 1;
-        let entry = Entry {
-            count,
-            id,
-            offset: start,
-        };
-        match entries {
-            Entries::All => all.push(entry),
-            Entries::Count(_) => {
-                if rare_quota > 0 {
-                    rare.push(entry.clone());
-                    if rare.len() > rare_quota {
-                        rare.pop();
-                    }
-                }
-                if want > 0 {
-                    freq.push(Reverse(entry));
-                    if freq.len() > want {
-                        freq.pop();
-                    }
-                }
+            "summary" => saw_summary = true,
+            other => {
+                bail!("report is damaged: unknown record type {other:?} at byte offset {start}")
             }
         }
     }
+    if !saw_summary {
+        bail!("report is damaged: no terminal summary record");
+    }
+    Ok(total)
+}
+
+fn pass1(path: &Path, want: usize) -> Result<Pass1> {
+    let rare_quota = want.div_ceil(2);
+    // Max-heap bounded to `rare_quota`: the worst element is the largest
+    // count, so popping it keeps the rarest.
+    let mut rare: BinaryHeap<Entry> = BinaryHeap::new();
+    // Bounded to `want` by the frequent ranking itself: the top of this heap
+    // is the lowest count and, among ties, the largest id.
+    let mut freq: BinaryHeap<Worst> = BinaryHeap::new();
+    let total = scan(path, |_, id, count, offset| {
+        let entry = Entry { count, id, offset };
+        if rare_quota > 0 {
+            rare.push(entry.clone());
+            if rare.len() > rare_quota {
+                rare.pop();
+            }
+        }
+        if want > 0 {
+            freq.push(Worst(entry));
+            if freq.len() > want {
+                freq.pop();
+            }
+        }
+        Ok(())
+    })?;
     let mut rarest = rare.into_vec();
     rarest.sort_unstable();
-    let mut frequent: Vec<Entry> = freq.into_vec().into_iter().map(|r| r.0).collect();
+    let mut frequent: Vec<Entry> = freq.into_vec().into_iter().map(|w| w.0).collect();
     // Descending count, ties by ascending id.
     frequent.sort_unstable_by(|a, b| b.count.cmp(&a.count).then(a.id.cmp(&b.id)));
     Ok(Pass1 {
         total,
         rarest,
         frequent,
-        all,
     })
 }
 
@@ -314,11 +393,20 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
 fn render_entry(record: &Record, bounded: bool) -> String {
     let stamp = |t: &Option<String>| t.clone().unwrap_or_else(|| "-".to_string());
     let mut out = format!(
-        "[{}x] id={} {} → {}\n",
+        "[{}x] id={} {} → {}{}\n",
         record.count,
         record.id,
         stamp(&record.time_range.first_seen),
         stamp(&record.time_range.last_seen),
+        // Honest about not knowing: a record carries no flag saying whether
+        // the rollup was skipped for this group or the group simply had
+        // nothing to vary. Said on this line, not a line of its own — the
+        // overview is a byte budget.
+        if record.variation.is_empty() {
+            "  variation: not recorded (not computed for this group, or none)"
+        } else {
+            ""
+        },
     );
     let mut cut_template = false;
     if bounded {
@@ -338,6 +426,7 @@ fn render_entry(record: &Record, bounded: bool) -> String {
     out.push('\n');
 
     let mut cut_samples = false;
+    let mut sampled_in_report: Vec<&str> = Vec::new();
     if !record.variation.is_empty() {
         let mut facts = Vec::new();
         for (name, v) in &record.variation {
@@ -358,103 +447,137 @@ fn render_entry(record: &Record, bounded: bool) -> String {
                     rendered.push(sample.clone());
                 }
             }
-            let mut fact = format!("{name}={}", v.distinct_count);
+            let mut fact = v.count_text(name);
             if !rendered.is_empty() {
                 fact.push_str(&format!(" [{}]", rendered.join("|")));
             }
-            // Only a cut made *here* is declared here. A report entry that
-            // already carries fewer samples than distinct values declared
-            // that omission itself, in its own record.
+            // A cut made *here* is a display omission. A report that already
+            // held fewer values than the group had is a different fact, and
+            // it is named on its own line below — in every mode, including
+            // `--overview all`, which cuts nothing of its own.
             if shown < v.samples.len() {
                 cut_samples = true;
-                fact.push_str(&format!(" …[{shown} of {} shown]", v.distinct_count));
+                fact.push_str(&format!(" …[showing {shown} of {}]", v.samples.len()));
+            }
+            if v.report_sampled() {
+                sampled_in_report.push(name);
+                fact.push_str(&format!(" …[report kept {}]", v.samples.len()));
             }
             facts.push(fact);
         }
-        out.push_str(&format!("variation: {}\n", facts.join("  ")));
+        let sampled = if sampled_in_report.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "  (report-sampled: {} — the report itself holds fewer values than the group had)",
+                sampled_in_report.join(", ")
+            )
+        };
+        out.push_str(&format!("variation: {}{sampled}\n", facts.join("  ")));
     }
     let previewed: Vec<&str> = [(cut_template, "template"), (cut_samples, "samples")]
         .into_iter()
         .filter_map(|(yes, name)| yes.then_some(name))
         .collect();
     if !previewed.is_empty() {
-        out.push_str(&format!("previewed: {}\n", previewed.join(", ")));
+        out.push_str(&format!("previewed here: {}\n", previewed.join(", ")));
     }
     out
 }
 
-/// The four recipes. None of them cats the file.
+/// Single-quote a path for a shell recipe. A report directory with a space,
+/// a `$` or a quote in it must not change the command the caller pastes.
+fn sh_quote(path: &Path) -> String {
+    format!("'{}'", path.display().to_string().replace('\'', r"'\''"))
+}
+
+/// The four recipes. None of them cats the file, and the two listing ones
+/// are bounded by row count and carry ids for drill-down.
 fn recipes(path: &Path) -> String {
-    let p = path.display();
+    let p = sh_quote(path);
     format!(
         "recipes (the report is JSONL; none of these prints the whole file):\n  \
-         overview, by count:  jq -r 'select(.type==\"group\")|\"\\(.count)\\t\\(.normalized[0:120])\"' {p} | sort -rn | head -40\n  \
-         singletons:          jq -r 'select(.type==\"group\" and .count==1)|.normalized[0:120]' {p}\n  \
-         what is missing:     jq 'select(.type==\"summary\")|{{completeness,degraded}}' {p}\n  \
-         one group in full (potentially large: a full record can be arbitrarily long):\n                       jq 'select(.type==\"group\" and .id==ID)' {p}\n"
+         top {RECIPE_ROWS} by count:   jq -r 'select(.type==\"group\")|\"\\(.count)\\t\\(.id)\\t\\(.normalized[0:120])\"' -- {p} | sort -rn | head -{RECIPE_ROWS}\n  \
+         first {RECIPE_ROWS} singletons: jq -r 'select(.type==\"group\" and .count==1)|\"\\(.id)\\t\\(.normalized[0:120])\"' -- {p} | head -{RECIPE_ROWS}\n  \
+         (both stop at {RECIPE_ROWS} rows and preview 120 bytes; drop the head or the slice for the rest)\n  \
+         what is missing:      jq 'select(.type==\"summary\")|{{completeness,degraded}}' -- {p}\n  \
+         one group in full by id (potentially large: a full record can be arbitrarily long):\n                        jq 'select(.type==\"group\" and .id==ID)' -- {p}\n"
     )
 }
 
-/// Render the whole stdout overview. `briefing` is already-rendered text
-/// (`None` under `-q`).
+/// The over-budget message, whose own length counts toward the overrun it
+/// states. The digits of `n` can widen `n`, so settle it by iteration — two
+/// rounds at most in practice, and it always terminates because the width
+/// only ever grows.
+fn over_budget_message(mandatory: usize, budget: usize) -> String {
+    let mut over = mandatory.saturating_sub(budget);
+    loop {
+        let msg = format!("overview: budget exceeded by mandatory text ({over} bytes over)\n");
+        let actual = (mandatory + msg.len()).saturating_sub(budget);
+        if actual == over {
+            return msg;
+        }
+        over = actual;
+    }
+}
+
+/// Render the whole stdout overview into `out`. `briefing` is
+/// already-rendered text (`None` under `-q`).
+///
+/// A bounded overview is at most `budget` bytes and is assembled before it
+/// is written, so a failed pass writes nothing. `--overview all` has no
+/// budget and streams: every record it will print has already been
+/// validated by pass 1, so the streaming half fails only on the writer.
 pub fn render(
+    out: &mut impl Write,
     path: &Path,
     locator: &Locator<'_>,
     entries: Entries,
     budget: usize,
     briefing: Option<&str>,
-) -> Result<String> {
-    let pass = pass1(path, entries)?;
+) -> Result<()> {
     let tail = recipes(path);
     let brief = briefing.unwrap_or("");
 
-    let file = std::fs::File::open(path)?;
-    let mut reader = BufReader::with_capacity(256 * 1024, file);
-    let mut buf = Vec::new();
-
-    let read_at =
-        |reader: &mut BufReader<std::fs::File>, buf: &mut Vec<u8>, offset: u64| -> Result<Record> {
-            reader.seek(SeekFrom::Start(offset))?;
-            let n = read_bounded(reader, buf, offset)?;
-            if n == 0 {
-                bail!("record at byte offset {offset} disappeared between passes");
-            }
-            serde_json::from_slice(buf)
-                .map_err(|e| anyhow::anyhow!("parse failed at byte offset {offset}: {e}"))
-        };
-
     if entries == Entries::All {
-        // No byte budget, no cuts, one record at a time, report order.
-        let mut body = String::new();
-        for entry in &pass.all {
-            let record = read_at(&mut reader, &mut buf, entry.offset)?;
-            body.push_str(&render_entry(&record, false));
-        }
-        let head = locator.render(pass.total, pass.total, pass.total);
-        return Ok(format!("{brief}{head}{body}{head}{tail}"));
+        return render_all(out, path, locator, brief, &tail);
     }
 
     let n = match entries {
         Entries::Count(n) => n,
         Entries::All => unreachable!(),
     };
+    let pass = pass1(path, n)?;
     let chosen = select(&pass, n.min(pass.total));
     let selected = chosen.len();
 
     // Reserve the mandatory text first: briefing, head locator, tail
-    // locator, recipes. The locator reservation uses its worst-case width
-    // for this run, so the budget is settled before `printed` is known.
+    // locator, recipes. The locator reservation is a true upper bound on
+    // this run's locator width, so the budget is settled before `printed`
+    // is known and the final bytes can never exceed it.
     let reserved = brief.len() + 2 * locator.reserved_len(pass.total) + tail.len();
-    if reserved > budget {
-        let over = reserved - budget;
-        let head = format!(
-            "overview: budget exceeded by mandatory text ({over} bytes over)\n{}",
-            locator.render(pass.total, selected, 0)
-        );
-        return Ok(format!("{brief}{head}{tail}"));
+    let head_zero = locator.render(pass.total, selected, 0);
+    let mandatory = brief.len() + 2 * head_zero.len() + tail.len();
+    if mandatory > budget {
+        // Both locators still print — the head and the tail are placed
+        // where a truncated capture keeps one of them — and the stated
+        // overrun counts every byte written, this message included.
+        let message = over_budget_message(mandatory, budget);
+        let head = head_zero;
+        out.write_all(brief.as_bytes())?;
+        out.write_all(message.as_bytes())?;
+        out.write_all(head.as_bytes())?;
+        out.write_all(head.as_bytes())?;
+        out.write_all(tail.as_bytes())?;
+        return Ok(());
     }
-    let room = budget - reserved;
+    // The reservation is an upper bound, so it can exceed the budget while
+    // the mandatory text alone fits. Then there is simply no room for an
+    // entry, and the output is the mandatory text — still inside B.
+    let room = budget.saturating_sub(reserved);
 
+    let mut reader = open(path)?;
+    let mut buf = Vec::new();
     let mut body = String::new();
     let mut printed = 0usize;
     for entry in &chosen {
@@ -469,13 +592,83 @@ pub fn render(
         printed += 1;
     }
     let head = locator.render(pass.total, selected, printed);
-    Ok(format!("{brief}{head}{body}{head}{tail}"))
+    out.write_all(brief.as_bytes())?;
+    out.write_all(head.as_bytes())?;
+    out.write_all(body.as_bytes())?;
+    out.write_all(head.as_bytes())?;
+    out.write_all(tail.as_bytes())?;
+    Ok(())
+}
+
+fn read_at(
+    reader: &mut BufReader<std::fs::File>,
+    buf: &mut Vec<u8>,
+    offset: u64,
+) -> Result<Record> {
+    reader.seek(SeekFrom::Start(offset))?;
+    let n = read_bounded(reader, buf, offset)?;
+    if n == 0 {
+        bail!("record at byte offset {offset} disappeared between passes");
+    }
+    serde_json::from_slice(buf)
+        .map_err(|e| anyhow::anyhow!("parse failed at byte offset {offset}: {e}"))
+}
+
+/// `--overview all`: every group, report order, no budget and no cuts.
+///
+/// Nothing accumulates. Pass 1 counts and validates every record — it keeps
+/// no entry list — and the second pass reads the file forward, rendering and
+/// writing one record at a time. Peak memory is one record.
+fn render_all(
+    out: &mut impl Write,
+    path: &Path,
+    locator: &Locator<'_>,
+    brief: &str,
+    tail: &str,
+) -> Result<()> {
+    // Validate with the renderer's own shape, so the streaming half below
+    // cannot fail halfway through a written overview. Each record is parsed
+    // and dropped: nothing accumulates across the scan.
+    let total = scan(path, |bytes, _, _, offset| {
+        serde_json::from_slice::<Record>(bytes)
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("parse failed at byte offset {offset}: {e}"))
+    })?;
+    let head = locator.render(total, total, total);
+    out.write_all(brief.as_bytes())?;
+    out.write_all(head.as_bytes())?;
+
+    let mut reader = open(path)?;
+    let mut buf = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let start = offset;
+        let n = read_bounded(&mut reader, &mut buf, start)?;
+        if n == 0 {
+            break;
+        }
+        offset += n as u64;
+        if buf.is_empty() {
+            continue;
+        }
+        let record: Record = match serde_json::from_slice(&buf) {
+            Ok(record) => record,
+            // The summary record: already validated by the scan above.
+            Err(_) => continue,
+        };
+        out.write_all(render_entry(&record, false).as_bytes())?;
+    }
+    out.write_all(head.as_bytes())?;
+    out.write_all(tail.as_bytes())?;
+    Ok(())
 }
 
 /// The head/tail-only output for a run whose report is complete but whose
-/// overview pass failed. No group is silently omitted: the reason is named.
+/// overview pass failed. No group is silently omitted: the reason is named,
+/// and the counts say `unknown` rather than inventing a total the pass never
+/// established.
 pub fn unavailable(locator: &Locator<'_>, error: &str) -> String {
-    let head = locator.render(0, 0, 0);
+    let head = locator.line(None);
     format!(
         "{head}overview: unavailable ({error})\n{head}{}",
         recipes(locator.path)
@@ -485,7 +678,6 @@ pub fn unavailable(locator: &Locator<'_>, error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn corpus(records: &[(usize, usize)]) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
@@ -512,10 +704,17 @@ mod tests {
         }
     }
 
+    fn rendered(path: &Path, entries: Entries, budget: usize) -> String {
+        let loc = locator(path);
+        let mut out = Vec::new();
+        render(&mut out, path, &loc, entries, budget, None).unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
     #[test]
     fn selection_takes_half_rarest_and_fills_with_the_most_frequent() {
         let (_d, path) = corpus(&[(0, 100), (1, 1), (2, 50), (3, 2), (4, 70)]);
-        let pass = pass1(&path, Entries::Count(4)).unwrap();
+        let pass = pass1(&path, 4).unwrap();
         assert_eq!(pass.total, 5, "the summary record is not a group");
         let chosen = select(&pass, 4);
         let ids: Vec<usize> = chosen.iter().map(|e| e.id).collect();
@@ -527,16 +726,32 @@ mod tests {
     #[test]
     fn ties_are_broken_by_ascending_id_and_the_quotas_still_fill() {
         let (_d, path) = corpus(&[(0, 7), (1, 7), (2, 7), (3, 7)]);
-        let pass = pass1(&path, Entries::Count(3)).unwrap();
+        let pass = pass1(&path, 3).unwrap();
         let ids: Vec<usize> = select(&pass, 3).iter().map(|e| e.id).collect();
         assert_eq!(ids.len(), 3, "all-equal counts must not underfill");
         assert_eq!(ids, vec![0, 1, 2]);
     }
 
     #[test]
+    fn a_tied_population_larger_than_both_heaps_keeps_the_smallest_ids() {
+        // Five groups, all count 7, N=2: the frequent heap retains two of
+        // five ties. Evicting by "count asc, id asc" would keep ids 3 and 4
+        // and select [0, 3]; the frequent ranking is count desc, id asc.
+        let (_d, path) = corpus(&[(0, 7), (1, 7), (2, 7), (3, 7), (4, 7)]);
+        let pass = pass1(&path, 2).unwrap();
+        assert_eq!(
+            pass.frequent.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![0, 1],
+            "the frequent heap must retain the smallest ids at a tied cutoff"
+        );
+        let ids: Vec<usize> = select(&pass, 2).iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![0, 1]);
+    }
+
+    #[test]
     fn n_at_or_above_the_total_selects_every_group() {
         let (_d, path) = corpus(&[(0, 1), (1, 2), (2, 3)]);
-        let pass = pass1(&path, Entries::Count(40)).unwrap();
+        let pass = pass1(&path, 40).unwrap();
         assert_eq!(select(&pass, 3).len(), 3);
     }
 
@@ -550,7 +765,7 @@ mod tests {
         f.write_all(&vec![b'a'; RECORD_GUARD + 10]).unwrap();
         f.write_all(b"\n").unwrap();
         drop(f);
-        let err = pass1(&path, Entries::Count(40)).expect_err("the guard must trip");
+        let err = pass1(&path, 40).expect_err("the guard must trip");
         assert_eq!(
             err.to_string(),
             format!("record too large: > 16 MiB at byte offset {offset}")
@@ -558,29 +773,11 @@ mod tests {
     }
 
     #[test]
-    fn the_fast_head_reads_only_what_this_writer_emits_and_refuses_anything_else() {
-        assert_eq!(
-            group_head(br#"{"type":"group","id":7,"count":42,"normalized":"x"}"#),
-            Some((7, 42))
-        );
-        // A truncated record does not end in `}` — the caller must parse it
-        // properly and fail, not count a damaged group and move on.
-        assert_eq!(
-            group_head(br#"{"type":"group","id":7,"count":42,"norm"#),
-            None
-        );
-        assert_eq!(group_head(br#"{"type":"summary","complete":true}"#), None);
-        // Field order or spacing this writer does not produce falls back too.
-        assert_eq!(group_head(br#"{"id":7,"type":"group","count":42}"#), None);
-        assert_eq!(group_head(br#"{"type":"group","id":,"count":42}"#), None);
-    }
-
-    #[test]
     fn a_truncated_report_fails_the_pass_with_a_parse_error_at_its_offset() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("report.jsonl");
         std::fs::write(&path, "{\"type\":\"group\",\"id\":0,\"co\n").unwrap();
-        let err = pass1(&path, Entries::Count(40)).expect_err("a half record must not parse");
+        let err = pass1(&path, 40).expect_err("a half record must not parse");
         assert!(
             err.to_string().starts_with("parse failed at byte offset 0"),
             "{err}"
@@ -588,27 +785,125 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_bounds_stdout_and_the_locator_reports_what_was_not_printed() {
-        let records: Vec<(usize, usize)> = (0..200).map(|i| (i, i + 1)).collect();
-        let (_d, path) = corpus(&records);
-        let loc = locator(&path);
-        let out = render(&path, &loc, Entries::Count(40), DEFAULT_BYTES, None).unwrap();
-        assert!(out.len() <= DEFAULT_BYTES, "{} bytes", out.len());
-        assert!(out.contains("200 total, 40 selected"), "{out}");
-        assert!(out.starts_with("report: "), "head locator first");
-        assert!(
-            out.ends_with("jq 'select(.type==\"group\" and .id==ID)' ") || out.contains("recipes"),
-            "tail last"
-        );
+    fn a_malformed_middle_in_an_unselected_record_still_fails_the_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.jsonl");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // Prefix and trailing `}` are exactly what the writer emits; the
+        // middle is not JSON. A prefix check would count this group and
+        // move on.
+        writeln!(
+            f,
+            r#"{{"type":"group","id":0,"count":1,"normalized":"x" garbage "y":}}"#
+        )
+        .unwrap();
+        writeln!(f, r#"{{"type":"summary","complete":true}}"#).unwrap();
+        drop(f);
+        let err = pass1(&path, 40).expect_err("a damaged record must fail the pass");
+        assert!(err.to_string().contains("parse failed"), "{err}");
     }
 
     #[test]
-    fn a_tiny_budget_prints_the_mandatory_text_and_says_how_far_over_it_is() {
-        let (_d, path) = corpus(&[(0, 1), (1, 2)]);
+    fn a_report_cut_at_a_group_boundary_has_no_summary_and_is_damaged() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.jsonl");
+        std::fs::write(
+            &path,
+            "{\"type\":\"group\",\"id\":0,\"count\":1,\"normalized\":\"x\"}\n",
+        )
+        .unwrap();
+        let err = pass1(&path, 40).expect_err("no terminal summary is a damaged report");
+        assert_eq!(
+            err.to_string(),
+            "report is damaged: no terminal summary record"
+        );
+        // An empty file is the same failure, not a successful empty run.
+        std::fs::write(&path, "").unwrap();
+        assert!(pass1(&path, 40).is_err(), "an empty report is damaged");
+    }
+
+    #[test]
+    fn an_unavailable_overview_never_invents_a_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("report.jsonl");
+        let out = unavailable(&locator(&path), "record too large");
+        assert!(out.contains("groups: unknown"), "{out}");
+        assert!(!out.contains("0 total"), "{out}");
+    }
+
+    #[test]
+    fn the_budget_bounds_stdout_and_the_locator_reports_what_was_not_printed() {
+        let records: Vec<(usize, usize)> = (0..200).map(|i| (i, i + 1)).collect();
+        let (_d, path) = corpus(&records);
+        let out = rendered(&path, Entries::Count(40), DEFAULT_BYTES);
+        assert!(out.len() <= DEFAULT_BYTES, "{} bytes", out.len());
+        assert!(out.contains("200 total, 40 selected"), "{out}");
+        assert!(out.starts_with("report: "), "head locator first");
+        assert!(out.contains("recipes"), "tail last");
+    }
+
+    #[test]
+    fn the_written_bytes_never_exceed_the_budget_at_any_size() {
+        // Digit boundaries on both the counts and the budget, plus budgets
+        // sized to the exact reservation and one byte either side of it.
+        let records: Vec<(usize, usize)> = (0..120).map(|i| (i, i % 9 + 1)).collect();
+        let (_d, path) = corpus(&records);
         let loc = locator(&path);
-        let out = render(&path, &loc, Entries::Count(40), 1, None).unwrap();
+        let tail = recipes(&path).len();
+        let exact = 2 * loc.reserved_len(120) + tail;
+        for budget in [
+            1,
+            9,
+            10,
+            99,
+            100,
+            999,
+            1000,
+            1024,
+            4096,
+            16384,
+            65535,
+            exact - 1,
+            exact,
+            exact + 1,
+            exact + 200,
+        ] {
+            let out = rendered(&path, Entries::Count(40), budget);
+            if out.contains("budget exceeded") {
+                let over: usize = out
+                    .split("mandatory text (")
+                    .nth(1)
+                    .unwrap()
+                    .split(' ')
+                    .next()
+                    .unwrap()
+                    .parse()
+                    .unwrap();
+                assert_eq!(
+                    out.len(),
+                    budget + over,
+                    "the stated overrun must be exact at budget {budget}"
+                );
+            } else {
+                assert!(
+                    out.len() <= budget,
+                    "budget {budget}: wrote {} bytes",
+                    out.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_tiny_budget_prints_both_locators_and_says_exactly_how_far_over_it_is() {
+        let (_d, path) = corpus(&[(0, 1), (1, 2)]);
+        let out = rendered(&path, Entries::Count(40), 1);
         assert!(out.contains("budget exceeded by mandatory text"), "{out}");
-        assert!(out.contains("0 printed"), "{out}");
+        assert_eq!(
+            out.matches("report: ").count(),
+            2,
+            "both locators must print: {out}"
+        );
         assert!(!out.contains("[1x] id=0"), "no entries follow: {out}");
     }
 
@@ -616,9 +911,8 @@ mod tests {
     fn overview_all_prints_every_group_in_report_order_with_no_budget() {
         let records: Vec<(usize, usize)> = (0..300).map(|i| (i, i + 1)).collect();
         let (_d, path) = corpus(&records);
-        let loc = locator(&path);
-        let out = render(&path, &loc, Entries::All, 1, None).unwrap();
-        let bounded = render(&path, &loc, Entries::Count(40), DEFAULT_BYTES, None).unwrap();
+        let out = rendered(&path, Entries::All, 1);
+        let bounded = rendered(&path, Entries::Count(40), DEFAULT_BYTES);
         assert!(
             out.len() > bounded.len(),
             "a budget of 1 byte must not bound --overview all ({} vs {})",
@@ -651,7 +945,7 @@ mod tests {
             out.contains("…[template 4000 bytes; id=7 in report]"),
             "{out}"
         );
-        assert!(out.contains("previewed: template"), "{out}");
+        assert!(out.contains("previewed here: template"), "{out}");
         let line = out.lines().nth(1).unwrap();
         let shown = line.split(" …[").next().unwrap();
         assert!(shown.starts_with('é'), "still valid UTF-8");
@@ -663,30 +957,122 @@ mod tests {
         assert_eq!(shown.len() % 2, 0, "cut on a char boundary, not mid-é");
     }
 
+    fn variation(
+        distinct_count: usize,
+        kind: Option<&str>,
+        samples: Vec<String>,
+        samples_complete: Option<bool>,
+        capped: bool,
+    ) -> Variation {
+        Variation {
+            distinct_count,
+            distinct_count_kind: kind.map(str::to_string),
+            samples,
+            samples_complete,
+            capped,
+        }
+    }
+
     #[test]
     fn samples_are_capped_at_three_and_eighty_bytes_each_with_the_count_declared() {
-        let mut variation = BTreeMap::new();
-        variation.insert(
+        let mut vars = BTreeMap::new();
+        vars.insert(
             "ip".to_string(),
-            Variation {
-                distinct_count: 9,
-                samples: vec!["x".repeat(200), "b".into(), "c".into(), "d".into()],
-            },
+            variation(
+                9,
+                Some("exact"),
+                vec!["x".repeat(200), "b".into(), "c".into(), "d".into()],
+                Some(false),
+                false,
+            ),
         );
         let record = Record {
             id: 1,
             count: 9,
             normalized: "t".into(),
             time_range: TimeRange::default(),
-            variation,
+            variation: vars,
         };
         let out = render_entry(&record, true);
         assert!(out.contains("ip=9"), "{out}");
-        assert!(out.contains("…[3 of 9 shown]"), "{out}");
+        assert!(out.contains("…[showing 3 of 4]"), "{out}");
         assert!(!out.contains("|d"), "the fourth sample is cut: {out}");
         assert!(out.contains(&"x".repeat(80)), "{out}");
         assert!(!out.contains(&"x".repeat(81)), "cut at 80 bytes: {out}");
-        assert!(out.contains("previewed: samples"), "{out}");
+        assert!(out.contains("previewed here: samples"), "{out}");
+    }
+
+    #[test]
+    fn a_capped_count_is_never_shown_as_exact_and_report_sampling_is_its_own_fact() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "name".to_string(),
+            variation(
+                64,
+                Some("lower_bound"),
+                vec!["a".into(), "b".into()],
+                Some(false),
+                true,
+            ),
+        );
+        let record = Record {
+            id: 4,
+            count: 900,
+            normalized: "t".into(),
+            time_range: TimeRange::default(),
+            variation: vars,
+        };
+        for bounded in [true, false] {
+            let out = render_entry(&record, bounded);
+            assert!(out.contains("name>=64"), "bounded={bounded}: {out}");
+            assert!(!out.contains("name=64"), "bounded={bounded}: {out}");
+            assert!(
+                out.contains("report kept 2") && out.contains("report-sampled: name"),
+                "bounded={bounded}: the report's own sampling must survive --overview all: {out}"
+            );
+            assert!(
+                !out.contains("previewed here"),
+                "bounded={bounded}: nothing was cut here: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_record_without_a_variation_map_says_so_instead_of_staying_silent() {
+        let record = Record {
+            id: 2,
+            count: 1,
+            normalized: "t".into(),
+            time_range: TimeRange::default(),
+            variation: BTreeMap::new(),
+        };
+        assert!(
+            render_entry(&record, true)
+                .lines()
+                .next()
+                .unwrap()
+                .contains("variation: not recorded"),
+            "an uncomputed rollup must not read as 'no variation'"
+        );
+    }
+
+    #[test]
+    fn an_unstated_count_kind_is_labelled_unstated_not_exact() {
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "ip".to_string(),
+            variation(5, None, vec!["a".into()], None, false),
+        );
+        let record = Record {
+            id: 0,
+            count: 5,
+            normalized: "t".into(),
+            time_range: TimeRange::default(),
+            variation: vars,
+        };
+        let out = render_entry(&record, true);
+        assert!(out.contains("ip~5 (kind unstated)"), "{out}");
+        assert!(out.contains("report-sampled: ip"), "1 of 5 kept: {out}");
     }
 
     #[test]
@@ -701,6 +1087,20 @@ mod tests {
             },
             variation: BTreeMap::new(),
         };
-        assert!(render_entry(&record, true).starts_with("[2x] id=1 12:00 → -\n"));
+        assert!(
+            render_entry(&record, true).starts_with("[2x] id=1 12:00 → -  variation: not recorded")
+        );
+    }
+
+    #[test]
+    fn a_path_with_shell_metacharacters_is_quoted_in_every_recipe() {
+        let path = Path::new("/tmp/re port$(x)/it's/report.jsonl");
+        let text = recipes(path);
+        assert!(
+            text.contains(r"'/tmp/re port$(x)/it'\''s/report.jsonl'"),
+            "{text}"
+        );
+        assert_eq!(text.matches("jq").count(), 4, "four recipes: {text}");
+        assert_eq!(text.matches(" -- ").count(), 4, "jq -- before the file");
     }
 }
