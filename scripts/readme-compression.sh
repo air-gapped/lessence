@@ -12,8 +12,8 @@
 set -u
 export LC_ALL=C
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-README="$ROOT/README.md"
-BIN="$ROOT/target/release/lessence"
+README="${LESSENCE_README:-$ROOT/README.md}"
+BIN="${LESSENCE_BIN:-$ROOT/target/release/lessence}"
 O="${LESSENCE_ORIGINALS:-$ROOT/examples/originals}"
 ROWS="Kubernetes kubelet|kubelet.log
 ArgoCD server|argocd_server_production.log
@@ -32,6 +32,7 @@ if [ "${1:-}" = --check ]; then
     echo "README compression table is current (generated at $at)"; exit 0
 fi
 
+set -o pipefail
 [ -x "$BIN" ] || { echo "build first: cargo build --release" >&2; exit 1; }
 version="${2:-${1:-}}"
 case "$version" in
@@ -39,19 +40,37 @@ case "$version" in
     *) echo "usage: $0 [--write] vX.Y.Z   (the version this table is released as)" >&2; exit 1 ;;
 esac
 head_sha="$(git -C "$ROOT" rev-parse --short=9 HEAD)"
+# The numbers are stamped with HEAD, so the binary must be HEAD's: its --version
+# carries the commit it was built from, and the tree it was built from must be
+# clean where folding lives. A stale binary would label old output as this commit.
+built_from="$("$BIN" --version | sed -n 's/^lessence [^ ]* (\([0-9a-f]*\),.*$/\1/p')"
+if [ "$built_from" != "$head_sha" ]; then
+    echo "binary $BIN was built from ${built_from:-?}, HEAD is $head_sha: rebuild (cargo build --release) before measuring" >&2; exit 1
+fi
+if ! git -C "$ROOT" diff --quiet HEAD -- src/ Cargo.toml; then
+    echo "src/ or Cargo.toml has uncommitted changes: commit them, rebuild, then measure" >&2; exit 1
+fi
+bin_sha="$(sha256sum "$BIN" | cut -c1-12)"
 table="| Log source | Lines in | Lines out | Reduction |
 |-----------|--------:|---------:|----------:|"
 while IFS='|' read -r name file; do
     [ -f "$O/$file" ] || { echo "missing original: $O/$file" >&2; exit 1; }
     in=$(wc -l < "$O/$file")
-    out=$("$BIN" --no-report -q "$O/$file" 2>/dev/null | wc -l)
+    errfile="$(mktemp)"
+    if ! out=$("$BIN" --no-report -q "$O/$file" 2>"$errfile" | wc -l); then
+        echo "lessence failed on $file (exit status of the run is not 0):" >&2
+        head -c 600 "$errfile" >&2; echo >&2
+        rm -f "$errfile"; exit 1
+    fi
+    rm -f "$errfile"
+    if [ "$out" -eq 0 ]; then echo "lessence printed no lines for $file; refusing to record a 100% row" >&2; exit 1; fi
     pct=$(awk -v i="$in" -v o="$out" 'BEGIN { printf "%.1f%%", 100 * (1 - o / i) }')
     table="$table
 | $name | $(python3 -c "print(f'{$in:,}')") | $(python3 -c "print(f'{$out:,}')") | $pct |"
 done <<< "$ROWS"
 block="<!-- gen:compression:begin -->
 <!-- gen:compression:at $head_sha -->
-Measured on $version (commit $head_sha, $(date -u +%Y-%m-%d)) by \`scripts/readme-compression.sh\`
+Measured on $version (commit $head_sha, binary sha256 $bin_sha…, $(date -u +%Y-%m-%d)) by \`scripts/readme-compression.sh\`
 on production logs that are not distributable. Lines out is the full folded text;
 since 0.5.0 the message text and source line are part of an event's identity, so
 output is larger than older tables showed and hides less.

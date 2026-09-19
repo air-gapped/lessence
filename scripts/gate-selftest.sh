@@ -178,5 +178,33 @@ else
     check "a measurement without a number fails" "no numeric peak RSS" "$(cat "$WORK/err")"
 fi
 
+# ── README compression table: a failing, empty or stale binary never becomes evidence ─
+rc_orig="$WORK/originals"; mkdir -p "$rc_orig"
+for f in kubelet.log argocd_server_production.log harbor_postgres_primary.log cilium_full.log rancher_production.log epyc_7days_journalctl.log; do
+    printf 'a\nb\nc\n' >"$rc_orig/$f"
+done
+readme_copy="$WORK/README.md"; cp "$ROOT/README.md" "$readme_copy"
+before="$(sha256sum "$readme_copy")"
+head_sha="$(git -C "$ROOT" rev-parse --short=9 HEAD)"
+rc_bin="$WORK/lessence-rc"
+mk_rc_bin() { # mk_rc_bin <version sha> <body>
+    printf '#!/usr/bin/env bash\n[ "$1" = --version ] && { echo "lessence 0.0.0 (%s, x86_64-unknown-linux-gnu)"; exit 0; }\n%s\n' "$1" "$2" >"$rc_bin"
+    chmod +x "$rc_bin"
+}
+rc() { LESSENCE_BIN="$rc_bin" LESSENCE_ORIGINALS="$rc_orig" LESSENCE_README="$readme_copy" "$ROOT/scripts/readme-compression.sh" --write v9.9.9 2>"$WORK/rc-err" >/dev/null; echo $?; }
+
+mk_rc_bin "$head_sha" 'echo "boom" >&2; exit 3'
+check "a failing lessence run is not recorded" "1" "$(rc)"
+check "the failure's stderr is shown" "boom" "$(cat "$WORK/rc-err")"
+
+mk_rc_bin "$head_sha" 'exit 0'
+check "a run that prints nothing is not recorded" "1" "$(rc)"
+check "the empty run is named" "refusing to record a 100% row" "$(cat "$WORK/rc-err")"
+
+mk_rc_bin "deadbeef1" 'echo x; echo y'
+check "a binary built from another commit is refused" "1" "$(rc)"
+check "the stale binary is named" "was built from deadbeef1" "$(cat "$WORK/rc-err")"
+check "the README copy was never written" "$before" "$(sha256sum "$readme_copy")"
+
 echo "--- $fails failure(s)"
 [ "$fails" -eq 0 ]
