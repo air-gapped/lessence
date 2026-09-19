@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.6.0](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.6.0) (2026-09-19)
+
+
+### Features
+
+* --skill prints the bundled agent skill, version-locked to the binary (after herdr's --skill) ([dc87751](https://github.com/air-gapped/lessence/commit/dc87751f143cac696aa1d644fff6f23b0adf3adf))
+* include input identity and completeness guidance in JSON reports ([9910979](https://github.com/air-gapped/lessence/commit/99109796e8aa177f4a9a94311951f4efe0ff32c6))
+
 ## [0.5.0](https://github.com/air-gapped/lessence/compare/v0.4.5...v0.5.0) (2026-09-18)
 
 
