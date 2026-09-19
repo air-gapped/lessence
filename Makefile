@@ -1,7 +1,7 @@
 # lessence Makefile
 # Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
 
-.PHONY: ci fmt clippy doc build test deny check docs install setup clean help \
+.PHONY: ci fmt clippy doc build test deny check docs readme-compression install setup clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
        gate release-check distill
 
@@ -64,6 +64,10 @@ check: fmt clippy deny
 ## docs: Regenerate the binary-derived README sections (gen: regions)
 docs: build
 	LESSENCE_UPDATE_DOCS=1 cargo test --release --test doc_contract
+
+## readme-compression: Re-measure the README compression table on the local originals (local only): make readme-compression VERSION=v0.6.1
+readme-compression: build
+	./scripts/readme-compression.sh --write $(VERSION)
 
 ## test-unit: Run unit tests only (fast)
 test-unit:

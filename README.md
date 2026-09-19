@@ -18,10 +18,9 @@ Original: 2,000 lines → 151 lines (92.5% reduction)
 ```
 <!-- gen:example:end -->
 
-On a full 70k-line production kubelet log this same run folds
-70,548 → 357 lines (99.5%, measured on v0.4.4) — the example above is the
-committed 2,000-line slice of that log, regenerated and verified on every
-CI run.
+The example above is the committed 2,000-line slice of a 70k-line production
+kubelet log, regenerated and verified on every CI run; the full log's numbers
+are in the compression table below.
 
 Three distinct problems, not 70,000. And the enriched markers tell you
 exactly which UUIDs, volumes, and IPs were affected — information that
@@ -112,7 +111,7 @@ make build 2>&1 | lessence
 docker-compose logs | lessence
 
 # What's going on? One screen, no scrolling
-kubectl logs pod/api-server | lessence --human
+kubectl logs pod/api-server | lessence --fit
 
 # Files or stdin — both work
 lessence app.log                          # direct file argument
@@ -143,17 +142,26 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 
 ## Real-World Compression
 
-| Log Source | Lines In | Lines Out | Reduction | Measured on |
-|-----------|--------:|---------:|----------:|------------:|
-| Kubernetes kubelet | 70,548 | 357 | 99.5% | v0.4.5 |
-| ArgoCD server | 60,849 | 8 | 99.9% | v0.4.5 |
-| PostgreSQL primary | 54,066 | 92 | 99.8% | v0.4.5 |
-| Cilium networking | 38,145 | 376 | 99.0% | v0.4.5 |
-| Rancher | 22,433 | 243 | 98.9% | v0.4.5 |
-| journalctl (7 days) | 655,103 | 1,870 | 99.7% | v0.4.5 |
+<!-- gen:compression:begin -->
+<!-- gen:compression:at f053f78b3 -->
+Measured on v0.6.1 (commit f053f78b3, 2026-09-19) by `scripts/readme-compression.sh`
+on production logs that are not distributable. Lines out is the full folded text;
+since 0.5.0 the message text and source line are part of an event's identity, so
+output is larger than older tables showed and hides less.
 
-Measurements on production corpora that are not distributable; the
-headline example above is the only CI-verified number.
+| Log source | Lines in | Lines out | Reduction |
+|-----------|--------:|---------:|----------:|
+| Kubernetes kubelet | 70,548 | 733 | 99.0% |
+| ArgoCD server | 60,849 | 21 | 100.0% |
+| PostgreSQL primary | 54,066 | 96 | 99.8% |
+| Cilium networking | 38,145 | 1,038 | 97.3% |
+| Rancher | 22,433 | 311 | 98.6% |
+| journalctl (7 days) | 655,103 | 3,386 | 99.5% |
+<!-- gen:compression:end -->
+
+The headline example above is the only CI-verified number; this table is
+regenerated locally before every release and the release check refuses a
+table older than the folding code.
 
 ## Flags
 

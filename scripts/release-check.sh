@@ -79,6 +79,12 @@ else
     fi
 fi
 
+# ── README compression table: generated at a commit with today's src/ ───
+
+echo "Checking the README compression table..." >&2
+readme_status="pass"
+readme_msg="$("$ROOT/scripts/readme-compression.sh" --check 2>&1)" || readme_status="FAIL"
+
 # ── make ci ──────────────────────────────────────────────────────────────
 
 echo "Running make ci..." >&2
@@ -113,6 +119,7 @@ echo "slow tests: $slow_status"
 if [ "$slow_status" = "FAIL" ]; then
     echo "$slow_tail"
 fi
+echo "README compression table: $readme_status ($readme_msg)"
 
 # ── release.json ─────────────────────────────────────────────────────────
 
@@ -126,8 +133,9 @@ cat > "$GATE_DIR/release.json" <<JSON
   "gate": "${gate_status}",
   "mutants": {"caught": ${mutants_caught}, "total": ${mutants_total}, "score_pct": "${mutation_score}"},
   "ci": "${ci_status}",
-  "slow": "${slow_status}"
+  "slow": "${slow_status}",
+  "readme_compression": "${readme_status}"
 }
 JSON
 
-[ "$gate_status" != "FAIL" ] && [ "$ci_status" = "pass" ] && [ "$slow_status" = "pass" ]
+[ "$gate_status" != "FAIL" ] && [ "$ci_status" = "pass" ] && [ "$slow_status" = "pass" ] && [ "$readme_status" = "pass" ]
