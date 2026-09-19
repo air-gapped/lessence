@@ -39,6 +39,13 @@ if [ "${#distilled_corpora[@]}" -eq 0 ]; then
     die2 "no examples/distilled/*.log found — run 'make distill' first"
 fi
 
+# The acceptance measurements below only mean something if they fail closed.
+# scripts/gate-selftest.sh proves that with stubs, in about a second.
+if ! selftest_out="$("$ROOT/scripts/gate-selftest.sh" 2>&1)"; then
+    echo "$selftest_out" >&2
+    die2 "scripts/gate-selftest.sh fails — the size and RSS checks cannot be trusted"
+fi
+
 paranoid="$(cat /proc/sys/kernel/perf_event_paranoid 2>/dev/null || echo 999)"
 if [ "$paranoid" -gt 2 ]; then
     die2 "perf_event_paranoid=$paranoid (need <=2) — 'perf stat -e instructions:u' won't work unprivileged"
@@ -362,40 +369,38 @@ fi
 # regression past the allowance fails the gate.
 
 RSS_ALLOWANCE_KB=$((32 * 1024))
-
-rss_kb() {
-    local bin="$1"
-    shift
-    local out
-    out="$(mktemp)"
-    local extra=()
-    mapfile -t extra < <(report_args "$bin")
-    /usr/bin/time -v -o "$out" "$bin" --threads 1 -q "${extra[@]}" "$@" "$PERF_CORPUS" \
-        >/dev/null 2>/dev/null || true
-    awk '/Maximum resident set size/ { print $NF }' "$out"
-    rm -f "$out"
-}
+GATE_TIME="${GATE_TIME:-/usr/bin/time}"
+# shellcheck source=scripts/gate-rss.sh
+. "$ROOT/scripts/gate-rss.sh"
 
 rss_ok=1
-if command -v /usr/bin/time >/dev/null 2>&1; then
-    echo "Measuring peak RSS (default and --overview all)..." >&2
-    rss_base="$(rss_kb "$(pwd)/$base_bin")"
-    rss_new="$(rss_kb "$(pwd)/$new_bin")"
-    rss_all="$(rss_kb "$(pwd)/$new_bin" --overview all)"
+rss_reason=""
+rss_base=null
+rss_new=null
+rss_all=null
+if [ ! -x "$GATE_TIME" ]; then
+    rss_ok=0
+    rss_reason="$GATE_TIME is not available, so peak RSS was not measured"
 else
-    rss_base=null
-    rss_new=null
-    rss_all=null
+    echo "Measuring peak RSS (default and --overview all)..." >&2
+    rss_base="$(rss_kb base "$(pwd)/$base_bin")" || rss_ok=0
+    rss_new="$(rss_kb new-default "$(pwd)/$new_bin")" || rss_ok=0
+    rss_all="$(rss_kb new-overview-all "$(pwd)/$new_bin" --overview all)" || rss_ok=0
+    if [ "$rss_ok" -eq 0 ]; then
+        rss_reason="a peak-RSS run failed or reported no number (diagnostics in $GATE_DIR/rss-*.stderr)"
+        rss_base="${rss_base:-null}"
+        rss_new="${rss_new:-null}"
+        rss_all="${rss_all:-null}"
+    fi
 fi
+
 rss_fail=0
-if [ "$rss_base" != "null" ] && [ -n "${rss_base:-}" ]; then
+if [ "$rss_ok" -eq 1 ]; then
     for r in "$rss_new" "$rss_all"; do
         if [ $((r - rss_base)) -gt "$RSS_ALLOWANCE_KB" ]; then
             rss_fail=1
         fi
     done
-else
-    rss_ok=0
 fi
 
 # Everything the gate's own runs wrote, and nothing else.
@@ -403,80 +408,29 @@ rm -rf "$GATE_REPORTS"
 
 # ── 6c. Size: default stdout/stderr bytes and pinned-tokenizer tokens per
 # corpus against the reviewed baseline in tests/fixtures, + max(128, 1%).
-# The report path is replaced by a fixed placeholder before counting, so the
-# baseline does not depend on where the repository sits.
+# scripts/gate-size.py fails closed — no tokenizer, no baseline, a corpus
+# missing from it or a missing field are errors, not skips — and creating the
+# baseline is the separate, explicit GATE_BLESS_SIZE=1 operation. The 16 KiB
+# bound is asserted there on the run's actual stdout bytes; only the
+# comparative metric replaces the variable locator text (report path, run id,
+# byte size) with placeholders, so the baseline travels between machines.
 
 SIZE_BASELINE="tests/fixtures/overview-size-baseline.json"
-size_py='
-import json, os, re, subprocess, sys, tempfile
-
-binary, baseline_path, corpora, bless = sys.argv[1], sys.argv[2], sys.argv[3:-1], sys.argv[-1] == "bless"
-try:
-    import tiktoken
-    enc = tiktoken.get_encoding("cl100k_base")
-    tokens = lambda s: len(enc.encode(s, disallowed_special=()))
-except Exception:
-    enc = None
-    tokens = lambda s: None
-
-baseline = {}
-if os.path.exists(baseline_path):
-    baseline = json.load(open(baseline_path)).get("corpora", {})
-
-measured, rows = {}, []
-# Under target/, not /tmp: /tmp is a tmpfs on most distributions and the
-# filesystem policy rejects it for a report directory.
-os.makedirs("target/gate", exist_ok=True)
-with tempfile.TemporaryDirectory(dir="target/gate") as reports:
-    for path in corpora:
-        name = os.path.basename(path)[:-4]
-        run = subprocess.run([binary, "--threads", "1", "--report-dir", reports, path],
-                             capture_output=True)
-        if run.returncode != 0:
-            sys.exit("size check: %s exited %d: %s"
-                     % (path, run.returncode, run.stderr.decode("utf-8", "replace")[:300]))
-        # The run directory name and the path to it are the one part of the
-        # overview whose size says nothing about the overview.
-        scrub = lambda b: re.sub(re.escape(reports) + r"/run-[0-9-]+-[0-9a-f]{8}/report.jsonl",
-                                 "<REPORT>", b.decode("utf-8", "replace"))
-        out, err = scrub(run.stdout), scrub(run.stderr)
-        measured[name] = {"stdout_bytes": len(out.encode()), "stderr_bytes": len(err.encode()),
-                          "stdout_tokens": tokens(out), "stderr_tokens": tokens(err)}
-
-over = []
-for name, now in sorted(measured.items()):
-    was = baseline.get(name)
-    if not was:
-        continue
-    for field, value in now.items():
-        old = was.get(field)
-        if old is None or value is None:
-            continue
-        allowance = max(128, old // 100)
-        if value > old + allowance:
-            over.append({"corpus": name, "field": field, "baseline": old, "now": value,
-                         "allowance": allowance})
-
-if bless:
-    json.dump({"note": "reviewed size baseline; + max(128, 1%) is the gate allowance",
-               "tokenizer": "tiktoken cl100k_base" if enc else None,
-               "corpora": measured}, open(baseline_path, "w"), indent=2, sort_keys=True)
-    open(baseline_path, "a").write("\n")
-
-print(json.dumps({"tokenizer": "tiktoken cl100k_base" if enc else None,
-                  "baseline": os.path.basename(baseline_path),
-                  "corpora_measured": len(measured), "corpora_baselined": len(baseline),
-                  "over": over}))
-'
 size_corpora=()
 for name in "${distilled_corpora[@]}"; do
     size_corpora+=("examples/distilled/${name}.log")
 done
-size_json="$(python3 -c "$size_py" "$(pwd)/$new_bin" "$SIZE_BASELINE" "${size_corpora[@]}" \
-    "${GATE_BLESS_SIZE:+bless}")"
-size_over="$(printf '%s' "$size_json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["over"]))')"
+size_json="$(python3 "$ROOT/scripts/gate-size.py" "$(pwd)/$new_bin" "$SIZE_BASELINE" \
+    "${size_corpora[@]}" "${GATE_BLESS_SIZE:+bless}")"
+read -r size_over size_errors <<<"$(printf '%s' "$size_json" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print(len(d["over"]), len(d["errors"]))
+')"
 size_fail=0
 [ "$size_over" -gt 0 ] && size_fail=1
+size_error_fail=0
+[ "$size_errors" -gt 0 ] && size_error_fail=1
 
 # ── Verdict ──────────────────────────────────────────────────────────────
 
@@ -504,6 +458,14 @@ fi
 if [ "$rss_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("peak RSS over the +32 MiB allowance: base=${rss_base}K default=${rss_new}K --overview all=${rss_all}K")
+fi
+if [ "$rss_ok" -eq 0 ]; then
+    verdict="FAIL"
+    fail_reasons+=("peak RSS not established: ${rss_reason}")
+fi
+if [ "$size_error_fail" -eq 1 ]; then
+    verdict="FAIL"
+    fail_reasons+=("size check could not run cleanly on ${size_errors} count(s) — see size.errors in gate.json")
 fi
 if [ "$size_fail" -eq 1 ]; then
     verdict="FAIL"
@@ -533,10 +495,10 @@ if [ "$rss_ok" -eq 1 ]; then
     printf "rss: base=%sK default=%sK overview-all=%sK (allowance +%sK)\n" \
         "$rss_base" "$rss_new" "$rss_all" "$RSS_ALLOWANCE_KB"
 else
-    echo "rss: not measured (/usr/bin/time -v unavailable)"
+    echo "rss: NOT MEASURED — ${rss_reason}"
 fi
-printf "size: %s corpora vs %s, %s over baseline + max(128, 1%%)\n" \
-    "${#distilled_corpora[@]}" "$SIZE_BASELINE" "$size_over"
+printf "size: %s corpora vs %s, %s over baseline + max(128, 1%%), %s error(s)\n" \
+    "${#distilled_corpora[@]}" "$SIZE_BASELINE" "$size_over" "$size_errors"
 echo "verdict: $verdict"
 for r in "${fail_reasons[@]:-}"; do
     [ -n "$r" ] && echo "  - $r"

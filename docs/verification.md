@@ -55,18 +55,35 @@ No target other than `make distill` reads an original corpus.
    `target/gate/reports` when the binary supports it, so nothing lands in the
    caller's state directory; that directory is removed after the measurement
    and nothing outside it is touched.
-7. Peak RSS (`/usr/bin/time -v`) on the same corpus for the baseline default,
-   the new default and the new `--overview all`. FAIL when either new number
-   is more than 32 MiB over the baseline default. Skipped, and said so, where
-   `/usr/bin/time` is absent.
-8. Size: stdout and stderr bytes and pinned-tokenizer tokens (tiktoken
-   `cl100k_base`) per corpus at default flags, against the reviewed baseline
-   `tests/fixtures/overview-size-baseline.json`. FAIL when any field exceeds
-   its baseline + max(128, 1%). The report path is replaced by `<REPORT>`
-   before counting, so the baseline does not depend on the checkout path.
-   `GATE_BLESS_SIZE=1` rewrites the baseline — a number written by the run
-   that is being judged proves nothing, so re-bless deliberately and read the
-   diff.
+7. Peak RSS (`/usr/bin/time -v`, `scripts/gate-rss.sh`) on the same corpus
+   for the baseline default, the new default and the new `--overview all`.
+   FAIL when either new number is more than 32 MiB over the baseline default.
+   Fails closed: all three runs must exit 0 and report a numeric peak RSS, and
+   an absent `/usr/bin/time` (`GATE_TIME` overrides the path) is a FAIL, never
+   a PASS with no measurement. A failed run's stderr is kept as
+   `target/gate/rss-<label>.stderr`.
+8. Size (`scripts/gate-size.py`): stdout and stderr bytes and pinned-tokenizer
+   tokens (tiktoken `cl100k_base`, version recorded) per corpus at default
+   flags, against the reviewed baseline
+   `tests/fixtures/overview-size-baseline.json`. FAIL when any compared field
+   exceeds its baseline + max(128, 1%). Fails closed: no tokenizer, no
+   baseline file, a corpus absent from the baseline, a missing baseline field
+   or a non-zero exit from the measured run are FAILs naming the cause, never
+   skips. The 16 KiB bound is asserted on the run's actual, unmodified stdout
+   bytes. Only the *comparative* metric normalises the locator text that says
+   nothing about the overview — the report path, the run id and the reported
+   byte size become `<REPORT>`, `<RUN>` and `<SIZE>` — so the baseline does
+   not depend on the checkout path or the run. Each corpus also records its
+   own sha256 and the run's total/selected/printed/omitted/previewed counts,
+   and the baseline's sha256 is recorded, so a comparison identifies the
+   artifacts it was made against. `GATE_BLESS_SIZE=1` rewrites the baseline —
+   a number written by the run that is being judged proves nothing, so
+   re-bless deliberately and read the diff; it is never implied by an
+   ordinary run, and it refuses to write when the measurement had errors.
+   `scripts/gate-selftest.sh` drives both checks with stubs (missing
+   tokenizer, missing baseline, missing corpus, missing field, genuine growth,
+   over-16-KiB stdout, failed RSS run, RSS report with no number) and runs as
+   a precondition of every gate.
 9. Stdout ≤ 15 lines. `gate.json`:
 
 ```json
@@ -79,8 +96,13 @@ No target other than `make distill` reads an original corpus.
   "perf": {"cpu": 0, "instructions_base": 0, "instructions_new": 0,
            "spread_pct": 0.0, "delta_pct": 0.0, "threshold_pct": 1.0},
   "rss_kb": {"base_default": 0, "new_default": 0, "new_overview_all": 0, "allowance_kb": 32768},
-  "size": {"tokenizer": "tiktoken cl100k_base", "baseline": "overview-size-baseline.json",
-           "corpora_measured": 0, "corpora_baselined": 0, "over": []},
+  "size": {"tokenizer": {"name": "tiktoken", "encoding": "cl100k_base", "version": ""},
+           "baseline": "overview-size-baseline.json", "baseline_sha256": "",
+           "stdout_limit_bytes": 16384, "corpora_measured": 0, "corpora_baselined": 0,
+           "corpora": {"<name>": {"stdout_bytes": 0, "stderr_bytes": 0, "stdout_tokens": 0,
+                        "stderr_tokens": 0, "corpus_sha256": "", "total": 0, "selected": 0,
+                        "printed": 0, "omitted": 0, "previewed": 0}},
+           "errors": [], "over": []},
   "verdict": "PASS" }
 ```
 

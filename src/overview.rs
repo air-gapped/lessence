@@ -499,7 +499,7 @@ fn recipes(path: &Path) -> String {
         "recipes (the report is JSONL; none of these prints the whole file):\n  \
          top {RECIPE_ROWS} by count:   jq -r 'select(.type==\"group\")|\"\\(.count)\\t\\(.id)\\t\\(.normalized[0:120])\"' -- {p} | sort -rn | head -{RECIPE_ROWS}\n  \
          first {RECIPE_ROWS} singletons: jq -r 'select(.type==\"group\" and .count==1)|\"\\(.id)\\t\\(.normalized[0:120])\"' -- {p} | head -{RECIPE_ROWS}\n  \
-         (both stop at {RECIPE_ROWS} rows and preview 120 bytes; drop the head or the slice for the rest)\n  \
+         (both stop at {RECIPE_ROWS} rows and preview 120 characters; drop the head or the slice for the rest)\n  \
          what is missing:      jq 'select(.type==\"summary\")|{{completeness,degraded}}' -- {p}\n  \
          one group in full by id (potentially large: a full record can be arbitrarily long):\n                        jq 'select(.type==\"group\" and .id==ID)' -- {p}\n"
     )
