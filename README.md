@@ -143,8 +143,8 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Real-World Compression
 
 <!-- gen:compression:begin -->
-<!-- gen:compression:at e83272330 -->
-Measured on v0.6.1 (commit e83272330, 2026-09-19) by `scripts/readme-compression.sh`
+<!-- gen:compression:at 38b257496 -->
+Measured on v0.6.1 (commit 38b257496, binary sha256 efd61f653ed7…, 2026-09-19) by `scripts/readme-compression.sh`
 on production logs that are not distributable. Lines out is the full folded text;
 since 0.5.0 the message text and source line are part of an event's identity, so
 output is larger than older tables showed and hides less.
