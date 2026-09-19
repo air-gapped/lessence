@@ -28,9 +28,10 @@ make gate           # FAILS on exactly five things: a new ##CASE that also passe
 make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
                     # via the hidden dev flags `--distill --anonymize` (docs/distill.md):
                     # every shape, no repetition, values invented. BLESS=1 re-blesses golden
-make release-check  # the gate against the last tag's build + mutants on the diff
-                    # since the tag + make ci + the slow (wall-clock) test profile. Writes
-                    # target/gate/release.json (~20 min)
+make release-check  # the gate against the last PUBLISHED release's build (what users
+                    # run; RELEASE_BASE=vX.Y.Z overrides) + mutants on the diff since it
+                    # + make ci + the slow (wall-clock) test profile + the README
+                    # compression table's freshness. Writes target/gate/release.json (~20 min)
 cargo test --lib    # unit tests while iterating
 cargo test --test integration known_open_defects -- --ignored --nocapture   # ##TODO status
 cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture  # open anchor classes
@@ -42,6 +43,12 @@ make install        # to ~/.cargo/bin, keeping a copy of every build installed u
 Run `make gate` before committing anything under `src/`; the pre-commit hook
 checks that `gate.json` was produced for exactly the staged change. Run
 `make release-check` before a release. Nothing else is required per change.
+
+The only perf evidence for a release is the measurement against the last
+published release, produced by `make release-check` at handoff and stated
+in the handoff as the cumulative number. The per-commit gate compares each
+change to its parent and forgets it; a `gate.json` found anywhere else, in a
+worktree or from an earlier day, is scratch, not evidence.
 
 ## Architecture
 

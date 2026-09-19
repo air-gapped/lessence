@@ -15,9 +15,20 @@ cd "$ROOT"
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
 
-last_tag="$(git describe --tags --abbrev=0)"
+# The base is the last PUBLISHED release: what users actually run. A tag can
+# exist without a published release (v0.6.0 did), and comparing against it
+# hides what the upgrade costs. `gh` knows which releases are published;
+# RELEASE_BASE overrides; without gh the newest tag is used and said so.
+if [ -n "${RELEASE_BASE:-}" ]; then
+    last_tag="$RELEASE_BASE"
+elif published="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null)" && [ -n "$published" ]; then
+    last_tag="$published"
+else
+    last_tag="$(git describe --tags --abbrev=0)"
+    echo "WARNING: gh unavailable; comparing against the newest tag $last_tag, which may be unpublished" >&2
+fi
 
-echo "Running gate against $last_tag..." >&2
+echo "Running gate against $last_tag (last published release)..." >&2
 gate_status="PASS"
 # Vacuity is judged per commit by the pre-commit gate; against the tag it
 # is only a count (see gate.sh, lessence-km2).
