@@ -43,7 +43,7 @@ head_sha="$(git -C "$ROOT" rev-parse --short=9 HEAD)"
 # The numbers are stamped with HEAD, so the binary must be HEAD's: its --version
 # carries the commit it was built from, and the tree it was built from must be
 # clean where folding lives. A stale binary would label old output as this commit.
-built_from="$("$BIN" --version | sed -n 's/^lessence [^ ]* (\([0-9a-f]*\),.*$/\1/p')"
+built_from="$("$BIN" --version | sed -n 's/^lessence [^ ]* (\([0-9a-f]*\)\(-dirty\)\{0,1\},.*$/\1/p')"
 if [ "$built_from" != "$head_sha" ]; then
     echo "binary $BIN was built from ${built_from:-?}, HEAD is $head_sha: rebuild (cargo build --release) before measuring" >&2; exit 1
 fi
