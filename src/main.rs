@@ -60,6 +60,14 @@ fn main() -> Result<()> {
         std::process::exit(i32::from(moved > 0));
     }
 
+    // Nothing to fold: no file and a terminal on stdin. Waiting silently for
+    // input looks like a hang to a person and is one for an agent, so show
+    // the help instead. A pipe, a file, or an explicit `-` still folds.
+    if cli.files.is_empty() && io::stdin().is_terminal() {
+        cli::command().print_help()?;
+        return Ok(());
+    }
+
     // --distill / --anonymize write a log rather than a report, so they
     // reject the output-mode flags instead of ignoring them.
     let distilling = cli.distill || cli.anonymize || cli.anonymize_words.is_some();

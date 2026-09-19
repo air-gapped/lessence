@@ -129,3 +129,36 @@ fn test_help_human() {
     assert!(!text.contains("Usage:"), "{text}");
     assert!(!text.contains("AI agent"), "{text}");
 }
+
+/// `lessence` with nothing to read must not sit waiting on a terminal: a
+/// person sees a hang, an agent hangs its session. With a terminal on stdin
+/// and no file it prints the help and exits 0; a pipe still folds.
+#[test]
+fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
+    // python's pty module lends the child a pseudo-terminal on stdin; the
+    // parent's stdin is /dev/null so nothing ever arrives on it.
+    let output = Command::new("python3")
+        .args([
+            "-c",
+            "import pty, sys; sys.exit(pty.spawn([sys.argv[1]]) >> 8)",
+            env!("CARGO_BIN_EXE_lessence"),
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("python3 should exist");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{text}");
+    assert!(
+        text.contains("AI agent") && text.contains("Usage:"),
+        "{text}"
+    );
+
+    // a pipe is input, even an empty one: no help, an empty fold
+    let piped = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .arg("-q")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("lessence binary should exist");
+    assert!(piped.status.success());
+    assert!(!String::from_utf8_lossy(&piped.stdout).contains("Usage:"));
+}
