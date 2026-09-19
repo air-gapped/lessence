@@ -143,8 +143,8 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Real-World Compression
 
 <!-- gen:compression:begin -->
-<!-- gen:compression:at 89491314c -->
-Measured on v0.6.1 (commit 89491314c) on production logs that are not
+<!-- gen:compression:at b61c01142 -->
+Measured on v0.7.0 (commit b61c01142) on production logs that are not
 distributable. Since 0.5.0 the message text is part of an event's identity, so
 output is larger than in older tables and hides less.
 
