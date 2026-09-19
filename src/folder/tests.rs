@@ -6797,6 +6797,54 @@ fn framed_continuations_add_to_input_and_saved_line_totals() {
     assert_eq!(f.stats.lines_saved, 8);
 }
 
+/// The absorbed continuation lines are also kept apart from the total, so
+/// the record count (total minus absorbed) stays checkable: they accumulate
+/// by addition across reports, never by anything else.
+#[test]
+fn absorbed_continuation_lines_accumulate_apart_from_the_total() {
+    let mut f = make_folder_json();
+    let report = |n: usize| crate::ingest::IngestReport {
+        fail_pattern_matched: false,
+        overlong_lines_skipped: 0,
+        continuation_lines_absorbed: n,
+        max_lines_reached: false,
+        input_hash: None,
+    };
+    assert_eq!(f.stats.continuation_lines_absorbed, 0);
+    f.absorb_ingest_report(&report(3), 0);
+    assert_eq!(f.stats.continuation_lines_absorbed, 3);
+    f.absorb_ingest_report(&report(2), 0);
+    assert_eq!(f.stats.continuation_lines_absorbed, 5);
+    f.absorb_ingest_report(&report(0), 0);
+    assert_eq!(f.stats.continuation_lines_absorbed, 5);
+}
+
+/// The locator's `input:` field reads the same degraded codes the summary
+/// record carries: none for a clean run, the exact code names otherwise.
+#[test]
+fn input_degraded_codes_name_exactly_what_the_ingest_proved() {
+    let mut f = make_folder_json();
+    assert!(f.input_degraded_codes().is_empty());
+    f.absorb_ingest_report(
+        &crate::ingest::IngestReport {
+            fail_pattern_matched: false,
+            overlong_lines_skipped: 2,
+            continuation_lines_absorbed: 0,
+            max_lines_reached: true,
+            input_hash: None,
+        },
+        1,
+    );
+    assert_eq!(
+        f.input_degraded_codes(),
+        vec![
+            "input.overlong_lines_skipped",
+            "input.max_lines_reached",
+            "input.failed_sources"
+        ]
+    );
+}
+
 /// retain_evicted_group 2763: a retained group with more than one member
 /// keeps its last raw line, and the record shows it.
 #[test]
