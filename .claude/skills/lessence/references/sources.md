@@ -5,7 +5,7 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
-verified-at: c488beab0d18f7302bf07b671758b129e09a28af
+verified-at: 975a2aca07b5a89eda1fcafe0c5151dcf70d0fb5
 
 `verified-at` is the main commit this skill was last verified against. The
 release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
