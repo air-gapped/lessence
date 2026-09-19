@@ -712,6 +712,48 @@ mod tests {
     }
 
     #[test]
+    fn the_record_guard_is_sixteen_mebibytes() {
+        // The guard is the documented bound on a single record; an
+        // arithmetic slip here silently changes what the reader refuses.
+        assert_eq!(RECORD_GUARD, 16_777_216);
+    }
+
+    #[test]
+    fn a_capped_variation_without_a_kind_reads_as_a_lower_bound() {
+        let mut v = Variation {
+            distinct_count: 5,
+            distinct_count_kind: None,
+            samples: Vec::new(),
+            samples_complete: None,
+            capped: true,
+        };
+        assert_eq!(
+            v.count_text("host"),
+            "host>=5",
+            "a capped rollup is a floor"
+        );
+        v.distinct_count_kind = Some("lower_bound".into());
+        assert_eq!(v.count_text("host"), "host>=5");
+        v.distinct_count_kind = Some("exact".into());
+        assert_eq!(v.count_text("host"), "host=5");
+        v.distinct_count_kind = None;
+        v.capped = false;
+        assert_eq!(
+            v.count_text("host"),
+            "host~5 (kind unstated)",
+            "without a kind and without a cap the count is unstated"
+        );
+    }
+
+    #[test]
+    fn a_cut_lands_on_the_last_boundary_at_or_below_the_limit() {
+        // "ééé" is six bytes with boundaries at 0, 2, 4, 6. A limit of 3
+        // must walk back to 2, not to 1 or 0, and must not slice mid-char.
+        assert_eq!(cut("ééé", 3), ("é", true));
+        assert_eq!(cut("ééé", 6), ("ééé", false));
+    }
+
+    #[test]
     fn selection_takes_half_rarest_and_fills_with_the_most_frequent() {
         let (_d, path) = corpus(&[(0, 100), (1, 1), (2, 50), (3, 2), (4, 70)]);
         let pass = pass1(&path, 4).unwrap();

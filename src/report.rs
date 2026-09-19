@@ -380,6 +380,61 @@ mod tests {
     }
 
     #[test]
+    fn a_record_that_exactly_fills_the_quota_is_written() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut spool = Spool::create(tmp.path(), 11).unwrap();
+        spool
+            .write_record("0123456789")
+            .expect("10 bytes and a newline are exactly the quota");
+        assert_eq!(spool.bytes_written(), 11);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_run_directory_that_cannot_be_created_fails_on_the_first_attempt() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("locked");
+        fs::create_dir(&base).unwrap();
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o500)).unwrap();
+        let err = Spool::create(&base, DEFAULT_MAX_BYTES);
+        fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+        let Err(err) = err else {
+            eprintln!("skipping: this user can write into a 0500 directory");
+            return;
+        };
+        let err = err.to_string();
+        assert!(
+            err.starts_with("cannot create "),
+            "a permission error is reported as itself: {err}"
+        );
+        assert!(
+            !err.contains("8 attempts"),
+            "only an already-taken name is retried: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_backing_filesystem_is_not_described_as_memory() {
+        let probe = Path::new("/proc");
+        let Ok((_magic, "unknown")) = classify(probe) else {
+            eprintln!("skipping: /proc is not an unknown-magic filesystem here");
+            return;
+        };
+        let err = check_filesystem(probe, Placement::Automatic, false)
+            .expect_err("an unknown backing filesystem is rejected");
+        assert!(
+            err.to_string().contains("backing filesystem unknown"),
+            "{err}"
+        );
+        assert!(
+            !err.to_string().contains("which is memory"),
+            "only the memory magics are named as memory: {err}"
+        );
+    }
+
+    #[test]
     fn a_run_id_is_a_timestamp_and_eight_hex_digits() {
         let suffix = random_suffix().unwrap();
         assert_eq!(suffix.len(), 8, "{suffix}");

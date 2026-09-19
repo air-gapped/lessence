@@ -288,6 +288,27 @@ fn no_report_writes_nothing_and_streams_the_folded_text() {
 }
 
 #[test]
+fn a_non_empty_xdg_state_home_carries_the_default_report_directory() {
+    let tmp = tmpdir();
+    let run = bin()
+        .env_remove("LESSENCE_REPORT_DIR")
+        .env("XDG_STATE_HOME", tmp.path())
+        .args(["-q", fixture()])
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let reports = tmp.path().join("lessence/reports");
+    assert!(
+        report_file(&reports).is_file(),
+        "the default lands under $XDG_STATE_HOME/lessence/reports"
+    );
+}
+
+#[test]
 fn the_environment_directory_is_used_when_no_flag_gives_one() {
     let tmp = tmpdir();
     let nested = tmp.path().join("a/b");
@@ -567,8 +588,8 @@ fn a_write_failure_mid_spool_removes_the_partial_and_says_the_input_is_incomplet
     );
     assert!(err.contains("report removed"), "{err}");
     assert!(
-        err.contains("lessence briefing"),
-        "the briefing from RAM is still printed: {err}"
+        !err.contains("lessence briefing") && !err.contains("top templates"),
+        "an aborted ingest has no established template statistics to print: {err}"
     );
     assert_no_partial(tmp.path());
     assert_eq!(walk(tmp.path()), vec![log], "only the input log is left");

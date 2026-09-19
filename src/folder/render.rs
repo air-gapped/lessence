@@ -474,13 +474,17 @@ impl PatternFolder {
             .unwrap_or(("plain", 0));
         let mixed = format_total > 0 && (dominant_count as f64) < (format_total as f64) * 0.9;
 
-        // Every input line must be represented in the template map exactly
-        // once (by member count), unless the 8192-template cap was hit.
+        // Every input record must be represented in the template map exactly
+        // once (by member count), unless the 8192-template cap was hit. A
+        // continuation line `--frame-continuations` folded into the record
+        // above it is an input line but not a record of its own.
         debug_assert!(
             stats.template_counts.is_truncated()
-                || stats.template_counts.total_members() == total_lines,
-            "template_counts must account for every input line: {} != {total_lines}",
-            stats.template_counts.total_members()
+                || stats.template_counts.total_members()
+                    == total_lines - stats.continuation_lines_absorbed,
+            "template_counts must account for every input record: {} != {}",
+            stats.template_counts.total_members(),
+            total_lines - stats.continuation_lines_absorbed
         );
 
         let mut tokens: Vec<crate::briefing::TokenClass> = stats

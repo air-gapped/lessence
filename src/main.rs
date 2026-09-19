@@ -351,12 +351,11 @@ fn main() -> Result<()> {
             if let Some(spool) = spool.as_mut() {
                 spool.discard();
                 eprintln!("lessence: report: not written ({e})");
+                // No template statistics: the ingest stopped before EOF, so
+                // the counts a briefing rests on were never established.
                 eprintln!(
                     "lessence: briefing: input incomplete (aborted at line {lines_proved}), report removed"
                 );
-                if config.stats && !config.stats_json {
-                    folder.print_stats(&mut io::stderr())?;
-                }
                 std::process::exit(1);
             }
             return Err(e);

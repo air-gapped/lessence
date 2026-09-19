@@ -504,6 +504,9 @@ const RETAINED_TEMPLATE_CAP: usize = 16_384;
 #[derive(Debug, Default)]
 pub struct FoldingStats {
     pub total_lines: usize,
+    /// Physical lines `--frame-continuations` merged into a record above them:
+    /// counted in `total_lines`, never a template member of their own.
+    pub continuation_lines_absorbed: usize,
     pub output_lines: usize, // Actual compressed output lines (excluding summary)
     pub collapsed_groups: usize,
     pub lines_saved: usize,
@@ -2285,6 +2288,7 @@ impl PatternFolder {
         // records of their own. Without this the input size and the
         // compression ratio both understate what was processed.
         self.stats.total_lines += report.continuation_lines_absorbed;
+        self.stats.continuation_lines_absorbed += report.continuation_lines_absorbed;
         // They are also lines the reader never has to look at, so they count
         // as saved too — otherwise the ratio would report framing as pure
         // input growth with no benefit.

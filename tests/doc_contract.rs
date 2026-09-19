@@ -400,8 +400,20 @@ fn readme_doc_links_exist() {
             .current_dir(repo_path(""))
             .output()
             .expect("failed to run git");
+        // cargo-mutants tests a copy of the tree without .git; there, "committed"
+        // cannot be asked, so the link is checked for existence instead.
+        let in_git = Command::new("git")
+            .args(["rev-parse", "--is-inside-work-tree"])
+            .current_dir(repo_path(""))
+            .output()
+            .is_ok_and(|o| o.status.success());
+        let ok = if in_git {
+            status.status.success()
+        } else {
+            repo_path(path).exists()
+        };
         assert!(
-            status.status.success(),
+            ok,
             "README links to {path} which is not committed — broken on crates.io, \
              where the README is frozen at the tag"
         );
