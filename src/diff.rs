@@ -172,6 +172,42 @@ mod tests {
     mod process {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
+        use std::sync::{Mutex, MutexGuard};
+
+        // These tests write a script and then execute it. A sibling test thread that forks a
+        // child in between hands that child the still-open write descriptor until its exec,
+        // and the script then fails with "text file busy". One at a time removes the race.
+        static SERIAL: Mutex<()> = Mutex::new(());
+
+        fn serial() -> MutexGuard<'static, ()> {
+            SERIAL
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+
+        /// The fork-to-exec window of any child spawned by another test thread can leave the
+        /// script's write descriptor open; exec then fails with "text file busy". Retry it.
+        fn retrying<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
+            let mut last = f();
+            for _ in 0..20 {
+                match &last {
+                    Err(e) if format!("{e:#}").contains("Text file busy") => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        last = f();
+                    }
+                    _ => break,
+                }
+            }
+            last
+        }
+
+        fn fold(bin: &Path, files: &[PathBuf], threads: &str) -> Result<Fold> {
+            retrying(|| Fold::run(bin, files, threads))
+        }
+
+        fn cmp(old: &Path, new: &Path, files: &[PathBuf], threads: &str) -> Result<usize> {
+            retrying(|| run(old, new, files, threads))
+        }
 
         fn binary(dir: &Path, body: &str) -> PathBuf {
             let path = dir.join("other-lessence");
@@ -182,6 +218,7 @@ mod tests {
 
         #[test]
         fn fold_runs_with_explicit_arguments_and_keeps_source_identity() {
+            let _serial = serial();
             let dir = tempfile::tempdir().unwrap();
             let bin = binary(
                 dir.path(),
@@ -195,7 +232,7 @@ cat <<'JSON'
 {"type":"summary","input_lines":6}
 JSON"#,
             );
-            let fold = Fold::run(&bin, &["first.log".into(), "second log".into()], "3")
+            let fold = fold(&bin, &["first.log".into(), "second log".into()], "3")
                 .expect("the child receives separate filename arguments");
             assert_eq!(fold.groups.len(), 3);
             let first = &fold.groups[&(Some("first.log".into()), 1)];
@@ -206,8 +243,9 @@ JSON"#,
 
         #[test]
         fn fold_reports_launch_exit_and_record_errors() {
+            let _serial = serial();
             let dir = tempfile::tempdir().unwrap();
-            let missing = Fold::run(&dir.path().join("missing"), &[], "1")
+            let missing = fold(&dir.path().join("missing"), &[], "1")
                 .err()
                 .expect("missing binary must fail");
             assert!(missing.to_string().contains("could not run"));
@@ -217,7 +255,7 @@ JSON"#,
                 ("echo not-json", "unparseable group record"),
             ] {
                 let bin = binary(dir.path(), body);
-                let error = Fold::run(&bin, &[], "1").err().expect("must fail");
+                let error = fold(&bin, &[], "1").err().expect("must fail");
                 assert!(error.to_string().contains(expected), "{error:#}");
                 assert!(error.to_string().contains("other-lessence"), "{error:#}");
             }
@@ -225,6 +263,7 @@ JSON"#,
 
         #[test]
         fn comparison_counts_joins_splits_and_resizes_but_not_unchanged_groups() {
+            let _serial = serial();
             let old_dir = tempfile::tempdir().unwrap();
             let new_dir = tempfile::tempdir().unwrap();
             let old = binary(
@@ -243,12 +282,13 @@ JSON"#,
 {"count":1,"first":{"line_no":6},"last":{"line_no":6}}
 JSON"#,
             );
-            assert_eq!(run(&old, &new, &[], "1").unwrap(), 3);
-            assert_eq!(run(&new, &new, &[], "1").unwrap(), 0);
+            assert_eq!(cmp(&old, &new, &[], "1").unwrap(), 3);
+            assert_eq!(cmp(&new, &new, &[], "1").unwrap(), 0);
         }
 
         #[test]
         fn comparison_distinguishes_sources_and_propagates_child_failure() {
+            let _serial = serial();
             let old_dir = tempfile::tempdir().unwrap();
             let new_dir = tempfile::tempdir().unwrap();
             let old = binary(
@@ -259,10 +299,10 @@ JSON"#,
                 new_dir.path(),
                 r#"echo '{"count":1,"first":{"source":"new.log","line_no":1},"last":{"line_no":1}}'"#,
             );
-            assert_eq!(run(&old, &new, &[], "1").unwrap(), 2);
+            assert_eq!(cmp(&old, &new, &[], "1").unwrap(), 2);
             let bad = binary(new_dir.path(), "echo 'cannot fold' >&2; exit 7");
             for (before, after) in [(&old, &bad), (&bad, &old)] {
-                let error = run(before, after, &[], "1").unwrap_err();
+                let error = cmp(before, after, &[], "1").unwrap_err();
                 assert!(error.to_string().contains("cannot fold"), "{error:#}");
             }
         }

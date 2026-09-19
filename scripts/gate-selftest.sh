@@ -90,6 +90,32 @@ out="$(size "$grown" | over_of)"
 check "growth fails, names the corpus" '"corpus": "tiny"' "$out"
 check "growth fails, names the field" '"field": "stdout_bytes"' "$out"
 
+# 5b. A baseline made with another tokenizer is not the pinned comparison.
+retok="$WORK/retok.json"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["tokenizer"]["version"] = "0.0.0-other"
+json.dump(d, open(sys.argv[2], "w"))
+' "$base" "$retok"
+out="$(size "$retok" | errors_of)"
+check "changed tokenizer identity fails" "tokenizer identity differs from the baseline" "$out"
+
+# 5c. A corpus whose bytes changed under the same name is not the baselined corpus.
+redig="$WORK/redig.json"
+python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["corpora"]["tiny"]["corpus_sha256"] = "0" * 64
+json.dump(d, open(sys.argv[2], "w"))
+' "$base" "$redig"
+out="$(size "$redig" | errors_of)"
+check "changed corpus digest fails" "corpus tiny changed since the baseline" "$out"
+
+# 5d. A corpus in the baseline that was not measured is a missing inventory item.
+out="$(python3 "$ROOT/scripts/gate-size.py" "$stub_bin" "$base" "" | errors_of)"
+check "unmeasured baselined corpus fails" "corpus tiny is in the baseline but was not measured" "$out"
+
 # 6. A non-zero exit from the measured binary is an error, never a number.
 out="$(STUB_EXIT=3 size "$base" | errors_of)"
 check "a failed run is an error" "exited 3" "$out"

@@ -3,7 +3,9 @@
 against the reviewed baseline in tests/fixtures, plus max(128, 1%).
 
 Fails closed. A missing tokenizer, a missing baseline file, a corpus absent
-from the baseline, or a missing field in a baseline entry is an error, never
+from the baseline, a missing field in a baseline entry, a tokenizer that is not the
+baseline's (name, encoding, version), or a corpus whose bytes differ from the
+baseline's digest is an error, never
 a skip. Creating the baseline is a separate, explicit operation (`bless`),
 never implied by an ordinary run.
 
@@ -73,9 +75,12 @@ def main(argv):
 
     baseline = {}
     baseline_sha = None
+    baseline_tokenizer = None
     if os.path.exists(baseline_path):
         baseline_sha = sha256_file(baseline_path)
-        baseline = json.load(open(baseline_path)).get("corpora", {})
+        loaded = json.load(open(baseline_path))
+        baseline = loaded.get("corpora", {})
+        baseline_tokenizer = loaded.get("tokenizer")
     elif not bless:
         errors.append(
             "baseline %s does not exist — create it explicitly with GATE_BLESS_SIZE=1"
@@ -133,6 +138,20 @@ def main(argv):
 
     over = []
     if not bless:
+        # The comparison is only the pinned one if the tokenizer that produced the
+        # baseline and the corpora it measured are the ones in front of us now.
+        refresh = "a reviewed baseline refresh (GATE_BLESS_SIZE=1) is required"
+        if baseline and tokenizer is not None:
+            if baseline_tokenizer != tokenizer:
+                errors.append(
+                    "tokenizer identity differs from the baseline: baseline %s, now %s; %s"
+                    % (json.dumps(baseline_tokenizer), json.dumps(tokenizer), refresh)
+                )
+        if baseline:
+            for name in sorted(set(baseline) - set(measured)):
+                errors.append(
+                    "corpus %s is in the baseline but was not measured; %s" % (name, refresh)
+                )
         for name, now in sorted(measured.items()):
             was = baseline.get(name)
             if not was:
@@ -141,6 +160,12 @@ def main(argv):
             for field in REQUIRED:
                 if was.get(field) is None:
                     errors.append("baseline %s is missing field %s" % (name, field))
+            if was.get("corpus_sha256") is not None and was["corpus_sha256"] != now["corpus_sha256"]:
+                errors.append(
+                    "corpus %s changed since the baseline (sha256 %s -> %s); %s"
+                    % (name, was["corpus_sha256"][:12], now["corpus_sha256"][:12], refresh)
+                )
+                continue
             for field in COMPARED:
                 old, value = was.get(field), now.get(field)
                 if old is None:
