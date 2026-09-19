@@ -132,7 +132,12 @@ fn render_flags() -> String {
                 .get_value_names()
                 .and_then(|v| v.first().map(std::string::ToString::to_string))
                 .unwrap_or_else(|| arg.get_id().as_str().to_uppercase());
-            line.push_str(&format!(" <{value_name}>"));
+            let optional = arg.get_num_args().is_some_and(|r| r.min_values() == 0);
+            if optional {
+                line.push_str(&format!(" [{value_name}]"));
+            } else {
+                line.push_str(&format!(" <{value_name}>"));
+            }
         }
         let help = arg
             .get_help()

@@ -68,37 +68,45 @@ fn skill_unknown_topic_exits_2_and_names_the_topics() {
     assert!(err.contains("skill, flags"), "{err}");
 }
 
+/// Run lessence with `args` on `input` and parse every stdout line as JSON.
+fn jsonl(args: &[&str], input: &[u8]) -> Vec<serde_json::Value> {
+    use std::io::Write;
+    let out = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            c.stdin.take().unwrap().write_all(input)?;
+            c.wait_with_output()
+        })
+        .expect("run lessence");
+    assert!(
+        out.status.success(),
+        "{args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{args:?}: {e}: {l}")))
+        .collect()
+}
+
 #[test]
 fn json_is_the_same_as_format_json() {
-    let input = "alpha one\nalpha two\nalpha three\nalpha four\n";
-    let with_flag = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--json", "-q"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .and_then(|mut c| {
-            use std::io::Write;
-            c.stdin.take().unwrap().write_all(input.as_bytes())?;
-            c.wait_with_output()
-        })
-        .unwrap();
-    let with_format = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--format", "json", "-q"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-        .and_then(|mut c| {
-            use std::io::Write;
-            c.stdin.take().unwrap().write_all(input.as_bytes())?;
-            c.wait_with_output()
-        })
-        .unwrap();
-    let a = String::from_utf8_lossy(&with_flag.stdout);
-    let b = String::from_utf8_lossy(&with_format.stdout);
-    assert!(a.trim_end().ends_with('}'), "{a}");
-    // identical modulo elapsed_ms
-    let strip = |s: &str| s.replace(|c: char| c.is_ascii_digit(), "");
-    assert_eq!(strip(&a), strip(&b));
+    let input = b"alpha one\nalpha two\nalpha three\nalpha four\nbeta\n";
+    let mut a = jsonl(&["--json", "-q"], input);
+    let mut b = jsonl(&["--format", "json", "-q"], input);
+    assert!(a.len() >= 2, "{a:?}");
+    // the only field that legitimately differs between two runs
+    for records in [&mut a, &mut b] {
+        let last = records.last_mut().unwrap();
+        assert_eq!(last["type"], "summary", "{last}");
+        last.as_object_mut().unwrap().remove("elapsed_ms");
+    }
+    assert_eq!(a, b);
 }
 
 #[test]
@@ -122,36 +130,20 @@ fn json_conflicts_with_an_explicit_format_and_with_distill() {
 
 #[test]
 fn json_works_with_summary_top_and_explain() {
+    let input = b"alpha one\nalpha two\nalpha three\nbeta\n";
     for args in [
         &["--json", "--summary", "-q"][..],
         &["--json", "--top", "2", "-q"][..],
         &["--json", "--explain", "-q"][..],
     ] {
-        let out = Command::new(env!("CARGO_BIN_EXE_lessence"))
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .and_then(|mut c| {
-                use std::io::Write;
-                c.stdin
-                    .take()
-                    .unwrap()
-                    .write_all(b"alpha one\nalpha two\nalpha three\nbeta\n")?;
-                c.wait_with_output()
-            })
-            .unwrap();
+        let records = jsonl(args, input);
+        assert!(records.len() >= 2, "{args:?}: {records:?}");
+        assert_eq!(records.last().unwrap()["type"], "summary", "{args:?}");
         assert!(
-            out.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        let text = String::from_utf8_lossy(&out.stdout);
-        let last = text.lines().last().unwrap_or("");
-        assert!(
-            last.starts_with('{') && last.ends_with('}'),
-            "{args:?}: {last}"
+            records[..records.len() - 1]
+                .iter()
+                .all(|r| r["type"].is_string()),
+            "{args:?}: {records:?}"
         );
     }
 }
