@@ -3,7 +3,9 @@ use std::process::{Command, Stdio};
 
 fn lessence_bin() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_lessence"));
-    cmd.arg("--no-stats");
+    // Every case here asserts the streamed text of a run that saves no
+    // report; the saved-report default is covered by tests/integration/test_report.rs.
+    cmd.args(["--no-stats", "--no-report"]);
     cmd
 }
 

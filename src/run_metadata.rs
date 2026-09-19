@@ -66,6 +66,20 @@ impl InputFacts {
         };
         self.recorded = true;
     }
+    /// The degraded codes this run proved, in the same order and spelling
+    /// the summary record's `degraded` array uses. The report locator names
+    /// them so stdout and the file agree on what the input was.
+    pub(crate) fn degraded_codes(&self) -> Vec<&'static str> {
+        [
+            (self.skipped != 0, "input.overlong_lines_skipped"),
+            (self.limited, "input.max_lines_reached"),
+            (self.failed != 0, "input.failed_sources"),
+        ]
+        .into_iter()
+        .filter_map(|(yes, code)| yes.then_some(code))
+        .collect()
+    }
+
     pub(crate) fn completeness(&self, processed_lines: usize) -> InputCompleteness {
         InputCompleteness {
             complete: self.skipped == 0 && !self.limited && self.failed == 0,

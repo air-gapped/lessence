@@ -115,6 +115,8 @@ Are you an AI agent? Use these ONLY IF your task specifically asks you to.
   Flag reference for agents:   lessence --skill flags
   Machine-readable output:     --format json (or --json); --explain says why lines fold or split
   Orientation before folding:  --preflight
+  The default run saves the complete folded JSON report to a file and prints a bounded
+  overview with that path; --no-report for `tail -f` or any source without an EOF
 Humans: lessence --help-human";
 
 /// `--help-human`: the short help for a person at a terminal. The full
@@ -127,7 +129,11 @@ lessence folds a repetitive log into its distinct events with counts, and keeps 
   lessence --fit app.log             one-screen overview, no scrolling
   lessence -q app.log                fold without the briefing
 
-Nothing is dropped silently: every line lessence leaves out is declared in its output.
+A run saves its full report to a file and prints a short overview naming that path; the
+report directory grows until you delete it, and `--no-report` turns the whole thing off.
+
+Nothing is dropped silently: the report holds every group, and everything the overview
+leaves off the screen is declared in its own output.
 
 README and examples:  https://github.com/air-gapped/lessence
 Full reference:       lessence --help   (written for coding agents; its option list is complete
@@ -216,6 +222,33 @@ pub struct Cli {
     #[arg(long, help_heading = "Output")]
     pub preserve_color: bool,
 
+    /// Where the default run saves its report (default:
+    /// $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else
+    /// ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex
+    /// directory per run; the directory grows until you delete it
+    #[arg(long, value_name = "DIR", help_heading = "Output")]
+    pub report_dir: Option<PathBuf>,
+
+    /// Per-run cap on the report file (default 1G, supports K/M/G). Nothing
+    /// bounds accumulated disk use across runs
+    #[arg(long, value_name = "N", value_parser = crate::config::parse_size_suffix, help_heading = "Output")]
+    pub report_max_bytes: Option<usize>,
+
+    /// Do not save a report: stream today's folded text to stdout and the
+    /// briefing to stderr. Use this for `tail -f` and any live source — a
+    /// source that never reaches EOF never gets a report
+    #[arg(long, help_heading = "Output")]
+    pub no_report: bool,
+
+    /// Groups to show in the stdout overview: N (default 40, max 10000), 0
+    /// for none, or `all` for every group with no byte budget
+    #[arg(long, value_name = "N|all", help_heading = "Output")]
+    pub overview: Option<String>,
+
+    /// Byte budget for the whole stdout overview (default 16384)
+    #[arg(long, value_name = "B", help_heading = "Output")]
+    pub overview_bytes: Option<usize>,
+
     // ---- Limits and safety ----
     /// Enable PII sanitization (mask email addresses and sensitive data, default: disabled)
     #[arg(long, help_heading = "Limits and safety")]
@@ -282,7 +315,99 @@ pub struct Cli {
     pub files: Vec<PathBuf>,
 }
 
+/// What the default text run does about its report, settled at the CLI
+/// boundary so `main` only dispatches.
+pub enum ReportPlan {
+    /// `--no-report`, or any mode other than the default text run: today's
+    /// streamed text and today's stderr briefing.
+    Off,
+    On(ReportSettings),
+}
+
+pub struct ReportSettings {
+    pub dir: Option<PathBuf>,
+    pub max_bytes: Option<usize>,
+    pub entries: crate::overview::Entries,
+    pub budget: usize,
+}
+
 impl Cli {
+    /// The report flags belong to the default text run and nothing else. No
+    /// flag is silently ignored: every combination outside the table in the
+    /// contract is a usage error naming the flags involved.
+    ///
+    /// `text_default` is the caller's mode decision: no `--format` other
+    /// than text, and none of the alternate output or dev modes.
+    pub fn report_plan(&self, text_default: bool) -> Result<ReportPlan, String> {
+        use crate::overview::{DEFAULT_BYTES, DEFAULT_ENTRIES, Entries, MAX_ENTRIES};
+
+        let named: Vec<&str> = [
+            (self.report_dir.is_some(), "--report-dir"),
+            (self.report_max_bytes.is_some(), "--report-max-bytes"),
+            (self.overview.is_some(), "--overview"),
+            (self.overview_bytes.is_some(), "--overview-bytes"),
+        ]
+        .into_iter()
+        .filter_map(|(hit, name)| hit.then_some(name))
+        .collect();
+
+        if !text_default {
+            if let Some(flag) = named.first() {
+                return Err(format!(
+                    "{flag} applies to the default text run only; it has no meaning with this output mode"
+                ));
+            }
+            if self.no_report {
+                return Err(
+                    "--no-report applies to the default text run only; this output mode never writes a report"
+                        .to_string(),
+                );
+            }
+            return Ok(ReportPlan::Off);
+        }
+
+        if self.no_report {
+            if let Some(flag) = named.first() {
+                return Err(format!(
+                    "--no-report writes no report; {flag} cannot be combined with it"
+                ));
+            }
+            return Ok(ReportPlan::Off);
+        }
+
+        let entries = match self.overview.as_deref() {
+            None => Entries::Count(DEFAULT_ENTRIES),
+            Some("all") => Entries::All,
+            Some(raw) => {
+                let n: usize = raw.parse().map_err(|_| {
+                    format!(
+                        "--overview takes a whole number 0..={MAX_ENTRIES} or 'all', not '{raw}'"
+                    )
+                })?;
+                if n > MAX_ENTRIES {
+                    return Err(format!(
+                        "--overview {n} is above the maximum of {MAX_ENTRIES}"
+                    ));
+                }
+                Entries::Count(n)
+            }
+        };
+
+        if entries == Entries::All && self.overview_bytes.is_some() {
+            return Err(
+                "--overview all has no byte budget; drop --overview-bytes or pick --overview N"
+                    .to_string(),
+            );
+        }
+
+        Ok(ReportPlan::On(ReportSettings {
+            dir: self.report_dir.clone(),
+            max_bytes: self.report_max_bytes,
+            entries,
+            budget: self.overview_bytes.unwrap_or(DEFAULT_BYTES),
+        }))
+    }
+
     /// `--distill` / `--anonymize` write a log, not a report. Every
     /// output-mode flag would be silently ignored, so a run that asks for
     /// both is a usage error naming the pair.

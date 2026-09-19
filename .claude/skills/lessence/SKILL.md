@@ -14,8 +14,8 @@ when_to_use: >-
   when looking at kubectl logs, docker logs, journalctl output, CI failures,
   crash-looping pods, test failures, or anything not normal in log output.
   When tempted to tail -N, head -N, or sample a log over ~200 lines to keep
-  output small: lessence -q is usually smaller than tail -200 and contains
-  every unique line, and its output already reports line counts, level
+  output small: lessence -q is usually smaller than tail -200, its saved
+  report holds every unique line, and its output already reports line counts, level
   distribution and per-pattern time ranges (the briefing) — no wc/head/tail recon pass needed. Pipe logs through lessence
   FIRST — before reading them raw. Does NOT trigger for short output (under
   ~50 lines), live following (tail -f), or when the task is ONLY a
@@ -55,7 +55,7 @@ Use the right tool for the job:
 | Need to understand the shape of failures | `lessence` | Shows frequency distribution across error types |
 | Only the latest events matter (problem is live right now) | `tail -N` | Recency is the filter — legitimate tail |
 | Failure location in the file unknown | `lessence -q` | Root cause is rarely in the last N lines |
-| Tempted to tail/head/sample "to save context" | `lessence -q` | Usually fewer lines than `tail -200`, zero blind spots |
+| Tempted to tail/head/sample "to save context" | `lessence -q` | Usually fewer lines than `tail -200`; the report keeps every group and the overview declares what it left out |
 | Huge output, unknown number of problems | `lessence` then `grep` on compressed output | Compress first, then drill in |
 | Comparing two log periods | `lessence --essence` + `diff` | Strips timestamps for structural comparison |
 
@@ -91,23 +91,53 @@ lessence --preflight < app.log        # orientation briefing as JSON (no folded 
 lessence --stats-json < app.log       # machine-readable stats on stderr
 lessence --summary < app.log          # compact one-line-per-pattern overview (caps at 30, use --top N to adjust)
 
+# The default run: complete report on disk, bounded overview on stdout
+lessence app.log                      # overview on stdout; the head locator names the report file
+lessence --overview all app.log       # every group, no byte budget
+lessence --no-report app.log          # no file: stream the folded text, as before (use for `tail -f`)
+
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
 lessence --top 10 < app.log           # top 10 most frequent patterns
-lessence -q < app.log                 # suppress the briefing (it goes to stderr — stdout is always pipe-clean)
+lessence -q < app.log                 # drop the briefing block (in --no-report runs it is a stderr footer)
 lessence --frame-continuations < app.log   # a stack trace folds as one event, not one group per frame
 lessence --sanitize host:pseudonym,ip < app.log   # mask hosts and IPs; pseudonym tags keep folding (references/flags.md)
 ```
 
 ## Reading the Output
 
+### The saved report and the overview (default runs)
+
+A default run writes the complete folded JSON of the run — the same schema-1
+records `--format json` emits — to `report.jsonl` in a fresh run directory, and
+prints a byte-bounded overview of it on stdout (16 KiB by default). Nothing is
+lost: the report is complete, stdout is bounded and says so.
+
+```
+report: ~/.local/state/lessence/reports/run-20260919-161814-f1362b46/report.jsonl  file: complete  input: complete  run: run-…  size: 673464 bytes  groups: 254 total, 40 selected, 15 printed, 239 omitted
+```
+
+That head locator is the first line and repeats as the last line, so a
+truncated capture keeps one of them. `printed < selected` means the byte
+budget stopped the entries early — the report still has every group. The four
+jq recipes at the end query the file by group id; none of them cats it.
+
+`--overview all` prints every group with no budget and no preview cuts.
+`--overview 0` prints the locators and recipes only. `--no-report` turns the
+whole thing off and streams the folded text as before — **use it for `tail -f`
+or any source that never reaches EOF**, since the report needs input EOF.
+The report directory is never pruned: it grows until you delete it.
+See references/flags.md for `--report-dir`, `--report-max-bytes` and the rest.
+
 ### The briefing (read this first, every time)
 
 Every run — text mode, `--explain`, `--preflight` — starts by orienting you
-before you decide what to run next. In text mode it's a stderr footer after
-the folded output; `--preflight` prints the same facts as its entire JSON
-document; `--explain`'s summary record carries it as `briefing`. `-q`
-silences only the stderr rendering, never the JSON.
+before you decide what to run next. In a default run it is the first block of
+the stdout overview; under `--no-report` it is a stderr footer after the folded
+output; `--preflight` prints the same facts as its entire JSON document;
+`--explain`'s summary record carries it as `briefing`. `-q` drops that rendered
+block — on stdout in a default run, on stderr under `--no-report` — and never
+touches the JSON.
 
 ```
 --- lessence briefing: kubelet.log (4,092 lines)

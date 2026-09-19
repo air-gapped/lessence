@@ -5,7 +5,7 @@ use std::str;
 fn test_microservices_compression_improvement() {
     // Test compression on microservices.log
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--no-stats"])
+        .args(["--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/microservices.log")
                 .expect("microservices.log not found"),
@@ -44,7 +44,7 @@ fn test_microservices_baseline_without_new_patterns() {
     // Used for comparison to validate improvement
 
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--no-stats"])
+        .args(["--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/microservices.log")
                 .expect("microservices.log not found"),

@@ -7,7 +7,7 @@ fn test_text_format_default() {
 
     // Test with default format (no --format flag)
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--no-stats"])
+        .args(["--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
                 .expect("nginx_sample.log not found"),
@@ -44,7 +44,7 @@ fn test_text_format_default() {
 
     // Test explicit --format text flag produces same result
     let explicit_output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["--format", "text", "--no-stats"])
+        .args(["--format", "text", "--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
                 .expect("nginx_sample.log not found"),

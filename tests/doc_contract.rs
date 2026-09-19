@@ -216,7 +216,7 @@ fn readme_pattern_names() {
 fn readme_headline_example() {
     let fixture = repo_path("tests/fixtures/kubelet_2k.log");
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["-q"])
+        .args(["-q", "--no-report"])
         .arg(&fixture)
         .output()
         .expect("failed to run lessence");
@@ -232,7 +232,7 @@ fn readme_headline_example() {
     let out_count = out_lines.len();
     let reduction = (1.0 - out_count as f64 / in_count as f64) * 100.0;
 
-    let mut block = String::from("$ lessence kubelet.log\n\n");
+    let mut block = String::from("$ lessence --no-report kubelet.log\n\n");
     for line in out_lines.iter().take(6) {
         block.push_str(line);
         block.push('\n');

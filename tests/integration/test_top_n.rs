@@ -101,7 +101,11 @@ fn test_top_n_larger_than_groups_shows_all() {
 fn test_without_top_output_unchanged() {
     // Without --top, output should be chronological (no [Nx] prefixes)
     let output = lessence_bin()
-        .args(["--no-stats", "tests/fixtures/nginx_sample.log"])
+        .args([
+            "--no-stats",
+            "--no-report",
+            "tests/fixtures/nginx_sample.log",
+        ])
         .output()
         .expect("Failed to run");
 

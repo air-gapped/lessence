@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 fn run_lessence_file(temp_file: &NamedTempFile) -> String {
     let file = std::fs::File::open(temp_file.path()).expect("Failed to open temp file");
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .arg("--no-stats")
+        .args(["--no-stats", "--no-report"])
         .stdin(file)
         .output()
         .expect("Failed to execute lessence");
@@ -15,8 +15,20 @@ fn run_lessence_file(temp_file: &NamedTempFile) -> String {
 
 /// Helper: run lessence with args, piping input string via stdin.
 fn run_lessence_stdin(args: &[&str], input: &str) -> String {
+    // The report flags belong to the default text run; a case that selects
+    // another mode must not be given --no-report. These tests assert the
+    // streamed text of a run that saves no report.
+    let mut args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+    if !args.iter().any(|a| {
+        matches!(
+            a.as_str(),
+            "--format" | "--json" | "--summary" | "--top" | "--fit" | "--preflight" | "--explain"
+        )
+    }) {
+        args.push("--no-report".to_string());
+    }
     let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(args)
+        .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

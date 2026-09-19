@@ -3066,6 +3066,12 @@ impl PatternFolder {
     pub fn get_stats(&self) -> &FoldingStats {
         &self.stats
     }
+
+    /// The degraded codes this run proved, for the report locator's
+    /// `input:` field. Same source of truth as the summary record.
+    pub fn input_degraded_codes(&self) -> Vec<&'static str> {
+        self.input_facts.degraded_codes()
+    }
 }
 
 // Keep the rounding and bounds clamp together: at large n, floating-point

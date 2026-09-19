@@ -7,6 +7,14 @@ summary record. This is the canonical format for programmatic
 consumption — agents, automation, CI pipelines — and is the reason
 the structured-folding-output feature exists.
 
+This same schema-1 stream is what a **default run saves to
+`report.jsonl`** (see `src/report.rs`): the report is produced by this
+renderer with the same options, so the report's records and its summary
+are the records `--format json` would have printed, byte for byte, except
+`elapsed_ms`. `tests/integration/test_report.rs` asserts that equality on
+every distilled corpus. Nothing here changes when a run saves a report —
+the schema, the record order and the version are the same.
+
 ## Why JSONL
 
 - **Streaming-friendly.** Consumers can parse records as they arrive

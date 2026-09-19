@@ -173,6 +173,19 @@ fn run(case: &Case, threads: &str) -> Run {
         args.push("--format".into());
         args.push("json".into());
     }
+    // A ##CASE asserts the folded text of the run itself. The saved-report
+    // default would replace that text with a bounded overview of a file, so
+    // a text-mode case runs with --no-report; the report path has its own
+    // tests in tests/integration/test_report.rs.
+    if !args.iter().any(|f| {
+        matches!(
+            f.as_str(),
+            "--format" | "--json" | "--summary" | "--top" | "--fit" | "--preflight" | "--explain"
+        )
+    }) || args.iter().any(|f| f == "text")
+    {
+        args.push("--no-report".into());
+    }
 
     let mut child = Command::new(&*BIN)
         .args(&args)

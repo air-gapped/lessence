@@ -92,6 +92,7 @@ fn test_stats_json_suppresses_human_readable_stats() {
 #[test]
 fn test_human_stats_footer_goes_to_stderr_not_stdout() {
     let mut child = lessence_bin()
+        .arg("--no-report")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

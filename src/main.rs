@@ -96,6 +96,31 @@ fn main() -> Result<()> {
         std::process::exit(2);
     }
 
+    // The default text run — no --format other than text and none of the
+    // alternate output or dev modes — is the only run that saves a report.
+    // Every report flag outside it is a usage error, never silently ignored.
+    let text_default = format == "text"
+        && !cli.summary
+        && cli.top.is_none()
+        && !cli.fit
+        && !cli.preflight
+        && !cli.explain
+        && !distilling;
+    let report_plan = match cli.report_plan(text_default) {
+        Ok(plan) => plan,
+        Err(e) => {
+            eprintln!("lessence: {e}");
+            std::process::exit(2);
+        }
+    };
+    // The report is the schema-1 JSON stream of this run, produced by the
+    // same renderer as --format json with the same options — that is what
+    // makes inventory, representative and metadata parity hold by
+    // construction rather than by a second implementation.
+    if matches!(report_plan, cli::ReportPlan::On(_)) {
+        format = "json".to_string();
+    }
+
     let requested_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
     let json_summary = requested_summary && matches!(format.as_str(), "json" | "jsonl");
     let json_summary_default_cap = json_summary && cli.top.is_none();
@@ -252,11 +277,31 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Open the report before a single line is read: a directory or file
+    // failure here leaves nothing on disk and ends the run.
+    let mut spool = match &report_plan {
+        cli::ReportPlan::Off => None,
+        cli::ReportPlan::On(settings) => match open_spool(settings) {
+            Ok(spool) => Some(spool),
+            Err(e) => {
+                eprintln!(
+                    "lessence: report: not written ({e})\n\
+                     lessence: pass --report-dir DIR to choose another location, or --no-report to \
+                     fold without saving one"
+                );
+                std::process::exit(1);
+            }
+        },
+    };
+
     let mut stdout = io::stdout();
     // Provenance handle for the input currently yielding lines; only the
     // JSON path pays the source-registration cost.
     let mut current_source_id = None;
-    let ingest_report = ingestor.run(readers, |event| {
+    // The last line the ingest actually proved, for the truthful `input:
+    // incomplete (aborted at line N)` state when the spool fails mid-run.
+    let mut lines_proved = 0usize;
+    let ingest_result = ingestor.run(readers, |event| {
         match event {
             Event::BeginInput { source } => {
                 // Registered unconditionally, not just in JSON mode: the
@@ -266,6 +311,7 @@ fn main() -> Result<()> {
                 current_source_id = source.map(|source| folder.register_source(source.to_string()));
             }
             Event::Line { text, line_number } => {
+                lines_proved = line_number;
                 let output = if use_json_output {
                     folder.process_line_at(text, current_source_id, line_number)?
                 } else {
@@ -275,6 +321,8 @@ fn main() -> Result<()> {
                 if let Some(output) = output {
                     if use_top_n {
                         // In top-N mode, discard incremental output — we'll use finish_top_n()
+                    } else if let Some(spool) = spool.as_mut() {
+                        spool.write_record(&output)?;
                     } else {
                         write_output(&mut stdout, format_args!("{output}\n"))?;
                     }
@@ -282,7 +330,27 @@ fn main() -> Result<()> {
             }
         }
         Ok(())
-    })?;
+    });
+    let ingest_report = match ingest_result {
+        Ok(report) => report,
+        Err(e) => {
+            // Either a fatal read/UTF-8 error or a spool failure mid-run.
+            // Both abort ingestion before EOF, so the report can never be
+            // completed and the briefing must say the input is incomplete.
+            if let Some(spool) = spool.as_mut() {
+                spool.discard();
+                eprintln!("lessence: report: not written ({e})");
+                eprintln!(
+                    "lessence: briefing: input incomplete (aborted at line {lines_proved}), report removed"
+                );
+                if config.stats && !config.stats_json {
+                    folder.print_stats(&mut io::stderr())?;
+                }
+                std::process::exit(1);
+            }
+            return Err(e);
+        }
+    };
     folder.absorb_ingest_report(&ingest_report, failed_sources);
     let pattern_matched = ingest_report.fail_pattern_matched;
 
@@ -321,6 +389,21 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(spool) = spool.take() {
+        let cli::ReportPlan::On(settings) = &report_plan else {
+            unreachable!("a spool exists only when the report plan is On")
+        };
+        finish_report(
+            &mut folder,
+            &config,
+            spool,
+            settings,
+            start_time.elapsed(),
+            pattern_matched || failed_sources != 0,
+        )?;
+        return Ok(());
+    }
+
     // Flush any remaining buffered lines (markdown mode buffers them in
     // the folder instead and emits one assembled document below)
     for output in folder.finish()? {
@@ -343,6 +426,141 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Resolve the report directory, apply the filesystem policy, and open the
+/// spool. Every failure here happens before any input is read.
+fn open_spool(settings: &cli::ReportSettings) -> Result<lessence::report::Spool> {
+    use lessence::report::{self, DEFAULT_MAX_BYTES};
+
+    let (dir, placement) = report::resolve_dir(settings.dir.as_deref())?;
+    // The bounded, acknowledged exception: an explicit directory together
+    // with an explicit positive quota accepts any filesystem.
+    let bounded = settings.max_bytes.is_some_and(|n| n > 0);
+    report::check_filesystem(&dir, placement, bounded)?;
+    let max_bytes = settings.max_bytes.map_or(DEFAULT_MAX_BYTES, |n| n as u64);
+    report::Spool::create(&dir, max_bytes)
+}
+
+/// Complete the report — drain, summary record, flush, fsync, rename,
+/// directory fsync — then print the bounded overview of the finished file.
+///
+/// Truthful state on every failure: what is said about the file is what is
+/// on disk, and what is said about the input is what the ingest proved.
+/// Reaching here means EOF was reached, so the input is `complete` or
+/// `degraded(<codes>)`, never `incomplete`.
+fn finish_report(
+    folder: &mut PatternFolder,
+    config: &Config,
+    mut spool: lessence::report::Spool,
+    settings: &cli::ReportSettings,
+    elapsed: Duration,
+    already_failing: bool,
+) -> Result<()> {
+    let mut complete = || -> Result<Option<String>> {
+        for output in folder.finish()? {
+            spool.write_record(&output)?;
+        }
+        let mut summary = Vec::new();
+        folder.print_summary_json(&mut summary, elapsed)?;
+        let summary = String::from_utf8(summary)?;
+        spool.write_record(summary.trim_end_matches('\n'))?;
+        spool.finish()
+    };
+    let durability = match complete() {
+        Ok(durability) => durability,
+        Err(e) => {
+            // Nothing was renamed, so nothing on disk is a report.
+            spool.discard();
+            eprintln!("lessence: report: not written ({e})");
+            let codes = folder.input_degraded_codes();
+            eprintln!(
+                "lessence: briefing: input {}",
+                if codes.is_empty() {
+                    "complete".to_string()
+                } else {
+                    format!("degraded({})", codes.join(","))
+                }
+            );
+            if config.stats && !config.stats_json {
+                folder.print_stats(&mut io::stderr())?;
+            }
+            std::process::exit(1);
+        }
+    };
+
+    let codes = folder.input_degraded_codes();
+    let locator = lessence::overview::Locator {
+        path: spool.final_path(),
+        file: durability.as_ref().map_or_else(
+            || "complete".to_string(),
+            |e| format!("complete, durability unconfirmed ({e})"),
+        ),
+        input: if codes.is_empty() {
+            "complete".to_string()
+        } else {
+            format!("degraded({})", codes.join(","))
+        },
+        run_id: spool.run_id(),
+        size_bytes: spool.bytes_written(),
+    };
+
+    // --stats-json keeps going to stderr, as today, in addition to the
+    // overview; -q (config.stats false) drops the briefing block.
+    if config.stats_json {
+        folder.print_stats_json(elapsed)?;
+    }
+    let briefing = if config.stats && !config.stats_json {
+        let mut buf = Vec::new();
+        folder.print_stats(&mut buf)?;
+        Some(String::from_utf8(buf)?)
+    } else {
+        None
+    };
+
+    // Test hook, with LESSENCE_TEST_FAIL_WRITE and LESSENCE_TEST_FAIL_DIR_FSYNC
+    // in src/report.rs: truncate the completed report so the overview pass
+    // meets a half record. The contract's failure paths need controlled
+    // fixtures, and a report is only damaged by things a test cannot cause.
+    if let Ok(bytes) = std::env::var("LESSENCE_TEST_TRUNCATE_REPORT")
+        && let Ok(bytes) = bytes.parse::<u64>()
+    {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(spool.final_path())?
+            .set_len(bytes)?;
+    }
+
+    let mut stdout = io::stdout();
+    match lessence::overview::render(
+        spool.final_path(),
+        &locator,
+        settings.entries,
+        settings.budget,
+        briefing.as_deref(),
+    ) {
+        Ok(text) => {
+            write_output(&mut stdout, format_args!("{text}"))?;
+            stdout.flush()?;
+            if already_failing || durability.is_some() {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            // The report is complete and stays. No group is silently
+            // omitted: stdout names why the overview could not be built.
+            write_output(
+                &mut stdout,
+                format_args!(
+                    "{}",
+                    lessence::overview::unavailable(&locator, &e.to_string())
+                ),
+            )?;
+            stdout.flush()?;
+            std::process::exit(1);
+        }
+    }
 }
 
 /// JSON reports always end with a summary record; text reports choose

@@ -4,7 +4,7 @@ Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually br
 
 <!-- gen:example:begin -->
 ```
-$ lessence kubelet.log
+$ lessence --no-report kubelet.log
 
 E0909 13:07:09.181236    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58 podName:9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc nodeName:}" failed. No retries permitted until 2025-09-09 13:09:11.181196845 +0000 UTC m=+225563.950173486 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-52r58" (UniqueName: "kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58") pod "pushprox-kube-proxy-client-9djm4" (UID: "9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/cattle-monitoring-system/serviceaccounts/pushprox-kube-proxy-client/token": read tcp 127.0.0.1:51706->127.0.0.1:6443: read: connection reset by peer
 [+71 similar | E0909 13:07:09.181236 → E0909 13:21:02.461198 | ipv4×1 {127.0.0.1}, k8s_namespace×16, k8s_volume×1 {oidc-token}, name×29, path×15, pid×1, quoted_string×11, uuid×15, varies×7 {"kube-api-access-<SUFFIX>"×69, "<COMPONENT>-<SUFFIX>"×52, "csi-rbdplugin-<SUFFIX>"×8, "cilium-envoy-<SUFFIX>"×5, "<VOLUME_NAME>"×4, "virt-handler-<SUFFIX>"×4, <QUOTED_STRING>×4}]
@@ -26,6 +26,25 @@ CI run.
 Three distinct problems, not 70,000. And the enriched markers tell you
 exactly which UUIDs, volumes, and IPs were affected — information that
 used to require re-running the tool.
+
+## The default run saves a report
+
+`lessence app.log` writes the **complete** folded JSON of the run — the same
+schema-1 records `--format json` emits — to `report.jsonl` in a fresh run
+directory under `$XDG_STATE_HOME/lessence/reports` (never the working
+directory), and prints a **byte-bounded overview** of that file on stdout: the
+briefing, a locator line naming the report and what it holds, the rarest and
+most frequent groups, and four jq recipes that query the report by group id.
+
+Nothing is lost and nothing is hidden: the report is complete, stdout is
+bounded to 16 KiB by default, and the locator says exactly how many groups
+were selected, printed and omitted. `--overview all` prints every group with no
+budget; `--report-dir` and `--report-max-bytes` move and cap the file; the
+report directory grows until you delete it.
+
+The example above uses `--no-report`, which skips the file and streams the
+folded text as it always did. **Use `--no-report` for `tail -f` or any source
+that never reaches EOF** — the report needs input EOF to be written.
 
 ## For Coding Agents & LLMs
 
@@ -87,7 +106,7 @@ On macOS, you may need to remove the quarantine flag: `xattr -d com.apple.quaran
 
 ```bash
 # Pipe anything with repetitive output
-kubectl logs -f pod/api-server | lessence
+kubectl logs -f pod/api-server | lessence --no-report   # live source: no EOF, no report
 journalctl -u nginx --since today | lessence
 make build 2>&1 | lessence
 docker-compose logs | lessence
@@ -156,6 +175,11 @@ headline example above is the only CI-verified number.
 --top <TOP>    Show only the N most frequent patterns, sorted by count
 --fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
+--report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it
+--report-max-bytes <N>    Per-run cap on the report file (default 1G, supports K/M/G). Nothing bounds accumulated disk use across runs
+--no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report [default: false]
+--overview <N|all>    Groups to show in the stdout overview: N (default 40, max 10000), 0 for none, or `all` for every group with no byte budget
+--overview-bytes <B>    Byte budget for the whole stdout overview (default 16384)
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
 --sanitize <ENTITY[:ACTION]>    Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
 --max-line-length <MAX_LINE_LENGTH>    Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)

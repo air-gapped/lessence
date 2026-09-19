@@ -93,6 +93,13 @@ sha2 = "0.10"
 [target.'cfg(target_env = "musl")'.dependencies]
 mimalloc = { version = "0.1", default-features = false }
 
+# The report directory's backing filesystem is classified by statfs magic
+# before a default run writes to it (src/report.rs, "filesystem policy").
+# nix rather than libc because this crate forbids unsafe code and nix wraps
+# statfs(2) safely. Unix only; other targets skip the classification.
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", default-features = false, features = ["fs"] }
+
 [dev-dependencies]
 # Provides the #[cfg_attr(test, mutants::skip)] marker attribute for cargo-mutants
 mutants = "0.0.4"
