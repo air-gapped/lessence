@@ -156,11 +156,19 @@ fn main() -> Result<()> {
     let use_json_output = matches!(config.output_format.as_str(), "json" | "jsonl");
     let use_top_n = config.top_n.is_some();
 
-    let (readers, input_failed) = ingest::open_inputs(&cli.files);
+    let (readers, failed_sources) = ingest::open_inputs(&cli.files);
     if readers.is_empty() {
         eprintln!("lessence: no valid input");
         std::process::exit(1);
     }
+
+    let ingestor = ingestor.with_input_hash(
+        (use_json_output || config.preflight)
+            && !distilling
+            && !config.sanitize_pii
+            && config.sanitize.is_none()
+            && failed_sources == 0,
+    );
 
     if distilling {
         let opts = lessence::distill::Options {
@@ -173,7 +181,7 @@ fn main() -> Result<()> {
             seed: cli.seed,
         };
         let code = lessence::distill::run(&config, &ingestor, readers, &opts)?;
-        std::process::exit(if input_failed { 1 } else { code });
+        std::process::exit(if failed_sources != 0 { 1 } else { code });
     }
 
     // Handle preflight mode: process logs but only output JSON analysis
@@ -198,9 +206,11 @@ fn main() -> Result<()> {
         // Flush remaining batch buffer (parallel mode collects lines in batches)
         let _ = folder.finish()?;
 
+        folder.record_ingest_metadata(&ingest_report, failed_sources);
+
         // Output JSON analysis only
         folder.print_preflight_json(&mut io::stdout())?;
-        if ingest_report.fail_pattern_matched || input_failed {
+        if ingest_report.fail_pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }
         return Ok(());
@@ -221,7 +231,7 @@ fn main() -> Result<()> {
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         }
-        if ingest_report.fail_pattern_matched || input_failed {
+        if ingest_report.fail_pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }
         return Ok(());
@@ -258,7 +268,7 @@ fn main() -> Result<()> {
         }
         Ok(())
     })?;
-    folder.absorb_ingest_report(&ingest_report, input_failed);
+    folder.absorb_ingest_report(&ingest_report, failed_sources);
     let pattern_matched = ingest_report.fail_pattern_matched;
 
     // Handle top-N mode: sort all groups by frequency and emit top N
@@ -290,7 +300,7 @@ fn main() -> Result<()> {
         );
 
         print_report_stats(&folder, &config, start_time.elapsed(), json_output)?;
-        if pattern_matched || input_failed {
+        if pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }
         return Ok(());
@@ -305,7 +315,7 @@ fn main() -> Result<()> {
     // Markdown: emit one assembled document from the buffered entries
     if config.output_format.as_str() == "markdown" {
         folder.emit_markdown(&mut io::stdout())?;
-        if pattern_matched || input_failed {
+        if pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }
         return Ok(());
@@ -313,7 +323,7 @@ fn main() -> Result<()> {
 
     print_report_stats(&folder, &config, start_time.elapsed(), use_json_output)?;
 
-    if pattern_matched || input_failed {
+    if pattern_matched || failed_sources != 0 {
         std::process::exit(1);
     }
 

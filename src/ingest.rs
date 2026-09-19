@@ -19,8 +19,9 @@
 
 use crate::config::Config;
 use anyhow::Result;
+use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read};
 use std::path::PathBuf;
 
 /// One opened input: an explicit file, or stdin.
@@ -32,21 +33,21 @@ pub struct InputReader {
 
 /// Opens the given input files, falling back to stdin when none are given.
 ///
-/// Returns the successfully opened readers plus whether any file failed to
+/// Returns the successfully opened readers plus the number of files that failed to
 /// open — like cat/grep, the remaining files are still processed but the
 /// process must exit non-zero.
-pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, bool) {
+pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, usize) {
     if files.is_empty() {
         return (
             vec![InputReader {
                 source: None,
                 reader: Box::new(BufReader::new(io::stdin().lock())),
             }],
-            false,
+            0,
         );
     }
     let mut readers = Vec::new();
-    let mut any_failed = false;
+    let mut failed_sources = 0;
     for path in files {
         if path.as_os_str() == "-" {
             readers.push(InputReader {
@@ -61,12 +62,12 @@ pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, bool) {
                 }),
                 Err(e) => {
                     eprintln!("lessence: {}: {}", path.display(), e);
-                    any_failed = true;
+                    failed_sources += 1;
                 }
             }
         }
     }
-    (readers, any_failed)
+    (readers, failed_sources)
 }
 
 /// One step of the ingestion stream, delivered to the sink in order.
@@ -94,6 +95,8 @@ pub struct IngestReport {
     pub overlong_lines_skipped: usize,
     /// Ingestion stopped early because `--max-lines` was reached.
     pub max_lines_reached: bool,
+    /// Raw ordered-source digest, only after every reader reaches EOF.
+    pub input_hash: Option<[u8; 32]>,
 }
 
 /// The configured ingestion contract. Build once per run with
@@ -104,6 +107,7 @@ pub struct Ingestor {
     strip_escapes: bool,
     fail_regex: Option<regex::Regex>,
     frame_continuations: bool,
+    hash_input: bool,
 }
 
 impl Ingestor {
@@ -124,7 +128,16 @@ impl Ingestor {
             strip_escapes: !config.preserve_color,
             fail_regex,
             frame_continuations: config.frame_continuations,
+            hash_input: false,
         })
+    }
+
+    /// Enable raw-byte identity for a run whose output can publish it.
+    /// Default library ingestion and modes that cannot use a digest skip this cost.
+    #[must_use]
+    pub fn with_input_hash(mut self, enabled: bool) -> Self {
+        self.hash_input = enabled;
+        self
     }
 
     /// Drains the readers through the ingestion contract, delivering each
@@ -133,6 +146,12 @@ impl Ingestor {
     where
         F: FnMut(Event<'_>) -> Result<()>,
     {
+        // These are opened readers. The CLI disables hashing after any open
+        // failure, so a published CLI digest still covers all requested sources.
+        let mut aggregate = self
+            .hash_input
+            .then(|| AggregateHash::new(readers.len()))
+            .transpose()?;
         let mut report = IngestReport::default();
         let mut lines_seen = 0usize;
         // The record being assembled while `--frame-continuations` is on: its
@@ -144,7 +163,18 @@ impl Ingestor {
             sink(Event::BeginInput {
                 source: input.source.as_deref(),
             })?;
-            for (line_index, line) in input.reader.lines().enumerate() {
+            let mut source_hash = self.hash_input.then(SourceHash::default);
+            // Hash below the line decoder, so delimiters, skipped lines and
+            // read-ahead are included. Only publish after complete EOF.
+            let mut reader: Box<dyn BufRead + '_> = if let Some(state) = source_hash.as_mut() {
+                Box::new(BufReader::new(HashingReader {
+                    inner: input.reader,
+                    state,
+                }))
+            } else {
+                input.reader
+            };
+            for (line_index, line) in reader.by_ref().lines().enumerate() {
                 let mut line = line?;
 
                 if let Some(max_lines) = self.max_lines
@@ -202,6 +232,11 @@ impl Ingestor {
                 }
             }
 
+            drop(reader);
+            if let (Some(aggregate), Some(source)) = (aggregate.as_mut(), source_hash) {
+                aggregate.push(source);
+            }
+
             // A record still open at end of input is complete: nothing follows
             // it. Flushed inside the input loop so its line number is not
             // reported against the next file.
@@ -212,7 +247,52 @@ impl Ingestor {
                 })?;
             }
         }
+        if !report.max_lines_reached {
+            report.input_hash = aggregate.map(AggregateHash::finish);
+        }
         Ok(report)
+    }
+}
+
+#[derive(Default)]
+struct SourceHash {
+    digest: Sha256,
+    bytes: u64,
+}
+struct HashingReader<'a, R> {
+    inner: R,
+    state: &'a mut SourceHash,
+}
+impl<R: Read> Read for HashingReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buffer)?;
+        self.state.bytes = self
+            .state
+            .bytes
+            .checked_add(
+                u64::try_from(n).map_err(|_| io::Error::other("input byte count exceeds u64"))?,
+            )
+            .ok_or_else(|| io::Error::other("input byte count exceeds u64"))?;
+        self.state.digest.update(&buffer[..n]);
+        Ok(n)
+    }
+}
+struct AggregateHash(Sha256);
+impl AggregateHash {
+    fn new(sources: usize) -> io::Result<Self> {
+        let sources =
+            u64::try_from(sources).map_err(|_| io::Error::other("source count exceeds u64"))?;
+        let mut hash = Sha256::new();
+        hash.update(b"lessence-input-hash/ordered-source-bytes-v1\0");
+        hash.update(sources.to_le_bytes());
+        Ok(Self(hash))
+    }
+    fn push(&mut self, source: SourceHash) {
+        self.0.update(source.bytes.to_le_bytes());
+        self.0.update(source.digest.finalize());
+    }
+    fn finish(self) -> [u8; 32] {
+        self.0.finalize().into()
     }
 }
 
@@ -707,6 +787,164 @@ Traceback:\n  at foo\n  at bar\n",
         assert!(
             report.fail_pattern_matched,
             "a pattern inside a continuation line must still fail the run"
+        );
+    }
+}
+
+#[cfg(test)]
+mod input_hash_tests {
+    use super::*;
+    fn hash(parts: &[&[u8]]) -> String {
+        let readers = parts
+            .iter()
+            .map(|p| InputReader {
+                source: None,
+                reader: Box::new(io::Cursor::new(p.to_vec())),
+            })
+            .collect();
+        let report = Ingestor::from_config(&Config::default())
+            .unwrap()
+            .with_input_hash(true)
+            .run(readers, |_| Ok(()))
+            .unwrap();
+        format!(
+            "{:x}",
+            sha2::digest::Output::<Sha256>::from(report.input_hash.unwrap())
+        )
+    }
+    #[test]
+    fn framing_matches_independently_computed_vectors() {
+        assert_eq!(
+            hash(&[]),
+            "7c239793ef2c132c9a40177131893e300ff9113ae3bd3a3e4077b3d47acc156c"
+        );
+        assert_eq!(
+            hash(&[&[][..]]),
+            "04829e7c493b8ffb6440b055bf22028567ab610a70fae68511154341cbc4df12"
+        );
+        assert_eq!(
+            hash(&[&[97, 10][..]]),
+            "136af5fb7412c9ea28f143034990456bcf3e301ff88f5307119243381f53d103"
+        );
+        assert_eq!(
+            hash(&[&[97, 13, 10][..]]),
+            "eba313f398358a48516ffd3b9f828e98f2b9b44e14b020a3388274b2862daefe"
+        );
+        assert_eq!(
+            hash(&[&[97][..]]),
+            "9f377afb9e1538ef76db4f9ff0fa88a9abed1c6950f9ef30186785db17f6e7f8"
+        );
+        assert_eq!(
+            hash(&[&[97][..], &[98][..]]),
+            "f41c7607fb22f9fd35c32f8e5122448f311a0ecfe5c77ce7e8ed15dc69d19749"
+        );
+        assert_eq!(
+            hash(&[&[98][..], &[97][..]]),
+            "b7189bc39717e41af175381143323d6f14cea94292bd5bc2418ee251ad21e765"
+        );
+        assert_eq!(
+            hash(&[&[97, 98][..]]),
+            "1cf71d09782c071b1eb8cd25b0c657e021e64279d712d3db5a2a3528b82c6b7b"
+        );
+        assert_eq!(
+            hash(&[&[][..], &[97][..]]),
+            "dc00d8167c2c43e49af26d00e367ee5408fc5f2e3c89e836c348f2bfc5451862"
+        );
+    }
+    struct ShortReads {
+        data: io::Cursor<Vec<u8>>,
+        chunk: usize,
+    }
+    impl Read for ShortReads {
+        fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+            let n = self.chunk.min(out.len());
+            self.data.read(&mut out[..n])
+        }
+    }
+    #[test]
+    fn byte_adapter_is_independent_of_read_chunking_and_counts_only_returned_bytes() {
+        let bytes = b"a\r\nb\nlast";
+        for chunk in 1..=bytes.len() + 2 {
+            let mut state = SourceHash::default();
+            let mut reader = HashingReader {
+                inner: ShortReads {
+                    data: io::Cursor::new(bytes.to_vec()),
+                    chunk,
+                },
+                state: &mut state,
+            };
+            let mut out = [0xa5; 32];
+            while reader.read(&mut out).unwrap() != 0 {}
+            assert_eq!(state.bytes, bytes.len() as u64);
+            assert_eq!(state.digest.finalize(), Sha256::digest(bytes));
+        }
+    }
+    #[test]
+    fn invalid_utf8_and_read_errors_do_not_produce_a_report() {
+        struct ErrorAfterLine(bool);
+        impl Read for ErrorAfterLine {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                if self.0 {
+                    return Err(io::Error::other("test read failure"));
+                }
+                self.0 = true;
+                out[..2].copy_from_slice(b"a\n");
+                Ok(2)
+            }
+        }
+        let ing = Ingestor::from_config(&Config::default())
+            .unwrap()
+            .with_input_hash(true);
+        for reader in [
+            Box::new(io::Cursor::new(vec![0xffu8])) as Box<dyn BufRead>,
+            Box::new(BufReader::new(ErrorAfterLine(false))),
+        ] {
+            assert!(
+                ing.run(
+                    vec![InputReader {
+                        source: None,
+                        reader
+                    }],
+                    |_| Ok(())
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
+    fn limit_and_eof_control_publication_even_after_read_ahead() {
+        let ing = Ingestor::from_config(&Config {
+            max_lines: Some(1),
+            ..Config::default()
+        })
+        .unwrap()
+        .with_input_hash(true);
+        for (bytes, truncated) in [(b"a\n".as_slice(), false), (b"a\nb\n".as_slice(), true)] {
+            let report = ing
+                .run(
+                    vec![InputReader {
+                        source: None,
+                        reader: Box::new(io::Cursor::new(bytes.to_vec())),
+                    }],
+                    |_| Ok(()),
+                )
+                .unwrap();
+            assert_eq!(report.max_lines_reached, truncated);
+            assert_eq!(report.input_hash.is_none(), truncated);
+        }
+        let report = Ingestor::from_config(&Config::default())
+            .unwrap()
+            .run(
+                vec![InputReader {
+                    source: None,
+                    reader: Box::new(io::Cursor::new(b"a\n")),
+                }],
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(
+            report.input_hash.is_none(),
+            "default library ingestion must not hash"
         );
     }
 }

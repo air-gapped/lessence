@@ -1,3 +1,4 @@
+use crate::run_metadata::{Count, InputCompleteness, InputFacts, RunMetadata};
 use anyhow::Result;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
@@ -436,10 +437,7 @@ pub struct PatternFolder {
     /// exactly once per flushed group in JSON mode. Stays at 0 in text /
     /// markdown modes. Stable within a run.
     next_json_id: usize,
-    json_input_complete: bool,
-    json_max_lines_reached: bool,
-    json_failed_sources: bool,
-    json_skipped_overlong_lines: usize,
+    input_facts: InputFacts,
     json_groups_emitted: usize,
     json_groups_total: Option<usize>,
     json_omitted_by_top: usize,
@@ -824,6 +822,8 @@ struct SummaryRecord {
     record_type: &'static str, // always "summary"
     #[serde(flatten)]
     stats: StatsJson,
+    #[serde(flatten)]
+    metadata: RunMetadata,
     completeness: Completeness,
     briefing: crate::briefing::Briefing,
 }
@@ -834,15 +834,6 @@ struct Completeness {
     input: InputCompleteness,
     groups: GroupCompleteness,
     variation_values: VariationCompleteness,
-}
-
-#[derive(Serialize, Default)]
-struct InputCompleteness {
-    complete: bool,
-    processed_lines: usize,
-    skipped_overlong_lines: Count,
-    unprocessed_after_max_lines: Count,
-    failed_sources: Count,
 }
 
 #[derive(Serialize, Default)]
@@ -868,41 +859,6 @@ struct VariationCompleteness {
     sampled_entries: usize,
     uncomputed_groups: usize,
     omitted_values: Count,
-}
-
-#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
-struct Count {
-    value: Option<usize>,
-    kind: &'static str,
-}
-
-impl Default for Count {
-    fn default() -> Self {
-        Self::exact(0)
-    }
-}
-
-impl Count {
-    const fn exact(value: usize) -> Self {
-        Self {
-            value: Some(value),
-            kind: "exact",
-        }
-    }
-
-    const fn lower_bound(value: usize) -> Self {
-        Self {
-            value: Some(value),
-            kind: "lower_bound",
-        }
-    }
-
-    const fn unknown() -> Self {
-        Self {
-            value: None,
-            kind: "unknown",
-        }
-    }
 }
 
 /// Discriminant name for a Token, used in `GroupRecord.token_types` and
@@ -2281,10 +2237,7 @@ impl PatternFolder {
             sources: Vec::new(),
             markdown_entries: Vec::new(),
             next_json_id: 0,
-            json_input_complete: true,
-            json_max_lines_reached: false,
-            json_failed_sources: false,
-            json_skipped_overlong_lines: 0,
+            input_facts: InputFacts::default(),
             json_groups_emitted: 0,
             json_groups_total: None,
             json_omitted_by_top: 0,
@@ -2324,8 +2277,8 @@ impl PatternFolder {
     /// and variation completeness fields are derived internally by the
     /// fold/finish paths. The fields set here are only read when the JSON
     /// summary record is rendered.
-    pub fn absorb_ingest_report(&mut self, report: &IngestReport, any_source_failed: bool) {
-        self.json_skipped_overlong_lines += report.overlong_lines_skipped;
+    pub fn absorb_ingest_report(&mut self, report: &IngestReport, failed_sources: usize) {
+        self.record_ingest_metadata(report, failed_sources);
         // `--frame-continuations` delivers a stack trace as one record, so the
         // per-record tally under-reports the file. Add the merged lines back:
         // they were read and they are represented in the output, just not as
@@ -2336,14 +2289,12 @@ impl PatternFolder {
         // as saved too — otherwise the ratio would report framing as pure
         // input growth with no benefit.
         self.stats.lines_saved += report.continuation_lines_absorbed;
-        if report.max_lines_reached {
-            self.json_input_complete = false;
-            self.json_max_lines_reached = true;
-        }
-        if any_source_failed {
-            self.json_input_complete = false;
-            self.json_failed_sources = true;
-        }
+    }
+
+    /// Record input metadata without modifying briefing/statistic counters.
+    /// Preflight uses this because its existing counters are independently rendered.
+    pub fn record_ingest_metadata(&mut self, report: &IngestReport, failed_sources: usize) {
+        self.input_facts.absorb(report, failed_sources);
     }
 
     /// Register one explicit input filename and return a compact handle that

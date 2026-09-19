@@ -11,6 +11,7 @@ pub mod ingest;
 pub mod normalize;
 pub mod output;
 pub mod patterns;
+mod run_metadata;
 pub mod sanitize;
 pub mod skill;
 

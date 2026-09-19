@@ -12,14 +12,14 @@ cap_lints = true
 exclude_re = [
     # lessence-e8v: absorb adds two nonempty group counts before this guard.
     # The sum is at least two; checked overflow traps before either guard.
-    '^src/folder/mod\.rs:336:27: replace match guard self.count > 1 with true in PatternGroup::absorb$',
-    '^src/folder/mod\.rs:336:38: replace > with >= in PatternGroup::absorb$',
+    '^src/folder/mod\.rs:337:27: replace match guard self.count > 1 with true in PatternGroup::absorb$',
+    '^src/folder/mod\.rs:337:38: replace > with >= in PatternGroup::absorb$',
     # unit_spans emits each PCI match as a whole atom. Its cuts preserve PCI
     # word boundaries, so any isolated match has both start=0 and end=len.
-    '^src/folder/mod\.rs:1273:45: replace && with \|\| in varying_spans$',
+    '^src/folder/mod\.rs:1229:45: replace && with \|\| in varying_spans$',
     # RollupComputer uses positive k (production default 7). At len=k,
     # pop-last, truncate(k-1), push-last is the identity on the sorted vector.
-    '^src/folder/mod\.rs:2204:78: replace > with >= in RollupComputer::finalize$',
+    '^src/folder/mod\.rs:2160:78: replace > with >= in RollupComputer::finalize$',
     # FQDN_REGEX already guarantees no leading/trailing dots (\b anchor)
     # so the contains('.')/starts_with/ends_with checks are redundant.
     "network.rs:207",
@@ -74,7 +74,7 @@ exclude_re = [
     '^src/normalize\.rs:347:9: replace && with \|\| in pci_addresses$',
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
-    '^src/folder/render\.rs:481:34: replace > with >= in PatternFolder::build_briefing$',
+    '^src/folder/render\.rs:475:34: replace > with >= in PatternFolder::build_briefing$',
 
     # --- lessence-e8v: merge_retained's Counted arm is unreachable ---
     # A `Counted` accumulator only exists after `finalize` inserts the
@@ -82,14 +82,14 @@ exclude_re = [
     # that merges two Counted maps never executes: deleting it or changing
     # its `+=` cannot be observed.
     'delete match arm \(Accumulator::Counted\(m\), Accumulator::Counted\(other\)\) in RollupComputer::merge_retained',
-    'folder/mod.rs:2140:50: replace \+= with',
+    'folder/mod.rs:2096:50: replace \+= with',
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.
-    '^src/folder/mod\.rs:1210:54: replace \+ with \* in align_words$',
+    '^src/folder/mod\.rs:1166:54: replace \+ with \* in align_words$',
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
-    '^src/folder/mod\.rs:1410:85: replace < with <= in cli_option_units$',
+    '^src/folder/mod\.rs:1366:85: replace < with <= in cli_option_units$',
 
     # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
     # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded

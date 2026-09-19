@@ -351,13 +351,93 @@ lessence --format json prod.log \
   inside group records uses UPPERCASE conventions. The two are
   independent.
 
+## Run metadata (schema version 1)
+
+The final JSONL `summary` record and the top level of `--preflight` add
+`schema_version`, `version`, `input_hash`, and `degraded`. Group records,
+`summary.briefing`, text/markdown output, and stderr `--stats-json` do not gain
+these fields. Preflight keeps its existing top-level briefing fields.
+
+- `schema_version`: integer `1`. Additive fields retain this version;
+  incompatible record changes require a new version.
+- `version`: `{ "semver": "<package version>", "build": "<build ID>",
+  "target": "<target triple>" }`, using the same compiled identity as
+  `--version`. Build IDs are non-empty strings and can include `-dirty` or
+  be `unknown`; they are not necessarily hexadecimal commits.
+- `input_hash`: `{ "algorithm": "sha256", "scope": "ordered-source-bytes-v1",
+  "value": "<64 lowercase hex digits or null>",
+  "unavailable_reason": "<reason or null>" }`. `value` is a JSON null when
+  unavailable, not the string `"null"`. Available digests have a null reason.
+- `degraded`: an array of input omissions with stable `code`, `count`
+  (`{value, kind}`, as in completeness), `message`, and `repair` fields.
+  Repairs are explanatory text, not shell commands.
+
+The degradation codes, in fixed order, are:
+
+| Code | Count | Repair |
+|---|---|---|
+| `input.overlong_lines_skipped` | Exact skipped physical lines | Increase `--max-line-length` to analyze those lines |
+| `input.max_lines_reached` | Unknown unprocessed suffix size | Remove `--max-lines` and rerun the same inputs |
+| `input.failed_sources` | Exact failed input opens | Correct paths/access reported on stderr and rerun all requested sources |
+
+`degraded` is empty if and only if `completeness.input.complete` is true in
+the JSON summary. It does **not** imply that every group or variation value
+was shown: output caps and sample limits still use the other completeness
+fields. Preflight derives its degradation from the same ingestion facts.
+Missing timestamps, sanitization, and `--fail-on-pattern` matches are not
+input degradation. `failed_sources` now reports an exact count, including
+multiple failures, instead of the previous lower bound of one.
+
+### Input identity
+
+The digest covers raw bytes, including line terminators, ANSI escapes, and
+lines skipped for length. It is published only after all requested sources
+were opened and reached EOF. No second pass or suffix read is done to finish
+a digest. Hashing uses fixed-size state beyond the existing ingestion buffers.
+A skipped overlong line can therefore coexist with an available raw-input
+digest: identity is not a claim that every line was analyzed.
+
+The unavailable reasons, in precedence order, are `sanitized`,
+`failed_sources`, `max_lines`, and `not_recorded`. Sanitized runs do not
+compute or publish raw-input identity. `not_recorded` is for library callers
+that did not supply a raw-ingestion digest. A `--max-lines` cutoff may read
+ahead, but never publishes that partial hash. Exactly reaching EOF at the
+limit leaves the complete digest available.
+
+Each source contributes `L_j`, its raw byte length, and `D_j`, its SHA-256
+as 32 binary bytes. With `N` requested sources, the aggregate is SHA-256 of:
+
+```text
+ASCII("lessence-input-hash/ordered-source-bytes-v1") || 0x00 || U64LE(N) ||
+  (U64LE(L_j) || D_j for each source in argument order)
+```
+
+This is an aggregate identity, not `sha256sum` of a file. Source order and
+boundaries matter; names do not. One file and stdin with identical bytes
+hash equally, including empty input. An empty source participates; two sources
+are not equivalent to their concatenation. LF, CRLF, and missing final LF
+are different raw inputs. Zero sources hash only the domain and `U64LE(0)`;
+CLI input with no filenames means one stdin source, not zero sources.
+
+Do not use this digest alone as an output-cache key: options, source labels,
+and binary versions can change results independently. Same-binary comparisons
+should compare all metadata and omit only `elapsed_ms`.
+
+One or more failed opens preserve the existing exit-1 behavior while successful
+sources still produce their final report. All opens failing, read/UTF-8 errors,
+and fatal output errors keep their existing failure paths: no new successful
+empty report is synthesized. Require a final summary and inspect exit status;
+partial JSONL group output without a final summary makes no completeness claim.
+A fail-pattern match can exit 1 with a complete digest and empty `degraded`.
+
 ## `Briefing` schema
 
 The orientation block an agent should read before deciding what to run next.
 It appears in two places, both from the same struct so they can never drift:
 
 1. **`lessence --preflight <log>`** — the `Briefing` printed directly as the
-   entire stdout JSON document (not wrapped in a record; there is no other
+   entire stdout JSON document, alongside the additive run metadata above
+   (not wrapped in a record; there is no other
    `--preflight` output).
 2. **`--explain`'s (`--format json --explain`) summary record**, under a new
    `briefing` field alongside `input_lines`, `pattern_hits`, etc.

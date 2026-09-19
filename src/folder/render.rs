@@ -15,12 +15,14 @@
 //!    the markdown report.
 
 use super::{
-    BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup,
-    InputCompleteness, LineRef, LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD,
-    Result, StatsJson, SummaryRecord, TimeRange, Token, VariationCompleteness, Write,
-    first_timestamp_in, group_epoch_range, io, render_compact_marker, token_type_name,
+    BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup, LineRef,
+    LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, StatsJson,
+    SummaryRecord, TimeRange, Token, VariationCompleteness, Write, first_timestamp_in,
+    group_epoch_range, io, render_compact_marker, token_type_name,
 };
+use crate::run_metadata::RunMetadata;
 use crate::sanitize::Sanitizer;
+use serde::Serialize;
 
 impl PatternFolder {
     /// Format a group for the configured output mode.
@@ -397,6 +399,10 @@ impl PatternFolder {
         let record = SummaryRecord {
             record_type: "summary",
             stats: self.build_stats_json(elapsed),
+            metadata: RunMetadata::new(
+                &self.input_facts,
+                self.config.sanitize_pii || self.config.sanitize.is_some(),
+            ),
             completeness: {
                 let group_total = self.json_groups_total.unwrap_or(self.json_groups_emitted);
                 let groups_complete = self.json_omitted_by_top == 0
@@ -407,25 +413,13 @@ impl PatternFolder {
                     && self.json_uncomputed_variation_groups == 0
                     && self.json_omitted_values_lower_bound == 0;
                 Completeness {
-                    complete: self.json_input_complete
-                        && self.json_skipped_overlong_lines == 0
+                    complete: self
+                        .input_facts
+                        .completeness(self.stats.total_lines)
+                        .complete
                         && groups_complete
                         && variation_complete,
-                    input: InputCompleteness {
-                        complete: self.json_input_complete && self.json_skipped_overlong_lines == 0,
-                        processed_lines: self.stats.total_lines,
-                        skipped_overlong_lines: Count::exact(self.json_skipped_overlong_lines),
-                        unprocessed_after_max_lines: if self.json_max_lines_reached {
-                            Count::unknown()
-                        } else {
-                            Count::exact(0)
-                        },
-                        failed_sources: if self.json_failed_sources {
-                            Count::lower_bound(1)
-                        } else {
-                            Count::exact(0)
-                        },
-                    },
+                    input: self.input_facts.completeness(self.stats.total_lines),
                     groups: GroupCompleteness {
                         complete: groups_complete,
                         emitted: self.json_groups_emitted,
@@ -589,7 +583,20 @@ impl PatternFolder {
     }
     /// Emit the pretty-printed --preflight JSON report: the run's briefing.
     pub fn print_preflight_json<W: Write>(&self, writer: &mut W) -> Result<()> {
-        let report = self.build_briefing();
+        #[derive(Serialize)]
+        struct Preflight {
+            #[serde(flatten)]
+            briefing: crate::briefing::Briefing,
+            #[serde(flatten)]
+            metadata: RunMetadata,
+        }
+        let report = Preflight {
+            briefing: self.build_briefing(),
+            metadata: RunMetadata::new(
+                &self.input_facts,
+                self.config.sanitize_pii || self.config.sanitize.is_some(),
+            ),
+        };
         let json = serde_json::to_string_pretty(&report)?;
         writeln!(writer, "{json}")?;
         Ok(())

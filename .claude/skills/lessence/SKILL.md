@@ -176,6 +176,21 @@ INFO [auth] Login succeeded user="admin@corp.com"
 
 ### JSON mode (`--format json`)
 
+The final summary and `--preflight` include `schema_version: 1`, structured
+`version` (semver/build/target), `input_hash`, and `degraded` with actionable
+`code`, `count`, `message`, and `repair`. Check `degraded` before drawing a
+conclusion from partial input: it names skipped overlong lines, a line-limit
+cutoff, and exact failed-source counts. Empty `degraded` means input was
+complete; output/sample limits still live in `completeness`.
+
+`input_hash` identifies the ordered raw source bytes and boundaries, excluding
+filenames; it is not a hash of the output or a standalone cache key. Its value
+is null for sanitized, failed-source, or truncated runs, with an explicit
+`unavailable_reason`. Overlong skipped bytes still contribute when all input
+reached EOF. A missing final summary means no completion claim; inspect exit
+status too. Library output without recorded ingestion uses `not_recorded`.
+See the repo's `docs/format-json-schema.md` for the exact aggregate encoding.
+
 Each folded group is a JSON object on one line (JSONL). The last record
 is a `"summary"` with aggregate statistics. Key fields per group:
 

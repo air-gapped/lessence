@@ -383,7 +383,7 @@ fn json_reports_failed_sources_and_keeps_stdout_valid_jsonl() {
     let records = parse_jsonl(&String::from_utf8(output.stdout).unwrap());
     let input = &records.last().unwrap()["completeness"]["input"];
     assert!(!input["complete"].as_bool().unwrap());
-    assert_eq!(input["failed_sources"]["kind"], "lower_bound");
+    assert_eq!(input["failed_sources"]["kind"], "exact");
     assert_eq!(input["failed_sources"]["value"], 1);
 }
 

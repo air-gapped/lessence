@@ -2683,8 +2683,9 @@ fn absorb_ingest_report_sets_input_completeness() {
         overlong_lines_skipped: 2,
         continuation_lines_absorbed: 0,
         max_lines_reached: true,
+        input_hash: None,
     };
-    f.absorb_ingest_report(&report, true);
+    f.absorb_ingest_report(&report, 1);
 
     let mut buf = Vec::new();
     f.print_summary_json(&mut buf, std::time::Duration::ZERO)
@@ -2694,7 +2695,7 @@ fn absorb_ingest_report_sets_input_completeness() {
     assert!(!input["complete"].as_bool().unwrap());
     assert_eq!(input["skipped_overlong_lines"]["value"], 2);
     assert_eq!(input["unprocessed_after_max_lines"]["kind"], "unknown");
-    assert_eq!(input["failed_sources"]["kind"], "lower_bound");
+    assert_eq!(input["failed_sources"]["kind"], "exact");
     assert_eq!(input["failed_sources"]["value"], 1);
 }
 
@@ -6093,8 +6094,9 @@ fn an_overlong_skip_alone_makes_input_and_the_run_incomplete() {
         overlong_lines_skipped: 1,
         continuation_lines_absorbed: 0,
         max_lines_reached: false,
+        input_hash: None,
     };
-    f.absorb_ingest_report(&report, false);
+    f.absorb_ingest_report(&report, 0);
     let v = summary_json(&f);
     let c = &v["completeness"];
     assert_eq!(c["input"]["complete"], false, "{c}");
@@ -6785,11 +6787,12 @@ fn framed_continuations_add_to_input_and_saved_line_totals() {
         overlong_lines_skipped: 0,
         continuation_lines_absorbed: 3,
         max_lines_reached: false,
+        input_hash: None,
     };
-    f.absorb_ingest_report(&report, false);
+    f.absorb_ingest_report(&report, 0);
     assert_eq!(f.stats.total_lines, 10);
     assert_eq!(f.stats.lines_saved, 5);
-    f.absorb_ingest_report(&report, false);
+    f.absorb_ingest_report(&report, 0);
     assert_eq!(f.stats.total_lines, 13);
     assert_eq!(f.stats.lines_saved, 8);
 }
