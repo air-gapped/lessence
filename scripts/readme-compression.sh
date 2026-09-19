@@ -63,7 +63,9 @@ while IFS='|' read -r name file; do
     fi
     rm -f "$errfile"
     if [ "$out" -eq 0 ]; then echo "lessence printed no lines for $file; refusing to record a 100% row" >&2; exit 1; fi
-    pct=$(awk -v i="$in" -v o="$out" 'BEGIN { printf "%.1f%%", 100 * (1 - o / i) }')
+    # One decimal, but never a rounded-up 100%: 21 lines out of 60,849 is 99.97%, and
+    # "100%" would say nothing was left, which is false. Such rows print two decimals.
+    pct=$(awk -v i="$in" -v o="$out" 'BEGIN { r = 100 * (1 - o / i); if (r >= 99.95) printf "%.2f%%", r; else printf "%.1f%%", r }')
     table="$table
 | $name | $(python3 -c "print(f'{$in:,}')") | $(python3 -c "print(f'{$out:,}')") | $pct |"
 done <<< "$ROWS"
