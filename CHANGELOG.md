@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
+## [0.7.0](https://github.com/air-gapped/lessence/compare/v0.6.0...v0.7.0) (2026-09-19)
+
+
+### Features
+
+* a default run saves the complete folded report to a file and prints a bounded overview of it ([29b27de](https://github.com/air-gapped/lessence/commit/29b27de98e0e2bc3c8b2279cfc818a7afb7dfbcd))
+
+
+### Bug Fixes
+
+* --help addresses coding agents first and points at the bundled skill; --help-human for people ([c488bea](https://github.com/air-gapped/lessence/commit/c488beab0d18f7302bf07b671758b129e09a28af))
+* a bare `lessence` at a terminal prints the help instead of waiting on stdin ([975a2ac](https://github.com/air-gapped/lessence/commit/975a2aca07b5a89eda1fcafe0c5151dcf70d0fb5))
+* an aborted run prints no template statistics; framed continuations no longer trip the record count ([5d8deb7](https://github.com/air-gapped/lessence/commit/5d8deb7bbf9c2107f4382fe61d71c7de1038d9e7))
+* the overview of a saved report streams, stays inside its budget, and never hides what it does not know ([8e855c4](https://github.com/air-gapped/lessence/commit/8e855c4fc99ee7264c13577e8480a79df2e7d141))
+
 ## [0.6.0](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.6.0) (2026-09-19)
 
 
