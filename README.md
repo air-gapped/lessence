@@ -143,15 +143,15 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Real-World Compression
 
 <!-- gen:compression:begin -->
-<!-- gen:compression:at b61c01142 -->
-Measured on v0.7.0 (commit b61c01142) on production logs that are not
+<!-- gen:compression:at 6904cf68c -->
+Measured on v0.7.0 (commit 6904cf68c) on production logs that are not
 distributable. Since 0.5.0 the message text is part of an event's identity, so
 output is larger than in older tables and hides less.
 
 | Log source | Lines in | Lines out | Reduction |
 |-----------|--------:|---------:|----------:|
 | Kubernetes kubelet | 70,548 | 733 | 99.0% |
-| ArgoCD server | 60,849 | 21 | 100.0% |
+| ArgoCD server | 60,849 | 21 | 99.97% |
 | PostgreSQL primary | 54,066 | 96 | 99.8% |
 | Cilium networking | 38,145 | 1,038 | 97.3% |
 | Rancher | 22,433 | 311 | 98.6% |
