@@ -142,6 +142,10 @@ pub struct Cli {
     #[arg(long, default_value = crate::config::DEFAULT_OUTPUT_FORMAT)]
     pub format: String,
 
+    /// Same as --format json
+    #[arg(long, conflicts_with = "format")]
+    pub json: bool,
+
     /// Enable essence mode (timestamp removal/tokenization for temporal independence)
     #[arg(long)]
     pub essence: bool,
@@ -202,6 +206,13 @@ pub struct Cli {
     #[arg(long)]
     pub completions: Option<clap_complete::Shell>,
 
+    /// Print the bundled agent skill and exit: `skill` (SKILL.md, the default)
+    /// or `flags` (the complete flag reference). Install with
+    /// `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and
+    /// `lessence --skill flags > ~/.claude/skills/lessence/references/flags.md`
+    #[arg(long, value_name = "TOPIC", num_args = 0..=1, default_missing_value = "skill")]
+    pub skill: Option<String>,
+
     /// Dev mode: write the input back out as a small log that folds the same
     /// way — every group's members, every unfolded line, original order.
     #[arg(long, hide = true)]
@@ -239,6 +250,7 @@ impl Cli {
                 self.format != crate::config::DEFAULT_OUTPUT_FORMAT,
                 "--format",
             ),
+            (self.json, "--json"),
             (self.summary, "--summary"),
             (self.fit, "--fit"),
             (self.top.is_some(), "--top"),

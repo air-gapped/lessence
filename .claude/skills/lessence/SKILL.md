@@ -63,6 +63,18 @@ Use the right tool for the job:
 Structured JSON logs fold natively — distinct `msg`/field values each keep their
 own group. Use the jq workflow below only to project specific fields.
 
+## This skill and the binary
+
+The installed binary is the authority for syntax: `lessence --help` wins over
+anything this text remembers. The skill ships inside the binary and was
+verified against the build that prints it; after upgrading, reinstall it:
+
+```bash
+mkdir -p ~/.claude/skills/lessence/references
+lessence --skill > ~/.claude/skills/lessence/SKILL.md
+lessence --skill flags > ~/.claude/skills/lessence/references/flags.md
+```
+
 ## Core Commands
 
 ```bash
@@ -315,11 +327,14 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
   (`--sanitize`, `--sanitize-pii`, `--max-line-length`, `--max-lines`), pattern control
   (`--threshold`, `--min-collapse`, `--disable-patterns`), and CI integration
   (`--fail-on-pattern`). Consult when needing a flag beyond the core set above.
-- **`references/sources.md`** — Per-claim verification stamps against the repo's
-  binary and docs. Consult when a claim looks stale; re-verify after user-facing
-  `feat:`/`fix:` commits.
-- **`references/trigger-evals.json`** — Persistent trigger eval set (10 should-fire,
-  8 should-not). Used by skill-improver trigger mode; extend rather than replace.
-- **`references/choice-evals/`** — Behavioral eval harness: does the model pick
-  lessence over tail/grep on a real large-log diagnosis? See its README to
-  re-run after skill or binary changes.
+- **`references/sources.md`** (repo only, not printed by `--skill`) — Per-claim
+  verification stamps against the repo's binary and docs. Consult when a claim
+  looks stale; re-verify after user-facing `feat:`/`fix:` commits.
+- **`references/trigger-evals.json`** (repo only) — Persistent trigger eval set
+  (10 should-fire, 8 should-not). Used by skill-improver trigger mode; extend
+  rather than replace.
+- **`references/choice-evals/`** (repo only) — Behavioral eval harness: does the
+  model pick lessence over tail/grep on a real large-log diagnosis? See its
+  README to re-run after skill or binary changes.
+- **`docs/format-json-schema.md`** (repo only) — the full JSON field reference;
+  the fields this skill names are the ones agents need.

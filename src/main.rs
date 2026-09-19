@@ -24,6 +24,20 @@ use lessence::output::write_output;
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // --skill prints the bundled agent skill and exits before any input is
+    // opened, so `lessence --skill > file` never waits on stdin.
+    if let Some(topic) = &cli.skill {
+        let Some(text) = lessence::skill::render(topic, cli::VERSION) else {
+            eprintln!(
+                "lessence: unknown --skill topic '{topic}' (expected one of: {})",
+                lessence::skill::TOPICS.join(", ")
+            );
+            std::process::exit(2);
+        };
+        io::stdout().write_all(text.as_bytes())?;
+        return Ok(());
+    }
+
     // Handle --completions before anything else
     if let Some(shell) = cli.completions {
         let mut cmd = cli::command();
@@ -49,7 +63,7 @@ fn main() -> Result<()> {
 
     // Validate output format before creating config; downstream dispatch
     // compares against the canonical spelling this returns.
-    let mut format = cli::validate_format(&cli.format)?;
+    let mut format = cli::validate_format(if cli.json { "json" } else { &cli.format })?;
     // --explain annotates the JSON group records; there is nothing to
     // annotate in the other formats.
     if cli.explain && !matches!(format.as_str(), "json" | "jsonl") {

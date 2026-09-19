@@ -12,6 +12,7 @@ pub mod normalize;
 pub mod output;
 pub mod patterns;
 pub mod sanitize;
+pub mod skill;
 
 pub use config::Config;
 pub use folder::{PatternFolder, apply_pii_masking};

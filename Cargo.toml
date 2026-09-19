@@ -11,7 +11,18 @@ keywords = ["llm", "log-compression", "log-analysis", "context-window", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 autobenches = false
 autotests = false
-exclude = [".github/", ".ideas/", ".claude/", "examples/", "tests/", "benches/"]
+# .claude/ stays out of the crate except the two files `--skill` embeds
+# (src/skill.rs): the agent skill ships inside the binary, version-locked.
+exclude = [
+    ".github/",
+    ".ideas/",
+    ".claude/**",
+    "!.claude/skills/lessence/SKILL.md",
+    "!.claude/skills/lessence/references/flags.md",
+    "examples/",
+    "tests/",
+    "benches/",
+]
 
 [[bin]]
 name = "lessence"

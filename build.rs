@@ -30,6 +30,10 @@ fn main() {
     // `--git-path` resolves correctly inside worktrees, where `.git` is a file.
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=Cargo.toml");
+    // `--skill` embeds these (src/skill.rs): a skill-only edit must refresh
+    // the dirty marker the printed provenance carries.
+    println!("cargo:rerun-if-changed=.claude/skills/lessence/SKILL.md");
+    println!("cargo:rerun-if-changed=.claude/skills/lessence/references/flags.md");
     for path in ["HEAD", "index"] {
         if let Some(resolved) = git(&["rev-parse", "--git-path", path]) {
             println!("cargo:rerun-if-changed={resolved}");

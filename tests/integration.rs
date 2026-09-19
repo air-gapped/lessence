@@ -30,6 +30,7 @@ mod integration {
     mod test_output_errors;
     mod test_performance;
     mod test_preflight;
+    mod test_skill;
     mod test_stats_json;
     mod test_stats_precedence;
     mod test_thread_safety;

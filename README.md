@@ -148,6 +148,7 @@ headline example above is the only CI-verified number.
 --summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
 --preflight    JSON analysis report to stdout (for automation/CI) [default: false]
 --format <FORMAT>    Output format: text (default), markdown, json (JSONL for agent consumption) [default: text]
+--json    Same as --format json [default: false]
 --essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
 --threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
@@ -162,6 +163,7 @@ headline example above is the only CI-verified number.
 --explain    Dev mode: annotate each JSON group record with the existing group it scored highest against before founding its own, the score, and the first token that differed. Implies --format json [default: false]
 --diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved
 --completions <COMPLETIONS>    Generate shell completion script and exit
+--skill <TOPIC>    Print the bundled agent skill and exit: `skill` (SKILL.md, the default) or `flags` (the complete flag reference). Install with `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and `lessence --skill flags > ~/.claude/skills/lessence/references/flags.md`
 FILE...    Input files (reads stdin if none given, use - for explicit stdin)
 ```
 <!-- gen:flags:end -->
@@ -196,15 +198,17 @@ The canonical skill lives in `.claude/skills/lessence`; the
 OpenCode recognizes both locations. On Windows, Git must be configured to
 check out repository symlinks as symlinks.
 
-**To install globally** (available in all projects):
+**To install globally** (available in all projects), from the binary you
+have — the skill is embedded at build time, so it always matches the
+installed version (the pattern comes from [herdr](https://github.com/herdrdev/herdr)'s `--skill`):
 
 ```bash
 mkdir -p ~/.claude/skills/lessence/references
-curl -fsSL https://raw.githubusercontent.com/air-gapped/lessence/main/.claude/skills/lessence/SKILL.md \
-  -o ~/.claude/skills/lessence/SKILL.md
-curl -fsSL https://raw.githubusercontent.com/air-gapped/lessence/main/.claude/skills/lessence/references/flags.md \
-  -o ~/.claude/skills/lessence/references/flags.md
+lessence --skill > ~/.claude/skills/lessence/SKILL.md
+lessence --skill flags > ~/.claude/skills/lessence/references/flags.md
 ```
+
+Re-run the two lines after upgrading lessence.
 
 Then just mention logs, errors, or "what's not normal" and the skill triggers.
 

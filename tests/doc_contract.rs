@@ -183,6 +183,18 @@ fn readme_flags_block() {
     assert_generated_region("README.md", "flags", &render_flags());
 }
 
+/// The flag reference `lessence --skill flags` prints carries the same
+/// binary-generated block as the README, so the list an agent installs is
+/// the binary's own (lessence-xo4).
+#[test]
+fn skill_flags_block() {
+    assert_generated_region(
+        ".claude/skills/lessence/references/flags.md",
+        "flags",
+        &render_flags(),
+    );
+}
+
 #[test]
 fn readme_pattern_names() {
     let patterns = lessence::cli::VALID_PATTERNS;

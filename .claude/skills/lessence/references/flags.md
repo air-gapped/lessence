@@ -122,4 +122,41 @@ is assigned in flush order.
 | Flag | Description |
 |------|-------------|
 | `--completions SHELL` | Generate shell completions (bash/zsh/fish/elvish/powershell) and exit. |
+| `--skill [TOPIC]` | Print the bundled agent skill and exit: `skill` (SKILL.md, the default) or `flags` (this file). The text is embedded at build time, so it is exactly the skill verified for the binary that prints it. Exits before any input is opened; an unknown topic exits 2. |
+| `--json` | Same as `--format json`. Conflicts with an explicit `--format` and, like every output-mode flag, with `--distill`. |
 | `FILE...` | Input files. Reads stdin if none given. Use `-` for explicit stdin. |
+
+## Every flag, from the binary
+
+Generated from the binary's own argument parser (`make docs`); the hand-written
+sections above explain, this block is the authoritative list.
+
+<!-- gen:flags:begin -->
+```
+--threshold <THRESHOLD>    Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting [default: 83]
+--min-collapse <MIN_COLLAPSE>    Minimum lines before folding (min: 3) [default: 3]
+--disable-patterns <DISABLE_PATTERNS>    Disable specific pattern groups (comma-separated). Valid names: timestamp, hash, network, uuid, email, path, duration, json, kubernetes, http-status, brackets, key-value, process, quoted-string, name
+--quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
+--preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
+--summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
+--preflight    JSON analysis report to stdout (for automation/CI) [default: false]
+--format <FORMAT>    Output format: text (default), markdown, json (JSONL for agent consumption) [default: text]
+--json    Same as --format json [default: false]
+--essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
+--threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
+--sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]
+--sanitize <ENTITY[:ACTION]>    Mask an entity: email, credential, host or ip, optionally with an action — redact (default) or pseudonym (a keyed tag such as <HOST:1a2b3c4d5e6f7a8b>, the same for the same value within a run, so masked hosts still fold; set LESSENCE_SANITIZE_KEY to make tags comparable across runs). Repeatable or comma-separated; --sanitize-pii equals --sanitize email,credential
+--max-line-length <MAX_LINE_LENGTH>    Maximum line length in bytes (skip lines exceeding this, supports K/M/G suffixes: 10M, 1G, default: 1M)
+--max-lines <MAX_LINES>    Maximum number of lines to process (stop after this count, default: no limit)
+--stats-json    Emit JSON statistics to stderr (replaces human-readable stats) [default: false]
+--top <TOP>    Show only the N most frequent patterns, sorted by count
+--fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
+--fail-on-pattern <FAIL_ON_PATTERN>    Exit 1 if any input line matches this regex (for CI gating)
+--frame-continuations    Attach indented continuation lines to the record above them, so a stack trace folds as one event instead of one group per frame [default: false]
+--explain    Dev mode: annotate each JSON group record with the existing group it scored highest against before founding its own, the score, and the first token that differed. Implies --format json [default: false]
+--diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved
+--completions <COMPLETIONS>    Generate shell completion script and exit
+--skill <TOPIC>    Print the bundled agent skill and exit: `skill` (SKILL.md, the default) or `flags` (the complete flag reference). Install with `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and `lessence --skill flags > ~/.claude/skills/lessence/references/flags.md`
+FILE...    Input files (reads stdin if none given, use - for explicit stdin)
+```
+<!-- gen:flags:end -->
