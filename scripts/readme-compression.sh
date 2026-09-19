@@ -50,7 +50,6 @@ fi
 if ! git -C "$ROOT" diff --quiet HEAD -- src/ Cargo.toml; then
     echo "src/ or Cargo.toml has uncommitted changes: commit them, rebuild, then measure" >&2; exit 1
 fi
-bin_sha="$(sha256sum "$BIN" | cut -c1-12)"
 table="| Log source | Lines in | Lines out | Reduction |
 |-----------|--------:|---------:|----------:|"
 while IFS='|' read -r name file; do
@@ -70,10 +69,9 @@ while IFS='|' read -r name file; do
 done <<< "$ROWS"
 block="<!-- gen:compression:begin -->
 <!-- gen:compression:at $head_sha -->
-<!-- measured $(date -u +%Y-%m-%d) with binary sha256 $bin_sha by scripts/readme-compression.sh -->
-Measured on $version, on production logs that are not distributable. Since 0.5.0
-the message text is part of an event's identity, so output is larger than in
-older tables and hides less.
+Measured on $version (commit $head_sha) on production logs that are not
+distributable. Since 0.5.0 the message text is part of an event's identity, so
+output is larger than in older tables and hides less.
 
 $table
 <!-- gen:compression:end -->"
