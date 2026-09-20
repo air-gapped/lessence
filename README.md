@@ -16,7 +16,7 @@ top templates (10 of 56, 68% of all lines):
    13.1%  261                	rpc error: code = Unknown desc = failed to setup network for sandbox "<HASH>": plugin type=<QUOTED_…
     8.7%  174                 > pod="<NAMESPACE>/<POD_NAME>"
 ...
-report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <bytes> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
+report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <n> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
 [73x] id=0 E0909 13:07:09.181236 → E0909 13:21:02.461198
 <TIMESTAMP>    <PID> nestedpendingoperations.go:348] Operation for "{volumeName:<K8S_NAME> podName:<UUID> nodeName:}" failed. No retries permitted until <TIMESTAMP> UTC m=+<DECIMAL> (durationBeforeRetry <DURATION>). Error: MountVolume.SetUp failed for volume <VARIES> (UniqueName: "<K8S_NAME>") pod <VARIES> (UID: "<UUID>") : failed to fetch token: Post "<PATH>": read tcp <IP>:<PORT>-><IP>:<PORT>: read: connection reset by peer
 variation: DURATION>=64 …[report kept 0]  IPV4=1 [127.0.0.1]  K8S_NAMESPACE=16 [kubernetes.io/projected/<UUID>-kube-api-access-52r58|kubernetes.io/projected/<UUID>-kube-api-access-b5ws4|kubernetes.io/projected/<UUID>-kube-api-access-gm4xp] …[showing 3 of 7] …[report kept 7]  K8S_VOLUME=1 [oidc-token]  NAME=29 [kube-api-access-b5ws4|kube-api-access-gm4xp|kube-api-access-l97vx] …[showing 3 of 7] …[report kept 7]  PATH=15 [https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-con|https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-dcg|https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-ope] …[showing 3 of 7] …[report kept 7]  PID=1 …[report kept 0]  PORT>=64 …[report kept 0]  QUOTED_STRING=11 ["<COMPONENT>-<SUFFIX>"|"<K8S_NAME>"|"<UUID>"] …[showing 3 of 7] …[report kept 7]  TIMESTAMP>=64 …[report kept 0]  UUID=15 [01af48d9-3471-4acf-93aa-689c01b31dff|1f0c6b7f-a1f8-4128-be41-448fb016a65a|1f4fdc9d-12d9-451b-9456-110b32706d57] …[showing 3 of 7] …[report kept 7]  VARIES=7 ["kube-api-access-<SUFFIX>"|"<COMPONENT>-<SUFFIX>"|"csi-rbdplugin-<SUFFIX>"] …[showing 3 of 7]  (report-sampled: DURATION, K8S_NAMESPACE, NAME, PATH, PID, PORT, QUOTED_STRING, TIMESTAMP, UUID — the report itself holds fewer values than the group had)
@@ -25,7 +25,7 @@ previewed here: samples
 <TIMESTAMP>    <PID> transport.go:356] Unable to cancel request for *otelhttp.Transport
 variation: PID=1 …[report kept 0]  TIMESTAMP=39 …[report kept 0]  (report-sampled: PID, TIMESTAMP — the report itself holds fewer values than the group had)
 ...
-report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <bytes> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
+report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <n> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
 recipes (the report is JSONL; none of these prints the whole file):
   top 40 by count:   jq -r 'select(.type=="group")|"\(.count)\t\(.id)\t\(.normalized[0:120])"' -- '~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl' | sort -rn | head -40
   ...
