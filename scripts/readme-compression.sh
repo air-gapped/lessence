@@ -12,6 +12,11 @@
 set -u
 export LC_ALL=C
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# The repository whose HEAD stamps the numbers and whose src/ must be clean.
+# Overridable so the self-test can exercise the guards below against a repo of
+# its own: this one is dirty in src/ exactly when a gate run is warranted, and
+# a self-test that reads it could only ever pass when the gate was not needed.
+REPO="${LESSENCE_REPO:-$ROOT}"
 README="${LESSENCE_README:-$ROOT/README.md}"
 BIN="${LESSENCE_BIN:-$ROOT/target/release/lessence}"
 O="${LESSENCE_ORIGINALS:-$ROOT/examples/originals}"
@@ -25,8 +30,8 @@ journalctl (7 days)|epyc_7days_journalctl.log"
 if [ "${1:-}" = --check ]; then
     at="$(sed -n 's/^<!-- gen:compression:at \([0-9a-f]*\) -->$/\1/p' "$README")"
     if [ -z "$at" ]; then echo "README compression table carries no generating commit; run scripts/readme-compression.sh --write" >&2; exit 1; fi
-    if ! git -C "$ROOT" cat-file -e "$at^{commit}" 2>/dev/null; then echo "README compression table was generated at unknown commit $at" >&2; exit 1; fi
-    if ! git -C "$ROOT" diff --quiet "$at" HEAD -- src/ Cargo.toml; then
+    if ! git -C "$REPO" cat-file -e "$at^{commit}" 2>/dev/null; then echo "README compression table was generated at unknown commit $at" >&2; exit 1; fi
+    if ! git -C "$REPO" diff --quiet "$at" HEAD -- src/ Cargo.toml; then
         echo "README compression table was generated at $at; src/ changed since. Run scripts/readme-compression.sh --write" >&2; exit 1
     fi
     echo "README compression table is current (generated at $at)"; exit 0
@@ -39,7 +44,7 @@ case "$version" in
     v[0-9]*.[0-9]*.[0-9]*) ;;
     *) echo "usage: $0 [--write] vX.Y.Z   (the version this table is released as)" >&2; exit 1 ;;
 esac
-head_sha="$(git -C "$ROOT" rev-parse --short=9 HEAD)"
+head_sha="$(git -C "$REPO" rev-parse --short=9 HEAD)"
 # The numbers are stamped with HEAD, so the binary must be HEAD's: its --version
 # carries the commit it was built from, and the tree it was built from must be
 # clean where folding lives. A stale binary would label old output as this commit.
@@ -47,7 +52,7 @@ built_from="$("$BIN" --version | sed -n 's/^lessence [^ ]* (\([0-9a-f]*\)\(-dirt
 if [ "$built_from" != "$head_sha" ]; then
     echo "binary $BIN was built from ${built_from:-?}, HEAD is $head_sha: rebuild (cargo build --release) before measuring" >&2; exit 1
 fi
-if ! git -C "$ROOT" diff --quiet HEAD -- src/ Cargo.toml; then
+if ! git -C "$REPO" diff --quiet HEAD -- src/ Cargo.toml; then
     echo "src/ or Cargo.toml has uncommitted changes: commit them, rebuild, then measure" >&2; exit 1
 fi
 table="| Log source | Lines in | Lines out | Reduction |

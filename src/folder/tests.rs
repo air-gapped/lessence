@@ -6407,24 +6407,6 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
     assert_eq!(into.varies.len(), 1);
 }
 
-/// take_distilled_rates 2318: the recorded rates leave with the call.
-#[test]
-fn distilled_rates_are_recorded_and_taken() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        distill: Some(3),
-        ..Config::default()
-    });
-    for i in 0..5 {
-        f.process_line(&format!("2025-01-01 10:00:0{i} worker tick"))
-            .unwrap();
-    }
-    f.finish().unwrap();
-    let rates = f.take_distilled_rates();
-    assert!(!rates.is_empty());
-    assert!(f.take_distilled_rates().is_empty(), "taken means gone");
-}
-
 /// source_name 2358: a registered source answers by name, stdin has none.
 #[test]
 fn a_registered_source_has_its_name_and_stdin_has_none() {
@@ -7051,20 +7033,5 @@ fn distillation_keeps_converging_groups_separate_until_selection() {
     assert_eq!(f.buffer.len(), 2);
     assert_eq!(f.buffer[0].template(), f.buffer[1].template());
     f.finish().unwrap();
-    assert_eq!(f.distill_templates.len(), 2);
-}
-
-#[test]
-fn distill_sample_indices_cover_small_groups_evenly() {
-    let indices: Vec<_> = (0..7).map(|i| distill_sample_index(20, i, 7)).collect();
-    assert_eq!(indices, [0, 3, 6, 10, 13, 16, 19]);
-    assert_eq!(distill_sample_index(1, 2, 3), 0);
-}
-
-#[test]
-#[cfg(target_pointer_width = "64")]
-fn distill_sample_index_clamps_floating_point_overshoot() {
-    // No group is allocated: exercise the same arithmetic on its size.
-    let n = 4_503_599_627_370_469;
-    assert_eq!(distill_sample_index(n, 15, 16), n - 1);
+    assert_eq!(f.distill_groups.len(), 2);
 }

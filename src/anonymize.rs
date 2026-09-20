@@ -1224,6 +1224,19 @@ mod tests {
     }
 
     #[test]
+    fn a_line_differing_only_in_numbers_is_one_shape() {
+        let a = "Aug 29 08:40:15 host1 sshd[123]: Failed password for root from 10.0.0.5";
+        let b = "Aug 30 09:41:16 host1 sshd[456]: Failed password for root from 10.0.0.9";
+        let c = "Aug 29 08:40:15 host1 sshd[123]: Accepted password for root from 10.0.0.5";
+        assert_eq!(word_shape(a), word_shape(b));
+        assert_ne!(word_shape(a), word_shape(c));
+        assert_eq!(
+            word_shape(a),
+            "Aug # #:#:# host# sshd # : Failed password for root from #.#.#.#"
+        );
+    }
+
+    #[test]
     fn word_shape_splits_a_spaceless_json_record_into_fields() {
         // One whitespace word each: without the field split both records
         // were `#`, and the distiller dropped one of the two events.

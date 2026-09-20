@@ -17,14 +17,14 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use rayon::prelude::*;
 
-use crate::anonymize::{Anonymizer, at_token_boundary, word_shape};
+use crate::anonymize::{Anonymizer, at_token_boundary};
 use crate::config::Config;
-use crate::folder::PatternFolder;
+use crate::folder::{
+    DISTILL_CHEAP_LINE_BYTES, DistillGroup, PatternFolder, ROLLUP_DISTINCT_CAP, VARIES_MARK,
+};
 use crate::ingest::{Event, IngestReport, Ingestor, InputReader};
 use crate::normalize::Normalizer;
 use crate::patterns::Token;
-
-pub(crate) mod rates;
 
 /// How many failures of one kind to print before summarising the rest.
 /// A contract check that floods the terminal teaches nothing the first
@@ -90,8 +90,32 @@ pub fn run(
     // other than the one it emits would carry members for groups that no
     // longer exist.
     let source_fold = fold(config, source)?;
-    let kept = keep_set(source, opts, &source_fold.kept);
-    let out_lines: Vec<String> = kept.iter().map(|&n| source[n - 1].clone()).collect();
+
+    // Whether a chosen pair really stays apart can only be answered by
+    // folding the result: two groups the input kept apart may merge once
+    // the thousands of lines between them are gone, and a corpus that
+    // over-folds would teach every later gate that the over-fold is
+    // correct. Where it happens the bucket picks a different partner and
+    // the fold is tried again; the loop ends when nothing merged or when
+    // no untried bucket is left to blame.
+    let mut careful = Careful::new();
+    let (kept, out_lines, output_fold) = loop {
+        let kept = keep_set(source, opts, &source_fold, &careful);
+        let out_lines: Vec<String> = kept.lines.iter().map(|&n| source[n - 1].clone()).collect();
+        let output_fold = fold(config, &out_lines)?;
+        let blame: Vec<Vec<&'static str>> = merged_templates(&kept, &output_fold)
+            .iter()
+            .filter_map(|t| source_fold.groups.iter().find(|g| &&g.template == t))
+            .map(|g| g.token_types.clone())
+            .filter(|k| careful.get(k).copied().unwrap_or(0) < SPLIT_GIVE_UP)
+            .collect();
+        if blame.is_empty() {
+            break (kept, out_lines, output_fold);
+        }
+        for key in blame {
+            *careful.entry(key).or_default() += 1;
+        }
+    };
 
     let mut stdout = io::stdout().lock();
     for line in &out_lines {
@@ -104,16 +128,7 @@ pub fn run(
     stdout.flush()?;
 
     let mut ok = true;
-    let output_fold = fold(config, &out_lines)?;
-    ok &= compare_templates(&source_fold, &output_fold);
-    if opts.distill {
-        rates::report(
-            &source_fold.rates,
-            &output_fold.rates,
-            &mut io::stderr().lock(),
-        )?;
-    }
-    ok &= check_word_shapes(source, &out_lines);
+    ok &= compare_coverage(&source_fold, &output_fold, &kept);
     if let Some(a) = anonymizer.as_ref() {
         ok &= check_survivors(&a.replaced_originals(), &out_lines);
         ok &= check_vocabulary(a, &out_lines);
@@ -152,12 +167,67 @@ fn anonymize_all(
     Ok(lines.iter().map(|line| anonymizer.rewrite(line)).collect())
 }
 
-/// What one fold of an input yields: the line numbers a distillation keeps
-/// and the template of every group that formed.
+/// What one fold of an input yields: a record per group of what it can
+/// prove and the lines that prove it.
 struct Fold {
-    kept: Vec<usize>,
-    templates: Vec<String>,
-    rates: rates::Rates,
+    groups: Vec<DistillGroup>,
+}
+
+impl Fold {
+    /// Everything a distillation of this input must still prove.
+    fn coverage(&self) -> Coverage {
+        let mut c = Coverage::default();
+        for g in &self.groups {
+            c.structures.insert(g.token_types.clone());
+            c.token_types.extend(g.all_types.iter().copied());
+            c.folded |= g.kept.len() >= crate::config::DEFAULT_MIN_COLLAPSE;
+            c.varies |= g.template.contains(VARIES_MARK);
+            c.capped |= g.distinct_forms > ROLLUP_DISTINCT_CAP;
+            c.capped_affordable |= !g.capping_extra.is_empty();
+        }
+        c
+    }
+
+    fn templates(&self) -> BTreeSet<&str> {
+        self.groups.iter().map(|g| g.template.as_str()).collect()
+    }
+}
+
+/// The properties a distilled log has to carry over from the log it came
+/// from. Not every template — a hundred literal variations of one event
+/// prove exactly what two of them prove, and the difference between those
+/// two numbers is the whole size of the file. The templates that *were*
+/// chosen are held separately, in [`Cover::templates`]: those must survive,
+/// or the distillation merged two things the input kept apart.
+#[derive(Default)]
+struct Coverage {
+    /// Every distinct token-type structure.
+    structures: BTreeSet<Vec<&'static str>>,
+    /// Every token type that fires anywhere.
+    token_types: BTreeSet<&'static str>,
+    /// Some group folds at all — below `min_collapse` no variation is
+    /// computed, so a file of singletons proves no grouping.
+    folded: bool,
+    /// Some template carries a `<VARIES>` slot.
+    varies: bool,
+    /// Some rollup reports `capped`.
+    capped: bool,
+    /// Some group could show the capped state without costing a fortune
+    /// in bytes. The state has to be visible somewhere across the corpus
+    /// set, not in every corpus: a log of 23 KB Kubernetes events would
+    /// pay megabytes for it, so there it is dropped on purpose and the
+    /// contract does not ask for it back.
+    capped_affordable: bool,
+}
+
+/// The chosen lines, and what choosing them promised.
+#[derive(Default)]
+struct Cover {
+    lines: BTreeSet<usize>,
+    /// The template of every group the cover kept. Each one must still be
+    /// a group of its own after the output is folded: two of them landing
+    /// in one group is an over-fold the input did not have.
+    templates: BTreeSet<String>,
 }
 
 fn fold(config: &Config, lines: &[String]) -> Result<Fold> {
@@ -166,69 +236,264 @@ fn fold(config: &Config, lines: &[String]) -> Result<Fold> {
         folder.process_line_at(line, None, i + 1)?;
     }
     folder.finish()?;
-    let (kept, templates) = folder.take_distilled();
-    let rates = folder.take_distilled_rates();
     Ok(Fold {
-        kept,
-        templates,
-        rates,
+        groups: folder.take_distilled(),
     })
 }
 
-/// The input line numbers the output carries, in order: what the folder
-/// selected, plus the earliest line of every word shape those lines do not
-/// already show. `--anonymize` without `--distill` keeps everything.
-fn keep_set(lines: &[String], opts: &Options, selected: &[usize]) -> BTreeSet<usize> {
+/// The input line numbers the output carries, in order.
+///
+/// `--anonymize` without `--distill` keeps everything. `--distill` keeps a
+/// covering subset: for each distinct token-type structure the group that
+/// shows it best, plus the group nearest to that one wherever the
+/// structure split, plus whatever top-up the remaining properties need.
+/// Everything else in the input is another literal spelling of a shape
+/// already present.
+fn keep_set(lines: &[String], opts: &Options, source: &Fold, careful: &Careful) -> Cover {
     if !opts.distill {
-        return (1..=lines.len()).collect();
+        return Cover {
+            lines: (1..=lines.len()).collect(),
+            templates: BTreeSet::new(),
+        };
     }
-    let mut kept: BTreeSet<usize> = selected.iter().copied().collect();
-
-    // Word-shape coverage. The detectors cannot see a fold across a literal
-    // word — that is the case where they found nothing to see — so the shape
-    // is computed without them, and any shape the selection missed brings
-    // its earliest line along.
-    let covered: HashSet<String> = kept.iter().map(|&n| word_shape(&lines[n - 1])).collect();
-    let mut earliest: BTreeMap<String, usize> = BTreeMap::new();
-    for (i, line) in lines.iter().enumerate() {
-        earliest.entry(word_shape(line)).or_insert(i + 1);
-    }
-    for (shape, line_no) in &earliest {
-        if !covered.contains(shape) {
-            kept.insert(*line_no);
-        }
-    }
-    kept
+    cover(&source.groups, careful)
 }
 
-/// Contract 1: folding the output yields the same templates as folding the
-/// input. Both sides are read after anonymisation, so an invented value is
-/// not mistaken for a lost shape.
-fn compare_templates(source: &Fold, output: &Fold) -> bool {
-    let want: BTreeSet<&String> = source.templates.iter().collect();
-    let have: BTreeSet<&String> = output.templates.iter().collect();
+/// How hard a structure has already been tried. A bucket starts by
+/// pairing its busiest group with the nearest other one — the split worth
+/// proving. If those two merge once the log between them is gone, the
+/// most *distant* group in the bucket is paired instead; if that merges
+/// too, the bucket keeps its primary alone and claims no split. Dropping
+/// the partner costs no coverage: every group in a bucket carries the
+/// same structure and the same token types.
+type Careful = BTreeMap<Vec<&'static str>, u8>;
 
-    let lost: Vec<&String> = want.difference(&have).copied().collect();
-    let gained: Vec<&String> = have.difference(&want).copied().collect();
-    report("template missing from the distilled output", &lost);
-    report("template only in the distilled output", &gained);
-    lost.is_empty() && gained.is_empty()
+/// Longest common prefix, in bytes. Two templates that agree for a long
+/// way and then disagree are the pair a fold came closest to merging, so
+/// they are the pair worth keeping as the proof that it did not.
+fn shared_prefix(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
 }
 
-/// Contract 1b: every distinct word shape of the input appears in the
-/// output, recomputed on the final text.
-fn check_word_shapes(source: &[String], out_lines: &[String]) -> bool {
-    let have: HashSet<String> = out_lines.iter().map(|l| word_shape(l)).collect();
-    let mut missing: BTreeSet<String> = BTreeSet::new();
-    for line in source {
-        let shape = word_shape(line);
-        if !have.contains(&shape) {
-            missing.insert(shape);
+/// Attempts per structure before the split is given up on.
+const SPLIT_GIVE_UP: u8 = 2;
+
+fn cover(groups: &[DistillGroup], careful: &Careful) -> Cover {
+    let mut buckets: BTreeMap<&[&'static str], Vec<usize>> = BTreeMap::new();
+    for (i, g) in groups.iter().enumerate() {
+        buckets.entry(&g.token_types).or_default().push(i);
+    }
+
+    let mut chosen: BTreeSet<usize> = BTreeSet::new();
+    for (key, members) in &buckets {
+        // The busiest group shows the structure; ties go to the earliest so
+        // the choice does not move between runs.
+        let &primary = members
+            .iter()
+            .max_by_key(|&&i| (groups[i].count, std::cmp::Reverse(i)))
+            .expect("a bucket is never empty");
+        chosen.insert(primary);
+
+        // Two kinds of split have to survive, and one group of each is
+        // enough. A *literal* split is two groups that agree for a long
+        // way and then say a different word — the pair a widened template
+        // would swallow first, so the nearest one is taken. An *anchor*
+        // split is two groups the folder promises never to merge whatever
+        // they look like, `success=yes` against `success=no`; that promise
+        // stops being tested the moment one side is dropped, so one group
+        // from a different anchor comes too. Taking one of each rather
+        // than every anchor value is what keeps a log of fifty pods from
+        // costing fifty copies of the same event.
+        let level = careful.get(key.to_vec().as_slice()).copied().unwrap_or(0);
+        if level < SPLIT_GIVE_UP
+            && let Some(&partner) = members
+                .iter()
+                .filter(|&&i| i != primary && groups[i].anchor == groups[primary].anchor)
+                .max_by_key(|&&i| {
+                    let shared = shared_prefix(&groups[i].template, &groups[primary].template);
+                    // Where the nearest pair turns out to merge once the
+                    // log around it is gone, the most *distant* group is
+                    // taken instead: a split the file can prove beats a
+                    // stronger one it cannot.
+                    let rank = if level == 0 {
+                        shared
+                    } else {
+                        usize::MAX - shared
+                    };
+                    (rank, std::cmp::Reverse(i))
+                })
+        {
+            chosen.insert(partner);
+        }
+        // Where the lines are small, every anchor value gets a group:
+        // there is no telling from here which of them a gate cares about,
+        // and `success=no` buried under a hundred busier anchors is
+        // exactly the one worth having. Where the lines are large the
+        // same completeness would cost megabytes, so one other anchor
+        // proves the mechanism and the rest are dropped.
+        let mut by_anchor: BTreeMap<u64, usize> = BTreeMap::new();
+        for &i in members
+            .iter()
+            .filter(|&&i| groups[i].anchor != groups[primary].anchor)
+        {
+            by_anchor
+                .entry(groups[i].anchor)
+                .and_modify(|best| {
+                    if (groups[i].count, std::cmp::Reverse(i))
+                        > (groups[*best].count, std::cmp::Reverse(*best))
+                    {
+                        *best = i;
+                    }
+                })
+                .or_insert(i);
+        }
+        let cheap = groups[primary].avg_bytes <= DISTILL_CHEAP_LINE_BYTES;
+        let mut others: Vec<usize> = by_anchor.into_values().collect();
+        if !cheap {
+            others.sort_unstable_by_key(|&i| (std::cmp::Reverse(groups[i].count), i));
+            others.truncate(1);
+        }
+        chosen.extend(others);
+    }
+
+    // Top-ups for the properties a per-structure choice does not imply.
+    if !chosen
+        .iter()
+        .any(|&i| groups[i].template.contains(VARIES_MARK))
+        && let Some(i) = cheapest(groups, |g| g.template.contains(VARIES_MARK))
+    {
+        chosen.insert(i);
+    }
+    if !chosen
+        .iter()
+        .any(|&i| groups[i].kept.len() >= crate::config::DEFAULT_MIN_COLLAPSE)
+        && let Some(i) = cheapest(groups, |g| {
+            g.kept.len() >= crate::config::DEFAULT_MIN_COLLAPSE
+        })
+    {
+        chosen.insert(i);
+    }
+
+    let mut out = Cover::default();
+    for &i in &chosen {
+        out.lines.extend(groups[i].kept.iter().copied());
+        out.templates.insert(groups[i].template.clone());
+    }
+
+    // `capped` costs sixty-odd extra lines, so it is taken once per input
+    // and only from a group that offered it (small lines, reachable cap).
+    // A chosen group having reached the cap in the *source* proves nothing
+    // here: the output carries six of its forms unless the extra members
+    // come with it.
+    if let Some(i) = cheapest(groups, |g| !g.capping_extra.is_empty()) {
+        out.lines.extend(groups[i].kept.iter().copied());
+        out.lines.extend(groups[i].capping_extra.iter().copied());
+        out.templates.insert(groups[i].template.clone());
+    }
+    out
+}
+
+/// The group satisfying `want` that costs the fewest lines to bring in.
+fn cheapest(groups: &[DistillGroup], want: impl Fn(&DistillGroup) -> bool) -> Option<usize> {
+    groups
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| want(g))
+        .min_by_key(|(i, g)| (g.kept.len() + g.capping_extra.len(), *i))
+        .map(|(i, _)| i)
+}
+
+/// Contract 1: everything the input proved, the output still proves.
+///
+/// Not template equality — `--distill` drops redundant spellings of a
+/// shape on purpose, so the output's template set is a subset by design.
+/// What may not shrink is the coverage: the structures, the token types,
+/// the splits, and the three variation states.
+/// A template's literal words — everything outside a `<PLACEHOLDER>`.
+///
+/// Two templates with the same literal words say the same thing and
+/// differ only in what sits between the words, so folding them together
+/// widens a placeholder and loses nothing. Two with different literal
+/// words are different events, and folding them is the over-fold that
+/// matters: `Server Reject` disappearing inside `Server Busy`.
+fn literal_words(template: &str) -> Vec<&str> {
+    let mut words: Vec<&str> = Vec::new();
+    let mut rest = template;
+    while let Some(open) = rest.find('<') {
+        words.extend(rest[..open].split_whitespace());
+        match rest[open..].find('>') {
+            Some(close) => rest = &rest[open + close + 1..],
+            None => return words,
         }
     }
-    let refs: Vec<&String> = missing.iter().collect();
-    report("word shape missing from the distilled output", &refs);
-    missing.is_empty()
+    words.extend(rest.split_whitespace());
+    words
+}
+
+/// The groups the cover deliberately kept whose event is no longer shown
+/// on a line of its own once the output is folded.
+///
+/// A distilled corpus is what every later gate reads as correct, so it
+/// must never itself demonstrate an over-fold. It may, though, fold two
+/// spellings of one event together — the input often keeps those apart
+/// only because thousands of lines sat between them — and that is the
+/// difference the literal words decide.
+fn merged_templates<'a>(cover: &'a Cover, output: &Fold) -> Vec<&'a String> {
+    let have = output.templates();
+    let said: BTreeSet<Vec<&str>> = have.iter().map(|t| literal_words(t)).collect();
+    cover
+        .templates
+        .iter()
+        .filter(|t| !have.contains(t.as_str()) && !said.contains(&literal_words(t)))
+        .collect()
+}
+
+fn compare_coverage(source: &Fold, output: &Fold, cover: &Cover) -> bool {
+    let want = source.coverage();
+    let have = output.coverage();
+
+    let missing = |what: &str, items: Vec<String>| -> bool {
+        let refs: Vec<&String> = items.iter().collect();
+        report(what, &refs);
+        items.is_empty()
+    };
+
+    let mut ok = missing(
+        "token-type structure missing from the distilled output",
+        want.structures
+            .difference(&have.structures)
+            .map(|s| s.join(","))
+            .collect(),
+    );
+    ok &= missing(
+        "token type missing from the distilled output",
+        want.token_types
+            .difference(&have.token_types)
+            .map(|t| (*t).to_string())
+            .collect(),
+    );
+    ok &= missing(
+        "two groups the input kept apart merged in the distilled output",
+        merged_templates(cover, output)
+            .into_iter()
+            .cloned()
+            .collect(),
+    );
+    for (name, wanted, got) in [
+        ("a folded group", want.folded, have.folded),
+        ("a <VARIES> template", want.varies, have.varies),
+        (
+            "a capped rollup",
+            want.capped && want.capped_affordable,
+            have.capped,
+        ),
+    ] {
+        if wanted && !got {
+            eprintln!("lessence: the distilled output no longer shows {name}");
+            ok = false;
+        }
+    }
+    ok
 }
 
 /// Contract 2: no value the rewriter actually replaced survives in the
@@ -332,61 +597,6 @@ fn read_vocabulary(path: &PathBuf) -> Result<Vec<String>> {
 mod tests {
     use super::*;
 
-    /// distill_take 2619 (the identical-hash skip), 2627 (the template
-    /// replace range) and 2638 (the distinct-form cap). Sixty-four distinct
-    /// forms fill the cap; the sixty-sixth member is the first to mark a
-    /// second slot, so only the template-replay step can pick it. The
-    /// sample points for n = 70 (0, 9, 17, 26, 35, 43, 52, 60, 69) miss
-    /// it, and with two members the floor step adds nothing.
-    #[test]
-    fn a_slot_first_marked_past_the_distinct_cap_is_still_kept() {
-        let stem = "alpha bravo charlie delta echo foxtrot golf hotel";
-        let word = |i: usize| {
-            format!(
-                "k{}{}",
-                (b'a' + (i / 26) as u8) as char,
-                (b'a' + (i % 26) as u8) as char
-            )
-        };
-        let mut lines = vec![format!("{stem} india kzz")];
-        for i in 0..64 {
-            lines.push(format!("{stem} india {}", word(i)));
-        }
-        lines.push(format!("{stem} juliet kzz"));
-        for _ in 0..4 {
-            lines.push(format!("{stem} india kzz"));
-        }
-        assert_eq!(lines.len(), 70);
-        let folded = fold(&cfg(2), &lines).expect("fold");
-        assert_eq!(
-            folded.templates.len(),
-            1,
-            "one group: {:?}",
-            folded.templates
-        );
-        let mut kept = folded.kept.clone();
-        kept.sort_unstable();
-        assert!(
-            kept.contains(&66),
-            "the second slot's first witness: {kept:?}"
-        );
-        let expected: Vec<usize> = (1..=64).chain([66, 70]).collect();
-        assert_eq!(kept, expected);
-    }
-
-    /// The log-scaled sample is
-    /// round(i * (n-1) / (target-1)). For twenty identical lines and one
-    /// member, target is 7 and nothing else selects anything past the
-    /// first line, so the kept set is the sample itself.
-    #[test]
-    fn the_log_scaled_sample_lands_on_its_exact_positions() {
-        let lines: Vec<String> = (0..20).map(|_| "worker finished job".to_string()).collect();
-        let folded = fold(&cfg(1), &lines).expect("fold");
-        let mut kept = folded.kept.clone();
-        kept.sort_unstable();
-        assert_eq!(kept, vec![1, 4, 7, 11, 14, 17, 20]);
-    }
-
     fn cfg(members: usize) -> Config {
         Config {
             distill: Some(members),
@@ -394,72 +604,6 @@ mod tests {
             thread_count: Some(1),
             ..Config::default()
         }
-    }
-
-    #[test]
-    fn a_folded_group_contributes_members_and_a_singleton_stays() {
-        let mut lines: Vec<String> = (0..10)
-            .map(|i| format!("Connection from 10.0.0.{i} accepted"))
-            .collect();
-        lines.push("a lone unrepeated sentence".to_string());
-        let folded = fold(&cfg(3), &lines).expect("fold");
-        assert!(
-            folded.kept.len() >= 4,
-            "three members plus the singleton: {:?}",
-            folded.kept
-        );
-        assert!(
-            folded.kept.contains(&11),
-            "the singleton is kept: {:?}",
-            folded.kept
-        );
-    }
-
-    #[test]
-    fn a_large_group_keeps_a_log_scaled_sample_in_order() {
-        // Every line identical, so the group has one normalized form and
-        // neither the template-building step nor the distinct-form step
-        // (capped at ROLLUP_DISTINCT_CAP) picks up any extra members: with
-        // `--members` 3, the floor step contributes indices {0,1,2} before
-        // the log-scaled sample is unioned in.
-        for (n, expected) in [(12_000, 18), (150, 12), (3, 3)] {
-            let lines: Vec<String> = (1..=n).map(|_| "worker finished job".to_string()).collect();
-            let folded = fold(&cfg(3), &lines).expect("fold");
-            let mut kept = folded.kept.clone();
-            kept.sort_unstable();
-            assert_eq!(kept.len(), expected, "n={n}: {kept:?}");
-            assert_eq!(kept[0], 1, "n={n}: first line kept: {kept:?}");
-            assert_eq!(*kept.last().unwrap(), n, "n={n}: last line kept: {kept:?}");
-            assert!(
-                kept.windows(2).all(|w| w[0] < w[1]),
-                "n={n}: kept must be strictly ascending: {kept:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn word_shape_coverage_adds_a_line_the_members_missed() {
-        // Nine identical events and one that differs in a literal word. The
-        // odd line is last, so "the first three members" would drop it.
-        let mut lines: Vec<String> = (0..9)
-            .map(|i| format!("worker {i} finished cleanly"))
-            .collect();
-        lines.push("worker 9 finished dirty".to_string());
-        let config = cfg(3);
-        let folded = fold(&config, &lines).expect("fold");
-        let opts = Options {
-            distill: true,
-            members: 3,
-            anonymize: false,
-            words_file: None,
-            seed: None,
-        };
-        let kept = keep_set(&lines, &opts, &folded.kept);
-        let shapes: HashSet<String> = kept.iter().map(|&n| word_shape(&lines[n - 1])).collect();
-        assert!(
-            shapes.contains("worker # finished dirty"),
-            "the odd word shape must survive: {shapes:?}"
-        );
     }
 
     fn opts() -> Options {
@@ -472,6 +616,169 @@ mod tests {
         }
     }
 
+    /// Selection, end to end: fold, cover, emit.
+    fn distilled(lines: &[String], members: usize) -> (Fold, Cover, Vec<String>) {
+        let config = cfg(members);
+        let source = fold(&config, lines).expect("fold");
+        let cover = keep_set(lines, &opts(), &source, &Careful::new());
+        let out = cover.lines.iter().map(|&n| lines[n - 1].clone()).collect();
+        (source, cover, out)
+    }
+
+    /// A member that marks a template slot no earlier member marked is the
+    /// only evidence that slot varies, so it is kept however late it sits —
+    /// past the distinct-form bound and past `--members`.
+    #[test]
+    fn a_slot_first_marked_past_the_form_bound_is_still_kept() {
+        let stem = "alpha bravo charlie delta echo foxtrot golf hotel";
+        let word = |i: usize| {
+            format!(
+                "k{}{}",
+                (b'a' + (i / 26) as u8) as char,
+                (b'a' + (i % 26) as u8) as char
+            )
+        };
+        let mut lines = vec![format!("{stem} india kzz")];
+        for i in 0..64 {
+            lines.push(format!("{stem} india {}", word(i)));
+        }
+        // The first member to differ in the `india` slot, long past the
+        // point where the distinct-form bound stopped collecting.
+        lines.push(format!("{stem} juliet kzz"));
+        for _ in 0..4 {
+            lines.push(format!("{stem} india kzz"));
+        }
+        assert_eq!(lines.len(), 70);
+
+        let folded = fold(&cfg(2), &lines).expect("fold");
+        assert_eq!(folded.groups.len(), 1, "one group");
+        assert!(
+            folded.groups[0].kept.contains(&66),
+            "the second slot's first witness: {:?}",
+            folded.groups[0].kept
+        );
+        assert!(
+            folded.groups[0].template.matches(VARIES_MARK).count() >= 2,
+            "both slots vary: {}",
+            folded.groups[0].template
+        );
+    }
+
+    /// Proportion is not a property a distillation carries. A group of
+    /// twelve thousand and a group of twelve prove the same shapes, and
+    /// the distilled file shows them at the same size.
+    #[test]
+    fn a_huge_group_and_a_small_one_cost_the_same() {
+        let sizes = [12_000, 150, 6];
+        let kept: Vec<usize> = sizes
+            .iter()
+            .map(|&n| {
+                let lines: Vec<String> =
+                    (1..=n).map(|_| "worker finished job".to_string()).collect();
+                let folded = fold(&cfg(3), &lines).expect("fold");
+                folded.groups[0].kept.len()
+            })
+            .collect();
+        assert_eq!(kept, vec![3, 3, 3], "identical lines: {kept:?}");
+    }
+
+    /// `min_collapse` members at least, wherever a fold is claimed: below
+    /// three lessence computes no variation at all, so a group shown with
+    /// two members proves a template and nothing under it.
+    #[test]
+    fn a_folded_group_stays_visible_as_a_fold() {
+        let mut lines: Vec<String> = (0..10)
+            .map(|i| format!("Connection from 10.0.0.{i} accepted"))
+            .collect();
+        lines.push("a lone unrepeated sentence".to_string());
+
+        let (source, _, out) = distilled(&lines, 3);
+        assert!(source.coverage().folded, "the input folds");
+        let after = fold(&cfg(3), &out).expect("fold");
+        assert!(
+            after.coverage().folded,
+            "the distillation still folds: {out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l == "a lone unrepeated sentence"),
+            "the singleton is not folded away, it is the log: {out:?}"
+        );
+    }
+
+    /// One event in many literal spellings proves what two of them prove.
+    /// The cover keeps two — the busiest, and the one nearest it — not all
+    /// twenty.
+    #[test]
+    fn many_spellings_of_one_structure_cost_two_groups() {
+        let spellings = [
+            "payment declined for order 7",
+            "kitchen light switched off 7",
+            "train arrived at platform 7",
+            "letter posted to recipient 7",
+            "music playback paused after 7",
+            "garden hose leaked litres 7",
+        ];
+        let mut lines: Vec<String> = Vec::new();
+        for text in spellings {
+            for _ in 0..5 {
+                lines.push(text.to_string());
+            }
+        }
+        let (source, cover, _) = distilled(&lines, 3);
+        assert_eq!(
+            source.groups.len(),
+            spellings.len(),
+            "one group per spelling in the input: {:?}",
+            source
+                .groups
+                .iter()
+                .map(|g| &g.template)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            source
+                .groups
+                .iter()
+                .map(|g| g.token_types.clone())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            1,
+            "all of them one structure"
+        );
+        assert_eq!(
+            cover.templates.len(),
+            2,
+            "one structure, two groups kept: {:?}",
+            cover.templates
+        );
+    }
+
+    /// Every token type the input fires still fires in the distillation,
+    /// including one that only ever appears on a late member.
+    #[test]
+    fn a_token_type_seen_once_late_still_fires() {
+        let mut lines: Vec<String> = (0..40)
+            .map(|i| format!("worker finished job {i} cleanly"))
+            .collect();
+        lines.push("worker finished job 99 cleanly at 10.0.0.7".to_string());
+
+        let (source, _, out) = distilled(&lines, 3);
+        assert!(
+            source.coverage().token_types.contains("IPV4"),
+            "the fixture must fire IPV4 for this test to mean anything"
+        );
+        let after = fold(&cfg(3), &out).expect("fold");
+        assert!(
+            compare_coverage(
+                &source,
+                &after,
+                &keep_set(&lines, &opts(), &source, &Careful::new())
+            ),
+            "coverage must hold"
+        );
+        assert!(after.coverage().token_types.contains("IPV4"));
+    }
+
     /// Nine events and a tenth that differs in one literal word.
     fn over_folded() -> Vec<String> {
         let mut lines: Vec<String> = (0..9)
@@ -481,47 +788,92 @@ mod tests {
         lines
     }
 
+    /// The contract is coverage, not proportion — but a distillation that
+    /// loses a token type, a structure or the fold itself must still fail.
     #[test]
-    fn the_template_check_fires_when_a_variant_is_dropped() {
+    fn the_coverage_check_fires_when_a_property_is_dropped() {
         let lines = over_folded();
         let config = cfg(3);
         let folded = fold(&config, &lines).expect("fold");
         assert!(
-            folded.templates.iter().any(|t| t.contains("<VARIES>")),
-            "the fixture must over-fold for this test to mean anything: {:?}",
-            folded.templates
+            folded
+                .groups
+                .iter()
+                .any(|g| g.template.contains(VARIES_MARK)),
+            "the fixture must over-fold for this test to mean anything"
         );
 
-        // "The first three members" — the selection this feature exists to
-        // replace — loses the tenth line, and the check must say so.
-        let naive: Vec<String> = lines[..3].to_vec();
+        // A single line proves no fold and no variation.
+        let naive: Vec<String> = lines[..1].to_vec();
+        let cover = keep_set(&lines, &opts(), &folded, &Careful::new());
         assert!(
-            !compare_templates(&folded, &fold(&config, &naive).expect("fold")),
-            "a distillation missing the rare variant must not pass"
+            !compare_coverage(&folded, &fold(&config, &naive).expect("fold"), &cover),
+            "a distillation that no longer folds must not pass"
         );
 
-        // What the selector actually keeps does pass.
-        let kept = keep_set(&lines, &opts(), &folded.kept);
-        let honest: Vec<String> = kept.iter().map(|&n| lines[n - 1].clone()).collect();
+        // What the cover actually keeps does pass.
+        let honest: Vec<String> = cover.lines.iter().map(|&n| lines[n - 1].clone()).collect();
         assert!(
-            compare_templates(&folded, &fold(&config, &honest).expect("fold")),
-            "the selected members must reproduce every template"
+            compare_coverage(&folded, &fold(&config, &honest).expect("fold"), &cover),
+            "the covered members must prove everything the input proved"
+        );
+    }
+
+    /// Two events that merge only because the log between them is gone is
+    /// the one thing a distilled corpus may never demonstrate: every later
+    /// gate reads it as correct. Merging two spellings of the *same* event
+    /// is not that — the literal words decide which is which.
+    #[test]
+    fn a_merge_across_a_literal_word_is_an_over_fold_and_one_across_a_value_is_not() {
+        let cover = Cover {
+            lines: BTreeSet::new(),
+            templates: ["<TIMESTAMP> fs (<VARIES> unmounting volume <UUID>".to_string()]
+                .into_iter()
+                .collect(),
+        };
+        let surviving = |t: &str| Fold {
+            groups: vec![DistillGroup {
+                template: t.to_string(),
+                token_types: Vec::new(),
+                all_types: Vec::new(),
+                anchor: 0,
+                avg_bytes: 0,
+                kept: Vec::new(),
+                capping_extra: Vec::new(),
+                count: 1,
+                distinct_forms: 1,
+            }],
+        };
+        assert_eq!(
+            merged_templates(
+                &cover,
+                &surviving("<TIMESTAMP> fs (<VARIES> mounted volume <UUID>")
+            )
+            .len(),
+            1,
+            "unmounting swallowed by mounted is an over-fold"
+        );
+        assert!(
+            merged_templates(
+                &cover,
+                &surviving("<TIMESTAMP> fs (<NAME> unmounting volume <VARIES>")
+            )
+            .is_empty(),
+            "the same words with a wider placeholder is not"
         );
     }
 
     #[test]
-    fn the_word_shape_check_fires_when_a_shape_is_dropped() {
-        let lines = over_folded();
-        let naive: Vec<String> = lines[..3].to_vec();
-        assert!(
-            !check_word_shapes(&lines, &naive),
-            "a distillation missing a word shape must not pass"
+    fn literal_words_ignore_every_placeholder() {
+        assert_eq!(
+            literal_words("<TIMESTAMP> host sshd[<PID>]: Failed for <NAME> from <IPV4>"),
+            vec!["host", "sshd[", "]:", "Failed", "for", "from"]
         );
-
-        let folded = fold(&cfg(3), &lines).expect("fold");
-        let kept = keep_set(&lines, &opts(), &folded.kept);
-        let honest: Vec<String> = kept.iter().map(|&n| lines[n - 1].clone()).collect();
-        assert!(check_word_shapes(&lines, &honest));
+        assert_eq!(
+            literal_words("a <UNCLOSED b c"),
+            vec!["a"],
+            "an unterminated placeholder ends the scan rather than panicking"
+        );
     }
 
     #[test]
@@ -560,19 +912,6 @@ mod tests {
         assert!(
             !check_vocabulary(&a, &["node9zorquidfoo online".to_string()]),
             "a 6+ character vocabulary word is checked as a substring anywhere"
-        );
-    }
-
-    #[test]
-    fn a_line_differing_only_in_numbers_is_one_shape() {
-        let a = "Aug 29 08:40:15 host1 sshd[123]: Failed password for root from 10.0.0.5";
-        let b = "Aug 30 09:41:16 host1 sshd[456]: Failed password for root from 10.0.0.9";
-        let c = "Aug 29 08:40:15 host1 sshd[123]: Accepted password for root from 10.0.0.5";
-        assert_eq!(word_shape(a), word_shape(b));
-        assert_ne!(word_shape(a), word_shape(c));
-        assert_eq!(
-            word_shape(a),
-            "Aug # #:#:# host# sshd # : Failed password for root from #.#.#.#"
         );
     }
 }

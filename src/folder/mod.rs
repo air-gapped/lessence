@@ -452,14 +452,10 @@ pub struct PatternFolder {
     /// JSON modes. Parameters (K, distinct_cap) are calibrated against
     /// the full corpus; see `docs/rollup-calibration.md` for evidence.
     rollup_computer: RollupComputer,
-    /// --distill: input line numbers to keep, appended group by group as
-    /// groups flush. Unordered across groups; `src/distill.rs` sorts.
-    distill_kept: Vec<usize>,
-    /// --distill: one template per flushed group — the input side of the
-    /// template-set contract check.
-    distill_templates: Vec<String>,
-    /// --distill only: per-template clock spans, combined across evictions.
-    distill_rates: crate::distill::rates::Rates,
+    /// --distill: one record per flushed group — what that group can
+    /// prove, and the input lines that prove it. The covering choice
+    /// across groups is made in `src/distill.rs`, which needs them apart.
+    distill_groups: Vec<DistillGroup>,
     /// Groups evicted from the live buffer that keep their identity
     /// instead of being emitted immediately (lessence-940): a later line
     /// whose founding hash matches rejoins here instead of founding a
@@ -926,6 +922,66 @@ const ROLLUP_K: usize = 7;
 /// bounded even at flush time.
 pub const ROLLUP_DISTINCT_CAP: usize = 64;
 
+/// How many distinct normalized forms one group contributes to a
+/// distillation. The rollup counts variants by distinct form, so a handful
+/// is what makes a `<VARIES>` slot and a populated rollup visible; the
+/// remaining sixty exist to state a proportion, which a distillation does
+/// not claim. `ROLLUP_DISTINCT_CAP` still applies to the one group per
+/// input that carries the capped state (`DistillGroup::capping_extra`).
+pub const DISTILL_FORMS: usize = 6;
+
+/// Average line length under which showing one more copy of an event is
+/// cheap. Below it a group may carry the extra members that push a rollup
+/// past `ROLLUP_DISTINCT_CAP`, and every one of a structure's anchor
+/// values gets its own group; above it both are rationed. Nothing on a
+/// syslog line, megabytes on a 23 KB Kubernetes event.
+pub(crate) const DISTILL_CHEAP_LINE_BYTES: usize = 512;
+
+/// What one folded group can prove, and the input lines that prove it.
+/// `--distill` keeps a covering subset of these rather than all of them:
+/// a log holding one event in a hundred literal variations proves the same
+/// shapes as one holding it in two (`src/distill.rs`, `cover`).
+pub(crate) struct DistillGroup {
+    /// The group's template — `<VARIES>` slots included.
+    pub template: String,
+    /// Token-type names of the group's representative line, sorted. Two
+    /// groups sharing this vector prove the same structure and differ
+    /// only in their literals. Read off the representative rather than
+    /// the whole membership so it survives distillation: a type carried
+    /// by one rare member may found its own group once the members around
+    /// it are gone, which would move a whole-membership key.
+    pub token_types: Vec<&'static str>,
+    /// Every token-type name any member carries, sorted. The criterion is
+    /// that each one still fires somewhere, not that it fires in the same
+    /// group it used to.
+    pub all_types: Vec<&'static str>,
+    /// The representative's anchor hash. Anchors are the fields that must
+    /// match exactly for two lines to fold, so two groups with different
+    /// anchors are two things the tool promises never to merge — and a
+    /// corpus that dropped one side would stop testing that promise.
+    /// `success=yes` and `success=no` are one such pair.
+    pub anchor: u64,
+    /// Mean bytes per member line. Proving an anchor split costs one more
+    /// copy of the event, which is nothing on a syslog line and megabytes
+    /// on a 23 KB Kubernetes event — so it decides how many of a
+    /// structure's anchor values the cover can afford to show.
+    pub avg_bytes: usize,
+    /// The input lines this group contributes, ascending.
+    pub kept: Vec<usize>,
+    /// Further lines that would carry this group past
+    /// `ROLLUP_DISTINCT_CAP` distinct forms, making one rollup report
+    /// `capped`. Non-empty only where that state is reachable and the
+    /// lines are small enough to be worth it; at most one group per input
+    /// is asked for them.
+    pub capping_extra: Vec<usize>,
+    /// True member count of the group in the source.
+    pub count: usize,
+    /// Distinct normalized forms the group held, bounded at
+    /// `ROLLUP_DISTINCT_CAP + 1`. Past the cap one rollup reports
+    /// `capped`, which is a state the corpus set has to show somewhere.
+    pub distinct_forms: usize,
+}
+
 /// Text-mode inline-sample threshold: when `distinct_count <=` this
 /// value, the compact marker shows the complete distinct set; otherwise
 /// count-only.
@@ -1125,7 +1181,7 @@ fn hash_token_value(token: &Token) -> u64 {
 /// detector having tokenised them. Sample-worthy: the values are the point.
 pub(super) const VARIES: &str = "VARIES";
 /// The placeholder a template shows where its members disagree.
-pub(super) const VARIES_MARK: &str = "<VARIES>";
+pub(crate) const VARIES_MARK: &str = "<VARIES>";
 
 /// A line may join a group whose founder it disagrees with in at most this
 /// many plain words.
@@ -2252,26 +2308,17 @@ impl PatternFolder {
             json_omitted_values_lower_bound: 0,
             rollup_computer: RollupComputer::with_defaults().sanitized(sanitizer.clone()),
             sanitizer,
-            distill_kept: Vec::new(),
-            distill_templates: Vec::new(),
-            distill_rates: crate::distill::rates::Rates::new(),
+            distill_groups: Vec::new(),
             retained: ahash::AHashMap::new(),
             retained_index: retained_index::RetainedIndex::default(),
             json_retention_cap_hits: 0,
         }
     }
 
-    /// --distill: the input line numbers the distillation keeps and the
-    /// template of every group that formed. Call after `finish()`.
-    pub fn take_distilled(&mut self) -> (Vec<usize>, Vec<String>) {
-        (
-            std::mem::take(&mut self.distill_kept),
-            std::mem::take(&mut self.distill_templates),
-        )
-    }
-
-    pub(crate) fn take_distilled_rates(&mut self) -> crate::distill::rates::Rates {
-        std::mem::take(&mut self.distill_rates)
+    /// --distill: one record per group that formed, in flush order. Call
+    /// after `finish()`.
+    pub(crate) fn take_distilled(&mut self) -> Vec<DistillGroup> {
+        std::mem::take(&mut self.distill_groups)
     }
 
     /// Absorb the ingestion outcome for the completeness section of the
@@ -2528,35 +2575,61 @@ impl PatternFolder {
         }
     }
 
-    /// --distill: record what a distillation of this group must carry —
-    /// its template, and the input line numbers of the members to keep.
+    /// --distill: record what this group can prove, and the input lines
+    /// that prove it.
     ///
     /// "The first N members" is not enough. When a group over-folded two
     /// events into one, the rarer event may sit at member 7,000, and a
     /// distillation that dropped it could never show the defect. What makes
     /// a member worth keeping is its normalized form: the template is built
     /// by folding every distinct normalized form of the group into
-    /// `<VARIES>`, and the rollup lists exactly those forms' differences. So
-    /// the first member of every distinct normalized form is kept — bounded
-    /// by the same [`ROLLUP_DISTINCT_CAP`] the rollup reports to — and only
-    /// then are the earliest remaining members added until `members` is
-    /// reached, plus a log-scaled sample spread evenly over the occurrences
-    /// (`3 + floor(log2 n)`, capped at 16), so a distillation of a huge group
-    /// is a miniature spanning its whole run rather than just its head. A
-    /// group too small to collapse keeps every line: those are not folded
-    /// away, they are the log.
+    /// `<VARIES>`, and the rollup lists exactly those forms' differences.
+    /// So every member that moved the template is kept — there is no cap
+    /// there, since the set cannot outgrow the template's own words — and
+    /// then distinct forms up to [`DISTILL_FORMS`], and then the earliest
+    /// remaining members until `members` is reached so the fold is visible
+    /// at all.
+    ///
+    /// What is deliberately *not* kept is proportion. A group of 200,000
+    /// occurrences and a group of six prove the same shapes, so the
+    /// distilled file shows the shapes and drops the multiplicity; the
+    /// counts live in the golden inventory, which is read from the
+    /// original. A group too small to collapse keeps every line: those are
+    /// not folded away, they are the log.
     fn distill_take(&mut self, group: &PatternGroup, members: usize) {
-        self.distill_templates.push(group.template().to_string());
-        let rates = self
-            .distill_rates
-            .entry(group.template().to_string())
-            .or_default();
-        for (line, &line_no) in group.lines.iter().zip(&group.member_line_nos) {
-            rates.record(line_no, &line.tokens);
+        let mut all_types: std::collections::BTreeSet<&'static str> =
+            std::collections::BTreeSet::new();
+        for line in &group.lines {
+            for t in &line.tokens {
+                all_types.insert(token_type_name(t));
+            }
         }
+        let structure: std::collections::BTreeSet<&'static str> =
+            group.first().tokens.iter().map(token_type_name).collect();
+
+        let mut record = DistillGroup {
+            template: group.template().to_string(),
+            token_types: structure.into_iter().collect(),
+            all_types: all_types.into_iter().collect(),
+            anchor: group.first().anchor,
+            avg_bytes: group.lines.iter().map(|l| l.original.len()).sum::<usize>()
+                / group.lines.len().max(1),
+            kept: Vec::new(),
+            capping_extra: Vec::new(),
+            count: group.count(),
+            distinct_forms: 0,
+        };
+
         if !group.should_collapse(self.config.min_collapse) {
-            self.distill_kept
-                .extend(group.member_line_nos.iter().copied());
+            record.distinct_forms = group
+                .lines
+                .iter()
+                .map(|l| l.hash)
+                .collect::<HashSet<u64>>()
+                .len();
+            record.kept.clone_from(&group.member_line_nos);
+            record.kept.sort_unstable();
+            self.distill_groups.push(record);
             return;
         }
 
@@ -2587,17 +2660,47 @@ impl PatternFolder {
         // Then one member per distinct normalized form, which is what the
         // rollup counts its variants by: two members can mark the same slot
         // and still carry different values there, and `Server Reject` inside
-        // `Server Busy` is the whole reason to distil at all.
+        // `Server Busy` is the whole reason to distil at all. Bounded at
+        // [`DISTILL_FORMS`]; the forms past the bound are offered separately
+        // as the capping set rather than kept outright.
         let mut seen: HashSet<u64> = HashSet::new();
+        let mut overflow: Vec<usize> = Vec::new();
         for (idx, line) in group.lines.iter().enumerate() {
-            if seen.len() >= ROLLUP_DISTINCT_CAP {
+            if !seen.insert(line.hash) {
+                continue;
+            }
+            if seen.len() <= DISTILL_FORMS {
+                chosen.insert(idx);
+            } else if seen.len() <= ROLLUP_DISTINCT_CAP + 1 {
+                overflow.push(idx);
+            } else {
                 break;
             }
-            if seen.insert(line.hash) {
+        }
+
+        // Then one member per token type the kept members do not yet
+        // carry. A type that only ever fires on member 400 is still a type
+        // the corpus proves, and the structure of the group is the union
+        // over its members, not over its first six.
+        let mut types_seen: std::collections::BTreeSet<&'static str> = chosen
+            .iter()
+            .flat_map(|&i| group.lines[i].tokens.iter().map(token_type_name))
+            .collect();
+        for (idx, line) in group.lines.iter().enumerate() {
+            if line
+                .tokens
+                .iter()
+                .any(|t| !types_seen.contains(token_type_name(t)))
+            {
+                types_seen.extend(line.tokens.iter().map(token_type_name));
                 chosen.insert(idx);
             }
         }
 
+        // Then the earliest remaining members until `members` is reached:
+        // below `min_collapse` no rollup is computed at all, so a group
+        // that kept one or two lines would prove a template and nothing
+        // about the variation under it.
         for idx in 0..group.lines.len() {
             if chosen.len() >= members {
                 break;
@@ -2605,20 +2708,27 @@ impl PatternFolder {
             chosen.insert(idx);
         }
 
-        // Then a log-scaled sample spread evenly over the group's
-        // occurrences, unioned with what is already chosen: 3 + ⌊log2 n⌋
-        // members, at most 16. Enough that the fold visibly compresses and
-        // the rollup fills; bounded so the distilled file stays a miniature
-        // of the log, never a copy of it. Additive only — everything the
-        // steps above already picked stays picked.
-        let n = group.lines.len();
-        let target = (3 + n.ilog2() as usize).min(16);
-        for i in 0..target {
-            chosen.insert(distill_sample_index(n, i, target));
+        record.distinct_forms = seen.len();
+        record.kept = chosen
+            .iter()
+            .filter_map(|i| group.member_line_nos.get(*i).copied())
+            .collect();
+        record.kept.sort_unstable();
+
+        // `capped` is a state a reader must be able to see somewhere, and
+        // it costs sixty-odd extra lines wherever it is shown. Offer it
+        // only where the group could actually reach the cap and the lines
+        // are small enough that showing it is cheap; `src/distill.rs` takes
+        // the offer at most once per input.
+        if seen.len() > ROLLUP_DISTINCT_CAP && record.avg_bytes <= DISTILL_CHEAP_LINE_BYTES {
+            record.capping_extra = overflow
+                .iter()
+                .filter_map(|i| group.member_line_nos.get(*i).copied())
+                .collect();
+            record.capping_extra.sort_unstable();
         }
 
-        self.distill_kept
-            .extend(chosen.iter().filter_map(|i| group.member_line_nos.get(*i)));
+        self.distill_groups.push(record);
     }
 
     fn flush_oldest_safe_group(&mut self) -> Result<Option<String>> {
@@ -3076,13 +3186,6 @@ impl PatternFolder {
     pub fn input_degraded_codes(&self) -> Vec<&'static str> {
         self.input_facts.degraded_codes()
     }
-}
-
-// Keep the rounding and bounds clamp together: at large n, floating-point
-// rounding can put the final sample one past the group's last index.
-fn distill_sample_index(n: usize, i: usize, target: usize) -> usize {
-    let idx = ((i * (n - 1)) as f64 / (target - 1) as f64).round() as usize;
-    idx.min(n - 1)
 }
 
 mod render;

@@ -185,13 +185,22 @@ for f in kubelet.log argocd_server_production.log harbor_postgres_primary.log ci
 done
 readme_copy="$WORK/README.md"; cp "$ROOT/README.md" "$readme_copy"
 before="$(sha256sum "$readme_copy")"
-head_sha="$(git -C "$ROOT" rev-parse --short=9 HEAD)"
+# A repo of the self-test's own, so these cases test the guards rather than
+# the state of the checkout they run in.
+rc_repo="$WORK/repo"; mkdir -p "$rc_repo/src"
+git -C "$rc_repo" init -q
+git -C "$rc_repo" config user.email selftest@example.com
+git -C "$rc_repo" config user.name selftest
+: >"$rc_repo/src/lib.rs"; : >"$rc_repo/Cargo.toml"
+git -C "$rc_repo" add -A
+git -C "$rc_repo" commit -qm "self-test fixture"
+head_sha="$(git -C "$rc_repo" rev-parse --short=9 HEAD)"
 rc_bin="$WORK/lessence-rc"
 mk_rc_bin() { # mk_rc_bin <version sha> <body>
     printf '#!/usr/bin/env bash\n[ "$1" = --version ] && { echo "lessence 0.0.0 (%s, x86_64-unknown-linux-gnu)"; exit 0; }\n%s\n' "$1" "$2" >"$rc_bin"
     chmod +x "$rc_bin"
 }
-rc() { LESSENCE_BIN="$rc_bin" LESSENCE_ORIGINALS="$rc_orig" LESSENCE_README="$readme_copy" "$ROOT/scripts/readme-compression.sh" --write v9.9.9 2>"$WORK/rc-err" >/dev/null; echo $?; }
+rc() { LESSENCE_BIN="$rc_bin" LESSENCE_ORIGINALS="$rc_orig" LESSENCE_README="$readme_copy" LESSENCE_REPO="$rc_repo" "$ROOT/scripts/readme-compression.sh" --write v9.9.9 2>"$WORK/rc-err" >/dev/null; echo $?; }
 
 mk_rc_bin "$head_sha" 'echo "boom" >&2; exit 3'
 check "a failing lessence run is not recorded" "1" "$(rc)"

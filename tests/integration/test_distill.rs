@@ -11,6 +11,9 @@ use std::process::{Command, Output, Stdio};
 const KUBELET: &str = "tests/fixtures/kubelet_2k.log";
 const MICRO: &str = "tests/fixtures/microservices.log";
 
+/// The `--members` default, as `src/cli.rs` declares it.
+const DEFAULT_MEMBERS: usize = 3;
+
 fn lessence_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_lessence"))
 }
@@ -112,15 +115,46 @@ fn uuids(text: &str) -> BTreeSet<String> {
     re.find_iter(text).map(|m| m.as_str().to_string()).collect()
 }
 
-// ---- (a) the contract: same templates, bounded size ----
+// ---- (a) the contract: everything still proved, at a derived size ----
+
+/// The distinct sorted token-type vectors `--explain` reports — the
+/// structures a distillation must still show.
+fn structures(jsonl: &[u8]) -> BTreeSet<Vec<String>> {
+    explain_groups(jsonl)
+        .iter()
+        .map(|g| {
+            g["token_types"]
+                .as_array()
+                .expect("token_types")
+                .iter()
+                .map(|t| t.as_str().expect("token type").to_string())
+                .collect()
+        })
+        .collect()
+}
+
+/// Every token type that fires anywhere.
+fn token_types(jsonl: &[u8]) -> BTreeSet<String> {
+    structures(jsonl).into_iter().flatten().collect()
+}
+
+fn explain_groups(jsonl: &[u8]) -> Vec<serde_json::Value> {
+    str::from_utf8(jsonl)
+        .expect("utf8")
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "group")
+        .collect()
+}
 
 #[test]
-fn distilled_output_folds_to_the_same_templates() {
+fn a_distillation_still_proves_every_structure_and_token_type() {
     for fixture in [KUBELET, MICRO] {
         let original = run(&["--explain", "-q", fixture]);
         assert!(original.status.success(), "{fixture}: --explain failed");
-        let want = templates(&original.stdout);
-        assert!(!want.is_empty(), "{fixture}: no templates to compare");
+        let want_structures = structures(&original.stdout);
+        let want_types = token_types(&original.stdout);
+        assert!(!want_structures.is_empty(), "{fixture}: nothing to compare");
 
         let distilled = run(&["--distill", fixture]);
         assert_eq!(
@@ -131,41 +165,63 @@ fn distilled_output_folds_to_the_same_templates() {
         );
 
         let refolded = run_stdin(&["--explain", "-q"], &distilled.stdout);
-        let have = templates(&refolded.stdout);
+        let have_structures = structures(&refolded.stdout);
+        let have_types = token_types(&refolded.stdout);
+        assert!(
+            want_structures.is_subset(&have_structures),
+            "{fixture}: structures lost: {:?}",
+            want_structures
+                .difference(&have_structures)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            want_types.is_subset(&have_types),
+            "{fixture}: token types lost: {:?}",
+            want_types.difference(&have_types).collect::<Vec<_>>()
+        );
+        let varies = |out: &[u8]| {
+            explain_groups(out)
+                .iter()
+                .any(|g| g["normalized"].as_str().unwrap_or("").contains("<VARIES>"))
+        };
         assert_eq!(
-            want, have,
-            "{fixture}: the distilled file does not fold to the same templates"
+            varies(&original.stdout),
+            varies(&refolded.stdout),
+            "{fixture}: a <VARIES> slot must survive wherever the input had one"
         );
 
-        let (groups, unfolded) = group_shape(&original.stdout);
-        // The selection rules, added up: at most three members per group,
-        // a log-scaled sample per collapsed group (t = min(16, 3 +
-        // floor(log2 n)) members for a group of n), every unfolded line,
-        // and at most one more line per distinct word shape (rule 5, the
-        // coverage pass). A derived bound, not a tuned number — it moves
-        // when the rules do, never when a corpus does.
-        let shapes: BTreeSet<String> = std::fs::read_to_string(fixture)
-            .expect("fixture readable")
-            .lines()
-            .map(lessence::anonymize::word_shape)
-            .collect();
-        let sampled: usize = group_counts(&original.stdout)
-            .into_iter()
-            .map(|count| {
-                let t = if count == 0 {
-                    0
-                } else {
-                    (3 + count.ilog2() as usize).min(16)
-                };
-                3 + t
+        // The selection rules, added up. A chosen group keeps its founding
+        // member, one member per `<VARIES>` slot it marks, one per distinct
+        // normalized form up to DISTILL_FORMS, one per token type it
+        // carries, and enough to reach --members. The cover chooses at most
+        // three groups per structure, two more for the <VARIES> and folded
+        // top-ups, and one group may carry the capping set. A derived
+        // bound, not a tuned number — it moves when the rules do, never
+        // when a corpus does.
+        let varies_max = explain_groups(&original.stdout)
+            .iter()
+            .map(|g| {
+                g["normalized"]
+                    .as_str()
+                    .unwrap_or("")
+                    .matches("<VARIES>")
+                    .count()
             })
-            .sum();
-        let bound = sampled + unfolded + shapes.len();
+            .max()
+            .unwrap_or(0);
+        let per_group =
+            1 + varies_max + lessence::folder::DISTILL_FORMS + want_types.len() + DEFAULT_MEMBERS;
+        let (_, unfolded) = group_shape(&original.stdout);
+        let bound = (3 * want_structures.len() + 2) * per_group
+            + lessence::folder::ROLLUP_DISTINCT_CAP
+            + 1
+            + unfolded;
         let emitted = String::from_utf8_lossy(&distilled.stdout).lines().count();
         assert!(
             emitted <= bound,
-            "{fixture}: {emitted} lines exceeds the bound {bound} ({groups} groups sampled + {unfolded} unfolded + {} shapes)",
-            shapes.len()
+            "{fixture}: {emitted} lines exceeds the derived bound {bound} \
+             ({} structures, per_group {per_group}, {unfolded} unfolded)",
+            want_structures.len()
         );
     }
 }
@@ -173,13 +229,13 @@ fn distilled_output_folds_to_the_same_templates() {
 // ---- (b) the check is load-bearing: a weaker selection would break it ----
 
 #[test]
-fn one_member_per_group_still_preserves_every_template() {
-    // `--members 1` asks for the smallest possible distillation. The members
-    // that built a group's template are kept regardless, so the contract
-    // still holds — a selection that fell back to "the first line" would
-    // report a lost template here and exit 1.
+fn members_one_still_proves_every_structure() {
+    // `--members 1` asks for the smallest possible distillation. The
+    // members that built a group's template are kept regardless, so the
+    // contract still holds — a selection that fell back to "the first
+    // line" would report a lost structure here and exit 1.
     let original = run(&["--explain", "-q", KUBELET]);
-    let want = templates(&original.stdout);
+    let want = structures(&original.stdout);
 
     let distilled = run(&["--distill", "--members", "1", KUBELET]);
     assert_eq!(
@@ -189,12 +245,15 @@ fn one_member_per_group_still_preserves_every_template() {
         String::from_utf8_lossy(&distilled.stderr)
     );
     let refolded = run_stdin(&["--explain", "-q"], &distilled.stdout);
-    assert_eq!(want, templates(&refolded.stdout));
+    assert!(
+        want.is_subset(&structures(&refolded.stdout)),
+        "structures lost at --members 1"
+    );
 
     let full = run(&["--distill", KUBELET]);
     assert!(
-        distilled.stdout.len() < full.stdout.len(),
-        "--members 1 must still be smaller than the default"
+        distilled.stdout.len() <= full.stdout.len(),
+        "--members 1 must never be larger than the default"
     );
 }
 
@@ -394,7 +453,7 @@ fn a_fold_across_a_literal_word_keeps_both_words() {
 }
 
 #[test]
-fn distill_reports_a_rate_order_inversion_without_changing_the_log_contract() {
+fn the_distilled_log_is_a_subset_of_its_input_and_says_nothing_on_stdout() {
     let mut input = String::new();
     for second in 0..100 {
         input.push_str(&format!(
@@ -409,30 +468,27 @@ fn distill_reports_a_rate_order_inversion_without_changing_the_log_contract() {
         }
     }
     let out = run_stdin(&["--distill", "--threads", "1"], input.as_bytes());
-    let report = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{report}");
     assert!(
-        report.contains("2 comparable templates, 0 unavailable"),
-        "{report}"
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    assert!(report.contains("source_interval=1.000000s"), "{report}");
-    assert!(report.contains("1 ordering inversions"), "{report}");
     let log = String::from_utf8_lossy(&out.stdout);
     assert!(
-        !log.contains("distill rate"),
-        "diagnostics must stay on stderr"
+        log.lines().count() < input.lines().count(),
+        "a distillation is smaller than its input"
     );
-    assert!(log.lines().count() < input.lines().count());
     assert!(
         log.lines()
-            .all(|line| input.lines().any(|original| original == line))
+            .all(|line| input.lines().any(|original| original == line)),
+        "every line is a line of the input, unchanged"
+    );
+    assert!(
+        !log.contains("lessence:"),
+        "diagnostics must stay on stderr"
     );
 
-    let original = run_stdin(&["--explain", "--threads", "1"], input.as_bytes());
-    let distilled = run_stdin(&["--explain", "--threads", "1"], &out.stdout);
-    assert_eq!(templates(&original.stdout), templates(&distilled.stdout));
-
-    let anonymized = run_stdin(&["--anonymize", "--seed", "1"], input.as_bytes());
-    assert!(anonymized.status.success());
-    assert!(!String::from_utf8_lossy(&anonymized.stderr).contains("distill rate"));
+    // Both events survive: the rare one is the whole reason to distil.
+    assert!(log.contains("housekeeping heartbeat"));
+    assert!(log.contains("database connection failed"));
 }
