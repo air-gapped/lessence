@@ -228,6 +228,7 @@ strip = false
 # longer compile times.
 [profile.test]
 opt-level = 1
+debug = "line-tables-only"
 
 # Custom profile for cargo-mutants: fast execution + fast incremental builds.
 # Used via `cargo mutants --profile mutants` or .cargo/mutants.toml.

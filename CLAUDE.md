@@ -16,7 +16,9 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 ## Commands
 
 ```bash
-make ci             # fmt + clippy + doc + build + test + deny  (~5 s warm, every commit)
+make ci             # fmt + clippy + doc + test + deny  (~18 s warm, every commit). Tests run on
+                    # the test profile: the release profile (fat LTO, one codegen unit) is
+                    # for the shipped binary, and GitHub CI is where it is checked to compile
 make gate           # FAILS on exactly five things: a new ##CASE that also passes on the
                     # HEAD build (vacuous), kubelet instructions over +1%, --explain vs
                     # --format json disagreeing on a corpus where the HEAD build agreed,

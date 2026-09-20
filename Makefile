@@ -10,7 +10,7 @@
 #---------------------------------------------------------------------------
 
 ## ci: Run the full CI pipeline locally (same as GitHub Actions)
-ci: fmt clippy doc build test deny
+ci: fmt clippy doc test deny
 	@echo "✓ All CI checks passed"
 
 ## fmt: Check formatting (cargo fmt --check)
@@ -29,9 +29,9 @@ doc:
 build:
 	cargo build --release
 
-## test: Run all tests via nextest (release mode)
+## test: Run all tests via nextest (test profile; the release profile is for releases)
 test:
-	cargo nextest run --release
+	cargo nextest run
 
 ## deny: Check dependencies (advisories, licenses, bans)
 deny:

@@ -45,11 +45,13 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
 
+      # The release build stays here as the only check that the shipped profile
+      # still compiles; it was removed from `make ci`, which runs per change.
       - name: Build
         run: cargo build --release
 
       - name: Test
-        run: cargo nextest run --release
+        run: cargo nextest run
 
       - name: Deny
         run: cargo deny check
