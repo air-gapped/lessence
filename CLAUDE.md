@@ -29,7 +29,8 @@ make gate           # FAILS on exactly five things: a new ##CASE that also passe
                     # golden never fails the gate. ≤15 lines, target/gate/gate.json (seconds)
 make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
                     # via the hidden dev flags `--distill --anonymize` (docs/distill.md):
-                    # every shape, no repetition, values invented. BLESS=1 re-blesses golden
+                    # the smallest log that still proves every structure, token type, split
+                    # and variation state; values invented. BLESS=1 re-blesses golden
 make release-check  # the gate against the last PUBLISHED release's build (what users
                     # run; RELEASE_BASE=vX.Y.Z overrides) + mutants on the diff since it
                     # + make ci + the slow (wall-clock) test profile + the README
@@ -75,9 +76,10 @@ These define correct behaviour. Add to them; never weaken them.
   each tolerated near-miss names its bead; the tables only shrink.
   <!-- scar: kubelet cap 700 -> 1000 proposed instead of a fix; caps replaced by owned shapes -->
 - `examples/distilled/*.log` (gitignored, scrubbed) — the corpora every gate
-  runs on: every shape of the originals, their repetition scaled down rather
-  than removed (`CONTEXT.md`, "Vocabulary": distilled is fidelity, miniature is
-  proportion — that file is the definition, this is a pointer). The
+  runs on: the smallest log that still proves what the original proved, with
+  repetition dropped rather than scaled (`CONTEXT.md`, "Vocabulary": distilled
+  is coverage, miniature is proportion and is deliberately gone — that file is
+  the definition, this is a pointer). The
   originals in `examples/originals/` are raw material only — studied once,
   distilled by `make distill`, never read by a gate. A gate fails loudly when
   a distilled corpus is missing; no test passes by absence.

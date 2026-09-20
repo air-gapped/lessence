@@ -495,7 +495,7 @@ enum Retention {
 /// growing the map without limit. Chosen well above the distinct-template
 /// count of every corpus this project measures against (~2,200 on the
 /// largest), so the cap is a genuine backstop, not an expected ceiling.
-const RETAINED_TEMPLATE_CAP: usize = 16_384;
+pub const RETAINED_TEMPLATE_CAP: usize = 16_384;
 
 #[derive(Debug, Default)]
 pub struct FoldingStats {

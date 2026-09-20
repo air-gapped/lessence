@@ -451,17 +451,17 @@ fn an_http_status_class_split_is_visible() {
         .collect();
     corpora.sort();
     assert!(!corpora.is_empty(), "missing distilled corpora");
-    let mut checked = 0;
-    for corpus in corpora {
-        let text = std::fs::read_to_string(&corpus).expect("read distilled corpus");
+    let checked = std::sync::atomic::AtomicU64::new(0);
+    crate::common::sweep_corpora(&corpora, |corpus| {
+        let text = std::fs::read_to_string(corpus).expect("read distilled corpus");
         if !text
             .lines()
             .any(|line| !http_status_signature(line).is_empty())
         {
-            continue;
+            return;
         }
-        checked += 1;
-        let offenders: Vec<_> = offender_groups(&corpus)
+        checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let offenders: Vec<_> = offender_groups(corpus)
             .into_iter()
             .filter(|(_, lines)| {
                 lines
@@ -477,8 +477,11 @@ fn an_http_status_class_split_is_visible() {
             "{} hides HTTP status identities: {offenders:?}",
             corpus.display()
         );
-    }
-    assert!(checked > 0, "missing HTTP status corpora");
+    });
+    assert!(
+        checked.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "missing HTTP status corpora"
+    );
 }
 
 /// Outcomes can disappear inside one group without producing duplicate
@@ -649,18 +652,22 @@ fn cli_option_identities_stay_visible_in_every_corpus() {
         return;
     };
     drop(dir);
-    let mut checked = 0;
-    for entry in std::fs::read_dir("examples/distilled").expect("read corpora") {
-        let path = entry.expect("corpus entry").path();
-        if path.extension().is_none_or(|extension| extension != "log") {
-            continue;
-        }
-        let input = std::fs::read_to_string(&path).expect("read corpus");
+    let checked = std::sync::atomic::AtomicU64::new(0);
+    let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
+        .expect("read corpora")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "log"))
+        .collect();
+    corpora.sort();
+    assert!(!corpora.is_empty(), "examples/distilled holds no corpora");
+    crate::common::sweep_corpora(&corpora, |path| {
+        let input = std::fs::read_to_string(path).expect("read corpus");
         if !input
             .lines()
             .any(|line| !cli_option_signature(line).is_empty())
         {
-            continue;
+            return;
         }
         let mut expected_counts = BTreeMap::<Vec<String>, u64>::new();
         for line in input.lines() {
@@ -674,10 +681,16 @@ fn cli_option_identities_stay_visible_in_every_corpus() {
         let mut actual_counts = BTreeMap::<Vec<String>, u64>::new();
         let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
             .args(["--explain", "--threads", "1"])
-            .arg(&path)
+            .arg(path)
             .output()
             .expect("run option corpus");
-        assert!(output.status.success());
+        assert!(
+            output.status.success(),
+            "{}: --explain exited {:?}: {}",
+            path.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
         for record in str::from_utf8(&output.stdout).unwrap().lines() {
             let group: serde_json::Value =
                 serde_json::from_str(record).expect("valid explain record");
@@ -688,7 +701,7 @@ fn cli_option_identities_stay_visible_in_every_corpus() {
             if expected.is_empty() {
                 continue;
             }
-            checked += 1;
+            checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             assert_eq!(
                 cli_option_signature(group["normalized"].as_str().unwrap()),
                 expected,
@@ -711,8 +724,11 @@ fn cli_option_identities_stay_visible_in_every_corpus() {
             "{}: option line totals",
             path.display()
         );
-    }
-    assert!(checked > 0, "missing CLI option corpus groups");
+    });
+    assert!(
+        checked.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "missing CLI option corpus groups"
+    );
 }
 
 /// These corpora exercise klog call sites, Python traceback frames and
@@ -897,7 +913,7 @@ fn a_pod_prefix_split_is_visible() {
         "examples/distilled/k8s_*.log must be non-empty — a gate fails loudly on an absent corpus, never passes by omission"
     );
 
-    for path in &corpora {
+    crate::common::sweep_corpora(&corpora, |path| {
         let offenders: Vec<(String, Vec<String>)> = offender_groups(path)
             .into_iter()
             .filter(|(_, lines)| {
@@ -921,7 +937,7 @@ fn a_pod_prefix_split_is_visible() {
                 ))
                 .collect::<Vec<_>>()
         );
-    }
+    });
 }
 
 /// Inspect the message schema independently of the production recognizer.

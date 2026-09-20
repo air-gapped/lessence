@@ -11,28 +11,36 @@ with a shelf life — re-measure rather than cite.
 
 ## Vocabulary
 
-Two words that are easy to blur, and are not the same property:
+Three words that are easy to blur, and are not the same property:
 
-**Distilled** — a *fidelity* property. Every distinct shape of the original is
-present and every value is invented. `--distill --anonymize` guarantees it and
-the self-checks enforce it: same templates as the original, every word shape
-present, no surviving real value. A distillate can be three lines per group —
-shape-complete and proportionless.
+**Distilled** — a *coverage* property, and what `--distill` produces. The
+smallest log that still proves everything the original proved: every
+token-type structure, every token type that fires, both kinds of split
+(literal and anchor), a group that still folds, a `<VARIES>` slot, and a
+capped rollup where the corpus can afford one. The self-checks enforce
+exactly that list — `docs/distill.md`, "What a distillation has to prove".
+
+**Complete** — a *fidelity* property: every distinct event of the original
+present, the output folding to the same template set. This is what
+`--distill` used to mean, and it is no longer produced by anything. It was
+abandoned on 2026-09-20 because it is not a useful test asset: a corpus
+holding one event in 133 literal spellings became 133 groups of it, and the
+eighty corpora came to 57.6 MB, most of what the suite spent its time
+folding.
 
 **Miniature** — a *proportion* property. The file still reads like a log:
-relative frequencies survive (members are kept log-scaled, so a big group keeps
-more lines than a small one), original order intact. This is what makes a fold
-visibly a fold and a perf number mean anything. The selection rule itself is a
-spec and lives in `docs/distill.md`, "Member selection" — it has changed once
-already, so it is not repeated here.
+relative frequencies survive, so a big group keeps more lines than a small
+one. This was carried by a log-scaled member sample, which `--distill` no
+longer takes. It is deliberately gone: proportion is not something a
+distilled corpus claims, and the counts that matter live in the golden,
+which is read from the original.
 
-They fail independently. Until `a0ffc6d` the corpora were distilled but not
-miniatures: a 12,000-line group and a 3-line group both showed three lines, so
-nothing demonstrated folding. A file can equally be proportional and missing a
-rare shape, which is worse — a gate then passes by absence.
+They fail independently, and the one that matters is coverage. A file can
+be proportional and missing a rare shape, which is the worst case — a gate
+then passes by absence.
 
-**The self-checks enforce fidelity. Nothing enforces the miniature property.**
-That is an open gap, not a decision.
+**The self-checks enforce coverage. Nothing enforces proportion, and
+nothing is meant to.**
 
 Other terms as this repo uses them:
 
@@ -139,7 +147,9 @@ ls examples/distilled/*.log | wc -l
 /usr/bin/grep -l '^\[pod/' examples/distilled/*.log | wc -l
 ```
 
-As of 2026-08-30: **80 corpora, 85,606 distilled lines.** By shape:
+As of 2026-09-20: **80 corpora, 11,463 distilled lines, 4.14 MB** (they
+were 85,606 lines and 57.6 MB until `--distill` became minimum-sufficient).
+By shape:
 
 | shape | count |
 |---|---:|

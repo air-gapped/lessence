@@ -80,3 +80,42 @@ pub fn assert_linear_scaling<F: Fn(&str)>(label: &str, small: &str, large: &str,
         ratios[2],
     );
 }
+
+/// How many corpora a sweep works on at once.
+///
+/// The per-corpus work in a sweep is a subprocess: roughly 30 ms of fork,
+/// exec and dynamic linking around 10 ms of folding, so a serial sweep over
+/// eighty corpora spends most of its wall clock in the kernel with one core
+/// busy.
+///
+/// Two, not more, and the reason is not caution. The suite also holds
+/// wall-clock ratio tests (`assert_linear_scaling`), and they share the
+/// machine. Measured over the whole suite on this hardware: serial sweeps
+/// 12.5 s and no retries, two 8.9 s and no retries, three 7.8 s and four
+/// 7.25 s — but three and four made `test_no_match_performance` fail its
+/// first attempt on *every* run, passing only on nextest's retry. A test
+/// that always needs a retry is not flaky, it is failing quietly, and 1.6
+/// seconds is not worth buying with that.
+pub const CORPUS_SWEEP_THREADS: usize = 2;
+
+/// Run `f` over every corpus, at most [`CORPUS_SWEEP_THREADS`] at a time.
+///
+/// `f` must assert rather than return: a panic in a worker propagates when
+/// the scope joins, so a failing corpus still fails the test.
+#[allow(dead_code)] // integration.rs uses this; the other harnesses share the module
+pub fn sweep_corpora<T: Sync>(corpora: &[T], f: impl Fn(&T) + Sync) {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let f = &f;
+    let next = &next;
+    std::thread::scope(|scope| {
+        for _ in 0..CORPUS_SWEEP_THREADS.min(corpora.len().max(1)) {
+            scope.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(corpus) = corpora.get(i) else { return };
+                    f(corpus);
+                }
+            });
+        }
+    });
+}

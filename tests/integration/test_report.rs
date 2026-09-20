@@ -91,7 +91,7 @@ fn groups(records: &[Value]) -> Vec<&Value> {
 /// matches except `elapsed_ms`.
 #[test]
 fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
-    for corpus in distilled_corpora() {
+    crate::common::sweep_corpora(&distilled_corpora(), |corpus| {
         let tmp = tmpdir();
         let run = run_default(tmp.path(), &["-q", corpus.to_str().unwrap()]);
         assert!(
@@ -104,9 +104,16 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
 
         let json = bin()
             .args(["--format", "json", "-q"])
-            .arg(&corpus)
+            .arg(corpus)
             .output()
             .expect("failed to run lessence --format json");
+        assert!(
+            json.status.success(),
+            "{}: --format json exited {:?}: {}",
+            corpus.display(),
+            json.status.code(),
+            String::from_utf8_lossy(&json.stderr)
+        );
         let json = String::from_utf8(json.stdout).unwrap();
 
         let (a, b) = (records(&report), records(&json));
@@ -136,7 +143,7 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
         // source line at line_no.
         // Owned and dropped with this iteration: leaking one corpus per
         // loop turn keeps every corpus in memory to the end of the test.
-        let text = std::fs::read_to_string(&corpus).unwrap();
+        let text = std::fs::read_to_string(corpus).unwrap();
         let raw: Vec<&str> = text.lines().collect();
         for g in &ga {
             let line_no = g["first"]["line_no"].as_u64().unwrap() as usize;
@@ -148,14 +155,14 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
                 g["id"]
             );
         }
-    }
+    });
 }
 
 /// Acceptance 4: the 16 KiB bound holds on every distilled corpus at default
 /// flags, and the run reports what it left out.
 #[test]
 fn default_stdout_stays_inside_sixteen_kib_on_every_corpus() {
-    for corpus in distilled_corpora() {
+    crate::common::sweep_corpora(&distilled_corpora(), |corpus| {
         let tmp = tmpdir();
         let run = run_default(tmp.path(), &[corpus.to_str().unwrap()]);
         assert!(run.status.success(), "{}", corpus.display());
@@ -171,7 +178,7 @@ fn default_stdout_stays_inside_sixteen_kib_on_every_corpus() {
             "{}: the locator must count what it omitted",
             corpus.display()
         );
-    }
+    });
 }
 
 // ---- the locator, the tail and the entry counts ----
@@ -541,7 +548,12 @@ fn wide_log(dir: &Path) -> PathBuf {
         "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo",
     ];
     // A cheap deterministic LCG: distinct word sequences do not fold into
-    // each other, so this passes RETAINED_TEMPLATE_CAP (16,384 templates).
+    // each other, so one line is one template and the run passes
+    // RETAINED_TEMPLATE_CAP. An eighth over the cap is margin enough —
+    // six to thirteen words drawn from eighteen is 34 million sequences
+    // at its narrowest, so collisions at this many draws are single
+    // digits. Derived from the cap, so it follows the cap rather than
+    // being a number somebody picked.
     let mut state: u64 = 1;
     let mut next = |n: u64| {
         state = state
@@ -550,7 +562,8 @@ fn wide_log(dir: &Path) -> PathBuf {
         (state >> 33) % n
     };
     let mut text = String::new();
-    for _ in 0..30_000 {
+    let lines = lessence::folder::RETAINED_TEMPLATE_CAP * 9 / 8;
+    for _ in 0..lines {
         let words = 6 + next(8);
         for w in 0..words {
             if w > 0 {

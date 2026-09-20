@@ -20,55 +20,76 @@ input line selected, no headers. Lines are byte-identical to the input
 unless `--anonymize`. Exit 0 only when every self-check below passed; a
 failed check prints what was lost and exits 1.
 
-## Member selection (`--distill`)
+## What a distillation has to prove
+
+`--distill` writes the smallest log that still proves everything the input
+proved — minimum subject to sufficiency, not minimum, and not one line per
+event either. A corpus holding one event in a hundred literal spellings
+proves what two of them prove, and the difference between those two numbers
+is the whole size of the file.
+
+What may not be lost, and is checked before exit 0:
+
+- **Every token-type structure.** The sorted token types of a group's
+  representative line. Tetragon's 133 groups are twelve structures.
+- **Every token type that fires**, anywhere, including one that appears on
+  a single late member of one group.
+- **Both kinds of split.** A *literal* split is two groups that agree for a
+  long way and then say a different word — the pair a widened template
+  would swallow first. An *anchor* split is two groups the folder promises
+  never to merge whatever they look like, `success=yes` against
+  `success=no`.
+- **A group that still folds**, with at least `--min-collapse` members:
+  below three, no variation is computed at all, so a file of singletons
+  proves a template and nothing under it.
+- **A `<VARIES>` slot.**
+- **A capped rollup**, where the corpus can afford one (see below).
+
+Proportion is deliberately *not* carried. A group of 200 000 occurrences
+and a group of six prove the same shapes, so the distilled file shows the
+shapes and drops the multiplicity. Counts live in the golden inventory,
+which is taken from the original.
+
+## Selection (`--distill`)
 
 Per group formed by the folder (a group re-founded after a flush window is
 its own group):
 
 1. every member whose arrival changed the group's template (replay of
-   `mark_varying_words`, uncapped);
-2. one member per distinct normalised form, up to `ROLLUP_DISTINCT_CAP`;
-3. the earliest remaining members until `--members` (default 3) is reached;
-4. then `3 + ⌊log2 n⌋` members (at most 16) spread evenly over the group's n
-   occurrences, index round(i·(n−1)/(t−1)) for i in 0..t, unioned with the
-   members above;
+   `mark_varying_words`, uncapped — the set cannot outgrow the template's
+   own words);
+2. one member per distinct normalised form, up to `DISTILL_FORMS` (6);
+3. one member per token type the members above do not already carry;
+4. the earliest remaining members until `--members` (default 3) is reached;
 5. every line of a group below `--min-collapse` (unfolded lines) as is.
 
-Then, over the whole output: the earliest line of every input word shape not
-yet present is added. Word shape (`anonymize::word_shape`): words split on
-whitespace and on `,{}[]` outside quotes; inside a word, every maximal digit
-run → `#`, and a run of `[A-Za-z0-9._-]` that is 16 or more characters and at
-least a quarter digits (an id, hash, UUID or stamp) → `#` whole; letters and
-punctuation verbatim. Two lines that differ only in digits are one shape —
-`switch0.1044:` and `switch0.1045:`, `-ipv4` and `-ipv6` — and the distilled
-file keeps one of them: the same claim lessence makes with `<NUMBER>`, and
-the known limit of the distillation. With `--anonymize`, selection runs on
-the anonymised log.
+Then across groups, one bucket per structure. Each bucket keeps the busiest
+group, the group nearest it by shared template prefix, and one group per
+distinct anchor value — all of the anchor values where the lines are small
+(mean under `DISTILL_CHEAP_LINE_BYTES`, 512), one of them where they are
+not, because proving an anchor costs another copy of the event and that is
+nothing on a syslog line and megabytes on a 23 KB Kubernetes event. The
+same threshold decides which group may carry the extra members that push a
+rollup past `ROLLUP_DISTINCT_CAP`; at most one group per input carries them.
 
-## Rate comparison (`--distill`, including `make distill`)
+With `--anonymize`, selection runs on the anonymised log.
 
-After folding the selected output, stderr reports each template's mean
-inter-arrival interval in the source and distillate: clock span divided by
-`occurrences - 1`. Every occurrence counts, including lines sharing a
-timestamp. The source is the anonymised input when anonymisation is enabled,
-so the two sides use the same invented identities. Identical templates are
-combined across evictions before comparing them.
+### Why the selection folds its own output
 
-The interval distortion is `distilled interval / source interval`; the report
-also divides it by the median distortion of all comparable templates in that
-corpus. Every pair whose strict frequency ordering reverses is listed using
-the template numbers defined in the report. Ties are not reversals. The report
-is advisory: distortion and inversions do not change the exit status, member
-selection, stdout log, or two-column golden format. No sidecar is written.
+A distilled corpus is what every later gate reads as correct, so it may
+never itself demonstrate an over-fold. Whether two groups stay apart cannot
+be predicted — the input often keeps them apart only because thousands of
+lines sat between them, and once those are gone they may merge. So the
+selection folds its result and checks. Where a chosen pair merged, the
+bucket picks its most *distant* group instead, and if that merges too it
+keeps its primary alone and claims no split there.
 
-Clocks use the briefing's timestamp parser at one-second resolution, with the
-span taken between minimum and maximum parsed timestamps. Templates with
-missing/unsupported timestamps (including uptime-only logs), fewer than two
-occurrences, a zero span, or a first timestamp later than the last are named
-as unavailable and excluded from comparisons. A backwards endpoint can mean a
-clock reversal or an unstated year boundary; the report does not guess which.
-Mean intervals describe rate loss, not regularity: a burst and a periodic
-event can have the same mean. Preserving gap shape is separate work.
+Merging two *spellings* of one event is allowed; merging two events is not.
+The literal words decide: everything outside a `<PLACEHOLDER>`. Two
+templates with the same literal words differ only in what sits between the
+words, so folding them widens a placeholder and loses nothing. Different
+literal words are different events, and folding them is the failure the
+whole tool exists to avoid.
 
 ## `--anonymize`
 
@@ -95,14 +116,15 @@ counts as a boundary.
 
 ## Self-checks (all run before exit 0)
 
-1. Template set: `--explain` templates of the (anonymised) input equal
-   those of the output. Missing / extra templates printed.
-2. Word-shape coverage: every word shape of the (anonymised) input occurs
-   in the output. Missing shapes printed.
-3. Survivors: no value of an invented class from the input remains in the
+1. Coverage: every structure, every token type, every kept group's own
+   template, and the folded / `<VARIES>` / capped states of the
+   (anonymised) input are still present after folding the output. Whatever
+   is missing is printed. Not template *equality* — the output's template
+   set is a subset by design.
+2. Survivors: no value of an invented class from the input remains in the
    output (boundary-aware; classes the table leaves unchanged are not
    checked). Survivors printed.
-4. Vocabulary: no `--anonymize-words` entry remains — an entry of 6 or more
+3. Vocabulary: no `--anonymize-words` entry remains — an entry of 6 or more
    characters is checked case-insensitively as a substring anywhere; a
    shorter entry is checked case-insensitively only at token boundaries
    (the same rule `at_token_boundary` uses: whitespace, quotes, brackets,
@@ -110,11 +132,16 @@ counts as a boundary.
    glued to other letters (`epycd`) is not replaced and fails here — add
    the glued form to the file.
 
-## Measured (2026-08-29, `--distill --anonymize --seed 1`, release build)
+## Measured (2026-09-20, `--distill --anonymize --seed 1`, release build)
 
-`examples/originals/kubelet.log` 70 548 → 2 987 lines, 2.3 s. `examples/originals/usw_messages.log`
-1 283 → 512 lines, 0.1 s. `tests/fixtures/kubelet_2k.log` 2 000 → 216 lines
-(bound 3×56 groups + 22 unfolded + one per distinct word shape).
+The eighty corpora of `examples/originals/` together: 86 057 → 11 463
+lines, 57.6 MB → 4.14 MB. `k8s_tetragon.log` 1 629 → 64 lines (37.9 MB →
+0.98 MB); it holds 133 groups of twelve structures, and the distillation
+keeps the structures. `kubelet.log` 70 548 → 720 lines.
+
+Folding the whole distilled set costs 0.89 s in one process, against 4.25 s
+for the same work as eighty subprocesses — which is why the corpus sweeps
+in the test suite are bounded-parallel rather than serial.
 
 ## Where it is used
 

@@ -68,16 +68,6 @@ fn group_shape(jsonl: &[u8]) -> (usize, usize) {
     (groups, unfolded)
 }
 
-/// Every collapsed group's `count`, in the order `--explain` reports them.
-fn group_counts(jsonl: &[u8]) -> Vec<usize> {
-    String::from_utf8_lossy(jsonl)
-        .lines()
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|v| v["type"] == "group")
-        .map(|v| v["count"].as_u64().unwrap_or(0) as usize)
-        .collect()
-}
-
 /// Sample values of the classes `--anonymize` invents, as the original's
 /// own `--explain` facts report them.
 fn invented_class_samples(jsonl: &[u8]) -> Vec<String> {

@@ -16,12 +16,24 @@ filter = 'test(redos) | test(scales_linearly) | test(performance) | test(timeout
 test-group = 'serial-timing'
 retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s" }
 
-# The wall-clock tests — every `*scales_linearly*` test and the kubelet speed
-# requirement — assert a duration. A duration is not evidence (CLAUDE.md) and
-# flakes under load, so they leave the default profile for `slow`, which
+# Two kinds of test leave the default profile for `slow`, which
 # `make release-check` runs alone:   cargo nextest run --release --profile slow
+#
+#  - The wall-clock tests: every `*scales_linearly*` test and the kubelet
+#    speed requirement. A duration is not evidence (CLAUDE.md) and flakes
+#    under load.
+#  - `a_write_failure_mid_spool*`. Its assertions are sound and its fixture
+#    is not padding: the report only spools mid-ingest once a run passes
+#    RETAINED_TEMPLATE_CAP, so the failure path it proves does not happen
+#    below 16,384 groups (measured: 16,000 lines does not trigger it).
+#    Folding that many distinct groups is quadratic - 2k/4k/8k/16k lines
+#    measure 0.11/0.41/1.62/7.03 s - so the test costs about 8 s, which was
+#    60% of the whole per-commit suite. It runs before every release
+#    instead. The same write-failure reporting is covered per-commit by
+#    `a_failure_writing_the_summary_record_never_claims_a_complete_report`
+#    on a small fixture.
 [profile.default]
-default-filter = 'not (test(scales_linearly) | test(test_processing_speed_requirement))'
+default-filter = "not (test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool))"
 
 [profile.slow]
-default-filter = 'test(scales_linearly) | test(test_processing_speed_requirement)'
+default-filter = "test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool)"
