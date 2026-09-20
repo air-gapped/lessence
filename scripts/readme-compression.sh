@@ -72,8 +72,8 @@ done <<< "$ROWS"
 block="<!-- gen:compression:begin -->
 <!-- gen:compression:at $head_sha -->
 Measured on $version (commit $head_sha) on production logs that are not
-distributable. Since 0.5.0 the message text is part of an event's identity, so
-output is larger than in older tables and hides less.
+distributable. Every distinct message is its own event, so these counts are
+lower than a looser folder would give.
 
 $table
 <!-- gen:compression:end -->"

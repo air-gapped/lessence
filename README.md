@@ -4,59 +4,77 @@ Your pod is crash-looping. `kubectl logs` dumps 70,000 lines. What's actually br
 
 <!-- gen:example:begin -->
 ```
-$ lessence --no-report kubelet.log
+$ lessence kubelet.log
 
-E0909 13:07:09.181236    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58 podName:9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc nodeName:}" failed. No retries permitted until 2025-09-09 13:09:11.181196845 +0000 UTC m=+225563.950173486 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-52r58" (UniqueName: "kubernetes.io/projected/9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc-kube-api-access-52r58") pod "pushprox-kube-proxy-client-9djm4" (UID: "9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/cattle-monitoring-system/serviceaccounts/pushprox-kube-proxy-client/token": read tcp 127.0.0.1:51706->127.0.0.1:6443: read: connection reset by peer
-[+71 similar | E0909 13:07:09.181236 → E0909 13:21:02.461198 | ipv4×1 {127.0.0.1}, k8s_namespace×16, k8s_volume×1 {oidc-token}, name×29, path×15, pid×1, quoted_string×11, uuid×15, varies×7 {"kube-api-access-<SUFFIX>"×69, "<COMPONENT>-<SUFFIX>"×52, "csi-rbdplugin-<SUFFIX>"×8, "cilium-envoy-<SUFFIX>"×5, "<VOLUME_NAME>"×4, "virt-handler-<SUFFIX>"×4, <QUOTED_STRING>×4}]
-E0909 13:21:02.461198    3116 nestedpendingoperations.go:348] Operation for "{volumeName:kubernetes.io/projected/1f4fdc9d-12d9-451b-9456-110b32706d57-kube-api-access-tldk7 podName:1f4fdc9d-12d9-451b-9456-110b32706d57 nodeName:}" failed. No retries permitted until 2025-09-09 13:23:04.461171825 +0000 UTC m=+226397.230148697 (durationBeforeRetry 2m2s). Error: MountVolume.SetUp failed for volume "kube-api-access-tldk7" (UniqueName: "kubernetes.io/projected/1f4fdc9d-12d9-451b-9456-110b32706d57-kube-api-access-tldk7") pod "virt-handler-gjcp7" (UID: "1f4fdc9d-12d9-451b-9456-110b32706d57") : failed to fetch token: Post "https://127.0.0.1:6443/api/v1/namespaces/kubevirt/serviceaccounts/kubevirt-handler/token": read tcp 127.0.0.1:33740->127.0.0.1:6443: read: connection reset by peer
-W0909 13:07:12.237366    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
-[+37 similar | W0909 13:07:12.237366 → W0909 13:21:42.989676 | pid×1]
-W0909 13:21:42.989676    3116 transport.go:356] Unable to cancel request for *otelhttp.Transport
+--- lessence briefing: kubelet_2k.log (2,000 lines)
+span:    E0909 13:07:09.181236 → E0909 13:21:46.847407  (14m 37s, 2.281 lines/s)
+shape:   █▇▇▆▆▆▆▅▇▆█▅▇▅▇▆▆▇▅▇▆▇▅▅  busiest 09-09 13:07 +37s holds 70 (5.8%)
+format:  plain 2,000 (100%)
+levels:  error 925 (78.9%), warn 68 (5.8%), info 179 (15.3%) — on 1,172 lines (59%)
+top templates (10 of 56, 68% of all lines):
+   13.1%  261                	Is the agent running?
+   13.1%  261                	rpc error: code = Unknown desc = failed to setup network for sandbox "<HASH>": plugin type=<QUOTED_…
+    8.7%  174                 > pod="<NAMESPACE>/<POD_NAME>"
 ...
-
-Original: 2,000 lines → 151 lines (92.5% reduction)
+report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <bytes> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
+[73x] id=0 E0909 13:07:09.181236 → E0909 13:21:02.461198
+<TIMESTAMP>    <PID> nestedpendingoperations.go:348] Operation for "{volumeName:<K8S_NAME> podName:<UUID> nodeName:}" failed. No retries permitted until <TIMESTAMP> UTC m=+<DECIMAL> (durationBeforeRetry <DURATION>). Error: MountVolume.SetUp failed for volume <VARIES> (UniqueName: "<K8S_NAME>") pod <VARIES> (UID: "<UUID>") : failed to fetch token: Post "<PATH>": read tcp <IP>:<PORT>-><IP>:<PORT>: read: connection reset by peer
+variation: DURATION>=64 …[report kept 0]  IPV4=1 [127.0.0.1]  K8S_NAMESPACE=16 [kubernetes.io/projected/<UUID>-kube-api-access-52r58|kubernetes.io/projected/<UUID>-kube-api-access-b5ws4|kubernetes.io/projected/<UUID>-kube-api-access-gm4xp] …[showing 3 of 7] …[report kept 7]  K8S_VOLUME=1 [oidc-token]  NAME=29 [kube-api-access-b5ws4|kube-api-access-gm4xp|kube-api-access-l97vx] …[showing 3 of 7] …[report kept 7]  PATH=15 [https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-con|https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-dcg|https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-ope] …[showing 3 of 7] …[report kept 7]  PID=1 …[report kept 0]  PORT>=64 …[report kept 0]  QUOTED_STRING=11 ["<COMPONENT>-<SUFFIX>"|"<K8S_NAME>"|"<UUID>"] …[showing 3 of 7] …[report kept 7]  TIMESTAMP>=64 …[report kept 0]  UUID=15 [01af48d9-3471-4acf-93aa-689c01b31dff|1f0c6b7f-a1f8-4128-be41-448fb016a65a|1f4fdc9d-12d9-451b-9456-110b32706d57] …[showing 3 of 7] …[report kept 7]  VARIES=7 ["kube-api-access-<SUFFIX>"|"<COMPONENT>-<SUFFIX>"|"csi-rbdplugin-<SUFFIX>"] …[showing 3 of 7]  (report-sampled: DURATION, K8S_NAMESPACE, NAME, PATH, PID, PORT, QUOTED_STRING, TIMESTAMP, UUID — the report itself holds fewer values than the group had)
+previewed here: samples
+[39x] id=1 W0909 13:07:12.237366 → W0909 13:21:42.989676
+<TIMESTAMP>    <PID> transport.go:356] Unable to cancel request for *otelhttp.Transport
+variation: PID=1 …[report kept 0]  TIMESTAMP=39 …[report kept 0]  (report-sampled: PID, TIMESTAMP — the report itself holds fewer values than the group had)
+...
+report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <bytes> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
+recipes (the report is JSONL; none of these prints the whole file):
+  top 40 by count:   jq -r 'select(.type=="group")|"\(.count)\t\(.id)\t\(.normalized[0:120])"' -- '~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl' | sort -rn | head -40
+  ...
 ```
 <!-- gen:example:end -->
 
-The example above is the committed 2,000-line slice of a 70k-line production
-kubelet log, regenerated and verified on every CI run; the full log's numbers
-are in the compression table below.
+That is the committed 2,000-line slice of a production kubelet log, run on
+every CI build so the example is always real output.
 
-Three distinct problems, not 70,000. And the enriched markers tell you
-exactly which UUIDs, volumes, and IPs were affected — information that
-used to require re-running the tool.
+## What a run gives you
 
-## The default run saves a report
+`lessence app.log` does two things. It writes the **report**, the complete
+folded JSON of the run (one record per distinct event, with its count, its
+first and last raw lines and the values that varied), to
+`~/.local/state/lessence/reports/<run>/report.jsonl`. And it prints an
+**overview** on stdout, bounded to 16 KiB: the **briefing** (the summary block
+at the top), the **locator** (the line naming the report file and counting the
+groups it holds, shows and left out), a selection of the rarest and most
+frequent **groups** (one distinct event with its count), and four `jq` recipes
+that query the report by group id. The report is complete; stdout is a
+selection, and the locator says how many groups it left out.
 
-`lessence app.log` writes the **complete** folded JSON of the run — the same
-schema-1 records `--format json` emits — to `report.jsonl` in a fresh run
-directory under `$XDG_STATE_HOME/lessence/reports` (never the working
-directory), and prints a **byte-bounded overview** of that file on stdout: the
-briefing, a locator line naming the report and what it holds, the rarest and
-most frequent groups, and four jq recipes that query the report by group id.
+`--overview all` prints every group with no budget. `--report-dir` moves the
+reports, `--report-max-bytes` caps one run (default 1G). lessence never deletes
+a report; `rm -r ~/.local/state/lessence/reports` when you want the space.
 
-Nothing is lost and nothing is hidden: the report is complete, stdout is
-bounded to 16 KiB by default, and the locator says exactly how many groups
-were selected, printed and omitted. `--overview all` prints every group with no
-budget; `--report-dir` and `--report-max-bytes` move and cap the file; the
-report directory grows until you delete it.
-
-The example above uses `--no-report`, which skips the file and streams the
-folded text as it always did. **Use `--no-report` for `tail -f` or any source
-that never reaches EOF** — the report needs input EOF to be written.
+`lessence --no-report app.log` skips the file and streams the folded text
+instead. **Use `--no-report` for `tail -f` or any source that never ends**: the
+report is written at end of input.
 
 ## For Coding Agents & LLMs
 
-70,000 log lines burn context and bury the signal. Pipe through lessence first — the agent sees 50 distinct patterns, not 70,000 repeated lines.
+70,000 log lines burn context and bury the signal. Pipe through lessence first: the agent sees each distinct event once, with its count, and can query the report for anything the overview left out.
 
 ```bash
 kubectl logs pod/api | lessence | claude -p "what's wrong?"
 kubectl logs pod/api | lessence --preflight | claude -p "analyze this log report"
 ```
 
+Which output for which need:
+
+- the default run for orientation plus a queryable report file;
+- `--format json` for the whole fold as JSONL on stdout, nothing saved;
+- `--preflight` for a one-object health summary of the log;
+- `--explain` is a developer mode that says why lines folded or split.
+
 ### Structured output for agents: `--format json`
 
-For programmatic consumption, `--format json` emits a JSONL stream —
+`--format json` emits a JSONL stream —
 one JSON object per folded group plus a terminating summary record.
 Each group record carries per-token-type rollup metadata: distinct
 counts, deterministic samples, a capped flag, a raw time range, and exact
@@ -76,8 +94,8 @@ kubectl logs pod/api | lessence --format json \
 ```
 
 Full schema: [`docs/format-json-schema.md`](docs/format-json-schema.md).
-Determinism is guaranteed (same input → byte-identical output, modulo
-`elapsed_ms`); the rollup parameters are corpus-calibrated, see
+Same input gives the same output, except the elapsed-time field; the rollup
+parameters are corpus-calibrated, see
 [`docs/rollup-calibration.md`](docs/rollup-calibration.md).
 
 ## What It Does
@@ -110,9 +128,6 @@ journalctl -u nginx --since today | lessence
 make build 2>&1 | lessence
 docker-compose logs | lessence
 
-# What's going on? One screen, no scrolling
-kubectl logs pod/api-server | lessence --fit
-
 # Files or stdin — both work
 lessence app.log                          # direct file argument
 lessence app.log server.log worker.log    # multiple files
@@ -130,10 +145,10 @@ lessence --sanitize host:pseudonym,ip app.log
 
 ## Essence Mode
 
-Sometimes you want to see *what* is happening, not *when*. `--essence` strips all timestamps:
+Sometimes you want to see *what* is happening, not *when*. `--essence` replaces every timestamp with `<TIMESTAMP>` so lines that differ only in time fold together:
 
 ```
-$ lessence --essence < app.log
+$ lessence --essence --no-report -q app.log
 <TIMESTAMP> ERROR: Database connection failed
 <TIMESTAMP> INFO: User authenticated successfully
 ```
@@ -143,10 +158,10 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Real-World Compression
 
 <!-- gen:compression:begin -->
-<!-- gen:compression:at 6904cf68c -->
-Measured on v0.7.0 (commit 6904cf68c) on production logs that are not
-distributable. Since 0.5.0 the message text is part of an event's identity, so
-output is larger than in older tables and hides less.
+<!-- gen:compression:at 550ebb482 -->
+Measured on v0.7.0 (commit 550ebb482) on production logs that are not
+distributable. Every distinct message is its own event, so these counts are
+lower than a looser folder would give.
 
 | Log source | Lines in | Lines out | Reduction |
 |-----------|--------:|---------:|----------:|
@@ -158,9 +173,8 @@ output is larger than in older tables and hides less.
 | journalctl (7 days) | 655,103 | 3,386 | 99.5% |
 <!-- gen:compression:end -->
 
-The headline example above is the only CI-verified number; this table is
-regenerated locally before every release and the release check refuses a
-table older than the folding code.
+Measured before each release on production logs that are not distributable;
+the release check refuses a table generated on older folding code.
 
 ## Flags
 
@@ -227,8 +241,7 @@ A `SKILL.md` is included at `.claude/skills/lessence/` that teaches AI coding ag
 **If you cloned the repo**, the skill is already active in this project directory.
 The canonical skill lives in `.claude/skills/lessence`; the
 `.agents/skills/lessence` symlink exposes the same files to Codex and Pi.
-OpenCode recognizes both locations. On Windows, Git must be configured to
-check out repository symlinks as symlinks.
+OpenCode recognizes both locations.
 
 `lessence --help` opens with a block addressed to agents: skip the skill if it
 is already in your context, otherwise `lessence --skill`, then the JSON surface.
@@ -236,7 +249,7 @@ People get a short help with `lessence --help-human`.
 
 **To install globally** (available in all projects), from the binary you
 have — the skill is embedded at build time, so it always matches the
-installed version (the pattern comes from [herdr](https://github.com/herdrdev/herdr)'s `--skill`):
+installed version:
 
 ```bash
 mkdir -p ~/.claude/skills/lessence/references

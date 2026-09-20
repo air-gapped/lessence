@@ -171,18 +171,6 @@ fn render_flags() -> String {
     format!("```\n{}\n```", out.join("\n"))
 }
 
-fn thousands(n: usize) -> String {
-    let s = n.to_string();
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if i > 0 && (s.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
 #[test]
 fn readme_flags_block() {
     assert_generated_region("README.md", "flags", &render_flags());
@@ -214,38 +202,70 @@ fn readme_pattern_names() {
 
 #[test]
 fn readme_headline_example() {
+    // The default run on the committed slice: report file plus bounded overview.
+    // The report lands under target/ (disk-backed; /tmp may be tmpfs and is
+    // refused). Path, run id and size vary per run and are shown as placeholders.
     let fixture = repo_path("tests/fixtures/kubelet_2k.log");
+    let reports = repo_path("target/doc-contract-reports");
+    let _ = std::fs::remove_dir_all(&reports);
+    std::fs::create_dir_all(&reports).expect("scratch report dir");
     let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .args(["-q", "--no-report"])
+        .arg("--report-dir")
+        .arg(&reports)
         .arg(&fixture)
         .output()
         .expect("failed to run lessence");
     assert!(
         output.status.success(),
-        "lessence -q {} failed: {}",
+        "lessence {} failed: {}",
         fixture.display(),
         String::from_utf8_lossy(&output.stderr)
     );
+    let path_re = regex::Regex::new(&format!(
+        "{}/run-[0-9]{{8}}-[0-9]{{6}}-[0-9a-f]{{8}}/report\\.jsonl",
+        regex::escape(&reports.to_string_lossy())
+    ))
+    .unwrap();
+    let run_re = regex::Regex::new(r"run: run-\S+").unwrap();
+    let size_re = regex::Regex::new(r"size: \d+ bytes").unwrap();
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let out_lines: Vec<&str> = stdout.lines().collect();
-    let in_count = read("tests/fixtures/kubelet_2k.log").lines().count();
-    let out_count = out_lines.len();
-    let reduction = (1.0 - out_count as f64 / in_count as f64) * 100.0;
+    let lines: Vec<String> = stdout
+        .lines()
+        .map(|l| {
+            let l = path_re.replace_all(
+                l,
+                "~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl",
+            );
+            let l = run_re.replace(&l, "run: run-<date>-<id>");
+            size_re.replace(&l, "size: <n> bytes").into_owned()
+        })
+        .collect();
+    let at =
+        |pred: &dyn Fn(&str) -> bool| lines.iter().position(|l| pred(l)).expect("overview shape");
+    let top = at(&|l| l.starts_with("top templates"));
+    let locator = at(&|l| l.starts_with("report: "));
+    let third_group = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with('[') && l.contains("x] id="))
+        .nth(2)
+        .map(|(i, _)| i)
+        .expect("at least three groups");
+    let recipes = at(&|l| l.starts_with("recipes"));
 
-    let mut block = String::from("$ lessence --no-report kubelet.log\n\n");
-    for line in out_lines.iter().take(6) {
-        block.push_str(line);
-        block.push('\n');
-    }
-    if out_count > 6 {
-        block.push_str("...\n");
-    }
-    block.push('\n');
-    block.push_str(&format!(
-        "Original: {} lines → {} lines ({reduction:.1}% reduction)",
-        thousands(in_count),
-        out_count
-    ));
+    let mut block = String::from("$ lessence kubelet.log\n");
+    let show = |block: &mut String, range: std::ops::Range<usize>| {
+        for line in &lines[range] {
+            block.push_str(line);
+            block.push('\n');
+        }
+    };
+    show(&mut block, 0..top + 4); // the briefing head and three top templates
+    block.push_str("...\n");
+    show(&mut block, locator..third_group); // the locator and the first two groups
+    block.push_str("...\n");
+    show(&mut block, recipes - 1..recipes + 2); // the locator again and the first recipe
+    block.push_str("  ...");
     let want = format!("```\n{block}\n```");
     assert_generated_region("README.md", "example", &want);
 }
