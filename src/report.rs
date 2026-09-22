@@ -36,6 +36,11 @@ const LOCAL_BACKING: &[(u64, &str)] = &[
     (0x9123_683E, "btrfs"),
     (0xF2F5_2010, "f2fs"),
     (0x2FC1_2FC1, "zfs"),
+    // The root filesystem of every Docker and Podman container, where an
+    // agent's default run lands. Its writable layer lives on the host's
+    // disk (/var/lib/docker, /var/lib/containers); refusing it made every
+    // default run inside a container fail.
+    (0x794C_7630, "overlayfs"),
 ];
 const REMOTE_BACKING: &[(u64, &str)] = &[
     (0x6969, "nfs"),
