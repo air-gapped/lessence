@@ -86,11 +86,14 @@ jobs:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
-    # build.rs embeds this in `--version`. The cross-rs container that builds
-    # aarch64 has no git, so it is passed in explicitly.
+    # build.rs embeds LESSENCE_BUILD_ID in `--version`. The cross-rs
+    # container that builds aarch64 has no git, so it is passed in, with the
+    # two things the tests read from the runner: CI (corpus tests skip, as
+    # on every other runner — the corpora are not in the repository) and a
+    # writable HOME (the container's is `/`).
     env:
       LESSENCE_BUILD_ID: ${{ github.sha }}
-      CROSS_CONTAINER_OPTS: --env LESSENCE_BUILD_ID=${{ github.sha }}
+      CROSS_CONTAINER_OPTS: --env LESSENCE_BUILD_ID=${{ github.sha }} --env CI=true --env HOME=/tmp
     strategy:
       fail-fast: false
       matrix:
@@ -161,11 +164,11 @@ jobs:
       - name: Test
         if: ${{ !matrix.cross }}
         shell: bash
-        run: cargo nextest run --target "${{ matrix.target }}"
+        run: cargo nextest run --no-fail-fast --target "${{ matrix.target }}"
 
       - name: Test (cross, qemu)
         if: ${{ matrix.cross }}
-        run: cross test --target "${{ matrix.target }}"
+        run: cross test --no-fail-fast --target "${{ matrix.target }}"
 
       - name: Build
         if: ${{ !matrix.cross }}
