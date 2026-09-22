@@ -36,35 +36,6 @@ GATE_BASE="$last_tag" GATE_VACUOUS_INFORMATIONAL=1 ./scripts/gate.sh || gate_sta
 
 # ── mutants --in-diff on <last-tag>..HEAD ───────────────────────────────
 
-# This machine is a workstation, not a build box: a browser, an editor and
-# whatever else is open have to survive the run. Budget from what is FREE
-# right now, not from a number somebody picked when the machine was idle —
-# `MemoryMax=48G` on a 62 GiB box with 39 GiB already in use is not a cap,
-# it is permission to take everything, and the kernel pays for it by
-# evicting the desktop.
-#
-# RESERVE_GIB is what is left for everything that is not this run.
-MUTANTS_RESERVE_GIB="${MUTANTS_RESERVE_GIB:-16}"
-avail_gib="$(awk '/^MemAvailable:/ {printf "%d", $2/1048576}' /proc/meminfo)"
-budget_gib=$(( avail_gib - MUTANTS_RESERVE_GIB ))
-[ "$budget_gib" -lt 4 ] && budget_gib=4
-MUTANTS_MEM_MAX="${MUTANTS_MEM_MAX:-${budget_gib}G}"
-MUTANTS_TIMEOUT_MULT="${MUTANTS_TIMEOUT_MULT:-3}"
-# Each worker is a full cargo build tree. Memory, not cores, is what runs
-# out first, so derive the worker count from the budget and cap it by the
-# cores actually available.
-jobs_by_mem=$(( budget_gib / 4 ))
-[ "$jobs_by_mem" -lt 1 ] && jobs_by_mem=1
-cores="$(nproc)"
-[ "$jobs_by_mem" -gt "$cores" ] && jobs_by_mem="$cores"
-[ "$jobs_by_mem" -gt 8 ] && jobs_by_mem=8
-MUTANTS_JOBS="${MUTANTS_JOBS:-$jobs_by_mem}"
-echo "mutants budget: ${MUTANTS_MEM_MAX} of ${avail_gib}G available, ${MUTANTS_JOBS} jobs (reserve ${MUTANTS_RESERVE_GIB}G)" >&2
-if [ "$MUTANTS_JOBS" -le 1 ]; then
-    echo "  only ${avail_gib}G free, so this runs single-job and will be slow." >&2
-    echo "  Close what you can, or lower the reserve deliberately:" >&2
-    echo "    MUTANTS_RESERVE_GIB=8 make release-check" >&2
-fi
 # src/folder/ is a directory since the split; naming src/folder.rs excluded
 # every folder change from the run (lessence-xr6).
 MUTANTS_FILES=(-f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**/*.rs')
@@ -82,13 +53,9 @@ else
     echo "Running cargo mutants --in-diff ${last_tag}..HEAD..." >&2
     # A previous run's outcomes must not be read as this run's (lessence-xr6).
     rm -rf mutants.out
-    # A user-scope unit caps memory the same way and needs no polkit
-    # prompt, so the run also works from a non-interactive session.
+    # scripts/mutants.sh sizes the run to the memory free right now.
     mutants_rc=0
-    systemd-run --user --scope -p "MemoryMax=${MUTANTS_MEM_MAX}" nice -n 19 \
-        env PROPTEST_CASES=32 PROPTEST_MAX_SHRINK_ITERS=100 \
-        cargo mutants -j "$MUTANTS_JOBS" --timeout-multiplier "$MUTANTS_TIMEOUT_MULT" \
-        "${MUTANTS_FILES[@]}" -C --lib --in-diff "$diff_file" \
+    scripts/mutants.sh "${MUTANTS_FILES[@]}" -C --lib --in-diff "$diff_file" \
         || mutants_rc=$?
     rm -f "$diff_file"
     outcomes="mutants.out/outcomes.json"

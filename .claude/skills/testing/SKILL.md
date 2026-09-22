@@ -134,18 +134,21 @@ and `fuzz_fold` (full pipeline). Corpus persists between runs.
 
 ### Mutation Testing (cargo-mutants)
 
-Runs wrapped in `systemd-run --scope -p MemoryMax=$(MUTANTS_MEM_MAX)`
-to cap memory (default 48G). The relevant knobs, all overridable on
-the `make` command line:
+`make mutants`, `make mutants-full` and `make release-check` all run
+through `scripts/mutants.sh`, which sizes the run to the machine as it
+is now: the memory budget is MemAvailable minus a 16 GiB reserve, set
+as `MemoryHigh` (over it the kernel throttles, it does not kill) with
+`MemoryMax` 2 GiB above; the job count is that budget divided by what
+one busy worker took last run (`target/gate/mutants-mem`, anonymous
+peak, plus a quarter; 4 GiB when there is no record), capped at cores
+and 8. Overrides, on the `make` line or in the environment:
 
-- `MUTANTS_JOBS` (default `8`) — parallel mutant jobs
+- `MUTANTS_RESERVE_GIB` (default `16`) — memory left for everything else
+- `MUTANTS_MEM_MAX` — the budget itself, e.g. `20G`
+- `MUTANTS_JOBS` — parallel mutant jobs
 - `MUTANTS_TIMEOUT_MULT` (default `3`) — timeout multiplier (NOT
   an absolute seconds value; cargo-mutants times a baseline test
   run and uses `baseline × multiplier` as the per-mutant timeout)
-- `MUTANTS_MEM_MAX` (default `48G`) — systemd memory cap
-
-Example: `make mutants MUTANTS_JOBS=4 MUTANTS_MEM_MAX=24G` for a
-memory-constrained machine.
 
 Interpret results: "missed" means a mutant survived — either no test
 covers that code path, or the test doesn't assert tightly enough.

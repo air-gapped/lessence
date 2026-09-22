@@ -107,49 +107,28 @@ fuzz: check-fuzz-prereqs
 fuzz-fold: check-fuzz-prereqs
 	nice -n 19 cargo +nightly fuzz run fuzz_fold -- -max_total_time=$(FUZZ_TIME) -jobs=$(FUZZ_WORKERS) -workers=$(FUZZ_WORKERS)
 
-MUTANTS_MEM_MAX ?= 48G
-MUTANTS_TIMEOUT_MULT ?= 3
-MUTANTS_JOBS ?= 8
-MUTANTS_RUN := systemd-run --scope -p MemoryMax=$(MUTANTS_MEM_MAX) nice -n 19
-MUTANTS_ENV := PROPTEST_CASES=32 PROPTEST_MAX_SHRINK_ITERS=100
-MUTANTS_FILES := -f src/folder.rs -f src/normalize.rs -f 'src/patterns/**/*.rs'
+MUTANTS_FILES := -f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**/*.rs'
 
 # ── Mutation testing ──────────────────────────────────────────────────
 #
-#   make mutants        Fast default. 8 mutants in parallel, unit tests
-#                       only. ~2,400 mutants in ~5–8 min.
+#   make mutants        Fast default: unit tests only.
+#   make mutants-full   Thorough: all tests including integration.
 #
-#   make mutants-full   Thorough. 8 mutants in parallel, all tests
-#                       including integration (subprocess) tests.
-#                       ~2,400 mutants in ~15–20 min.
-#
-# Parallel mode (-j 8): cargo-mutants copies the source tree 8 times
-# and tests 8 mutations simultaneously. Each copy uses ~2 GB for the
-# Rust compiler. Memory limit is 48 GB (adjust MUTANTS_JOBS/MEM_MAX).
-#
-# Previous runs used --in-place (single-threaded, no copy) which was
-# safe but slow. The memory issues that forced --in-place are fixed:
-#   - PII masking infinite loop: forward-progress guard added
-#   - cargo build inside tests: all removed
-#   - cargo run inside tests: replaced with env!(CARGO_BIN_EXE)
+# scripts/mutants.sh picks the worker count and memory cap from what is
+# free right now and what one worker took last run; MUTANTS_RESERVE_GIB,
+# MUTANTS_MEM_MAX, MUTANTS_JOBS and MUTANTS_TIMEOUT_MULT override it.
 #
 # -C --lib: only compile and run unit tests inside src/. Skips building
-# 5 integration test binaries — saves ~1.5s per mutant.
-#
-# Override parallelism: make mutants MUTANTS_JOBS=4
+# the integration test binaries.
 # ──────────────────────────────────────────────────────────────────────
 
 ## mutants: Mutation testing — fast, unit tests only (~5 min)
 mutants: check-mutants-prereqs
-	$(MUTANTS_RUN) env $(MUTANTS_ENV) cargo mutants \
-		-j $(MUTANTS_JOBS) --timeout-multiplier $(MUTANTS_TIMEOUT_MULT) \
-		$(MUTANTS_FILES) -C --lib
+	scripts/mutants.sh $(MUTANTS_FILES) -C --lib
 
 ## mutants-full: Mutation testing — thorough, all tests (~15 min)
 mutants-full: check-mutants-prereqs
-	$(MUTANTS_RUN) env $(MUTANTS_ENV) cargo mutants \
-		-j $(MUTANTS_JOBS) --timeout-multiplier $(MUTANTS_TIMEOUT_MULT) \
-		$(MUTANTS_FILES)
+	scripts/mutants.sh $(MUTANTS_FILES)
 
 #---------------------------------------------------------------------------
 # Install
