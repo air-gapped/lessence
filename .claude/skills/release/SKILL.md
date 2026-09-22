@@ -1,126 +1,109 @@
 ---
 name: release
 description: >-
-  Release workflow for lessence — release-please automation, conventional
-  commits, version bumping, changelog, binary publishing. Use when preparing
-  a release, checking release status, fixing release issues, or understanding
-  how versions are managed.
+  Release workflow for lessence — the agent runs the whole release: version
+  bump, changelog section, release-check, tag, push, publish. Use when
+  preparing a release, checking whether one is ready, fixing a release that
+  went wrong, or understanding how versions are managed.
 ---
 
 # Release Workflow
 
-Releases are **fully automated** via release-please. No manual version bumping,
-changelog editing, or tagging. The workflow is: write conventional commits →
-merge to main → release-please does the rest.
+**The agent runs the release end to end.** There is no bot. release-please
+was removed on 2026-09-22 after it produced two tagged-but-unpublished
+versions and a stale changelog; nothing opens a PR against this repo any
+more.
 
-## How It Works
+A release is a tag plus a published GitHub release. Pushing `main` does
+**not** start one — push freely, but remember the repo is public and
+everything pushed is visible.
 
-1. **Conventional commits on main** trigger release-please (`release.yml`)
-2. Release-please opens/updates a **release PR** with version bump + changelog
-3. **Merging the release PR** creates a GitHub release + git tag
-4. The release triggers:
-   - `cargo publish` to crates.io
-   - Binary builds for 5 targets (Linux x86_64/aarch64, macOS x86_64/aarch64, Windows)
-   - SHA256 checksums uploaded to the GitHub release
+## The sequence
 
-## Commit Types That Drive Releases
-
-From CLAUDE.md — the commit type controls what appears in the changelog:
-
-- `feat:` → **minor** version bump, appears in changelog
-- `fix:` → **patch** version bump, appears in changelog
-- `perf:` → **patch** version bump, appears in changelog
-- `feat!:` or `BREAKING CHANGE:` footer → **major** version bump
-- `test:`, `refactor:`, `style:`, `chore:`, `docs:`, `ci:`, `build:` → no release, hidden from changelog
-
-The first line of the commit message becomes the changelog entry. Write it
-for users: "add --fit flag for screen-sized output" not "implement fit_budget
-in folder.rs".
-
-## Checking Release Status
+Nothing here is optional and the order matters: the tag is a public claim
+and must never point at a commit that failed a check.
 
 ```bash
-# See if a release PR is open
-gh pr list --label "autorelease: pending"
+# 1. Everything intended for the release is committed and on main.
+git status --short          # clean
+git log --oneline <last-tag>..HEAD
 
-# Check the latest release
-gh release list --limit 1
+# 2. Decide the version from what is IN that range, not from habit.
+#    feat: -> minor. fix:/perf: -> patch. A changed or removed --format json
+#    field, flag or exit code is BREAKING: minor while 0.x, major after 1.0.
 
-# Current version in Cargo.toml
-grep '^version' Cargo.toml
+# 3. Refresh the README compression table (it is stamped with a commit, and
+#    release-check refuses a stale one). Needs a clean src/ and a release
+#    binary built from HEAD.
+cargo build --release
+./scripts/readme-compression.sh --write vX.Y.Z
+git commit -am "docs: README compression table measured for vX.Y.Z"
+
+# 4. Bump the version and write the changelog section BY HAND.
+#    Users read this. Say what changed for them, not what moved in the code.
+$EDITOR Cargo.toml CHANGELOG.md
+cargo build --release        # refresh Cargo.lock
+git commit -am "chore: release X.Y.Z"
+
+# 5. The gate. This is what decides "ready" — not judgement.
+make release-check           # ~20 min
+
+# 6. Only if it passed: tag, push, publish.
+git tag vX.Y.Z
+git push origin main
+git push origin vX.Y.Z
+gh release create vX.Y.Z --title vX.Y.Z --notes-file <notes>
 ```
 
-### Is the release PR up to date with main?
+Step 6's `gh release create` publishes immediately, which fires
+`release-build.yml` (`on: release: [released]`). That workflow refuses a tag
+that is not on `main`, re-runs the doc contract at the tag, publishes the
+crate, and builds and attaches the musl binaries.
 
-The PR is a *projection* of main: every push reruns `release.yml`, which
-rewrites the PR's version and changelog from the conventional commits since
-the last tag. It is current iff the latest `release.yml` run succeeded on
-main's HEAD:
+## What release-check proves
 
-```bash
-[ "$(gh run list --workflow release.yml --limit 1 --json headSha,conclusion \
-      -q 'select(.[0].conclusion == "success") | .[0].headSha')" \
-  = "$(git rev-parse origin/main)" ] \
-  && echo "release PR is current" || echo "NOT current — run pending/failed, or stale-PR bug (see Troubleshooting)"
-```
+`scripts/release-check.sh`, writing `target/gate/release.json`:
 
-Never edit the PR or Cargo.toml version by hand — push a commit and let it
-regenerate. `docs:`/`chore:`/`test:` pushes still rerun the workflow (keeping
-the PR's base fresh) but add nothing to the changelog.
+| Check | Meaning |
+|---|---|
+| gate vs the last **published** release | not the last tag — a tag can exist with no release behind it, and comparing to it hides what the upgrade costs |
+| mutants `--in-diff` | the tests kill the mutants the diff introduced |
+| `make ci` | fmt, clippy, doc, tests, deny |
+| slow tests | the wall-clock profile the default profile excludes |
+| README compression table | generated at a commit whose `src/` equals today's |
+| agent skill re-verified | `sources.md`'s `verified-at:` sha covers every user-facing `src/` commit |
 
-## Configuration
+The last one used to be a GitHub check on the release-please PR branch. With
+no PR to hang it on it moved into `release-check`, because a check that only
+fires on a branch nobody creates is a check that never runs.
 
-- **PR management**: `.github/workflows/release.yml` — runs on push to main, only manages the release PR
-- **Build + publish**: `.github/workflows/release-build.yml` — triggers on `release: published` event only
-- **Release-please**: uses defaults (auto-detects Rust from Cargo.toml, no config file)
-- **Auth**: GitHub App token via `RELEASE_BOT_APP_ID` / `RELEASE_BOT_PRIVATE_KEY` secrets
-- **Binary builds**: `taiki-e/upload-rust-binary-action` with musl for Linux
+**Perf against the last published release is separate** and is not in
+`release-check`: see `CLAUDE.local.md` for the script, and state the
+cumulative number in the handoff.
 
-## Troubleshooting
+## Version rules
 
-- **PR has stale/wrong changelog** (includes old commits, wrong version): close the PR, delete its branch (`gh pr close N --delete-branch`), push a commit to retrigger. This is a known release-please bug that recurs.
-- **Release PR not appearing**: check that commits use conventional format and include `feat:` or `fix:`
-- **Version mismatch**: release-please manages `Cargo.toml` version — do not edit it manually
-- **Failed binary build**: check the matrix job for the failing target in Actions
-- **Crate publish failed**: uses OIDC via `crates-io-auth-action`, not a token secret — check the action version and crates.io trusted publisher config
+- `Cargo.toml` is edited by hand now. Nothing rewrites it.
+- The tag is `vX.Y.Z`; `Cargo.toml` carries `X.Y.Z`.
+- **The version string comes from the tag**, via `git describe`. A tag with
+  no release behind it makes every later build claim that version — which is
+  how builds nine commits past `v0.7.0` came to report `0.7.0`.
+- A tag is public the moment it is pushed. Do not push one speculatively.
 
-## Straggler Commits After the Release PR Merged
+## If something goes wrong
 
-While the release is still a **draft**, the tag is movable — no binaries
-exist, crates.io is untouched. To pull post-merge commits (typically docs
-that should ship with the release) into it:
+- **Binaries missing from a published release**:
+  `gh workflow run release-build.yml -f tag=vX.Y.Z` rebuilds and reattaches.
+- **Tag pushed by mistake, nothing published**: delete it on both sides
+  (`git tag -d`, `git push --delete origin`) before anyone fetches it. Once a
+  release is published, supersede rather than delete — crates.io publishes
+  are immutable.
+- **Release created but the crate did not publish**: check `publish-crate` in
+  the run; its ancestry guard refuses a tag that is not on `main`.
 
-```bash
-git tag -f vX.Y.Z $(git rev-parse origin/main)
-git push origin vX.Y.Z --force
-gh release edit vX.Y.Z --draft --target $(git rev-parse origin/main)
-```
+## History worth keeping
 
-Only safe for changelog-hidden commit types (docs/chore/test) — a fix/feat
-straggler belongs in the next release, since the changelog was generated at
-merge. NEVER move a published release's tag.
-
-## Pre-release Verification
-
-Doc/skill drift is **enforced, not checked by hand**:
-
-- `cargo test` includes the doc-contract suite (`tests/doc_contract.rs`) — README
-  gen: regions, flag coverage, rollup-cap sanity, link integrity. Regenerate
-  stale regions with `make docs`. Runs in `make ci` and the required
-  `test (ubuntu-latest)` check.
-- The release PR cannot merge until `test (ubuntu-latest)` AND `release-gate`
-  are green. `release-gate` fails if any feat/fix/perf commit touching src/
-  postdates the skill's `verified-at:` sha in sources.md — follow its error
-  annotation verbatim: commit the re-verification to MAIN (never the PR
-  branch), then **re-run the failed check** with
-  `gh run rerun <run-id> --failed` (or "Re-run jobs" in the UI). The job
-  checks out current main, so the rerun passes. A docs-only commit does NOT
-  refresh the release PR — release-please only force-pushes the PR branch
-  when the generated changelog/version changes — so the check will never
-  re-trigger on its own. Never use `gh pr merge --admin` to get past it.
-- Publishing is also guarded at the tag: `release-build.yml` refuses to
-  `cargo publish` unless the tag commit is an ancestor of main and the
-  doc-contract suite passes at that commit — a tag pushed from a side branch
-  cannot reach crates.io.
-- Only remaining eyeball item: release-notes Highlights cover every
-  user-noticeable changelog entry.
+Two releases, `v0.6.0` and `v0.7.0`, were tagged and drafted but never
+published, while users stayed on `v0.5.0`. That is the failure this process
+exists to prevent: the drafts were deleted, the tags kept (they are true —
+those commits were tagged), and the next release supersedes them.

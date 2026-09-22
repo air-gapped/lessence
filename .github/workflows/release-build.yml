@@ -9,8 +9,10 @@ on:
     # `released` fires when a release is published (a draft promoted to live, or
     # created already-published). Both jobs key off it: publish-crate runs
     # `cargo publish`, build-binaries compiles + attaches the per-target binaries.
-    # NOTE: we do NOT use `created` — release-please's bot-created drafts do not
-    # emit a `created` workflow event, so binaries must be built at publish time.
+    # NOTE: we do NOT use `created` — it does not fire for every creation path,
+    # and publishing is the only moment that should cost a crates.io push.
+    # The release is created by hand (`gh release create vX.Y.Z`) after the tag
+    # is pushed; nothing bot-authored opens a PR against this repo any more.
     types: [released]
   # Manual recovery: rebuild + reattach binaries for an existing tag (e.g. a
   # release that published without them).
@@ -41,7 +43,7 @@ jobs:
           fetch-depth: 0
 
       # crates.io publishes are immutable — including the README frozen at the
-      # tag. Only commits that went through the gated release-PR merge (and
+      # tag. Only commits that reached main (and
       # therefore passed the doc-contract tests and the release-gate check)
       # may publish. A tag pushed from a side branch must never reach
       # crates.io.

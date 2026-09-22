@@ -96,6 +96,37 @@ echo "Checking the README compression table..." >&2
 readme_status="pass"
 readme_msg="$("$ROOT/scripts/readme-compression.sh" --check 2>&1)" || readme_status="FAIL"
 
+# ── agent skill re-verified since the last behaviour change ─────────────
+#
+# This ran as a GitHub check on release-please's PR branch. With
+# release-please gone there is no PR to hang it on, and a check that only
+# fires on a branch nobody creates is a check that never runs — so it moves
+# here, onto the path that actually precedes a tag.
+#
+# `.claude/skills/lessence/references/sources.md` carries `verified-at: <sha>`.
+# Every user-facing src/ commit after that sha is a behaviour change the
+# agent-facing skill has not been re-read against.
+
+echo "Checking the agent skill was re-verified..." >&2
+skill_status="pass"
+skill_msg="ok"
+sources="$ROOT/.claude/skills/lessence/references/sources.md"
+verified_sha="$(grep -oE '^verified-at: [0-9a-f]{40}' "$sources" 2>/dev/null | awk '{print $2}')"
+if [ -z "${verified_sha:-}" ]; then
+    skill_status="FAIL"; skill_msg="sources.md has no 'verified-at: <sha>' line"
+elif ! git -C "$ROOT" merge-base --is-ancestor "$verified_sha" HEAD 2>/dev/null; then
+    skill_status="FAIL"; skill_msg="verified-at $verified_sha is not an ancestor of HEAD"
+else
+    unverified="$(git -C "$ROOT" log "$verified_sha"..HEAD --extended-regexp \
+        --grep='^(feat|fix|perf)(\(.*\))?!?:' --format='%h %s' -- src/)"
+    if [ -n "$unverified" ]; then
+        skill_status="FAIL"
+        skill_msg="not re-verified since: $(echo "$unverified" | tr '\n' ';' | cut -c1-160)"
+    else
+        skill_msg="verified-at ${verified_sha:0:9} covers every user-facing src/ commit"
+    fi
+fi
+
 # ── make ci ──────────────────────────────────────────────────────────────
 
 echo "Running make ci..." >&2
@@ -131,6 +162,7 @@ if [ "$slow_status" = "FAIL" ]; then
     echo "$slow_tail"
 fi
 echo "README compression table: $readme_status ($readme_msg)"
+echo "agent skill: $skill_status ($skill_msg)"
 
 # ── release.json ─────────────────────────────────────────────────────────
 

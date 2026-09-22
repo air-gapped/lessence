@@ -1,6 +1,6 @@
 #!/bin/sh
 # Commit-msg hook: warn-and-block when the conventional-commit type would
-# trigger a release-please version bump and a public changelog entry.
+# mark a change as user-facing: it earns a changelog entry at release time.
 #
 # Per CLAUDE.md ("Commits" section): only feat:, fix:, perf: are
 # user-facing and bump the version. All other types (chore:, refactor:,

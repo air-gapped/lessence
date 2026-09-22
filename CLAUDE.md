@@ -119,17 +119,21 @@ Report in four parts: **DONE** (what changed, in user terms), **PROOF**
 
 ## Commits
 
-Conventional commits drive release notes via release-please. `feat:` / `fix:`
-/ `perf:` are user-facing and appear in the changelog — write the first line
-for users ("default cap of 30 patterns in --summary mode", not "add
+Conventional commits decide what reaches the changelog, which is now written
+by hand at release time rather than generated. `feat:` / `fix:` / `perf:` are
+user-facing and appear in the notes — write the first line for users
+("default cap of 30 patterns in --summary mode", not "add
 DEFAULT_SUMMARY_CAP"). `test:` / `refactor:` / `style:` / `chore:` / `docs:` /
 `ci:` / `build:` are hidden. `RELEASE_COMMIT=1` for `feat:`/`fix:`/`perf:`.
 Commit before risky operations. Before `git add`, check `git check-ignore`.
 
 ## Safety
 
-- Never run destructive git commands without asking; never push (pushing
-  main triggers the release train — the owner pushes).
+- Never run destructive git commands without asking. Pushing main is
+  allowed: release-please is gone, so a push no longer starts a release —
+  a release begins when a `vX.Y.Z` tag is pushed and the GitHub release is
+  created. **Everything pushed is public**: check the diff for anything
+  that should not be, every time.
 - Never create planning or scratch files inside the project tree.
 - Corpora are scrubbed by invention before they land in `examples/`; nothing
   unscrubbed is ever on disk in the tree.
