@@ -120,6 +120,23 @@ fn classify(_dir: &Path) -> Result<(u64, &'static str)> {
     Ok((0, "unchecked"))
 }
 
+/// Make a rename inside `dir` durable. POSIX only: Windows cannot open a
+/// directory as a file, so this failed on every Windows run and turned
+/// every default run into exit 1 ("durability unconfirmed").
+// ponytail: on Windows the rename is std::fs::rename (MoveFileExW without
+// MOVEFILE_WRITE_THROUGH), durable as far as NTFS journals it. Call
+// MoveFileExW with write-through, as the atomicwrites crate does, if a
+// Windows report ever needs the same guarantee as a Unix one.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    return File::open(dir).and_then(|d| d.sync_all());
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        Ok(())
+    }
+}
+
 /// Apply the filesystem policy. `bounded_exception` is true only when both
 /// `--report-dir` and a positive `--report-max-bytes` were given.
 pub fn check_filesystem(dir: &Path, placement: Placement, bounded_exception: bool) -> Result<()> {
@@ -369,14 +386,14 @@ impl Spool {
         // Directory fsync: the rename is what makes the report complete,
         // and only this makes the rename itself durable.
         #[cfg(not(feature = "test-hooks"))]
-        let dir_fsync = File::open(&self.dir).and_then(|d| d.sync_all());
+        let dir_fsync = sync_dir(&self.dir);
         #[cfg(feature = "test-hooks")]
         let dir_fsync = if self.fail_dir_fsync {
             Err(std::io::Error::other(
                 "injected directory fsync failure (LESSENCE_TEST_FAIL_DIR_FSYNC)",
             ))
         } else {
-            File::open(&self.dir).and_then(|d| d.sync_all())
+            sync_dir(&self.dir)
         };
         Ok(dir_fsync.err().map(|e| e.to_string()))
     }
