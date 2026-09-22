@@ -139,15 +139,18 @@ jobs:
       # cross container that is an aarch64 executable the x86 host kernel
       # cannot run until qemu is registered with binfmt_misc; cross only
       # wraps the test harness, not what the harness starts.
-      # Ubuntu's qemu-user-static registers its interpreters with the F
-      # flag, so the kernel runs aarch64 executables inside containers too.
-      # (docker/setup-qemu-action does the same but is not on this repo's
-      # allowed-actions list.)
+      # The kernel must run aarch64 executables inside the cross container,
+      # which needs qemu registered with binfmt_misc's F flag (the
+      # interpreter is opened on the host, not looked up in the container).
+      # Ubuntu's qemu-user-static registers a wrapper without it. This is
+      # the image docker/setup-qemu-action runs, called directly because
+      # that action is not on this repo's allowed-actions list.
       - name: Register qemu for aarch64 executables
         if: ${{ matrix.cross }}
         run: |
-          sudo apt-get update && sudo apt-get install -y qemu-user-static
-          grep -H . /proc/sys/fs/binfmt_misc/qemu-aarch64
+          # tonistiigi/binfmt:qemu-v10.2.3
+          docker run --privileged --rm tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0 --install arm64
+          grep -H flags /proc/sys/fs/binfmt_misc/qemu-aarch64
 
       - name: Install cross
         if: ${{ matrix.cross }}
