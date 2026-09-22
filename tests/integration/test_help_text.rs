@@ -133,6 +133,7 @@ fn test_help_human() {
 /// `lessence` with nothing to read must not sit waiting on a terminal: a
 /// person sees a hang, an agent hangs its session. With a terminal on stdin
 /// and no file it prints the help and exits 0; a pipe still folds.
+#[cfg(unix)] // python's pty module is Unix-only
 #[test]
 fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
     // python's pty module lends the child a pseudo-terminal on stdin; the
