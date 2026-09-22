@@ -145,8 +145,17 @@ fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
             env!("CARGO_BIN_EXE_lessence"),
         ])
         .stdin(std::process::Stdio::null())
-        .output()
-        .expect("python3 should exist");
+        .output();
+    // The cross-rs aarch64 image has no python3. Skip there as corpus tests
+    // do on CI; anywhere else a missing python3 is a failure, not a pass.
+    let output = match output {
+        Ok(output) => output,
+        Err(e) if std::env::var_os("CI").is_some() => {
+            eprintln!("Skipping: python3 not available ({e}) on this CI runner");
+            return;
+        }
+        Err(e) => panic!("python3 should exist: {e}"),
+    };
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{text}");
     assert!(
