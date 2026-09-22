@@ -80,7 +80,10 @@ pub fn resolve_dir(explicit: Option<&Path>) -> Result<(PathBuf, Placement)> {
 /// Classify the backing filesystem of the nearest existing ancestor of
 /// `dir`. The ancestor rather than `dir` itself so a rejected filesystem is
 /// never written to, not even an empty directory.
-#[cfg(unix)]
+///
+/// Linux and Android only: `statfs` magic numbers are a Linux interface, and
+/// every constant above is one. Elsewhere the policy does not apply.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn classify(dir: &Path) -> Result<(u64, &'static str)> {
     let mut probe = dir;
     loop {
@@ -112,7 +115,7 @@ fn classify(dir: &Path) -> Result<(u64, &'static str)> {
     Ok((magic, "unknown"))
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn classify(_dir: &Path) -> Result<(u64, &'static str)> {
     Ok((0, "unchecked"))
 }
@@ -123,7 +126,7 @@ pub fn check_filesystem(dir: &Path, placement: Placement, bounded_exception: boo
     if placement == Placement::Explicit && bounded_exception {
         return Ok(());
     }
-    if cfg!(not(unix)) {
+    if cfg!(not(any(target_os = "linux", target_os = "android"))) {
         return Ok(());
     }
     let (magic, name) = classify(dir)?;
@@ -433,7 +436,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn an_unknown_backing_filesystem_is_not_described_as_memory() {
         let probe = Path::new("/proc");
@@ -514,7 +517,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn tmpfs_is_rejected_by_name_for_automatic_placement_and_accepted_for_the_bounded_pair() {
         let shm = Path::new("/dev/shm");
@@ -533,7 +536,7 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_known_disk_backed_directory_passes_the_policy() {
         let tmp = tempfile::tempdir().unwrap();
