@@ -36,9 +36,35 @@ GATE_BASE="$last_tag" GATE_VACUOUS_INFORMATIONAL=1 ./scripts/gate.sh || gate_sta
 
 # ── mutants --in-diff on <last-tag>..HEAD ───────────────────────────────
 
-MUTANTS_MEM_MAX="${MUTANTS_MEM_MAX:-48G}"
+# This machine is a workstation, not a build box: a browser, an editor and
+# whatever else is open have to survive the run. Budget from what is FREE
+# right now, not from a number somebody picked when the machine was idle —
+# `MemoryMax=48G` on a 62 GiB box with 39 GiB already in use is not a cap,
+# it is permission to take everything, and the kernel pays for it by
+# evicting the desktop.
+#
+# RESERVE_GIB is what is left for everything that is not this run.
+MUTANTS_RESERVE_GIB="${MUTANTS_RESERVE_GIB:-16}"
+avail_gib="$(awk '/^MemAvailable:/ {printf "%d", $2/1048576}' /proc/meminfo)"
+budget_gib=$(( avail_gib - MUTANTS_RESERVE_GIB ))
+[ "$budget_gib" -lt 4 ] && budget_gib=4
+MUTANTS_MEM_MAX="${MUTANTS_MEM_MAX:-${budget_gib}G}"
 MUTANTS_TIMEOUT_MULT="${MUTANTS_TIMEOUT_MULT:-3}"
-MUTANTS_JOBS="${MUTANTS_JOBS:-8}"
+# Each worker is a full cargo build tree. Memory, not cores, is what runs
+# out first, so derive the worker count from the budget and cap it by the
+# cores actually available.
+jobs_by_mem=$(( budget_gib / 4 ))
+[ "$jobs_by_mem" -lt 1 ] && jobs_by_mem=1
+cores="$(nproc)"
+[ "$jobs_by_mem" -gt "$cores" ] && jobs_by_mem="$cores"
+[ "$jobs_by_mem" -gt 8 ] && jobs_by_mem=8
+MUTANTS_JOBS="${MUTANTS_JOBS:-$jobs_by_mem}"
+echo "mutants budget: ${MUTANTS_MEM_MAX} of ${avail_gib}G available, ${MUTANTS_JOBS} jobs (reserve ${MUTANTS_RESERVE_GIB}G)" >&2
+if [ "$MUTANTS_JOBS" -le 1 ]; then
+    echo "  only ${avail_gib}G free, so this runs single-job and will be slow." >&2
+    echo "  Close what you can, or lower the reserve deliberately:" >&2
+    echo "    MUTANTS_RESERVE_GIB=8 make release-check" >&2
+fi
 # src/folder/ is a directory since the split; naming src/folder.rs excluded
 # every folder change from the run (lessence-xr6).
 MUTANTS_FILES=(-f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**/*.rs')
