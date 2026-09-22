@@ -2547,6 +2547,18 @@ fn format_group_json_record_type_is_group() {
 }
 
 #[test]
+fn a_group_record_opens_with_the_head_the_report_index_reads() {
+    // The report index reads id and count from a record's first bytes and
+    // parses in full otherwise; a reordered GroupRecord stays correct but
+    // loses the fast path, so pin the order here.
+    let mut f = make_folder_json();
+    let group = make_group("line", vec![vec![], vec![]]);
+    f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    assert_eq!(crate::overview::group_head(&json), Some((1, 2)));
+}
+
+#[test]
 fn print_summary_json_zero_lines() {
     let f = make_folder_json();
     let mut buf = Vec::new();

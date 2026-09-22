@@ -159,6 +159,9 @@ pub struct Spool {
     writer: Option<BufWriter<File>>,
     written: u64,
     max_bytes: u64,
+    /// The overview's pass 1, filled as records are written. Dropped if a
+    /// record cannot be indexed; the overview then reads the file instead.
+    index: Option<crate::overview::Index>,
     /// Failure-injection seam, compiled in only under the `test-hooks`
     /// feature (see Cargo.toml): `LESSENCE_TEST_FAIL_WRITE=n` makes the
     /// n-th record write fail and `LESSENCE_TEST_FAIL_DIR_FSYNC` fails the
@@ -255,6 +258,7 @@ impl Spool {
                         run_id,
                         writer: Some(BufWriter::new(file)),
                         written: 0,
+                        index: None,
                         max_bytes,
                         #[cfg(feature = "test-hooks")]
                         fail_at_write: std::env::var("LESSENCE_TEST_FAIL_WRITE")
@@ -288,6 +292,16 @@ impl Spool {
         self.written
     }
 
+    /// Index every record written from here on for an overview of `want`
+    /// entries.
+    pub fn index_for_overview(&mut self, want: usize) {
+        self.index = Some(crate::overview::Index::new(want));
+    }
+
+    pub fn take_index(&mut self) -> Option<crate::overview::Index> {
+        self.index.take()
+    }
+
     /// Append one JSON record and its newline. Returns an error on quota
     /// exhaustion or any write failure; the caller then removes the partial.
     pub fn write_record(&mut self, record: &str) -> Result<()> {
@@ -316,6 +330,11 @@ impl Spool {
             .write_all(record.as_bytes())
             .and_then(|()| writer.write_all(b"\n"))
             .with_context(|| format!("writing {}", self.partial.display()))?;
+        if let Some(index) = self.index.as_mut()
+            && index.record(record, self.written).is_err()
+        {
+            self.index = None;
+        }
         self.written += len;
         Ok(())
     }

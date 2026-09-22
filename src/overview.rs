@@ -324,40 +324,129 @@ fn scan(
     Ok(total)
 }
 
-fn pass1(path: &Path, want: usize) -> Result<Pass1> {
-    let rare_quota = want.div_ceil(2);
-    // Max-heap bounded to `rare_quota`: the worst element is the largest
+/// The two bounded heaps pass 1 fills: `ceil(want/2)` rarest and `want`
+/// most frequent, at most 2N entries whatever the report's size.
+#[derive(Debug)]
+struct Heaps {
+    want: usize,
+    total: usize,
+    // Max-heap bounded to `ceil(want/2)`: the worst element is the largest
     // count, so popping it keeps the rarest.
-    let mut rare: BinaryHeap<Entry> = BinaryHeap::new();
+    rare: BinaryHeap<Entry>,
     // Bounded to `want` by the frequent ranking itself: the top of this heap
     // is the lowest count and, among ties, the largest id.
-    let mut freq: BinaryHeap<Worst> = BinaryHeap::new();
-    let total = scan(path, |_, id, count, offset| {
-        let entry = Entry { count, id, offset };
+    freq: BinaryHeap<Worst>,
+}
+
+impl Heaps {
+    fn new(want: usize) -> Self {
+        Heaps {
+            want,
+            total: 0,
+            rare: BinaryHeap::new(),
+            freq: BinaryHeap::new(),
+        }
+    }
+
+    fn push(&mut self, entry: Entry) {
+        self.total += 1;
+        let rare_quota = self.want.div_ceil(2);
         if rare_quota > 0 {
-            rare.push(entry.clone());
-            if rare.len() > rare_quota {
-                rare.pop();
+            self.rare.push(entry.clone());
+            if self.rare.len() > rare_quota {
+                self.rare.pop();
             }
         }
-        if want > 0 {
-            freq.push(Worst(entry));
-            if freq.len() > want {
-                freq.pop();
+        if self.want > 0 {
+            self.freq.push(Worst(entry));
+            if self.freq.len() > self.want {
+                self.freq.pop();
             }
         }
+    }
+
+    fn into_pass(self) -> Pass1 {
+        let mut rarest = self.rare.into_vec();
+        rarest.sort_unstable();
+        let mut frequent: Vec<Entry> = self.freq.into_vec().into_iter().map(|w| w.0).collect();
+        // Descending count, ties by ascending id.
+        frequent.sort_unstable_by(|a, b| b.count.cmp(&a.count).then(a.id.cmp(&b.id)));
+        Pass1 {
+            total: self.total,
+            rarest,
+            frequent,
+        }
+    }
+}
+
+fn pass1(path: &Path, want: usize) -> Result<Pass1> {
+    let mut heaps = Heaps::new(want);
+    scan(path, |_, id, count, offset| {
+        heaps.push(Entry { count, id, offset });
         Ok(())
     })?;
-    let mut rarest = rare.into_vec();
-    rarest.sort_unstable();
-    let mut frequent: Vec<Entry> = freq.into_vec().into_iter().map(|w| w.0).collect();
-    // Descending count, ties by ascending id.
-    frequent.sort_unstable_by(|a, b| b.count.cmp(&a.count).then(a.id.cmp(&b.id)));
-    Ok(Pass1 {
-        total,
-        rarest,
-        frequent,
-    })
+    Ok(heaps.into_pass())
+}
+
+/// Pass 1 done by the writer instead of by a read of the finished file.
+///
+/// The report is written by this process, record by record, so the id,
+/// count and offset of every group are known as it goes; reading the whole
+/// file back and parsing every record to learn them again cost more than
+/// writing it (18M instructions on distilled kubelet, of which 13M were
+/// the read-back). The index feeds the same bounded heaps, so memory stays
+/// at 2N entries. What the read-back proved about the file is kept by
+/// checking its size on disk against the bytes written, and every record
+/// the overview prints is still read from the file.
+#[derive(Debug)]
+pub struct Index {
+    heaps: Heaps,
+    saw_summary: bool,
+}
+
+impl Index {
+    pub fn new(want: usize) -> Self {
+        Index {
+            heaps: Heaps::new(want),
+            saw_summary: false,
+        }
+    }
+
+    /// Record one line as written at byte `offset`. The writer's own group
+    /// records open with `{"type":"group","id":N,"count":M,` (the field
+    /// order of the serialized struct), read here without parsing the rest;
+    /// anything else is parsed in full, so a different shape costs time,
+    /// never a wrong index.
+    pub fn record(&mut self, record: &str, offset: u64) -> Result<()> {
+        let (kind, id, count) = if let Some((id, count)) = group_head(record) {
+            ("group", id, count)
+        } else {
+            let meta: Meta = serde_json::from_str(record)
+                .map_err(|e| anyhow::anyhow!("parse failed at byte offset {offset}: {e}"))?;
+            match meta.record_type.as_str() {
+                "group" => ("group", meta.id, meta.count),
+                "summary" => ("summary", 0, 0),
+                other => bail!("unknown record type {other:?} at byte offset {offset}"),
+            }
+        };
+        if self.saw_summary {
+            bail!("a record follows the summary at byte offset {offset}");
+        }
+        if kind == "summary" {
+            self.saw_summary = true;
+        } else {
+            self.heaps.push(Entry { count, id, offset });
+        }
+        Ok(())
+    }
+}
+
+/// `(id, count)` from the head of a group record as this crate writes it.
+pub(crate) fn group_head(record: &str) -> Option<(usize, usize)> {
+    let rest = record.strip_prefix(r#"{"type":"group","id":"#)?;
+    let (id, rest) = rest.split_once(',')?;
+    let (count, _) = rest.strip_prefix(r#""count":"#)?.split_once(',')?;
+    Some((id.parse().ok()?, count.parse().ok()?))
 }
 
 /// R = ceil(N/2) rarest, then the most frequent not already selected, up to
@@ -535,6 +624,7 @@ pub fn render(
     entries: Entries,
     budget: usize,
     briefing: Option<&str>,
+    index: Option<Index>,
 ) -> Result<()> {
     let tail = recipes(path);
     let brief = briefing.unwrap_or("");
@@ -547,7 +637,22 @@ pub fn render(
         Entries::Count(n) => n,
         Entries::All => unreachable!(),
     };
-    let pass = pass1(path, n)?;
+    let pass = match index {
+        Some(index) => {
+            if !index.saw_summary {
+                bail!("report is damaged: no terminal summary record");
+            }
+            let on_disk = std::fs::metadata(path)?.len();
+            if on_disk != locator.size_bytes {
+                bail!(
+                    "report is damaged: {on_disk} bytes on disk, {} written",
+                    locator.size_bytes
+                );
+            }
+            index.heaps.into_pass()
+        }
+        None => pass1(path, n)?,
+    };
     let chosen = select(&pass, n.min(pass.total));
     let selected = chosen.len();
 
@@ -707,8 +812,121 @@ mod tests {
     fn rendered(path: &Path, entries: Entries, budget: usize) -> String {
         let loc = locator(path);
         let mut out = Vec::new();
-        render(&mut out, path, &loc, entries, budget, None).unwrap();
+        render(&mut out, path, &loc, entries, budget, None, None).unwrap();
         String::from_utf8(out).unwrap()
+    }
+
+    /// The index a writer would have built for the file at `path`.
+    fn index_of(path: &Path, want: usize) -> Index {
+        let mut index = Index::new(want);
+        let mut offset = 0u64;
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            index.record(line, offset).unwrap();
+            offset += line.len() as u64 + 1;
+        }
+        index
+    }
+
+    fn rendered_with(path: &Path, want: usize, index: Option<Index>) -> Result<String> {
+        let mut loc = locator(path);
+        loc.size_bytes = std::fs::metadata(path).unwrap().len();
+        let mut out = Vec::new();
+        render(
+            &mut out,
+            path,
+            &loc,
+            Entries::Count(want),
+            DEFAULT_BYTES,
+            None,
+            index,
+        )?;
+        Ok(String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn an_index_built_while_writing_renders_what_a_read_back_renders() {
+        let counts: Vec<(usize, usize)> = (0..60).map(|id| (id, (id * 7919) % 23 + 1)).collect();
+        let (_dir, path) = corpus(&counts);
+        for want in [0, 1, 5, 40, 60, 100] {
+            assert_eq!(
+                rendered_with(&path, want, Some(index_of(&path, want))).unwrap(),
+                rendered_with(&path, want, None).unwrap(),
+                "want={want}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_index_refuses_a_report_whose_size_on_disk_is_not_what_was_written() {
+        let (_dir, path) = corpus(&[(0, 3), (1, 1)]);
+        let index = index_of(&path, 5);
+        let mut loc = locator(&path);
+        loc.size_bytes = std::fs::metadata(&path).unwrap().len() + 1;
+        let err = render(
+            &mut Vec::new(),
+            &path,
+            &loc,
+            Entries::Count(5),
+            DEFAULT_BYTES,
+            None,
+            Some(index),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("report is damaged: "), "{err}");
+        assert!(err.contains(" bytes on disk, "), "{err}");
+    }
+
+    #[test]
+    fn an_index_refuses_a_report_without_its_summary() {
+        let (_dir, path) = corpus(&[(0, 3)]);
+        let mut index = Index::new(5);
+        let first = std::fs::read_to_string(&path).unwrap();
+        index.record(first.lines().next().unwrap(), 0).unwrap();
+        let err = rendered_with(&path, 5, Some(index))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no terminal summary record"), "{err}");
+    }
+
+    #[test]
+    fn the_head_of_a_group_record_gives_its_id_and_count() {
+        assert_eq!(
+            group_head(r#"{"type":"group","id":12,"count":3456,"token_types":[]}"#),
+            Some((12, 3456))
+        );
+        assert_eq!(
+            group_head(r#"{"type":"summary","id":1,"count":2,"x":0}"#),
+            None
+        );
+        assert_eq!(
+            group_head(r#"{"type":"group","count":2,"id":1,"x":0}"#),
+            None
+        );
+    }
+
+    #[test]
+    fn a_record_the_head_cannot_read_is_parsed_in_full() {
+        let mut index = Index::new(2);
+        index
+            .record(r#"{"count":9,"type":"group","id":4}"#, 0)
+            .unwrap();
+        index.record(r#"{"type":"summary"}"#, 40).unwrap();
+        assert!(
+            index
+                .record(r#"{"type":"group","id":5,"count":1,"x":0}"#, 60)
+                .is_err()
+        );
+        let pass = index.heaps.into_pass();
+        assert_eq!(pass.total, 1);
+        assert_eq!(
+            pass.frequent,
+            vec![Entry {
+                count: 9,
+                id: 4,
+                offset: 0
+            }]
+        );
     }
 
     #[test]

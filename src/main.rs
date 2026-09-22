@@ -449,7 +449,11 @@ fn open_spool(settings: &cli::ReportSettings) -> Result<lessence::report::Spool>
     let bounded = settings.max_bytes.is_some_and(|n| n > 0);
     report::check_filesystem(&dir, placement, bounded)?;
     let max_bytes = settings.max_bytes.map_or(DEFAULT_MAX_BYTES, |n| n as u64);
-    report::Spool::create(&dir, max_bytes)
+    let mut spool = report::Spool::create(&dir, max_bytes)?;
+    if let lessence::overview::Entries::Count(n) = settings.entries {
+        spool.index_for_overview(n);
+    }
+    Ok(spool)
 }
 
 /// Complete the report — drain, summary record, flush, fsync, rename,
@@ -499,6 +503,7 @@ fn finish_report(
         }
     };
 
+    let index = spool.take_index();
     let codes = folder.input_degraded_codes();
     let locator = lessence::overview::Locator {
         path: spool.final_path(),
@@ -555,6 +560,7 @@ fn finish_report(
         settings.entries,
         settings.budget,
         briefing.as_deref(),
+        index,
     );
     match result {
         Ok(()) => {

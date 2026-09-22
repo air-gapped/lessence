@@ -727,7 +727,7 @@ fn a_damaged_report_leaves_the_file_in_place_and_says_the_overview_is_unavailabl
     let stdout = String::from_utf8(run.stdout).unwrap();
     assert!(stdout.starts_with("report: "), "the locator is still first");
     assert!(
-        stdout.contains("overview: unavailable (parse failed at byte offset "),
+        stdout.contains("overview: unavailable (report is damaged: 200 bytes on disk, "),
         "no group is silently omitted: {stdout}"
     );
     assert!(stdout.contains("jq "), "the recipes still print");
@@ -1021,6 +1021,7 @@ fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
         &locator,
         lessence::overview::Entries::All,
         lessence::overview::DEFAULT_BYTES,
+        None,
         None,
     )
     .expect("--overview all must complete on a 200k-group report");
