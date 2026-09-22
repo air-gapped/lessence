@@ -4481,3 +4481,27 @@ resource configuration cpu=750m timeout=40m worker=cedar
 ##FROM invented syslogd lines
 Aug 29 03:10:07 gw-lab-1 daemon.err sshd: ERROR bad key from peer [id 7]
 Aug 29 03:10:09 gw-lab-1 daemon.err sshd: ERROR bad key from peer [id 9]
+
+##CASE study-container-start-time-varies out_present="start_time":"<TIMESTAMP>"×2, ∅×2 holds-on-base
+##WHY A container subtree that is present on most events and absent on freshly created ones must stay countable on the line, not silently widen. Observed on a live Tetragon export: containers created seconds earlier carry no pod.container.start_time while steady-state containers in the same capture do. The shape is asserted, not the cause.
+##FROM invented process_exec records
+{"process_exec":{"process":{"exec_id":"YWxwaGE6MTAx","pid":4101,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main","start_time":"2026-01-02T03:04:05.000000000Z"}}}}}
+{"process_exec":{"process":{"exec_id":"YmV0YToxMDI=","pid":4102,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main","start_time":"2026-01-02T03:04:06.000000000Z"}}}}}
+{"process_exec":{"process":{"exec_id":"Z2FtbWE6MTAz","pid":4103,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main"}}}}}
+{"process_exec":{"process":{"exec_id":"ZGVsdGE6MTA0","pid":4104,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main"}}}}}
+
+##CASE study-exit-signal-is-visible out_present="signal":"SIGKILL"×2 holds-on-base
+##WHY A process killed by a signal and one that exited cleanly are different outcomes. They may share a group, but the signal must remain visible with its count — an operator reading a fold of exits has to see that some were killed.
+##FROM invented process_exit records
+{"process_exit":{"process":{"exec_id":"YWxwaGE6MjAx","pid":5201,"uid":0,"binary":"/usr/bin/worker"},"status":0}}
+{"process_exit":{"process":{"exec_id":"YmV0YToyMDI=","pid":5202,"uid":0,"binary":"/usr/bin/worker"},"status":0}}
+{"process_exit":{"process":{"exec_id":"Z2FtbWE6MjAz","pid":5203,"uid":0,"binary":"/usr/bin/worker"},"signal":"SIGKILL"}}
+{"process_exit":{"process":{"exec_id":"ZGVsdGE6MjA0","pid":5204,"uid":0,"binary":"/usr/bin/worker"},"signal":"SIGKILL"}}
+
+##CASE study-privileged-is-visible out_present="privileged":true×2, ∅×2 holds-on-base
+##WHY Whether a container is privileged is the line an operator most needs never to be hidden inside a fold. Privileged and unprivileged containers of the same image may share a group, but the flag must stay on the line with its count.
+##FROM invented process_exec records
+{"process_exec":{"process":{"exec_id":"YWxwaGE6MzAx","pid":6301,"uid":0,"binary":"/usr/bin/agent","pod":{"namespace":"birch","container":{"name":"main","security_context":{"privileged":true}}}}}}
+{"process_exec":{"process":{"exec_id":"YmV0YTozMDI=","pid":6302,"uid":0,"binary":"/usr/bin/agent","pod":{"namespace":"birch","container":{"name":"main","security_context":{"privileged":true}}}}}}
+{"process_exec":{"process":{"exec_id":"Z2FtbWE6MzAz","pid":6303,"uid":0,"binary":"/usr/bin/agent","pod":{"namespace":"birch","container":{"name":"main","security_context":{}}}}}}
+{"process_exec":{"process":{"exec_id":"ZGVsdGE6MzA0","pid":6304,"uid":0,"binary":"/usr/bin/agent","pod":{"namespace":"birch","container":{"name":"main","security_context":{}}}}}}

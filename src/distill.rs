@@ -275,6 +275,28 @@ fn shared_prefix(a: &str, b: &str) -> usize {
     a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
 }
 
+/// The words of a template, as a set. Position-independent, which is the
+/// whole point: a prefix score is decided by whatever comes first, and on
+/// a structured line that is almost nothing. Measured on a Tetragon
+/// export, `"binary"` first occurs at byte 116 of a 21,293-byte median
+/// line — so once two templates diverge there, 99.5% of the line cannot
+/// influence a prefix score at all, and a subtree appearing or vanishing
+/// deep in the object reads as no distance at all.
+fn word_set(template: &str) -> BTreeSet<&str> {
+    template.split_whitespace().collect()
+}
+
+/// How much two templates say in common, 0..=1000. Jaccard — shared words
+/// over total distinct words — in integer arithmetic, so the choice is
+/// orderable and cannot move with float rounding between runs.
+fn word_overlap(a: &BTreeSet<&str>, b: &BTreeSet<&str>) -> usize {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 1000;
+    }
+    a.intersection(b).count() * 1000 / union
+}
+
 /// Attempts per structure before the split is given up on.
 const SPLIT_GIVE_UP: u8 = 2;
 
@@ -335,13 +357,36 @@ fn cover(groups: &[DistillGroup], careful: &Careful) -> Cover {
         // about a hundred of twenty-three thousand characters with anything
         // kept were dropped, among them the only lines carrying
         // `security_context.privileged` and the privilege-raise policy hits.
-        if let Some(&far) = members.iter().filter(|&&i| i != primary).min_by_key(|&&i| {
-            (
-                shared_prefix(&groups[i].template, &groups[primary].template),
-                i,
-            )
-        }) {
-            chosen.insert(far);
+        // Two notions of "farthest", because neither subsumes the other and
+        // each demonstrably catches shapes the other drops. By prefix: the
+        // group that diverges earliest, which on a structured line means
+        // early fields — it is what finds the kprobe policy-hit arguments.
+        // By word set: the group with the least vocabulary in common,
+        // position-independent — it is what finds a `security_context`
+        // subtree buried deep in an otherwise ordinary event. Measured on
+        // the Tetragon corpus: prefix alone reaches 98.7% of the input's
+        // JSON paths but keeps no privileged container; word set alone
+        // keeps the privileged containers and falls to 94.4%, losing the
+        // whole `process_credentials_arg` subtree. Together they cover both.
+        if level < SPLIT_GIVE_UP {
+            let primary_words = word_set(&groups[primary].template);
+            let others = || members.iter().filter(|&&i| i != primary);
+            if let Some(&far) = others().min_by_key(|&&i| {
+                (
+                    shared_prefix(&groups[i].template, &groups[primary].template),
+                    i,
+                )
+            }) {
+                chosen.insert(far);
+            }
+            if let Some(&far) = others().min_by_key(|&&i| {
+                (
+                    word_overlap(&word_set(&groups[i].template), &primary_words),
+                    i,
+                )
+            }) {
+                chosen.insert(far);
+            }
         }
 
         // Where the lines are small, every anchor value gets a group:
