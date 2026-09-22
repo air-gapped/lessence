@@ -450,12 +450,12 @@ fn a_quota_too_small_for_the_report_writes_no_report_and_exits_one() {
     assert!(walk(tmp.path()).is_empty(), "nothing is left on disk");
 }
 
+#[cfg(unix)] // a directory is made unwritable with Unix mode bits
 #[test]
 fn an_unwritable_directory_fails_before_any_input_is_read() {
     let tmp = tmpdir();
     let locked = tmp.path().join("locked");
     std::fs::create_dir(&locked).unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
