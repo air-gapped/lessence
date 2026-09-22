@@ -130,10 +130,12 @@ Commit before risky operations. Before `git add`, check `git check-ignore`.
 ## Safety
 
 - Never run destructive git commands without asking. Pushing main is
-  allowed: release-please is gone, so a push no longer starts a release —
-  a release begins when a `vX.Y.Z` tag is pushed and the GitHub release is
-  created. **Everything pushed is public**: check the diff for anything
-  that should not be, every time.
+  allowed: a push starts no release and no build. A release is only ever
+  `gh workflow run release-build.yml -f tag=vX.Y.Z`, which tests every
+  platform and creates the tag, the release and the crate after all of
+  them pass — never tag or `gh release create` by hand (the release skill).
+  **Everything pushed is public**: check the diff for anything that should
+  not be, every time.
 - Never create planning or scratch files inside the project tree.
 - Corpora are scrubbed by invention before they land in `examples/`; nothing
   unscrubbed is ever on disk in the tree.

@@ -1,92 +1,93 @@
-name: Release Build
+name: Release
 
-permissions:
-  contents: write
-  id-token: write
+# Manual only: nothing here runs on push. Two ways to start it:
+#
+#   gh workflow run release-build.yml --ref main
+#     Dry run (the default). Every target is tested, built, smoke-tested and
+#     packaged; nothing is tagged, uploaded or published.
+#
+#   gh workflow run release-build.yml --ref main -f tag=vX.Y.Z
+#     Release. The same jobs, then — only if every one of them passed — the
+#     tag and the GitHub release are created at the tested commit, and only
+#     after that is the crate published.
+#
+# The order is the point. 0.8.0 was released first and built second: its
+# crate reached crates.io while macOS was failing to compile. Here the tag,
+# the release and the crate all come after the whole matrix is green, as in
+# astral-sh/uv's and ruff's release workflows.
+#
+# The file keeps its old name: crates.io trusted publishing is bound to it.
 
 on:
-  release:
-    # `released` fires when a release is published (a draft promoted to live, or
-    # created already-published). Both jobs key off it: publish-crate runs
-    # `cargo publish`, build-binaries compiles + attaches the per-target binaries.
-    # NOTE: we do NOT use `created` — it does not fire for every creation path,
-    # and publishing is the only moment that should cost a crates.io push.
-    # The release is created by hand (`gh release create vX.Y.Z`) after the tag
-    # is pushed; nothing bot-authored opens a PR against this repo any more.
-    types: [released]
-  # Manual recovery: rebuild + reattach binaries for an existing tag (e.g. a
-  # release that published without them).
-  #   gh workflow run release-build.yml -f tag=vX.Y.Z
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to build + attach binaries for (e.g. v0.4.3)
+        description: "vX.Y.Z to release, or dry-run to test and build every target and publish nothing"
         required: true
+        default: dry-run
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
 jobs:
-  publish-crate:
-    # Only run when the release is actually published, not on draft creation.
-    # crates.io publishes are immutable; we never want to fire this for a
-    # draft that might be deleted.
-    if: github.event.action == 'released'
+  plan:
     runs-on: ubuntu-latest
+    outputs:
+      publishing: ${{ steps.plan.outputs.publishing }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
-          # Full history: the ancestry guard below needs the main branch graph.
-          fetch-depth: 0
 
-      # crates.io publishes are immutable — including the README frozen at the
-      # tag. Only commits that reached main (and
-      # therefore passed the doc-contract tests and the release-gate check)
-      # may publish. A tag pushed from a side branch must never reach
-      # crates.io.
-      - name: Refuse to publish a tag that is not on main
+      # A release is cut from main only, at the commit this run tests.
+      - name: Plan
+        id: plan
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
         run: |
           set -euo pipefail
-          git fetch origin main
-          if ! git merge-base --is-ancestor HEAD origin/main; then
-            echo "::error::Tag commit $(git rev-parse HEAD) is not an ancestor of origin/main — it never passed the release merge gate. Refusing to publish to crates.io."
+          if [ "$REF" != refs/heads/main ]; then
+            echo "::error::run this workflow on main (--ref main), not $REF"
             exit 1
           fi
-          echo "tag commit is on main — ok"
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "$TAG" = dry-run ]; then
+            echo "publishing=false" >> "$GITHUB_OUTPUT"
+            echo "dry run of $version at $GITHUB_SHA: nothing will be published"
+            exit 0
+          fi
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag must be vX.Y.Z or dry-run, got $TAG"
+            exit 1
+          fi
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match Cargo.toml version $version"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "::error::$TAG already exists; a release never moves a tag"
+            exit 1
+          fi
+          if ! grep -q "^## \[$version\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no ## [$version] section for the release notes"
+            exit 1
+          fi
+          echo "publishing=true" >> "$GITHUB_OUTPUT"
 
-      - name: Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
-        with:
-          toolchain: stable
-
-      # Defense in depth: re-run the doc-contract suite at the exact tag being
-      # published, so shipped doc surfaces provably match the binary that
-      # crates.io will freeze forever.
-      - name: Doc contract at the tag
-        run: cargo test --release --test doc_contract
-
-      - name: Authenticate with crates.io
-        id: crates-io-auth
-        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
-
-      - name: Publish to crates.io
-        run: cargo publish
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-
-  build-binaries:
-    # Build + attach the per-target binaries when the release is published, or
-    # on a manual workflow_dispatch recovery run for a given tag.
-    if: github.event.action == 'released' || github.event_name == 'workflow_dispatch'
-    name: Build ${{ matrix.target }}
+  build:
+    needs: plan
+    name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
-    # build.rs embeds this in `--version`. Set explicitly because the cross-rs
-    # container that builds aarch64 has no git, so the build.rs fallback there
-    # would report `unknown`. CROSS_CONTAINER_OPTS forwards it into that
-    # container; a plain job env var does not cross the docker boundary.
+    timeout-minutes: 60
+    # build.rs embeds this in `--version`. The cross-rs container that builds
+    # aarch64 has no git, so it is passed in explicitly.
     env:
       LESSENCE_BUILD_ID: ${{ github.sha }}
       CROSS_CONTAINER_OPTS: --env LESSENCE_BUILD_ID=${{ github.sha }}
@@ -98,9 +99,9 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-          # Native Intel runner (standard tier, free for public repos) so the
-          # x86_64 binary is built AND executed on its real architecture —
-          # macos-latest is arm64 and Rosetta is being sunset after macOS 26.
+            cross: true
+          # Native Intel runner so the x86_64 binary is tested on its real
+          # architecture; macos-latest is arm64.
           - target: x86_64-apple-darwin
             os: macos-15-intel
           - target: aarch64-apple-darwin
@@ -111,8 +112,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.release.tag_name || inputs.tag }}
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -125,68 +124,163 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
-      # mimalloc has C source that needs a musl-targeted C compiler when
-      # building for x86_64-unknown-linux-musl. ubuntu-latest doesn't ship
-      # musl-tools by default; install it before the upload action runs
-      # `cargo build`. No untrusted input is interpolated — `matrix.target`
-      # is a static config value, and the run: command is a literal.
+      # mimalloc has C source that needs a musl-targeted C compiler.
       - name: Install musl cross-compile toolchain
         if: matrix.target == 'x86_64-unknown-linux-musl'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      # ---- Smoke tests (ripgrep-style): build the exact release target first,
-      # execute it, and only then let the upload action rebuild from the warm
-      # cache and attach the asset. A binary that does not start or does not
-      # fold never reaches the release page. Only `matrix.target` (a static
-      # config value) is interpolated into run: commands.
-      - name: Build for smoke test
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+      - name: Install cargo-nextest
+        if: ${{ !matrix.cross }}
+        uses: taiki-e/install-action@3f74d7c16a4242f1c95561e98edc25d36adb4375 # v2
+        with:
+          tool: cargo-nextest
+
+      - name: Install cross
+        if: ${{ matrix.cross }}
+        run: type -P cross >/dev/null || cargo install cross --locked
+
+      # The whole test suite on the platform it ships to: natively, or under
+      # qemu inside the cross-rs image for aarch64.
+      - name: Test
+        if: ${{ !matrix.cross }}
         shell: bash
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo nextest run --target "${{ matrix.target }}"
 
-      # aarch64 is cross-compiled; the upload action uses cross (docker) for
-      # it, so build with the same tool the action will reuse.
-      - name: Build for smoke test (cross)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          type -P cross >/dev/null || cargo install cross --locked
-          cross build --release --target ${{ matrix.target }}
+      - name: Test (cross, qemu)
+        if: ${{ matrix.cross }}
+        run: cross test --target "${{ matrix.target }}"
 
-      # The fixture asserts both halves of the contract: repeated lines fold
-      # (the "similar" marker) and the unique line survives (zero data loss).
+      - name: Build
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: cargo build --release --target "${{ matrix.target }}"
+
+      - name: Build (cross)
+        if: ${{ matrix.cross }}
+        run: cross build --release --target "${{ matrix.target }}"
+
+      # The released binary itself, run once each way: --no-report prints the
+      # folded text (repeated lines fold, the unique line survives), and the
+      # default run saves a report and prints an overview of it.
       - name: Smoke test
-        if: matrix.target != 'aarch64-unknown-linux-gnu'
+        if: ${{ !matrix.cross }}
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          BIN="target/${{ matrix.target }}/release/lessence"
-          [[ "${{ matrix.target }}" == *windows* ]] && BIN="$BIN.exe"
+          BIN="target/$TARGET/release/lessence"
+          [[ "$TARGET" == *windows* ]] && BIN="$BIN.exe"
           "$BIN" --version
           "$BIN" --completions bash > /dev/null
-          out=$(printf 'ERROR connect timeout host=10.0.0.1\nERROR connect timeout host=10.0.0.2\nERROR connect timeout host=10.0.0.3\nERROR connect timeout host=10.0.0.4\nINFO unique startup line\n' | "$BIN" -q)
+          out=$(printf 'ERROR connect timeout host=10.0.0.1\nERROR connect timeout host=10.0.0.2\nERROR connect timeout host=10.0.0.3\nERROR connect timeout host=10.0.0.4\nINFO unique startup line\n' | "$BIN" -q --no-report)
           grep -F "similar" <<<"$out"
           grep -F "INFO unique startup line" <<<"$out"
+          reports="$RUNNER_TEMP/lessence-reports"
+          out=$(printf 'INFO unique startup line\n' | "$BIN" -q --report-dir "$reports")
+          grep -F "report: " <<<"$out"
+          find "$reports" -name report.jsonl | grep -q .
 
-      # Cross-compiled target: execute under qemu inside the same cross-rs
-      # image that built it (ripgrep's release pipeline does the same).
-      - name: Smoke test (qemu, aarch64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Smoke test (qemu)
+        if: ${{ matrix.cross }}
         run: |
           set -euo pipefail
           BIN=/target/aarch64-unknown-linux-gnu/release/lessence
           IMG=ghcr.io/cross-rs/aarch64-unknown-linux-gnu:main
           docker run --rm -v "$PWD/target:/target:Z" "$IMG" qemu-aarch64 "$BIN" --version
-          out=$(printf 'ERROR connect timeout host=10.0.0.1\nERROR connect timeout host=10.0.0.2\nERROR connect timeout host=10.0.0.3\nERROR connect timeout host=10.0.0.4\nINFO unique startup line\n' | docker run --rm -i -v "$PWD/target:/target:Z" "$IMG" qemu-aarch64 "$BIN" -q)
+          out=$(printf 'ERROR connect timeout host=10.0.0.1\nERROR connect timeout host=10.0.0.2\nERROR connect timeout host=10.0.0.3\nERROR connect timeout host=10.0.0.4\nINFO unique startup line\n' | docker run --rm -i -v "$PWD/target:/target:Z" "$IMG" qemu-aarch64 "$BIN" -q --no-report)
           grep -F "similar" <<<"$out"
           grep -F "INFO unique startup line" <<<"$out"
 
-      - name: Build and upload
+      # Package exactly as earlier releases did (cargo-binstall reads these
+      # names), without uploading: the release job attaches them only once
+      # every target has passed.
+      - name: Package
+        id: package
         uses: taiki-e/upload-rust-binary-action@f0d45ae91ee7b8ee928de7a9d04d893a08bcbec6 # v1
         with:
           bin: lessence
           target: ${{ matrix.target }}
+          archive: $bin-$target
           tar: unix
           zip: windows
           checksum: sha256
-          ref: refs/tags/${{ github.event.release.tag_name || inputs.tag }}
-          token: ${{ secrets.GITHUB_TOKEN }}
+          dry-run: true
+          dry-run-intended: true
+
+      - name: Keep the package for the release job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lessence-${{ matrix.target }}
+          path: |
+            ${{ steps.package.outputs.tar }}
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.sha256 }}
+          if-no-files-found: error
+
+  release:
+    needs: [plan, build]
+    if: needs.plan.outputs.publishing == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect packages
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The notes are the version's CHANGELOG.md section, written by hand
+      # before the run. The tag is created here, at the commit every job
+      # tested — never before.
+      - name: Create the tag and the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          previous="$(gh release view --json tagName -q .tagName)"
+          awk -v v="$VERSION" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          printf '\n**Full changelog**: [%s...%s](https://github.com/%s/compare/%s...%s)\n' \
+            "$previous" "$TAG" "$GITHUB_REPOSITORY" "$previous" "$TAG" >> notes.md
+          ls -l dist
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
+
+  publish-crate:
+    needs: [plan, release]
+    if: needs.plan.outputs.publishing == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: stable
+
+      # The shipped doc surfaces must match the binary crates.io freezes.
+      - name: Doc contract
+        run: cargo test --release --test doc_contract
+
+      - name: Authenticate with crates.io
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+
+      - name: Publish to crates.io
+        run: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}

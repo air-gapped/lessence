@@ -130,6 +130,32 @@ fi
 ci_tail="$(tail -8 /tmp/release-check-ci.$$)"
 rm -f /tmp/release-check-ci.$$
 
+# ── every release target type-checks ────────────────────────────────────
+#
+# This machine builds one target. 0.8.0 called a Linux-only API and was
+# found not to compile on macOS only after its crate had published.
+# `cargo check --target` needs no foreign linker, so it catches that class
+# here in about a minute a target. It cannot run another platform's tests:
+# the dry run of release-build.yml does that, on the real runners.
+# The shipped lib and binary only — dev-dependencies build C code that
+# needs each platform's own compiler.
+
+RELEASE_TARGETS=(x86_64-unknown-linux-musl aarch64-unknown-linux-gnu x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc)
+echo "Type-checking every release target..." >&2
+targets_status="pass"
+targets_msg=""
+installed="$(rustup target list --installed)"
+for t in "${RELEASE_TARGETS[@]}"; do
+    if ! grep -qx "$t" <<<"$installed"; then
+        targets_status="FAIL"
+        targets_msg+="$t not installed (rustup target add $t); "
+    elif ! cargo check --release --target "$t" >/tmp/release-check-target.$$ 2>&1; then
+        targets_status="FAIL"
+        targets_msg+="$t: $(grep -m1 '^error' /tmp/release-check-target.$$); "
+    fi
+done
+rm -f /tmp/release-check-target.$$
+
 # ── slow tests: the wall-clock profile the default profile excludes ─────
 
 echo "Running slow tests (cargo nextest run --release --profile slow)..." >&2
@@ -156,6 +182,7 @@ if [ "$slow_status" = "FAIL" ]; then
 fi
 echo "README compression table: $readme_status ($readme_msg)"
 echo "agent skill: $skill_status ($skill_msg)"
+echo "release targets: $targets_status${targets_msg:+ ($targets_msg)}"
 
 # ── release.json ─────────────────────────────────────────────────────────
 
@@ -170,8 +197,11 @@ cat > "$GATE_DIR/release.json" <<JSON
   "mutants": {"caught": ${mutants_caught}, "total": ${mutants_total}, "score_pct": "${mutation_score}"},
   "ci": "${ci_status}",
   "slow": "${slow_status}",
-  "readme_compression": "${readme_status}"
+  "readme_compression": "${readme_status}",
+  "agent_skill": "${skill_status}",
+  "release_targets": "${targets_status}"
 }
 JSON
 
-[ "$gate_status" != "FAIL" ] && [ "$ci_status" = "pass" ] && [ "$slow_status" = "pass" ] && [ "$readme_status" = "pass" ]
+[ "$gate_status" != "FAIL" ] && [ "$ci_status" = "pass" ] && [ "$slow_status" = "pass" ] \
+    && [ "$readme_status" = "pass" ] && [ "$skill_status" = "pass" ] && [ "$targets_status" = "pass" ]

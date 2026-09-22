@@ -52,19 +52,30 @@ git commit -am "docs: README compression table measured for vX.Y.Z"
 # 5. The gate. This is what decides "ready" — not judgement.
 make release-check           # ~20 min
 
-# 6. Only if it passed: tag, push, publish. A perf delta over the gate's
-#    threshold is the owner's call; once they accept it, that gate line is
-#    the one FAIL a release may carry, and the handoff states the number.
-git tag vX.Y.Z
+# 6. Dry run of the release on every platform: the whole test suite, the
+#    build, the smoke tests and the packaging, natively on macOS and
+#    Windows and under qemu for aarch64. Nothing is tagged or published.
+#    Manual only — nothing builds on push.
 git push origin main
-git push origin vX.Y.Z
-gh release create vX.Y.Z --title vX.Y.Z --notes-file <notes>
+gh workflow run release-build.yml --ref main
+gh run watch "$(gh run list --workflow release-build.yml --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
+
+# 7. The release, only after both passed. The same jobs run again, and only
+#    if every one is green does the workflow create the tag and the GitHub
+#    release at the tested commit (notes: the version's CHANGELOG.md
+#    section), and only after that publish the crate. A perf delta over the
+#    gate's threshold is the owner's call; once accepted, that gate line is
+#    the one FAIL release-check may carry, and the handoff states it.
+gh workflow run release-build.yml --ref main -f tag=vX.Y.Z
+gh run watch "$(gh run list --workflow release-build.yml --limit 1 --json databaseId -q '.[0].databaseId')" --exit-status
 ```
 
-Step 6's `gh release create` publishes immediately, which fires
-`release-build.yml` (`on: release: [released]`). That workflow refuses a tag
-that is not on `main`, re-runs the doc contract at the tag, publishes the
-crate, and builds and attaches the musl binaries.
+Never tag by hand and never `gh release create` by hand: the workflow
+creates both, after the matrix. That order is the fix for 0.8.0, which was
+released first and built second, and whose crate reached crates.io while
+macOS was failing to compile (yanked). It follows astral-sh/uv and ruff:
+a manual workflow whose default input is a dry run, `release` needing
+every build, `publish-crate` needing `release`.
 
 ## What release-check proves
 
@@ -78,8 +89,9 @@ crate, and builds and attaches the musl binaries.
 | slow tests | the wall-clock profile the default profile excludes |
 | README compression table | generated at a commit whose `src/` equals today's |
 | agent skill re-verified | `sources.md`'s `verified-at:` sha covers every user-facing `src/` commit |
+| release targets | `cargo check --release --target` for every shipped target: a Linux-only API is caught here, not on the release runners |
 
-The last one used to be a GitHub check on the release-please PR branch. With
+The skill check used to be a GitHub check on the release-please PR branch. With
 no PR to hang it on it moved into `release-check`, because a check that only
 fires on a branch nobody creates is a check that never runs.
 
@@ -98,14 +110,15 @@ cumulative number in the handoff.
 
 ## If something goes wrong
 
-- **Binaries missing from a published release**:
-  `gh workflow run release-build.yml -f tag=vX.Y.Z` rebuilds and reattaches.
-- **Tag pushed by mistake, nothing published**: delete it on both sides
-  (`git tag -d`, `git push --delete origin`) before anyone fetches it. Once a
-  release is published, supersede rather than delete — crates.io publishes
-  are immutable.
-- **Release created but the crate did not publish**: check `publish-crate` in
-  the run; its ancestry guard refuses a tag that is not on `main`.
+- **A build or test fails in the release run**: nothing is public — the tag
+  is created only after the whole matrix passes. Fix on main, push, and run
+  the release again.
+- **The crate did not publish** (release created, `publish-crate` red):
+  `gh run rerun <run-id> --failed` retries only that job. crates.io
+  publishes are immutable; never publish from a laptop to work around it.
+- **A published version is broken**: yank it on crates.io (the owner holds
+  the login), turn its GitHub release back into a draft, and supersede it —
+  a yanked version can never be reused.
 
 ## History worth keeping
 
