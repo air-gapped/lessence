@@ -52,6 +52,11 @@ if [ "$MUTANTS_JOBS" -le 1 ]; then
     echo "    MUTANTS_RESERVE_GIB=8 $0 ..." >&2
 fi
 
+# Each worker copies the tree, build output included, into TMPDIR. /tmp is
+# tmpfs here: eight copies filled its 32G quota and are RAM besides, so the
+# copies go to disk.
+export TMPDIR="${MUTANTS_TMPDIR:-/var/tmp}"
+
 # A run with fewer mutants than jobs keeps only that many workers busy, and
 # its peak must be divided by those, not by -j, or the next run oversizes.
 mutant_count="$(cargo mutants --list "$@" 2>/dev/null | wc -l)"

@@ -5,7 +5,7 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
-verified-at: 5d8deb7bbf9c2107f4382fe61d71c7de1038d9e7
+verified-at: 29aa2eedf30760e197754ce6374a7fa574907b63
 
 `verified-at` is the main commit this skill was last verified against. The
 release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
@@ -32,3 +32,4 @@ touching `src/` postdates it.
 | Additive JSON/preflight schema_version, version, input_hash and degraded; raw ordered-source identity, exact failed-source counts and explicit unavailable reasons | docs/format-json-schema.md + tests/integration/test_run_metadata.rs + src/ingest.rs hash vectors; `make ci` passed on the e2f implementation | 2026-09-19 |
 | `--help` and `-h` open with the agent block (skip if a lessence skill is already in context, otherwise `lessence --skill`; `--skill flags`; the JSON surface) with `--skill` listed before every fold knob under an `Agent` heading; `--help-human` prints the short human help and exits before opening input | tests/integration/test_help_text.rs (`test_help_is_agent_first`, `test_help_human`) + live run of the build at verified-at | 2026-09-19 |
 | A default run saves the complete folded report (`report.jsonl`) to a fresh `run-<date>-<hex>` dir and prints a byte-bounded overview with a head/tail locator line, `printed < selected` meaning the byte budget cut entries (not the report), the four jq recipes, and `--overview all`/`--overview 0`/`--no-report`; a memory-backed (tmpfs/ramfs) `--report-dir` is refused with a named-filesystem error unless paired with `--no-report` | src/report.rs (`MEMORY_BACKED`) + live run on `examples/distilled/uap_messages.log` at verified-at | 2026-09-19 |
+| The `--stats-json` bucket for bare numbers is `numbers` (was `percentages` before 15e00e3); the skill names neither, so no claim in it changed | `git show 15e00e3` + grep of the skill + live briefing on `examples/distilled/kubelet.log` | 2026-09-22 |
