@@ -32,23 +32,29 @@ git log --oneline <last-tag>..HEAD
 #    feat: -> minor. fix:/perf: -> patch. A changed or removed --format json
 #    field, flag or exit code is BREAKING: minor while 0.x, major after 1.0.
 
-# 3. Refresh the README compression table (it is stamped with a commit, and
-#    release-check refuses a stale one). Needs a clean src/ and a release
-#    binary built from HEAD.
-cargo build --release
-./scripts/readme-compression.sh --write vX.Y.Z
-git commit -am "docs: README compression table measured for vX.Y.Z"
-
-# 4. Bump the version and write the changelog section BY HAND.
+# 3. Bump the version and write the changelog section BY HAND.
 #    Users read this. Say what changed for them, not what moved in the code.
 $EDITOR Cargo.toml CHANGELOG.md
 cargo build --release        # refresh Cargo.lock
+make gate                    # the pre-commit hook wants it for Cargo.toml
 git commit -am "chore: release X.Y.Z"
+
+# 4. Refresh the README compression table AFTER the bump: its freshness
+#    check compares src/ and Cargo.toml, so a table measured before the
+#    bump is stale by definition. Needs a release binary built from HEAD.
+cargo build --release
+./scripts/readme-compression.sh --write vX.Y.Z
+git commit -am "docs: README compression table measured for vX.Y.Z"
+#    And move `verified-at:` in .claude/skills/lessence/references/sources.md
+#    to HEAD once the skill has been re-read against every user-facing
+#    src/ commit since the old sha.
 
 # 5. The gate. This is what decides "ready" — not judgement.
 make release-check           # ~20 min
 
-# 6. Only if it passed: tag, push, publish.
+# 6. Only if it passed: tag, push, publish. A perf delta over the gate's
+#    threshold is the owner's call; once they accept it, that gate line is
+#    the one FAIL a release may carry, and the handoff states the number.
 git tag vX.Y.Z
 git push origin main
 git push origin vX.Y.Z
