@@ -1230,7 +1230,7 @@ fn render_format_line(f: &FormatSniff) -> String {
 }
 
 /// Whole-number percent (`100%`, not `100.0%`) — the format line's summary
-/// stat is coarser than the per-item percentages elsewhere in the briefing.
+/// stat is coarser than the per-item numbers elsewhere in the briefing.
 fn fmt_pct_whole(value: f64) -> String {
     format!("{value:.0}%")
 }

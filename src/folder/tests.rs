@@ -2786,7 +2786,7 @@ fn count_pattern_types_overloaded_bucket() {
         },
     ]);
     // Every token type lands in its own counter — nothing is lumped.
-    assert_eq!(f.stats.percentages, 1, "only Number counts as percentages");
+    assert_eq!(f.stats.numbers, 1, "only Number counts as numbers");
     assert_eq!(f.stats.quoted_strings, 1);
     assert_eq!(f.stats.names, 1);
     assert_eq!(f.stats.brackets, 1);
@@ -3643,7 +3643,7 @@ fn count_pattern_types_json() {
 fn count_pattern_types_number() {
     let mut f = make_folder();
     f.count_pattern_types(&[Token::Number("42".into())]);
-    assert_eq!(f.stats.percentages, 1);
+    assert_eq!(f.stats.numbers, 1);
 }
 
 #[test]
@@ -3651,7 +3651,7 @@ fn count_pattern_types_quoted_string() {
     let mut f = make_folder();
     f.count_pattern_types(&[Token::QuotedString("hello".into())]);
     assert_eq!(f.stats.quoted_strings, 1);
-    assert_eq!(f.stats.percentages, 0);
+    assert_eq!(f.stats.numbers, 0);
 }
 
 #[test]
@@ -3670,7 +3670,7 @@ fn count_pattern_types_name() {
     let mut f = make_folder();
     f.count_pattern_types(&[Token::Name("app".into())]);
     assert_eq!(f.stats.names, 1);
-    assert_eq!(f.stats.percentages, 0);
+    assert_eq!(f.stats.numbers, 0);
     // Second hit must accumulate (kills += -> -= / *= mutants).
     f.count_pattern_types(&[Token::Name("app".into())]);
     assert_eq!(f.stats.names, 2);
@@ -3681,7 +3681,7 @@ fn count_pattern_types_bracket_context() {
     let mut f = make_folder();
     f.count_pattern_types(&[Token::BracketContext(vec!["error".into()])]);
     assert_eq!(f.stats.brackets, 1);
-    assert_eq!(f.stats.percentages, 0);
+    assert_eq!(f.stats.numbers, 0);
 }
 
 #[test]
@@ -3692,7 +3692,7 @@ fn count_pattern_types_kv_pair() {
         value_type: "string".into(),
     }]);
     assert_eq!(f.stats.key_values, 1);
-    assert_eq!(f.stats.percentages, 0);
+    assert_eq!(f.stats.numbers, 0);
 }
 
 #[test]
@@ -3703,7 +3703,7 @@ fn count_pattern_types_log_module() {
         level: "error".into(),
     }]);
     assert_eq!(f.stats.log_modules, 1);
-    assert_eq!(f.stats.percentages, 0);
+    assert_eq!(f.stats.numbers, 0);
 }
 
 #[test]
@@ -3714,7 +3714,7 @@ fn count_pattern_types_structured_message() {
         level: "info".into(),
     }]);
     assert_eq!(f.stats.structured, 1);
-    assert_eq!(f.stats.percentages, 0);
+    assert_eq!(f.stats.numbers, 0);
 }
 
 // ---------------------------------------------------------------

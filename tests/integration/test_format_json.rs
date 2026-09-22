@@ -222,7 +222,7 @@ fn json_summary_record_has_required_fields() {
         "durations",
         "http_status",
         "sizes",
-        "percentages",
+        "numbers",
         "paths",
         "kubernetes",
         "emails",

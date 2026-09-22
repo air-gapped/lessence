@@ -18,7 +18,7 @@ expression: normalized
     "ips": 0,
     "kubernetes": 0,
     "paths": 0,
-    "percentages": 0,
+    "numbers": 0,
     "pids": 0,
     "sizes": 0,
     "timestamps": 0,

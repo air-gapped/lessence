@@ -145,13 +145,13 @@ fn test_email_statistics_in_essence_mode() {
     println!("✅ Email statistics work correctly in essence mode");
 }
 
-/// Contract 4: Email patterns must not be grouped with percentages/numbers
+/// Contract 4: Email patterns must not be grouped with numbers/numbers
 ///
 /// Given: A log file containing both email addresses and numeric patterns
 /// When: lessence processes the file
-/// Then: Email patterns must appear in their own category, not in "percentages"
+/// Then: Email patterns must appear in their own category, not in "numbers"
 #[test]
-fn test_email_not_grouped_with_percentages() {
+fn test_email_not_grouped_with_numbers() {
     // Test input with emails and numbers
     let test_input = "2025-09-26T10:15:00Z CPU usage: 85% for user@domain.com\n\
                       2025-09-26T10:15:01Z CPU usage: 92% for admin@domain.com\n";
@@ -177,18 +177,18 @@ fn test_email_not_grouped_with_percentages() {
 
     let stderr_str = String::from_utf8(output.stderr).expect("Invalid UTF-8 stderr");
 
-    // Verify both emails and percentages appear as separate token classes,
+    // Verify both emails and numbers appear as separate token classes,
     // each with their own count (2 each — not merged into one entry).
     assert!(
         stderr_str.contains("emails 2/"),
         "tokens line should include 'emails 2/', got: {stderr_str}"
     );
     assert!(
-        stderr_str.contains("percentages 2/"),
-        "tokens line should include 'percentages 2/' as a separate class, got: {stderr_str}"
+        stderr_str.contains("numbers 2/"),
+        "tokens line should include 'numbers 2/' as a separate class, got: {stderr_str}"
     );
 
-    println!("✅ Email patterns are tracked separately from percentages/numbers");
+    println!("✅ Email patterns are tracked separately from numbers/numbers");
 }
 
 /// Contract 5: Documentation consistency - README.md must include Email in pattern order

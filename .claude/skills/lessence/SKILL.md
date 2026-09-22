@@ -23,6 +23,7 @@ when_to_use: >-
   partly exploratory ("anything else weird?"), use lessence.
 license: MIT
 ---
+<!-- Printed by `lessence --skill` from lessence 0.7.0 (796e36d48, x86_64-unknown-linux-gnu). The installed `lessence --help` is authoritative over anything this text remembers about flags; re-run `lessence --skill` after upgrading. -->
 
 # lessence — Extract the Essence of Massive Logs
 

@@ -197,7 +197,7 @@ fn test_stats_json_contains_all_required_fields() {
         "durations",
         "http_status",
         "sizes",
-        "percentages",
+        "numbers",
         "paths",
         "kubernetes",
         "emails",

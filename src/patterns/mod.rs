@@ -93,7 +93,7 @@ pub(crate) enum StatsBucket {
     CpuQuantities,
     HttpStatus,
     Sizes,
-    Percentages,
+    Numbers,
     Paths,
     Json,
     QuotedStrings,
@@ -174,7 +174,7 @@ impl Token {
                 true,
             ),
             Token::Size(_) => facts("SIZE", "size", StatsBucket::Sizes, false),
-            Token::Number(_) => facts("NUMBER", "number", StatsBucket::Percentages, false),
+            Token::Number(_) => facts("NUMBER", "number", StatsBucket::Numbers, false),
             Token::HttpStatus(_) => {
                 facts("HTTP_STATUS", "http_status", StatsBucket::HttpStatus, true)
             }
