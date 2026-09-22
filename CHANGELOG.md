@@ -5,28 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
-## [0.7.0](https://github.com/air-gapped/lessence/compare/v0.6.0...v0.7.0) (2026-09-19)
+## [0.8.0](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.8.0) (2026-09-22)
+
+0.6.0 and 0.7.0 were tagged but never published. Their changes are listed
+here, so this section is everything since 0.5.0.
+
+
+### ⚠ BREAKING CHANGES
+
+* a default run writes a report to disk and prints a bounded overview of it on stdout instead of the folded text; `--no-report` restores the 0.5.0 output, and is what `tail -f` and any source without an end need
+* the briefing's count of bare numbers is `numbers`, not `percentages`, in `--stats-json`, the JSON summary record and the briefing text
 
 
 ### Features
 
 * a default run saves the complete folded report to a file and prints a bounded overview of it ([29b27de](https://github.com/air-gapped/lessence/commit/29b27de98e0e2bc3c8b2279cfc818a7afb7dfbcd))
+* --skill prints the bundled agent skill, version-locked to the binary; --skill flags prints the flag reference ([dc87751](https://github.com/air-gapped/lessence/commit/dc87751f143cac696aa1d644fff6f23b0adf3adf))
+* JSON summary and --preflight records carry schema_version, the build version, a SHA-256 identity of the input and a list of what was degraded, with a repair for each ([9910979](https://github.com/air-gapped/lessence/commit/99109796e8aa177f4a9a94311951f4efe0ff32c6))
 
 
 ### Bug Fixes
 
 * --help addresses coding agents first and points at the bundled skill; --help-human for people ([c488bea](https://github.com/air-gapped/lessence/commit/c488beab0d18f7302bf07b671758b129e09a28af))
 * a bare `lessence` at a terminal prints the help instead of waiting on stdin ([975a2ac](https://github.com/air-gapped/lessence/commit/975a2aca07b5a89eda1fcafe0c5151dcf70d0fb5))
-* an aborted run prints no template statistics; framed continuations no longer trip the record count ([5d8deb7](https://github.com/air-gapped/lessence/commit/5d8deb7bbf9c2107f4382fe61d71c7de1038d9e7))
 * the overview of a saved report streams, stays inside its budget, and never hides what it does not know ([8e855c4](https://github.com/air-gapped/lessence/commit/8e855c4fc99ee7264c13577e8480a79df2e7d141))
+* an aborted run prints no template statistics; framed continuations no longer trip the record count ([5d8deb7](https://github.com/air-gapped/lessence/commit/5d8deb7bbf9c2107f4382fe61d71c7de1038d9e7))
+* the briefing counts numbers as numbers, not as percentages ([15e00e3](https://github.com/air-gapped/lessence/commit/15e00e345d8c7e24fd70763fa6b67274c02829de))
 
-## [0.6.0](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.6.0) (2026-09-19)
 
+### Performance Improvements
 
-### Features
-
-* --skill prints the bundled agent skill, version-locked to the binary (after herdr's --skill) ([dc87751](https://github.com/air-gapped/lessence/commit/dc87751f143cac696aa1d644fff6f23b0adf3adf))
-* include input identity and completeness guidance in JSON reports ([9910979](https://github.com/air-gapped/lessence/commit/99109796e8aa177f4a9a94311951f4efe0ff32c6))
+* a default run no longer reads its own report back to print the overview ([f3b9d5a](https://github.com/air-gapped/lessence/commit/f3b9d5a0a6a73c5d9bc3db29151cf4ffc5d66a65))
 
 ## [0.5.0](https://github.com/air-gapped/lessence/compare/v0.4.5...v0.5.0) (2026-09-18)
 

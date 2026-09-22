@@ -1,6 +1,6 @@
 [package]
 name = "lessence"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Compress massive logs for LLM and coding-agent context — fold repetitive lines into patterns while preserving every unique line"
