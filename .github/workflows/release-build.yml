@@ -135,6 +135,16 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # The integration tests spawn the lessence binary itself. Inside the
+      # cross container that is an aarch64 executable the x86 host kernel
+      # cannot run until qemu is registered with binfmt_misc; cross only
+      # wraps the test harness, not what the harness starts.
+      - name: Register qemu for aarch64 executables
+        if: ${{ matrix.cross }}
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
       - name: Install cross
         if: ${{ matrix.cross }}
         run: type -P cross >/dev/null || cargo install cross --locked
