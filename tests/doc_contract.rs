@@ -222,7 +222,8 @@ fn readme_headline_example() {
         String::from_utf8_lossy(&output.stderr)
     );
     let path_re = regex::Regex::new(&format!(
-        "{}/run-[0-9]{{8}}-[0-9]{{6}}-[0-9a-f]{{8}}/report\\.jsonl",
+        // Either separator: a Windows build prints `\run-…\report.jsonl`.
+        "{}[/\\\\]run-[0-9]{{8}}-[0-9]{{6}}-[0-9a-f]{{8}}[/\\\\]report\\.jsonl",
         regex::escape(&reports.to_string_lossy())
     ))
     .unwrap();
