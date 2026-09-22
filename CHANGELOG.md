@@ -5,11 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v0.1.0.html).
 
-## [0.8.0](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.8.0) (2026-09-22)
+## [0.8.1](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.8.1) (2026-09-23)
 
-0.6.0 and 0.7.0 were tagged but never published. Their changes are listed
-here, so this section is everything since 0.5.0.
+The first release since 0.5.0. 0.6.0 and 0.7.0 were tagged but never
+published, and 0.8.0 was yanked: it did not compile on macOS, and its
+Windows and container builds failed at runtime. Every one of those is
+fixed here, and this release was tested on each platform it ships for
+before it was tagged. Two changes break scripts written for 0.5.0; both
+are under **Upgrading From 0.5.0**.
 
+### Highlights
+
+#### The Report Is The Output
+
+A default run now folds the whole log into a JSONL report on disk and prints a bounded overview of it on stdout, 16 KiB by default. The overview opens with the briefing and a locator line that names the file and states the group counts — total, selected, printed, omitted — so a reader always knows what it is not seeing. It then shows up to 40 groups, half of them the rarest and the rest the most frequent, the same locator line again, and four `jq` recipes for drilling into the report without printing it whole.
+
+Nothing is dropped: the report holds every group, and the overview declares everything it leaves out. `--overview N`, `--overview all` or `--overview 0` choose how much is shown, `--overview-bytes` sets the budget, `--report-dir` sets where reports go (default `$XDG_STATE_HOME/lessence/reports`), and `--report-max-bytes` caps one report (default 1G). A report is written under a temporary name and renamed only when complete, so an aborted run never leaves a report that looks finished. lessence refuses to put a report on memory-backed storage (tmpfs, ramfs) unless you name the directory and a size cap explicitly.
+
+#### Built For Agents
+
+`--help` now speaks to coding agents first and points at the bundled skill; `--help-human` is the short help for people. `--skill` prints the agent skill that matches this exact binary, and `--skill flags` prints the complete flag reference, so an agent never works from instructions written for another version. `--json` is shorthand for `--format json`, and a bare `lessence` at a terminal prints the help instead of waiting on stdin.
+
+#### Know What You Are Looking At
+
+The JSON summary record and `--preflight` now carry `schema_version`, the `version` of the build that wrote them, an `input_hash` (SHA-256 over the ordered raw input), and `degraded`: every way the input was cut short, each with a stable `code`, a count, a message and a `repair`. An agent can tell whether two reports describe the same input, and whether it is reasoning from all of it.
+
+#### Where Agents Run
+
+The report default works in a Docker or Podman container, whose overlayfs root it used to refuse, on Windows, where every default run exited 1, and on macOS, where 0.8.0 did not compile. Each release now runs its whole test suite on every platform it ships for before anything is tagged.
+
+#### Upgrading From 0.5.0
+
+- **stdout is the overview, not the folded text.** Add `--no-report` to get 0.5.0's output back. Use it for `tail -f` and any source that never ends — a source without an end never gets a report.
+- **`percentages` is now `numbers`** in `--stats-json`, in the JSON summary record and in the briefing text. It always counted bare numbers; the name was wrong.
+
+#### Speed
+
+Folding costs what it did in 0.5.0. A default run, which also writes the report, costs about 0.9% more CPU instructions than 0.5.0's plain text output.
 
 ### ⚠ BREAKING CHANGES
 
@@ -31,11 +63,20 @@ here, so this section is everything since 0.5.0.
 * the overview of a saved report streams, stays inside its budget, and never hides what it does not know ([8e855c4](https://github.com/air-gapped/lessence/commit/8e855c4fc99ee7264c13577e8480a79df2e7d141))
 * an aborted run prints no template statistics; framed continuations no longer trip the record count ([5d8deb7](https://github.com/air-gapped/lessence/commit/5d8deb7bbf9c2107f4382fe61d71c7de1038d9e7))
 * the briefing counts numbers as numbers, not as percentages ([15e00e3](https://github.com/air-gapped/lessence/commit/15e00e345d8c7e24fd70763fa6b67274c02829de))
+* lessence builds on macOS again; the report filesystem check is Linux-only ([ea81be2](https://github.com/air-gapped/lessence/commit/ea81be2363a9fa8e95c6161ac8dbcc99316c2ba5))
+* a default run on Windows no longer exits 1 with "durability unconfirmed" ([5f3f926](https://github.com/air-gapped/lessence/commit/5f3f9269f8b084dc4beef3d4c9098b99c1c11aa9))
+* the Windows build prints its skill with the frontmatter first ([f3aeec9](https://github.com/air-gapped/lessence/commit/f3aeec91e0165cc27f33658105ae83df6a4eb632))
+* a default run inside a container saves its report instead of refusing overlayfs ([40092ec](https://github.com/air-gapped/lessence/commit/40092ece80db85cb7a30fdab27c37d6838224e54))
 
 
 ### Performance Improvements
 
 * a default run no longer reads its own report back to print the overview ([f3b9d5a](https://github.com/air-gapped/lessence/commit/f3b9d5a0a6a73c5d9bc3db29151cf4ffc5d66a65))
+
+## [0.8.0](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.8.0) (2026-09-22) [YANKED]
+
+Yanked from crates.io the day it was published: it did not compile on
+macOS. Its changes, with the platform fixes, are 0.8.1.
 
 ## [0.5.0](https://github.com/air-gapped/lessence/compare/v0.4.5...v0.5.0) (2026-09-18)
 
