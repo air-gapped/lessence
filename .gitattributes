@@ -1,0 +1,4 @@
+# LF everywhere, Windows checkouts included: the binary embeds SKILL.md and
+# flags.md (include_str!), and a CRLF checkout made the Windows build print
+# its skill with the frontmatter no longer at byte zero.
+* text=auto eol=lf
