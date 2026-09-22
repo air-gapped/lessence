@@ -325,6 +325,25 @@ fn cover(groups: &[DistillGroup], careful: &Careful) -> Cover {
         {
             chosen.insert(partner);
         }
+        // The nearest group proves the split; the *farthest* proves the
+        // bucket is not uniform. A token-type structure is a coarse key on
+        // a wide JSON line — twenty thousand characters of object can hold
+        // an entirely different event and still tokenise the same way — so
+        // without this the cover keeps three neighbours and calls a bucket
+        // covered. Measured on a Tetragon export with the process-credential
+        // and namespace subtrees on: four events whose templates shared
+        // about a hundred of twenty-three thousand characters with anything
+        // kept were dropped, among them the only lines carrying
+        // `security_context.privileged` and the privilege-raise policy hits.
+        if let Some(&far) = members.iter().filter(|&&i| i != primary).min_by_key(|&&i| {
+            (
+                shared_prefix(&groups[i].template, &groups[primary].template),
+                i,
+            )
+        }) {
+            chosen.insert(far);
+        }
+
         // Where the lines are small, every anchor value gets a group:
         // there is no telling from here which of them a gate cares about,
         // and `success=no` buried under a hundred busier anchors is
