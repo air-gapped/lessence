@@ -609,7 +609,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "criterion",
- "getrandom 0.3.4",
+ "getrandom 0.4.2",
  "hmac",
  "insta",
  "lessence",
