@@ -79,7 +79,7 @@ rand_chacha = "0.9"
 # construction on purpose — nothing bespoke to audit. getrandom is already in
 # the tree via rand; a direct dependency so the call is explicit.
 getrandom = "0.3"
-hmac = "0.12"
+hmac = "0.13"
 sha2 = "0.10"
 
 # mimalloc replaces musl's malloc on musl-target release builds. musl's
