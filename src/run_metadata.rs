@@ -173,9 +173,7 @@ impl RunMetadata {
                 algorithm: "sha256",
                 scope: "ordered-source-bytes-v1",
                 value: if reason.is_none() {
-                    input
-                        .hash
-                        .map(|h| format!("{:x}", sha2::digest::Output::<sha2::Sha256>::from(h)))
+                    input.hash.map(|h| hex(&h))
                 } else {
                     None
                 },
@@ -184,6 +182,17 @@ impl RunMetadata {
             degraded,
         }
     }
+}
+
+/// Lowercase hex, two digits a byte: how `input_hash` is written.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 #[cfg(test)]

@@ -807,10 +807,7 @@ mod input_hash_tests {
             .with_input_hash(true)
             .run(readers, |_| Ok(()))
             .unwrap();
-        format!(
-            "{:x}",
-            sha2::digest::Output::<Sha256>::from(report.input_hash.unwrap())
-        )
+        crate::run_metadata::hex(&report.input_hash.unwrap())
     }
     #[test]
     fn framing_matches_independently_computed_vectors() {
