@@ -98,7 +98,7 @@ mimalloc = { version = "0.1", default-features = false }
 # nix rather than libc because this crate forbids unsafe code and nix wraps
 # statfs(2) safely. Unix only; other targets skip the classification.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", default-features = false, features = ["fs"] }
+nix = { version = "0.31", default-features = false, features = ["fs"] }
 
 [features]
 # Failure-injection seams for the report writer and the overview pass.
