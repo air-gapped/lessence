@@ -194,6 +194,7 @@ format_push_string = "allow"
 manual_strip = "allow"
 if_not_else = "allow"
 match_wild_err_arm = "allow"
+assert_is_empty = "allow"
 # Warnings we want to enforce
 needless_pass_by_value = "warn"
 
