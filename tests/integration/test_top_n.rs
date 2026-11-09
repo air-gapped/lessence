@@ -180,3 +180,97 @@ fn test_top_n_coverage_footer() {
         "Footer should show coverage percentage. Got: {stderr}"
     );
 }
+
+/// 45 lines sharing no token, so each is its own pattern: more than the
+/// summary default cap of 30, which is what makes "all" distinguishable.
+fn forty_five_distinct_patterns() -> String {
+    fn word(n: usize) -> String {
+        let a = (b'a' + (n / 26) as u8 % 26) as char;
+        let b = (b'a' + (n % 26) as u8) as char;
+        format!("{a}{b}{a}{b}x")
+    }
+    (0..45)
+        .map(|i| {
+            (0..5)
+                .map(|j| word(i * 5 + j))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+fn run_stdin(args: &[&str], input: &str) -> (String, String) {
+    let mut child = lessence_bin()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+fn count_text_groups(s: &str) -> usize {
+    s.lines()
+        .filter(|l| l.starts_with('[') && l.contains("x]"))
+        .count()
+}
+
+fn count_json_groups(s: &str) -> usize {
+    s.lines()
+        .filter(|l| l.contains("\"type\":\"group\"") || l.contains("\"type\": \"group\""))
+        .count()
+}
+
+#[test]
+fn top_zero_text_shows_every_pattern() {
+    let input = forty_five_distinct_patterns();
+    let (all, _) = run_stdin(&["--top", "1000", "-q"], &input);
+    let (zero, err) = run_stdin(&["--top", "0", "-q"], &input);
+    let uncapped = count_text_groups(&all);
+    assert!(
+        uncapped > 30,
+        "fixture must exceed the default cap: {uncapped}"
+    );
+    assert_eq!(count_text_groups(&zero), uncapped, "got:\n{zero}");
+    assert!(
+        err.contains(&format!("showing top {uncapped} of {uncapped} patterns")),
+        "trailer must report shown == total: {err}"
+    );
+}
+
+#[test]
+fn top_zero_json_emits_every_group() {
+    let input = forty_five_distinct_patterns();
+    let (all, _) = run_stdin(&["--format", "json", "--top", "1000", "-q"], &input);
+    let (zero, _) = run_stdin(&["--format", "json", "--top", "0", "-q"], &input);
+    let uncapped = count_json_groups(&all);
+    assert!(
+        uncapped > 30,
+        "fixture must exceed the default cap: {uncapped}"
+    );
+    assert_eq!(count_json_groups(&zero), uncapped);
+}
+
+#[test]
+fn top_zero_summary_still_shows_all() {
+    let input = forty_five_distinct_patterns();
+    let (capped, _) = run_stdin(&["--summary", "-q"], &input);
+    let (zero, _) = run_stdin(&["--summary", "--top", "0", "-q"], &input);
+    let (big, _) = run_stdin(&["--summary", "--top", "1000", "-q"], &input);
+    assert!(zero.lines().count() > capped.lines().count());
+    assert_eq!(zero.lines().count(), big.lines().count());
+}

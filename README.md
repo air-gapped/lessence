@@ -193,7 +193,7 @@ the release check refuses a table generated on older folding code.
 --essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
 --quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
 --summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
---top <TOP>    Show only the N most frequent patterns, sorted by count
+--top <TOP>    Show only the N most frequent patterns, sorted by count (0 for all)
 --fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
 --report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it (default text run only)

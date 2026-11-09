@@ -99,7 +99,7 @@ lessence --no-report app.log          # no file: stream the folded text, as befo
 
 # Key flags
 lessence --essence < app.log          # strip timestamps, show pure patterns
-lessence --top 10 < app.log           # top 10 most frequent patterns
+lessence --top 10 < app.log           # top 10 most frequent patterns (--top 0 = all)
 lessence -q < app.log                 # drop the briefing block (in --no-report runs it is a stderr footer)
 lessence --frame-continuations < app.log   # a stack trace folds as one event, not one group per frame
 lessence --sanitize host:pseudonym,ip < app.log   # mask hosts and IPs; pseudonym tags keep folding (references/flags.md)

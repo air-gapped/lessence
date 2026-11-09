@@ -20,7 +20,7 @@ for a specific count, or drill into specific patterns with default mode.
 | `--format text\|markdown\|json` | `text` | Output format. `json` emits JSONL with per-group rollup metadata (best for agents — see SKILL.md). Markdown adds headers and code blocks for reports. |
 | `-q` / `--quiet` | off | Suppress statistics footer. Alias: `--no-stats`. |
 | `--stats-json` | off | Emit JSON statistics to stderr instead of the human-readable footer (which also goes to stderr since 0.4.4 — stdout carries only log output). |
-| `--top N` | off | Show only the N most frequent patterns, sorted by count descending. |
+| `--top N` | off | Show only the N most frequent patterns, sorted by count descending. `--top 0` shows all patterns, in every mode. |
 
 ## The saved report (default runs)
 
@@ -202,7 +202,7 @@ sections above explain, this block is the authoritative list.
 --essence    Enable essence mode (timestamp removal/tokenization for temporal independence) [default: false]
 --quiet (alias: --no-stats) (-q)    Disable statistics output (enabled by default) [default: false]
 --summary    One-line-per-pattern frequency summary (use with --top N for compact overview) [default: false]
---top <TOP>    Show only the N most frequent patterns, sorted by count
+--top <TOP>    Show only the N most frequent patterns, sorted by count (0 for all)
 --fit (alias: --human)    Quick human-readable overview that fits your screen — no scrolling [default: false]
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
 --report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it (default text run only)

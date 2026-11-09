@@ -211,7 +211,7 @@ pub struct Cli {
     #[arg(long, help_heading = "Output")]
     pub summary: bool,
 
-    /// Show only the N most frequent patterns, sorted by count
+    /// Show only the N most frequent patterns, sorted by count (0 for all)
     #[arg(long, help_heading = "Output")]
     pub top: Option<usize>,
 

@@ -2985,6 +2985,8 @@ impl PatternFolder {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
+        // `--top 0` means every pattern, as it does for `--summary`.
+        let n = if n == 0 { usize::MAX } else { n };
 
         // Groups already streamed out as JSON records before this ranking
         // pass count toward the total the summary record reports.
