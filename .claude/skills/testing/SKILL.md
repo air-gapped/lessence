@@ -127,8 +127,8 @@ These run outside CI. See `make help` for all targets.
 make fuzz                     # Fuzz normalizer (nightly, 5 min default)
 make fuzz FUZZ_WORKERS=8      # Parallel fuzzing on 8 cores
 make fuzz-fold                # Fuzz full folding pipeline
-make mutants                  # Mutation testing, unit tests via -C --lib (~40 min)
-make mutants-full             # Mutation testing, full suite including integration (~hours)
+make mutants                  # Mutation testing, unit tests via -C --lib (~12 min)
+make mutants-full             # Mutation testing, full suite including integration (~38 min)
 make coverage                 # HTML code coverage report
 ```
 
