@@ -274,3 +274,67 @@ fn top_zero_summary_still_shows_all() {
     assert!(zero.lines().count() > capped.lines().count());
     assert_eq!(zero.lines().count(), big.lines().count());
 }
+
+/// Sorted (count, first.line_no, last.line_no) of every group record.
+fn group_shape(args: &[&str], file: &str) -> Vec<(u64, u64, u64)> {
+    let output = lessence_bin()
+        .args(["--json", "-q"])
+        .args(args)
+        .arg(file)
+        .output()
+        .expect("Failed to run");
+    let mut shape: Vec<(u64, u64, u64)> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["type"] == "group")
+        .map(|v| {
+            (
+                v["count"].as_u64().unwrap(),
+                v["first"]["line_no"].as_u64().unwrap(),
+                v["last"]["line_no"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    shape.sort_unstable();
+    shape
+}
+
+/// A display flag must never change the group set: `--top 0` shows exactly
+/// the groups the default run does (lessence-mdh: the ranked path skipped
+/// the merge of groups that converge on one template, so one template was
+/// shown twice).
+#[test]
+fn test_top_zero_shows_the_same_groups_as_default_on_every_distilled_corpus() {
+    let Some(_) = crate::common::require_example("examples/distilled") else {
+        return;
+    };
+    let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
+        .expect("examples/distilled must be readable")
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "log"))
+        .collect();
+    corpora.sort();
+    assert!(
+        !corpora.is_empty(),
+        "examples/distilled/*.log must be non-empty"
+    );
+    let mut disagreeing = Vec::new();
+    for corpus in &corpora {
+        let path = corpus.to_str().unwrap();
+        let default = group_shape(&[], path);
+        let top = group_shape(&["--top", "0"], path);
+        if default != top {
+            disagreeing.push(format!(
+                "{path}: default {} groups, --top 0 {} groups",
+                default.len(),
+                top.len()
+            ));
+        }
+    }
+    assert!(
+        disagreeing.is_empty(),
+        "--top 0 changed the group set on:\n{}",
+        disagreeing.join("\n")
+    );
+}

@@ -2994,9 +2994,16 @@ impl PatternFolder {
 
         // Collect all groups with their counts (drains the buffer, so the
         // hash index goes with it)
+        // Same groups the default run renders: in founding order, with the
+        // groups that converged on one template merged (`finish`). A display
+        // cap must never change which groups exist. Ranked modes never
+        // evict, so nothing is retained here.
         self.group_index.clear();
+        let mut all_groups: Vec<PatternGroup> = std::mem::take(&mut self.buffer);
+        all_groups.sort_by_key(|group| group.position);
+        let all_groups = self.merge_converged(all_groups);
         let mut groups_with_counts: Vec<(usize, PatternGroup)> =
-            self.buffer.drain(..).map(|g| (g.count(), g)).collect();
+            all_groups.into_iter().map(|g| (g.count(), g)).collect();
 
         // Sort by count descending; ties broken by the group's normalized
         // representative ascending so the cutoff at `take(n)` is
