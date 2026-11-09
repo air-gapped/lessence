@@ -161,7 +161,7 @@ is assigned in flush order.
 | Code | Meaning |
 |------|---------|
 | 0 | Success (also when output pipe closes early, e.g. `\| head`) |
-| 1 | `--fail-on-pattern` matched, or a named input file could not be opened (remaining files are still processed, like cat/grep) |
+| 1 | `--fail-on-pattern` matched, or a named input file could not be opened (remaining files are still processed, like cat/grep). A closed output pipe never turns this into 0, in any mode: with `--fail-on-pattern`, lessence reads on to the end of the input for the verdict |
 | 2 | Invalid `--fail-on-pattern` regex |
 
 ## Performance

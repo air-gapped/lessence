@@ -19,7 +19,7 @@ use lessence::cli::{self, Cli};
 use lessence::config::{self, Config};
 use lessence::folder::PatternFolder;
 use lessence::ingest::{self, Event, Ingestor};
-use lessence::output::write_output;
+use lessence::output::{self, write_output};
 
 fn main() -> Result<()> {
     let matches = cli::command().get_matches();
@@ -244,6 +244,11 @@ fn main() -> Result<()> {
         eprintln!("lessence: no valid input");
         std::process::exit(1);
     }
+    // Every failure is recorded the moment it is known, so a reader closing
+    // stdout from here on stops the run without erasing it.
+    if failed_sources != 0 {
+        output::record_failure();
+    }
 
     let ingestor = ingestor.with_input_hash(
         (use_json_output || config.preflight)
@@ -291,9 +296,17 @@ fn main() -> Result<()> {
         // Same accounting as the default briefing, so the two agree on the
         // input's line count when continuations were merged.
         folder.absorb_ingest_report(&ingest_report, failed_sources);
+        if ingest_report.fail_pattern_matched {
+            output::record_failure();
+        }
 
         // Output JSON analysis only
-        folder.print_preflight_json(&mut io::stdout())?;
+        let mut preflight = Vec::new();
+        folder.print_preflight_json(&mut preflight)?;
+        write_output(
+            &mut io::stdout(),
+            format_args!("{}", String::from_utf8(preflight)?),
+        )?;
         if ingest_report.fail_pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }
@@ -310,6 +323,9 @@ fn main() -> Result<()> {
             }
             Ok(())
         })?;
+        if ingest_report.fail_pattern_matched {
+            output::record_failure();
+        }
         // Flush and output as summary (one line per group, sorted by count)
         folder.finish_summary(config.top_n, fit_budget)?;
         if config.stats_json {
@@ -345,6 +361,11 @@ fn main() -> Result<()> {
     // The last line the ingest actually proved, for the truthful `input:
     // incomplete (aborted at line N)` state when the spool fails mid-run.
     let mut lines_proved = 0usize;
+    // A reader closing stdout mid-run stops the run at once, unless
+    // --fail-on-pattern still has unread lines to judge: its verdict is on
+    // the whole input, so reading goes on to EOF and folding stops.
+    let gate_pending = config.fail_pattern.is_some();
+    let mut stdout_closed = false;
     let ingest_result = ingestor.run(readers, |event| {
         match event {
             Event::BeginInput { source } => {
@@ -356,6 +377,9 @@ fn main() -> Result<()> {
             }
             Event::Line { text, line_number } => {
                 lines_proved = line_number;
+                if stdout_closed {
+                    return Ok(());
+                }
                 let output = if use_json_output {
                     folder.process_line_at(text, current_source_id, line_number)?
                 } else {
@@ -367,8 +391,12 @@ fn main() -> Result<()> {
                         // In top-N mode, discard incremental output — we'll use finish_top_n()
                     } else if let Some(spool) = spool.as_mut() {
                         spool.write_record(&output)?;
-                    } else {
-                        write_output(&mut stdout, format_args!("{output}\n"))?;
+                    } else if !output::write_unless_closed(&mut stdout, format_args!("{output}\n"))?
+                    {
+                        if !gate_pending {
+                            output::exit_on_closed_pipe();
+                        }
+                        stdout_closed = true;
                     }
                 }
             }
@@ -396,6 +424,12 @@ fn main() -> Result<()> {
     };
     folder.absorb_ingest_report(&ingest_report, failed_sources);
     let pattern_matched = ingest_report.fail_pattern_matched;
+    if pattern_matched {
+        output::record_failure();
+    }
+    if stdout_closed {
+        output::exit_on_closed_pipe();
+    }
 
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
@@ -623,7 +657,12 @@ fn print_report_stats(
     json_output: bool,
 ) -> Result<()> {
     if json_output {
-        folder.print_summary_json(&mut io::stdout(), elapsed)?;
+        let mut record = Vec::new();
+        folder.print_summary_json(&mut record, elapsed)?;
+        write_output(
+            &mut io::stdout(),
+            format_args!("{}", String::from_utf8(record)?),
+        )?;
         if config.stats_json {
             eprintln!(
                 "lessence: --stats-json ignored in JSON mode (summary record already emitted)"

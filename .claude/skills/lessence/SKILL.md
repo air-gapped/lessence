@@ -366,7 +366,8 @@ diff /tmp/a.txt /tmp/b.txt
 ### CI gating
 ```bash
 lessence --fail-on-pattern "ERROR|FATAL" < app.log
-# Exit code 1 if pattern found, 0 if clean
+# Exit code 1 if pattern found, 0 if clean — also behind `| head`: a closed
+# pipe never turns a failure into exit 0
 ```
 
 ## Common Mistakes
