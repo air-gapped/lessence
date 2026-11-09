@@ -178,6 +178,28 @@ else
     check "a measurement without a number fails" "no numeric peak RSS" "$(cat "$WORK/err")"
 fi
 
+# ── New-case vacuity: only a result the test reported counts ──────────────
+# shellcheck source=scripts/gate-vacuity.sh
+. "$ROOT/scripts/gate-vacuity.sh"
+vac="$WORK/vacuity.out"
+t="test integration::test_fold_regressions::known_fold_regressions ..."
+outcome() { vacuity_outcome "$1" "$vac" || echo "error"; }
+
+printf 'running 1 test\n%s ok\n\ntest result: ok. 1 passed; 0 failed\n' "$t" >"$vac"
+check "a case that passes on the baseline is vacuous" "passes" "$(outcome 0)"
+
+printf 'running 1 test\n%s FAILED\n\nthread panicked at tests/x.rs:1:1:\n1 of 1 fold regressions came back:\n' "$t" >"$vac"
+check "a case that fails on the baseline is proven" "fails" "$(outcome 101)"
+
+printf 'error[E0425]: cannot find value x in this scope\nerror: could not compile lessence\n' >"$vac"
+check "a compile failure is a gate error, not a failing case" "error" "$(outcome 101)"
+
+printf 'running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 256 filtered out\n' >"$vac"
+check "a filter that ran nothing is a gate error, not a passing case" "error" "$(outcome 0)"
+
+printf 'running 1 test\n%s FAILED\n\nthread panicked at tests/x.rs:22:59:\nLESSENCE_FIXTURE=/x: No such file or directory\n' "$t" >"$vac"
+check "a panic before the case check is a gate error" "error" "$(outcome 101)"
+
 # ── README compression table: a failing, empty or stale binary never becomes evidence ─
 rc_orig="$WORK/originals"; mkdir -p "$rc_orig"
 for f in kubelet.log argocd_server_production.log harbor_postgres_primary.log cilium_full.log rancher_production.log epyc_7days_journalctl.log; do

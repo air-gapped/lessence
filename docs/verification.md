@@ -31,7 +31,12 @@ No target other than `make distill` reads an original corpus.
    baseline binary (`LESSENCE_BIN`, `LESSENCE_FIXTURE` overrides in
    `tests/integration/test_fold_regressions.rs`). A new block that passes on
    the baseline and lacks `holds-on-base` in its header is vacuous → FAIL,
-   headers listed. With `GATE_VACUOUS_INFORMATIONAL=1` (set by
+   headers listed. A run is judged only on a result the test reported
+   (`scripts/gate-vacuity.sh`): `known_fold_regressions ... ok` with exit 0
+   is a pass, `... FAILED` with the case check's "N of M fold regressions
+   came back" is a fail; anything else — a compile failure, a filter that
+   ran nothing, a panic before the case was checked — is exit 2 naming the
+   case, never "fails on the baseline". With `GATE_VACUOUS_INFORMATIONAL=1` (set by
    `release-check.sh`, whose baseline is the last tag) the count is printed
    and listed in `gate.json` but does not fail: against a tag, passing only
    means the tag never had that defect.
@@ -82,8 +87,9 @@ No target other than `make distill` reads an original corpus.
    ordinary run, and it refuses to write when the measurement had errors.
    `scripts/gate-selftest.sh` drives both checks with stubs (missing
    tokenizer, missing baseline, missing corpus, missing field, genuine growth,
-   over-16-KiB stdout, failed RSS run, RSS report with no number) and runs as
-   a precondition of every gate.
+   over-16-KiB stdout, failed RSS run, RSS report with no number, and the
+   vacuity classification of step 4) and runs as a precondition of every
+   gate.
 9. Stdout ≤ 15 lines. `gate.json`:
 
 ```json

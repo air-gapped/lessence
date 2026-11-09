@@ -140,6 +140,8 @@ done < <(awk '
 
 n_new="${#new_case_lines[@]}"
 vacuous=()
+# shellcheck source=scripts/gate-vacuity.sh
+. "$ROOT/scripts/gate-vacuity.sh"
 
 if [ "$n_new" -gt 0 ]; then
     echo "Checking $n_new new ##CASE block(s) against the baseline binary..." >&2
@@ -162,19 +164,26 @@ if [ "$n_new" -gt 0 ]; then
             *" holds-on-base"*) holds_on_base=1 ;;
         esac
 
+        vacuity_out="$GATE_DIR/vacuity-check.out"
         set +e
         LESSENCE_BIN="$(pwd)/$base_bin" LESSENCE_FIXTURE="$tmp_fixture" \
             cargo test --release --test integration -- \
             --exact integration::test_fold_regressions::known_fold_regressions \
-            >/tmp/gate-vacuous.$$ 2>&1
+            >"$vacuity_out" 2>&1
         rc=$?
         set -e
         rm -f "$tmp_fixture"
 
-        if [ "$rc" -eq 0 ] && [ "$holds_on_base" -eq 0 ]; then
+        # Only a result the test itself reported counts: a non-zero exit from
+        # a compile failure is not "fails on the baseline" (scripts/gate-vacuity.sh).
+        if ! outcome="$(vacuity_outcome "$rc" "$vacuity_out")"; then
+            tail -n 20 "$vacuity_out" >&2
+            die2 "the new case '$header' was never judged on the baseline: cargo test exited $rc without a known_fold_regressions result (output kept in $vacuity_out)"
+        fi
+        if [ "$outcome" = passes ] && [ "$holds_on_base" -eq 0 ]; then
             vacuous+=("$header")
         fi
-        rm -f /tmp/gate-vacuous.$$
+        rm -f "$vacuity_out"
     done
     unset total_lines
 fi
