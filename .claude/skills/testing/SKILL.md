@@ -158,20 +158,18 @@ include it.
 
 **Structurally equivalent mutants** — mutations that can't change
 observable behavior because of an earlier guard or redundant check
-— live in `.cargo/mutants.toml` under `exclude_re`. Currently:
+— live in `.cargo/mutants.toml` under `exclude_re`, each with its proof
+in a comment. An entry names the mutant by description and function
+(`... in <fn>$`) when that is unique in the function; otherwise it also
+pins `file:line:col`, which fails safe (after a drift it matches nothing
+and the mutant reappears as missed). Re-derive pins from
+`cargo mutants --list --no-config` — never leave a bare `file.rs:NNN`
+prefix, which after a drift silently excludes whatever real mutant
+moved onto that line.
 
-- `network.rs` (`FQDN` check) — FQDN regex's `\b` anchors already guarantee
-  the `contains('.')` / `starts_with` / `ends_with` checks
-- `normalize.rs` (`normalize_json` guard) — PathDetector (step 3) replaces `&Event{}`
-  before JsonDetector (step 4) can see it, so the `normalize_json`
-  guard is structurally unreachable for that input shape
-- `normalize.rs` (quoted-string `prefilter` in `DETECTOR_ORDER`) — `QuotedStringDetector` has its own
-  `if !text.contains('"')` fast path, making the normalizer's
-  `|| contains('\'')` branch dead for token emission
-
-If cargo-mutants reports a "missed" mutant on one of those patterns (`.cargo/mutants.toml` holds the exact ids),
-don't try to kill it — add to the exclusion list if a new equivalent
-is found.
+If cargo-mutants reports a "missed" mutant that one of those proofs
+covers, re-pin the entry; don't try to kill it. Add an entry only for a
+new equivalent, with its proof.
 
 ### Code Coverage (cargo-llvm-cov)
 
