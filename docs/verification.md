@@ -8,7 +8,7 @@ and the commit hooks. Rationale is not here; the rules are in CLAUDE.md.
 | Target | Run when | Reads | Writes | Exit |
 |---|---|---|---|---|
 | `make ci` | every commit | tests, `tests/fixtures/` | — | non-zero on any failure |
-| `make gate` | before a commit touching `src/` or `Cargo.lock` | `examples/distilled/*.log`, `*.golden`, `tests/fixtures/fold_regressions.log` | `target/gate/gate.json` | 0 PASS · 1 FAIL · 2 cannot run |
+| `make gate` | before a commit touching the binary's inputs (below) | `examples/distilled/*.log`, `*.golden`, `tests/fixtures/fold_regressions.log` | `target/gate/gate.json` | 0 PASS · 1 FAIL · 2 cannot run |
 | `make distill` | after a corpus is added or re-harvested; `BLESS=1` after an intended fold change | `examples/originals/*.log` (originals, this step only) | `examples/distilled/<name>.log`, `<name>.golden` | non-zero names the corpus |
 | `make release-check` | before a release | distilled set, `<last-published-release>..HEAD`, the `slow` nextest profile, README compression table, skill `sources.md` | `target/gate/release.json` | as gate |
 
@@ -23,7 +23,10 @@ No target other than `make distill` reads an original corpus.
 2. Baseline: `GATE_BASE` (default `HEAD`) checked out into a worktree under
    `target/gate/`, built with the current toolchain, cached as
    `target/gate/base-<commit>/lessence`. A binary path is never accepted.
-   If `git diff <base> -- src Cargo.lock` is empty → exit 2 "nothing to compare".
+   If `git diff <base>` over the binary's inputs — `src/`, `Cargo.toml`,
+   `Cargo.lock`, `build.rs` and the two skill files `src/skill.rs` embeds
+   (`.claude/skills/lessence/SKILL.md`, `references/flags.md`) — is empty
+   → exit 2 "nothing to compare".
 3. New: `cargo build --release` of the working tree. sha256 of both binaries
    recorded.
 4. Cases: `##CASE` headers in the working-tree fixture absent from the
@@ -157,7 +160,8 @@ test by accident and `make release-check` always runs all of them.
 
 ## Hooks (`.githooks/`, `core.hooksPath`)
 
-- `pre-commit`: if a staged path is under `src/` or is `Cargo.lock`, require
+- `pre-commit`: if a staged path (added, changed, deleted, or either side
+  of a rename) is one of the binary's inputs (`scripts/gate.sh`, step 2), require
   `target/gate/gate.json` with `verdict: PASS` and `staged_diff_sha256`
   equal to the current staged diff; otherwise print `run make gate` and
   exit 1.

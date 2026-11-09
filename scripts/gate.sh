@@ -91,12 +91,15 @@ new_sha="$(sha256sum "$new_bin" | awk '{print $1}')"
 # (the baseline is built in a throwaway worktree at a different path — an
 # ELF build-id or similar differs even for identical source), so the sha256
 # equality the spec names is a bonus fast-path, not the real test. The real
-# test is git: does anything that could change the binary's behaviour — src/
-# or Cargo.lock, including uncommitted changes — actually differ from
-# GATE_BASE?
-src_diff="$(git diff "$base_commit" -- src Cargo.lock)"
+# test is git: does anything that could change the binary's behaviour —
+# including uncommitted changes — actually differ from GATE_BASE? That is
+# src/, the manifest and lockfile, build.rs, and the two skill files
+# src/skill.rs embeds; .githooks/pre-commit requires a gate for the same set.
+binary_inputs=(src Cargo.toml Cargo.lock build.rs
+    .claude/skills/lessence/SKILL.md .claude/skills/lessence/references/flags.md)
+src_diff="$(git diff "$base_commit" -- "${binary_inputs[@]}")"
 if [ "$base_sha" = "$new_sha" ] || [ -z "$src_diff" ]; then
-    die2 "nothing to compare — src/ and Cargo.lock are identical to the $GATE_BASE baseline"
+    die2 "nothing to compare — ${binary_inputs[*]} are identical to the $GATE_BASE baseline"
 fi
 
 # ── 4. Cases: new ##CASE headers vs the baseline commit's fixture ──────────

@@ -43,8 +43,11 @@ make install        # to ~/.cargo/bin, keeping a copy of every build installed u
                     # is how a new ##CASE is checked against the build that shipped
 ```
 
-Run `make gate` before committing anything under `src/`; the pre-commit hook
-checks that `gate.json` was produced for exactly the staged change. Run
+Run `make gate` before committing anything that builds the binary: `src/`,
+`Cargo.toml`, `Cargo.lock`, `build.rs`, and the two skill files `src/skill.rs`
+embeds (`.claude/skills/lessence/SKILL.md`, `references/flags.md`); the
+pre-commit hook checks that `gate.json` was produced for exactly the staged
+change. Run
 `make release-check` before a release. Nothing else is required per change.
 
 The only perf evidence for a release is the measurement against the last
