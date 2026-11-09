@@ -120,7 +120,7 @@ fn main() -> Result<()> {
     // --explain annotates the JSON group records; there is nothing to
     // annotate in the other formats. A format asked for by name that cannot
     // carry them is an error, not a silent switch to JSON.
-    if cli.explain && !matches!(format.as_str(), "json" | "jsonl") {
+    if cli.explain && format != "json" {
         if format_given {
             eprintln!(
                 "lessence: --explain annotates JSON group records; --format {} cannot carry \
@@ -170,7 +170,7 @@ fn main() -> Result<()> {
     }
 
     let requested_summary = cli.summary || (cli.fit && cli.top.is_none());
-    let json_summary = requested_summary && matches!(format.as_str(), "json" | "jsonl");
+    let json_summary = requested_summary && format == "json";
     let json_summary_default_cap = json_summary && cli.top.is_none();
     // JSON summary uses the regular JSONL group schema with the summary-mode
     // default cap. This keeps every flag combination machine-parseable.
@@ -241,7 +241,7 @@ fn main() -> Result<()> {
 
     let start_time = Instant::now();
 
-    let use_json_output = matches!(config.output_format.as_str(), "json" | "jsonl");
+    let use_json_output = config.output_format == "json";
     let use_top_n = config.top_n.is_some();
 
     let (readers, failed_sources) = ingest::open_inputs(&cli.files);

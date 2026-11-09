@@ -65,16 +65,17 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
 }
 
 /// Validate `--format` at the CLI boundary and return the canonical
-/// spelling the mode dispatch compares against: `text`, `markdown`,
-/// `json`, or `jsonl`. Accepted aliases (`plain`, `md`, any case)
-/// normalize here so `--format md` and `--format JSON` behave exactly
-/// like their canonical forms. Called from `main` (not a clap
-/// value_parser) so a bad value is a `lessence:` usage error with exit 2.
+/// spelling the mode dispatch compares against: `text`, `markdown` or
+/// `json`. Accepted aliases (`plain`, `md`, `jsonl`, any case) normalize
+/// here, once, so `--format md` and `--format JSONL` behave exactly like
+/// their canonical forms and no later check has to match an alias. Called
+/// from `main` (not a clap value_parser) so a bad value is a `lessence:`
+/// usage error with exit 2.
 pub fn validate_format(s: &str) -> anyhow::Result<String> {
     match s.to_lowercase().as_str() {
         "text" | "plain" => Ok("text".to_string()),
         "markdown" | "md" => Ok("markdown".to_string()),
-        canonical @ ("json" | "jsonl") => Ok(canonical.to_string()),
+        "json" | "jsonl" => Ok("json".to_string()),
         _ => Err(anyhow::anyhow!(
             "Invalid format '{s}'. Supported formats: text (plain), markdown (md), json, jsonl"
         )),
@@ -569,7 +570,7 @@ mod tests {
     #[test]
     fn format_json_and_alias() {
         assert_eq!(validate_format("json").unwrap(), "json");
-        assert_eq!(validate_format("jsonl").unwrap(), "jsonl");
+        assert_eq!(validate_format("jsonl").unwrap(), "json");
     }
 
     #[test]
