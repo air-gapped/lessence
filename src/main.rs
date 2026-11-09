@@ -145,7 +145,8 @@ fn main() -> Result<()> {
 
     // The default text run — no --format other than text and none of the
     // alternate output or dev modes — is the only run that saves a report.
-    // Every report flag outside it is a usage error, never silently ignored.
+    // Every flag that shapes a report is a usage error outside it, never
+    // silently ignored; --no-report is already satisfied there.
     let text_default = format == "text"
         && !cli.summary
         && cli.top.is_none()

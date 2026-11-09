@@ -32,12 +32,15 @@ every group; stdout is a view that declares everything it leaves out.
 |------|---------|-------------|
 | `--report-dir DIR` | `$LESSENCE_REPORT_DIR`, else `$XDG_STATE_HOME/lessence/reports`, else `~/.local/state/lessence/reports` | Where the run directory `run-<UTC date>-<8 hex>` is created (0700, report file 0600). Never the working directory. |
 | `--report-max-bytes N` | `1G` | Per-run cap on the report file. K/M/G suffixes. Nothing bounds accumulated disk use; **the directory grows until you delete it**. |
-| `--no-report` | off | Write no report: stream the folded text to stdout and the briefing to stderr, exactly as before this feature. |
+| `--no-report` | off | Write no report: stream the folded text to stdout and the briefing to stderr, exactly as before this feature. Accepted in every other mode too, where it does nothing: they write no report already. |
 | `--overview N\|all` | `40` | Groups in the stdout overview. `0` prints none; `all` prints every group in report order with no byte budget and no preview cuts. Max 10000. |
 | `--overview-bytes B` | `16384` | Byte budget for the whole overview — briefing, locators, entries and recipes together. Usage error with `--overview all`. |
 
-All five apply to the default run only; with any other mode they are a usage
-error, never silently ignored, and the error names what to run instead.
+The four that shape a report (`--report-dir`, `--report-max-bytes`,
+`--overview`, `--overview-bytes`) apply to the default run only; with any
+other mode they are a usage error, never silently ignored, and the error names
+what to run instead. `--no-report` is accepted everywhere: no other mode
+writes a report, so there it does nothing.
 `LESSENCE_REPORT_DIR` is read only there too. **There is no report in
 `--format json`:** that mode streams every group to stdout already, so
 `--format json --overview all` is a usage error and plain `--format json` is
@@ -205,7 +208,7 @@ sections above explain, this block is the authoritative list.
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
 --report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it (default text run only)
 --report-max-bytes <N>    Per-run cap on the report file (default 1G, supports K/M/G). Nothing bounds accumulated disk use across runs (default text run only)
---no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report (default text run only) [default: false]
+--no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report. Every other mode writes no report already; there it does nothing [default: false]
 --overview <N|all>    Groups to show in the stdout overview: N (default 40, max 10000), 0 for none, or `all` for every group with no byte budget (default text run only)
 --overview-bytes <B>    Byte budget for the whole stdout overview (default 16384) (default text run only)
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]

@@ -133,6 +133,8 @@ streams: peak memory is one record, whatever the group count).
 `--overview 0` prints the locators and recipes only. `--no-report` turns the
 whole thing off and streams the folded text as before — **use it for `tail -f`
 or any source that never reaches EOF**, since the report needs input EOF.
+It is harmless in every other mode (`--format json`, `--summary`, `--top`,
+`--preflight`, …): they save no report, so there it does nothing.
 The report directory is never pruned: it grows until you delete it.
 See references/flags.md for `--report-dir`, `--report-max-bytes` and the rest.
 

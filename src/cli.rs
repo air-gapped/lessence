@@ -246,8 +246,8 @@ pub struct Cli {
 
     /// Do not save a report: stream today's folded text to stdout and the
     /// briefing to stderr. Use this for `tail -f` and any live source — a
-    /// source that never reaches EOF never gets a report (default text run
-    /// only)
+    /// source that never reaches EOF never gets a report. Every other mode
+    /// writes no report already; there it does nothing
     #[arg(long, help_heading = "Output")]
     pub no_report: bool,
 
@@ -346,9 +346,11 @@ pub struct ReportSettings {
 }
 
 impl Cli {
-    /// The report flags belong to the default text run and nothing else. No
-    /// flag is silently ignored: every combination outside the table in the
-    /// contract is a usage error naming the flags involved.
+    /// The flags that shape a report belong to the default text run and
+    /// nothing else. None is silently ignored: every combination outside the
+    /// table in the contract is a usage error naming the flags involved.
+    /// `--no-report` is the exception: outside the default text run no report
+    /// is written anyway, so the request is met and it does nothing.
     ///
     /// `text_default` is the caller's mode decision: no `--format` other
     /// than text, and none of the alternate output or dev modes.
@@ -373,14 +375,8 @@ impl Cli {
                      writes no report and streams every group to stdout"
                 ));
             }
-            if self.no_report {
-                return Err(
-                    "--no-report applies to the default text run, the only run that saves a \
-                     report; this output mode already writes none, so drop --no-report and the \
-                     command works as it stands"
-                        .to_string(),
-                );
-            }
+            // --no-report asks for no report, and this mode writes none: the
+            // request is already met, so it is accepted and does nothing.
             return Ok(ReportPlan::Off);
         }
 
