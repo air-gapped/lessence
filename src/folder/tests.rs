@@ -6207,24 +6207,136 @@ fn an_unsampled_variation_entry_keeps_the_sampled_count_zero() {
 /// (advance), 1210 (tie-break).
 #[test]
 fn word_alignment_is_an_lcs_with_its_documented_tie_break() {
-    let same = align_words(&["a", "b"], &["a", "b"]).unwrap();
+    let same = align_words(&["a", "b"], &["a", "b"]);
     assert_eq!(same, vec![Some(0), Some(1)]);
-    let skip = align_words(&["a", "b", "c", "d"], &["a", "c", "d"]).unwrap();
+    let skip = align_words(&["a", "b", "c", "d"], &["a", "c", "d"]);
     assert_eq!(skip, vec![Some(0), None, Some(1), Some(2)]);
-    let insert = align_words(&["x", "b", "y"], &["b"]).unwrap();
+    let insert = align_words(&["x", "b", "y"], &["b"]);
     assert_eq!(insert, vec![None, Some(0), None]);
     // a tie: dropping the left word first is the documented choice
-    let tie = align_words(&["a", "b"], &["b", "a", "c"]).unwrap();
+    let tie = align_words(&["a", "b"], &["b", "a", "c"]);
     assert_eq!(tie, vec![None, Some(0)]);
     // repeated words align in order, never crossing
-    let rep = align_words(&["k", "v", "k", "w"], &["k", "w"]).unwrap();
+    let rep = align_words(&["k", "v", "k", "w"], &["k", "w"]);
     assert_eq!(rep, vec![Some(0), None, None, Some(1)]);
-    // the cap is inclusive on both sides
-    let big: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS).collect();
+    // the cap is inclusive on both sides; past it only the band aligns
+    assert!(alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS - 1));
+    assert!(alignable(MAX_ALIGN_WORDS, 1));
+    assert!(alignable(1, MAX_ALIGN_WORDS));
+    assert!(!alignable(MAX_ALIGN_WORDS + 1, 1));
+    assert!(!alignable(1, MAX_ALIGN_WORDS + 1));
+    // what is not alignable is paired by position, which is still true
     let bigger: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS + 1).collect();
-    assert!(align_words(&big, &big[..MAX_ALIGN_WORDS - 1]).is_some());
-    assert!(align_words(&bigger, &["w"]).is_none());
-    assert!(align_words(&["w"], &bigger).is_none());
+    let mut by_position = vec![None; MAX_ALIGN_WORDS + 1];
+    by_position[0] = Some(0);
+    assert_eq!(align_words(&bigger, &["v"]), by_position);
+    assert_eq!(align_words(&["v"], &bigger), vec![Some(0)]);
+}
+
+/// Past the cap, counts within the band align and the band's edge is
+/// inclusive on both sides; equal counts align by position at any length,
+/// and inside the cap any difference aligns exactly.
+#[test]
+fn long_lines_align_within_the_band_and_no_further() {
+    let over = MAX_ALIGN_WORDS + 1;
+    assert!(alignable(over, over));
+    assert!(alignable(over + 40, over + 40));
+    assert!(alignable(over, over + ALIGN_BAND));
+    assert!(alignable(over + ALIGN_BAND, over));
+    assert!(!alignable(over, over + ALIGN_BAND + 1));
+    assert!(!alignable(over + ALIGN_BAND + 1, over));
+    // one side at the cap, the other past it: still the band that decides
+    assert!(alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS + ALIGN_BAND));
+    assert!(!alignable(
+        MAX_ALIGN_WORDS,
+        MAX_ALIGN_WORDS + ALIGN_BAND + 1
+    ));
+    // both inside the cap: exact, whatever the difference
+    assert!(alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS - ALIGN_BAND - 1));
+    // and it is the exact table that runs there, not the band
+    let words: Vec<String> = (0..MAX_ALIGN_WORDS).map(|i| format!("w{i}")).collect();
+    let full: Vec<&str> = words.iter().map(String::as_str).collect();
+    let short: Vec<&str> = full[ALIGN_BAND + 1..].to_vec();
+    let aligned = align_words(&full, &short);
+    assert_eq!(aligned[..=ALIGN_BAND], vec![None; ALIGN_BAND + 1]);
+    for (i, slot) in aligned.iter().enumerate().skip(ALIGN_BAND + 1) {
+        assert_eq!(*slot, Some(i - ALIGN_BAND - 1));
+    }
+}
+
+/// Distinct words, so every alignment below is forced: an inserted or
+/// dropped unit is the only one left unpaired, on either side and at
+/// either end, and the walk back crosses many 64-bit words of its table.
+#[test]
+fn a_long_line_with_inserted_units_pairs_every_other_unit() {
+    let words: Vec<String> = (0..400).map(|i| format!("u{i}")).collect();
+    let line: Vec<&str> = words.iter().map(String::as_str).collect();
+    for at in [0, 1, 199, 398, 399] {
+        let mut shorter = line.clone();
+        shorter.remove(at);
+        let expect: Vec<Option<usize>> = (0..400)
+            .map(|i| match i.cmp(&at) {
+                std::cmp::Ordering::Less => Some(i),
+                std::cmp::Ordering::Equal => None,
+                std::cmp::Ordering::Greater => Some(i - 1),
+            })
+            .collect();
+        assert_eq!(align_words(&line, &shorter), expect, "dropped at {at}");
+        let back: Vec<Option<usize>> = (0..399).map(|i| Some(i + usize::from(i >= at))).collect();
+        assert_eq!(align_words(&shorter, &line), back, "inserted at {at}");
+    }
+    // the band's whole width: eight units gone from one place
+    let mut gap = line.clone();
+    gap.drain(100..100 + ALIGN_BAND);
+    let aligned = align_words(&line, &gap);
+    assert_eq!(aligned.iter().filter(|a| a.is_none()).count(), ALIGN_BAND);
+    assert!(aligned[100..100 + ALIGN_BAND].iter().all(Option::is_none));
+    assert_eq!(aligned[100 + ALIGN_BAND], Some(100));
+}
+
+/// A long line that gained a value folds (0 plain words differ), one that
+/// gained a sentence word is one difference, and one that gained more than
+/// the band is refused outright.
+#[test]
+fn long_lines_count_plain_word_diffs_through_the_band() {
+    let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
+    let line = words.join(" ");
+    let with = |extra: &[&str]| {
+        let mut w: Vec<&str> = words.iter().map(String::as_str).collect();
+        for (n, e) in extra.iter().enumerate() {
+            w.insert(150 + n, e);
+        }
+        w.join(" ")
+    };
+    assert_eq!(plain_word_diffs(&line, &with(&["zone=k2/west"])), 0);
+    assert_eq!(plain_word_diffs(&with(&["zone=k2/west"]), &line), 0);
+    assert_eq!(plain_word_diffs(&line, &with(&["stalled"])), 1);
+    let values: Vec<String> = (0..=ALIGN_BAND).map(|i| format!("t{i}=v/{i}")).collect();
+    let values: Vec<&str> = values.iter().map(String::as_str).collect();
+    assert_eq!(plain_word_diffs(&line, &with(&values[..ALIGN_BAND])), 0);
+    assert_eq!(
+        plain_word_diffs(&line, &with(&values)),
+        MAX_PLAIN_WORD_DIFFS + 1
+    );
+    assert_eq!(
+        plain_word_diffs(&with(&values), &line),
+        MAX_PLAIN_WORD_DIFFS + 1
+    );
+}
+
+/// The template a long member is folded into marks what that member lacks.
+#[test]
+fn a_long_template_marks_the_unit_a_shorter_member_lacks() {
+    let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
+    let mut founder: Vec<&str> = words.iter().map(String::as_str).collect();
+    founder.insert(150, "shard=k7/east");
+    let founder = founder.join(" ");
+    let member = words.join(" ");
+    let edits = varying_spans(&founder, &member);
+    let at = founder.find("shard=").unwrap();
+    assert_eq!(edits, vec![(at, "shard=k7/east".len())]);
+    // a member that carries everything the template shows changes nothing
+    assert!(varying_spans(&member, &founder).is_empty());
 }
 
 /// shared_affixes 1227 (prefix cap), 1233/1234 (suffix loop bounds).
@@ -6443,8 +6555,7 @@ fn anchor_mismatch_is_set_only_when_the_anchors_differ() {
 /// 1233:18/27/31, 1234:19/28/32.
 #[test]
 fn shared_affix_bounds_bind_on_the_shorter_side() {
-    let big: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS).collect();
-    assert!(align_words(&big[..MAX_ALIGN_WORDS - 1], &big).is_some());
+    assert!(alignable(MAX_ALIGN_WORDS - 1, MAX_ALIGN_WORDS));
     // prefix cap: the whole shorter word is never a prefix
     assert_eq!(shared_affixes("k=", "k=x"), (0, 0));
     assert_eq!(shared_affixes("k=x", "k="), (0, 0));
@@ -6462,23 +6573,20 @@ fn shared_affix_bounds_bind_on_the_shorter_side() {
 #[test]
 fn word_alignment_drops_a_left_word_to_reach_a_later_match() {
     assert_eq!(
-        align_words(&["a", "a"], &["b", "a", "a"]).unwrap(),
+        align_words(&["a", "a"], &["b", "a", "a"]),
         vec![Some(1), Some(2)]
     );
     assert_eq!(
-        align_words(&["a", "a"], &["b", "a", "b"]).unwrap(),
+        align_words(&["a", "a"], &["b", "a", "b"]),
         vec![None, Some(1)]
     );
+    assert_eq!(align_words(&["a"], &["b", "b", "a"]), vec![Some(2)]);
     assert_eq!(
-        align_words(&["a"], &["b", "b", "a"]).unwrap(),
-        vec![Some(2)]
-    );
-    assert_eq!(
-        align_words(&["a", "z", "b"], &["b", "a"]).unwrap(),
+        align_words(&["a", "z", "b"], &["b", "a"]),
         vec![None, None, Some(0)]
     );
     assert_eq!(
-        align_words(&["a", "b"], &["x", "a", "b", "a", "b"]).unwrap(),
+        align_words(&["a", "b"], &["x", "a", "b", "a", "b"]),
         vec![Some(1), Some(2)]
     );
 }
@@ -7035,4 +7143,106 @@ fn distillation_keeps_converging_groups_separate_until_selection() {
     assert_eq!(f.buffer[0].template(), f.buffer[1].template());
     f.finish().unwrap();
     assert_eq!(f.distill_groups.len(), 2);
+}
+
+// ---------------------------------------------------------------
+// Property-based tests for the banded word alignment
+// ---------------------------------------------------------------
+
+mod alignment_properties {
+    use super::*;
+    use proptest::collection::vec as pvec;
+    use proptest::prelude::*;
+
+    /// The exact table's walk back, with the diagonal `j - i` of every cell
+    /// it visits: an oracle written apart from `align_exact`.
+    fn exact_with_path(left: &[&str], right: &[&str]) -> (Vec<Option<usize>>, Vec<isize>) {
+        let (rows, cols) = (left.len(), right.len());
+        let mut lcs = vec![vec![0usize; cols + 1]; rows + 1];
+        for i in (0..rows).rev() {
+            for j in (0..cols).rev() {
+                lcs[i][j] = if left[i] == right[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        let mut out = vec![None; rows];
+        let mut path = vec![0isize];
+        let (mut i, mut j) = (0, 0);
+        while i < rows && j < cols {
+            if left[i] == right[j] {
+                out[i] = Some(j);
+                i += 1;
+                j += 1;
+            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+                i += 1;
+            } else {
+                j += 1;
+            }
+            path.push(j as isize - i as isize);
+        }
+        (out, path)
+    }
+
+    /// A short sequence over a three-word alphabet and a copy of it with a
+    /// few units inserted, dropped or changed: alike enough that the exact
+    /// walk mostly stays near its diagonal, unlike enough to leave it.
+    fn arb_pair() -> impl Strategy<Value = (Vec<&'static str>, Vec<&'static str>)> {
+        const WORDS: [&str; 3] = ["a", "b", "c"];
+        (
+            pvec(0..3usize, 0..24),
+            pvec((0..3u8, any::<prop::sample::Index>(), 0..3usize), 0..5),
+        )
+            .prop_map(|(base, edits)| {
+                let left: Vec<&str> = base.iter().map(|&w| WORDS[w]).collect();
+                let mut right = left.clone();
+                for (op, at, w) in edits {
+                    let n = right.len();
+                    match op {
+                        0 => right.insert(at.index(n + 1), WORDS[w]),
+                        1 if n > 0 => {
+                            right.remove(at.index(n));
+                        }
+                        _ if n > 0 => right[at.index(n)] = WORDS[w],
+                        _ => {}
+                    }
+                }
+                (left, right)
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn banded_alignment_is_the_exact_one_whenever_its_path_fits(
+            (left, right) in arb_pair(),
+            band in 1..4usize,
+        ) {
+            prop_assume!(left.len().abs_diff(right.len()) <= band);
+            let (exact, path) = exact_with_path(&left, &right);
+            prop_assert_eq!(&align_exact(&left, &right), &exact);
+            let d = right.len() as isize - left.len() as isize;
+            let (lo, hi) = (d.min(0) - band as isize, d.max(0) + band as isize);
+            let banded = align_banded(&left, &right, band);
+            if path.iter().all(|k| (lo..=hi).contains(k)) {
+                prop_assert_eq!(&banded, &exact);
+            }
+            // whatever the band, a pairing of equal words in order
+            let mut last = None;
+            for (i, slot) in banded.iter().enumerate() {
+                if let Some(j) = *slot {
+                    prop_assert_eq!(left[i], right[j]);
+                    prop_assert!(last.is_none_or(|l| j > l));
+                    last = Some(j);
+                }
+            }
+        }
+
+        #[test]
+        fn a_band_as_wide_as_the_table_is_the_exact_alignment((left, right) in arb_pair()) {
+            let band = left.len().max(right.len()).max(1);
+            prop_assert_eq!(align_banded(&left, &right, band), align_exact(&left, &right));
+        }
+    }
 }

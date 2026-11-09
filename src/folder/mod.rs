@@ -1197,20 +1197,56 @@ pub(crate) const VARIES_MARK: &str = "<VARIES>";
 const MAX_PLAIN_WORD_DIFFS: usize = 1;
 
 /// Word alignment is exact up to this many words a side; past it a member
-/// is aligned positionally when the counts agree and skipped otherwise.
+/// is aligned positionally when the counts agree and within
+/// [`ALIGN_BAND`] otherwise.
 const MAX_ALIGN_WORDS: usize = 256;
 
+/// How far an alignment of two lines past [`MAX_ALIGN_WORDS`] may stray
+/// from the straight path between them: their unit counts may differ by at
+/// most this much, and the alignment may wander this far past either side
+/// of that difference. A few fields gained or lost — a label one node
+/// carries and another lacks — is still one event; a line that gains a
+/// block of them is refused, since a shorter founder could not show what
+/// the longer member added. The plain-word allowance cannot set this: an
+/// added value is not a plain word. Measured on the distilled corpora, the
+/// long lines that are one event differ by one to five units and the next
+/// nearest pairs by 26 and more.
+const ALIGN_BAND: usize = 8;
+
+/// Whether `align_words` aligns sequences of these lengths by their
+/// content. Two lines past the cap whose counts differ by more than the
+/// band are not: a join between them is refused, because nothing could
+/// show which of their units correspond.
+fn alignable(left: usize, right: usize) -> bool {
+    left == right
+        || (left <= MAX_ALIGN_WORDS && right <= MAX_ALIGN_WORDS)
+        || left.abs_diff(right) <= ALIGN_BAND
+}
+
 /// For each word of `a`, the index of the word of `b` it pairs with, by
-/// longest common subsequence (positional when the counts agree, which is
-/// the common case and needs no DP). `None` when the lines are too long to
-/// align exactly and differ in word count.
-pub(super) fn align_words(left: &[&str], right: &[&str]) -> Option<Vec<Option<usize>>> {
-    if left.len() == right.len() {
-        return Some((0..left.len()).map(Some).collect());
+/// longest common subsequence: positional when the counts agree, which is
+/// the common case and needs no DP; exact up to [`MAX_ALIGN_WORDS`] a side;
+/// past it, the longest common subsequence among paths inside
+/// [`ALIGN_BAND`]. Every pair it reports is of two equal words, in order,
+/// so whatever it leaves unpaired can be shown as varying and the template
+/// stays true. Lengths `alignable` refuses get the positional pairing — a
+/// pairing all the same, so still true, only coarser; no join relies on it.
+pub(super) fn align_words(left: &[&str], right: &[&str]) -> Vec<Option<usize>> {
+    if left.len() == right.len() || !alignable(left.len(), right.len()) {
+        return (0..left.len())
+            .map(|i| (i < right.len()).then_some(i))
+            .collect();
     }
     if left.len() > MAX_ALIGN_WORDS || right.len() > MAX_ALIGN_WORDS {
-        return None;
+        return align_banded(left, right, ALIGN_BAND);
     }
+    align_exact(left, right)
+}
+
+/// The longest common subsequence of `left` and `right` by the full table,
+/// walked from the start: a match is taken, and on a mismatch the left word
+/// is dropped unless that loses more than dropping the right one.
+fn align_exact(left: &[&str], right: &[&str]) -> Vec<Option<usize>> {
     // lcs[i][j] = LCS length of left[i..] and right[j..]
     let (rows, cols) = (left.len(), right.len());
     let mut lcs = vec![0u16; (rows + 1) * (cols + 1)];
@@ -1237,7 +1273,84 @@ pub(super) fn align_words(left: &[&str], right: &[&str]) -> Option<Vec<Option<us
             j += 1;
         }
     }
-    Some(out)
+    out
+}
+
+/// The longest common subsequence of `left` and `right` among paths that
+/// keep `j - i` within `band` of the range between 0 and
+/// `right.len() - left.len()`, walked back with the same tie-break as the
+/// exact table. Whenever the exact alignment's path stays inside the band
+/// this returns it unchanged: every cell on that path holds its exact
+/// value, and a cell outside the band is lower than any inside it, so no
+/// comparison on the path can come out differently. Two rows of lengths
+/// and one bit per cell for the walk back: memory and time grow with the
+/// line times the band, never with the square of the line. The caller
+/// keeps the counts within `band` of each other, which is what lets the
+/// band hold the path from one corner to the other.
+fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>> {
+    let (rows, cols) = (left.len(), right.len());
+    // a band one cell wide has no room to step off a mismatch
+    debug_assert!(rows.abs_diff(cols) <= band && (rows != cols || band > 0));
+    // diagonal `k = j - i` of the cells inside the band, shifted to 0..width
+    let low = cols.min(rows) as isize - rows as isize - band as isize;
+    let width = rows.abs_diff(cols) + 2 * band + 1;
+    let at = |i: usize, j: usize| -> Option<usize> {
+        let k = j as isize - i as isize - low;
+        (0..width as isize).contains(&k).then_some(k as usize)
+    };
+    // LCS length of left[i..] and right[j..] for row i (`here`) and row
+    // i + 1 (`below`); -1 marks a cell outside the band or the table.
+    let mut below = vec![-1i32; width];
+    let mut here = vec![-1i32; width];
+    for (k, cell) in below.iter_mut().enumerate() {
+        let j = rows as isize + low + k as isize;
+        if (0..=cols as isize).contains(&j) {
+            *cell = 0;
+        }
+    }
+    // down[i * width + k]: on a mismatch at (i, k), drop the left word.
+    let mut down = vec![0u64; (rows * width).div_ceil(64)];
+    let value = |row: &[i32], i: usize, j: usize| at(i, j).map_or(-1, |k| row[k]);
+    for i in (0..rows).rev() {
+        here.fill(-1);
+        // the row's cells inside the band; never empty, since the band
+        // spans the diagonal through both corners
+        let first = (i as isize + low).max(0) as usize;
+        let last = (i as isize + low + width as isize - 1).min(cols as isize) as usize;
+        for j in (first..=last).rev() {
+            let k = (j as isize - i as isize - low) as usize;
+            here[k] = if j == cols {
+                0
+            } else if left[i] == right[j] {
+                value(&below, i + 1, j + 1) + 1
+            } else {
+                let (drop_left, drop_right) = (value(&below, i + 1, j), value(&here, i, j + 1));
+                if drop_left >= drop_right {
+                    let bit = i * width + k;
+                    down[bit / 64] |= 1 << (bit % 64);
+                }
+                drop_left.max(drop_right)
+            };
+        }
+        std::mem::swap(&mut below, &mut here);
+    }
+    let mut out = vec![None; rows];
+    let (mut i, mut j) = (0, 0);
+    while i < rows && j < cols {
+        if left[i] == right[j] {
+            out[i] = Some(j);
+            i += 1;
+            j += 1;
+        } else {
+            let bit = i * width + at(i, j).expect("the walk stays inside the band");
+            if (down[bit / 64] >> (bit % 64)) & 1 == 1 {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Where a template unit and the member's aligned unit share a field name
@@ -1277,9 +1390,7 @@ fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
         .into_iter()
         .map(|(at, len)| &member[at..at + len])
         .collect();
-    let Some(aligned) = align_words(&tmpl, &mem) else {
-        return Vec::new();
-    };
+    let aligned = align_words(&tmpl, &mem);
     let mut edits = Vec::new();
     let mut same_pci_identity = None;
     let mut same_option_identity = None;
@@ -1575,12 +1686,13 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
         .into_iter()
         .map(|(at, len)| &b[at..at + len])
         .collect();
-    // Lines too long to align exactly cannot be shown to agree, and "no
-    // difference" would let any two of them join and the template claim a
-    // literal half its members lack. Refuse the join.
-    let Some(aligned) = align_words(&ua, &ub) else {
+    // Long lines whose counts differ by more than the band cannot be shown
+    // to agree, and "no difference" would let any two of them join and the
+    // template claim a literal half its members lack. Refuse the join.
+    if !alignable(ua.len(), ub.len()) {
         return MAX_PLAIN_WORD_DIFFS + 1;
-    };
+    }
+    let aligned = align_words(&ua, &ub);
     // Two units that differ: word by word, for single words and quoted
     // sentences alike; a unit shorter than its counterpart is at most one
     // further disagreement — a value that gained a word is still one value.
@@ -1947,9 +2059,7 @@ impl RollupComputer {
                 .into_iter()
                 .map(|(at, len)| &normalized[at..at + len])
                 .collect();
-            let Some(aligned) = align_words(&tmpl_words, &member) else {
-                continue;
-            };
+            let aligned = align_words(&tmpl_words, &member);
             for &(i, k, q) in &slots {
                 let masked;
                 let value = match aligned[i] {
