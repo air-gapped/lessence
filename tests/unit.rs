@@ -1,6 +1,6 @@
 // Barrel file: consolidates all external unit tests into one binary.
 // Allow warnings in legacy test code — these files predate the barrel consolidation.
-#![allow(clippy::all, unused_variables)]
+#![allow(clippy::all)]
 
 mod common;
 

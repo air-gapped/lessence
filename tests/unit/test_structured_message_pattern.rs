@@ -15,7 +15,7 @@ mod tests {
         ];
 
         for log_line in k8s_logs {
-            let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
+            let (_result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
             assert!(
                 !tokens.is_empty(),
@@ -62,7 +62,7 @@ mod tests {
         ];
 
         for log_line in docker_logs {
-            let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
+            let (_result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
             // Docker logs might have nested structure - detect if present
             if !tokens.is_empty() {
@@ -105,7 +105,7 @@ mod tests {
         ];
 
         for log_line in cloud_logs {
-            let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
+            let (_result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
@@ -152,7 +152,7 @@ mod tests {
         ];
 
         for log_line in framework_logs {
-            let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
+            let (_result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
@@ -331,7 +331,7 @@ mod tests {
         ];
 
         for test_case in edge_cases {
-            let (result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
+            let (_result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
             // Should be conservative with incomplete structured logs
             let structured_count = tokens

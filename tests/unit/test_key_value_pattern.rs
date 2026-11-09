@@ -15,7 +15,7 @@ mod tests {
         ];
 
         for line in metrics_logs {
-            let (result, tokens) = KeyValueDetector::detect_and_replace(line);
+            let (_, tokens) = KeyValueDetector::detect_and_replace(line);
 
             assert!(!tokens.is_empty(), "Should detect metrics in: {line}");
 

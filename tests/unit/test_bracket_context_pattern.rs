@@ -117,7 +117,7 @@ mod tests {
         ];
 
         for line in apache_logs {
-            let (result, tokens) = BracketContextDetector::detect_and_replace(line);
+            let (_, tokens) = BracketContextDetector::detect_and_replace(line);
 
             // Should detect [error], [warn] as bracket contexts
             // Note: timestamps should be handled by timestamp pattern detector
@@ -201,7 +201,7 @@ mod tests {
         ];
 
         for test_case in mixed_cases {
-            let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
+            let (_, tokens) = BracketContextDetector::detect_and_replace(test_case);
 
             // Should detect square bracket contexts but not other bracket types
             assert!(
