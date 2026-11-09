@@ -152,9 +152,11 @@ lines. `RELEASE_CHECK_SKIP_MUTANTS=1` skips mutants (testing only).
 
 ## Test profiles (`.config/nextest.toml`)
 
-The default profile's `default-filter` excludes every `*scales_linearly*`
-test and `test_processing_speed_requirement` — the tests that assert a
-duration. The `slow` profile is exactly those, run by `make release-check`
+The default profile's `default-filter` excludes the tests that assert a
+duration (every `*scales_linearly*` test, `test_processing_speed_requirement`
+and the others `.config/nextest.toml` names), the mid-spool write-failure
+test and the 200,000-group `--overview all` streaming test. The `slow`
+profile is exactly those, run by `make release-check`
 and by hand with `cargo nextest run --release --profile slow`. A `-E`
 expression on the command line selects within the profile's default filter
 unless `--ignore-default-filter` is given, so `make ci` can never run a slow

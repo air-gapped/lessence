@@ -16,7 +16,7 @@ filter = 'test(redos) | test(scales_linearly) | test(performance) | test(timeout
 test-group = 'serial-timing'
 retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s" }
 
-# Two kinds of test leave the default profile for `slow`, which
+# Three kinds of test leave the default profile for `slow`, which
 # `make release-check` runs alone:   cargo nextest run --release --profile slow
 #
 #  - The wall-clock tests: every `*scales_linearly*` test, the kubelet
@@ -35,8 +35,12 @@ retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s
 #    instead. The same write-failure reporting is covered per-commit by
 #    `a_failure_writing_the_summary_record_never_claims_a_complete_report`
 #    on a small fixture.
+#  - `overview_all_streams_two_hundred_thousand_groups_*`: its point is a
+#    memory cap (the systemd-run invocation is in its doc comment), which no
+#    profile imposes; uncapped it proves only that --overview all completes
+#    on 200,000 groups. About 0.5 s, measured 2026-11-10.
 [profile.default]
-default-filter = "not (test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool) | test(test_long_text_performance) | test(test_overlap_resolution_performance) | test(test_no_match_performance) | test(test_pattern_priority_performance) | test(test_backward_compatibility_performance) | test(test_unix_timestamp_penalty_performance) | test(test_memory_allocation_consistency) | test(test_scalability_with_pattern_count) | test(test_redos_protection_email) | test(test_redos_protection_timestamp) | test(test_redos_protection_ipv6) | test(test_security_performance_overhead) | test(test_email_performance_impact) | test(test_validation_fails_fast_no_stdin_read))"
+default-filter = "not (test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool) | test(test_long_text_performance) | test(test_overlap_resolution_performance) | test(test_no_match_performance) | test(test_pattern_priority_performance) | test(test_backward_compatibility_performance) | test(test_unix_timestamp_penalty_performance) | test(test_memory_allocation_consistency) | test(test_scalability_with_pattern_count) | test(test_redos_protection_email) | test(test_redos_protection_timestamp) | test(test_redos_protection_ipv6) | test(test_security_performance_overhead) | test(test_email_performance_impact) | test(test_validation_fails_fast_no_stdin_read) | test(overview_all_streams_two_hundred_thousand_groups))"
 
 [profile.slow]
-default-filter = "test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool) | test(test_long_text_performance) | test(test_overlap_resolution_performance) | test(test_no_match_performance) | test(test_pattern_priority_performance) | test(test_backward_compatibility_performance) | test(test_unix_timestamp_penalty_performance) | test(test_memory_allocation_consistency) | test(test_scalability_with_pattern_count) | test(test_redos_protection_email) | test(test_redos_protection_timestamp) | test(test_redos_protection_ipv6) | test(test_security_performance_overhead) | test(test_email_performance_impact) | test(test_validation_fails_fast_no_stdin_read)"
+default-filter = "test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool) | test(test_long_text_performance) | test(test_overlap_resolution_performance) | test(test_no_match_performance) | test(test_pattern_priority_performance) | test(test_backward_compatibility_performance) | test(test_unix_timestamp_penalty_performance) | test(test_memory_allocation_consistency) | test(test_scalability_with_pattern_count) | test(test_redos_protection_email) | test(test_redos_protection_timestamp) | test(test_redos_protection_ipv6) | test(test_security_performance_overhead) | test(test_email_performance_impact) | test(test_validation_fails_fast_no_stdin_read) | test(overview_all_streams_two_hundred_thousand_groups)"

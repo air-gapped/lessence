@@ -953,19 +953,17 @@ fn a_rejected_combination_names_the_command_that_does_work() {
 
 // ---- --overview all streams: many groups under a memory cap ----
 
-/// Run this one under a cap, which is the whole point:
-///
-/// ```text
-/// systemd-run --user --scope -p MemoryMax=1G \
-///   cargo test --release --test integration -- --ignored overview_all_streams
-/// ```
-///
 /// 200,000 small groups is a report no `--overview all` may assemble in
 /// memory: the pass streams one record at a time to the writer, so the
 /// resident set is the reader's buffer plus one record whatever the group
-/// count is.
+/// count is. The `slow` nextest profile runs it uncapped, which proves the
+/// pass completes and writes every group; the memory claim needs a cap:
+///
+/// ```text
+/// systemd-run --user --scope -p MemoryMax=1G \
+///   cargo nextest run --release --profile slow -E 'test(overview_all_streams)'
+/// ```
 #[test]
-#[ignore = "memory-cap validation; see the doc comment for the systemd-run invocation"]
 fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
     use std::io::Write;
 
