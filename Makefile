@@ -2,9 +2,9 @@
 # `make ci` mirrors .github/workflows/ci.yml except that CI also runs
 # `cargo build --release` (the release profile is checked there) — run it before every commit
 
-.PHONY: ci fmt clippy doc build test deny check docs readme-compression install setup clean help \
+.PHONY: ci fmt clippy doc build test deny docs install clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
-       gate release-check distill test-unit
+       gate release-check distill
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -58,21 +58,9 @@ distill:
 # Quick checks
 #---------------------------------------------------------------------------
 
-## check: Fast pre-push validation (skip build + tests)
-check: fmt clippy deny
-	@echo "✓ Quick checks passed"
-
 ## docs: Regenerate the binary-derived README sections (gen: regions)
 docs: build
 	LESSENCE_UPDATE_DOCS=1 cargo test --release --test doc_contract
-
-## readme-compression: Re-measure the README compression table on the local originals (local only): make readme-compression VERSION=v0.6.1
-readme-compression: build
-	./scripts/readme-compression.sh --write $(VERSION)
-
-## test-unit: Run unit tests only (fast)
-test-unit:
-	cargo test --lib
 
 ## coverage: Generate HTML coverage report (opens in browser)
 coverage:
@@ -147,19 +135,6 @@ install: build
 	cp ./target/release/lessence ~/.cargo/bin/lessence
 	@lessence --version
 
-## setup: Install required development tools
-setup:
-	@echo "Installing development tools..."
-	cargo install cargo-deny
-	curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin
-	rustup component add clippy rustfmt
-	@echo ""
-	@echo "✓ Tools installed:"
-	@cargo deny --version
-	@cargo nextest --version
-	@cargo clippy --version
-	@cargo fmt --version
-
 ## clean: Remove build artifacts
 clean:
 	cargo clean
@@ -173,12 +148,10 @@ help:
 	@echo "lessence Development Commands"
 	@echo ""
 	@echo "  make ci            — Run full CI pipeline (same as GitHub Actions)"
-	@echo "  make check         — Quick pre-push validation (fmt + clippy + deny)"
 	@echo "  make coverage      — HTML code coverage report (unit tests)"
 	@echo "  make fuzz          — Fuzz normalizer (nightly, local only, 5 min)"
 	@echo "  make mutants       — Mutation testing, unit tests only (~12 min)"
 	@echo "  make mutants-full  — Mutation testing, all tests (~38 min)"
-	@echo "  make setup         — Install required dev tools"
 	@echo "  make install       — Build and install to PATH"
 	@echo ""
 	@sed -n 's/^##//p' $(MAKEFILE_LIST) | column -t -s ':' | sed 's/^/ /'
