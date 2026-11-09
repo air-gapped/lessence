@@ -1,9 +1,10 @@
 # lessence Makefile
-# Mirrors .github/workflows/ci.yml exactly — run `make ci` before pushing
+# `make ci` mirrors .github/workflows/ci.yml except that CI also runs
+# `cargo build --release` (the release profile is checked there) — run it before every commit
 
 .PHONY: ci fmt clippy doc build test deny check docs readme-compression install setup clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
-       gate release-check distill
+       gate release-check distill test-unit
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -45,11 +46,11 @@ deny:
 gate:
 	./scripts/gate.sh
 
-## release-check: Full-corpus diff + mutants + thread scaling before a release (~30 min)
+## release-check: Gate vs the last published release + mutants on the diff + make ci + slow tests + README table/skill freshness (~20 min)
 release-check:
 	./scripts/release-check.sh
 
-## distill: Regenerate examples/distilled/*.log + .golden from examples/*.log
+## distill: Regenerate examples/distilled/*.log + .golden from examples/originals/*.log
 distill:
 	./scripts/distill.sh
 

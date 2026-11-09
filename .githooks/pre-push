@@ -1,6 +1,7 @@
 #!/bin/sh
 # Pre-push hook: run `make ci` to mirror the server-side gate
-# (fmt + clippy + doc + build + test + deny). Blocks the push on failure.
+# (fmt + clippy + doc + test + deny; CI additionally builds the release
+# profile, which `make ci` does not). Blocks the push on failure.
 #
 # Bypass with `git push --no-verify` if you truly need to — e.g. pushing
 # a branch you know will be squashed, or recovering from a tooling outage.

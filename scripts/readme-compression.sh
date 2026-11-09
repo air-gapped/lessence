@@ -3,7 +3,7 @@
 #
 #   ./scripts/readme-compression.sh v0.6.1          print the table for that release version
 #   ./scripts/readme-compression.sh --write v0.6.1  replace the gen:compression region in README.md
-#   (the version is an argument: Cargo.toml still carries the previous one until release-please bumps it)
+#   (the version is an argument: Cargo.toml still carries the previous one until the release)
 #   ./scripts/readme-compression.sh --check  exit 1 unless the table was generated at a commit
 #                                            whose src/ tree equals HEAD's (release-check runs this)
 #

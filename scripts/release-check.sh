@@ -104,7 +104,7 @@ echo "Checking the agent skill was re-verified..." >&2
 skill_status="pass"
 skill_msg="ok"
 sources="$ROOT/.claude/skills/lessence/references/sources.md"
-verified_sha="$(grep -oE '^verified-at: [0-9a-f]{40}' "$sources" 2>/dev/null | awk '{print $2}')"
+verified_sha="$(grep -oE '^verified-at: [0-9a-f]{40}' "$sources" 2>/dev/null | awk '{print $2}' || true)"
 if [ -z "${verified_sha:-}" ]; then
     skill_status="FAIL"; skill_msg="sources.md has no 'verified-at: <sha>' line"
 elif ! git -C "$ROOT" merge-base --is-ancestor "$verified_sha" HEAD 2>/dev/null; then

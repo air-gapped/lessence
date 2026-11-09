@@ -1,9 +1,9 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # Commit-msg hook: warn-and-block when the conventional-commit type would
-# mark a change as user-facing: it earns a changelog entry at release time.
+# mark a change as user-facing: it appears in the hand-written release notes.
 #
 # Per CLAUDE.md ("Commits" section): only feat:, fix:, perf: are
-# user-facing and bump the version. All other types (chore:, refactor:,
+# user-facing and appear in the release notes. All other types (chore:, refactor:,
 # test:, style:, ci:, build:, docs:) are hidden from release notes.
 #
 # This hook catches the common slip of typing `fix:` for internal
@@ -129,7 +129,7 @@ case "$first_line" in
         type=$(printf '%s' "$first_line" | sed -E 's/^([a-z]+).*/\1/')
 
         printf "\n%s⚠  Release-triggering commit type: '%s%s:%s'%s\n" "$YELLOW" "$BOLD" "$type" "$NC" "$NC" >&2
-        printf "   This will bump the version and add a changelog line on the next push.\n\n" >&2
+        printf "   This is user-facing and appears in the hand-written release notes.\n\n" >&2
         printf "   First line: %s\n\n" "$first_line" >&2
         printf "   If genuinely user-facing (a user-reported bug, new feature, or perf\n" >&2
         printf "   win users would notice), retry with:\n" >&2
