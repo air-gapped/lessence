@@ -4537,3 +4537,15 @@ svc-probe bababa babako babari babamu babate babaso babala babavi babane babapu 
 2024-01-01 10:00:01 [domain] lookup failed
 2024-01-01 10:00:02 [remainder] lookup failed
 2024-01-01 10:00:03 [remainder] lookup failed
+
+##CASE lessence-bmp template_present=<HTTP_STATUS_5XX> -> cache miss then <HTTP_STATUS_2XX>
+##WHY the words between an upstream and a downstream status are the event's; `502 -> cache miss then 200` used to read `<HTTP_STATUS_5XX> -> <HTTP_STATUS_2XX>`, the same as a cache hit
+##FROM invented proxy lines
+GET /api upstream 502 -> cache miss then 200
+GET /api upstream 502 -> cache miss then 200
+
+##CASE lessence-bmp template_absent=HTTP_STATUS
+##WHY a status code is a whole number; `12345 -> 67890` used to yield `12<HTTP_STATUS_3XX> -> <HTTP_STATUS_UNKNOWN>90`
+##FROM invented proxy lines
+GET /api id 12345 -> 67890 moved
+GET /api id 12346 -> 67891 moved
