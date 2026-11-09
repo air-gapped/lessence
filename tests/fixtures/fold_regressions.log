@@ -4549,3 +4549,11 @@ GET /api upstream 502 -> cache miss then 200
 ##FROM invented proxy lines
 GET /api id 12345 -> 67890 moved
 GET /api id 12346 -> 67891 moved
+
+##CASE lessence-bmp groups=2
+##WHY a session, trace or correlation keyword in front of a plain word is a state, not an id: `session=opened` and `session=closed` used to fold to one `session=<UUID>` with no token recorded
+##FROM invented login lines
+user alice session=opened by uid
+user alice session=opened by uid
+user alice session=closed by uid
+user alice session=closed by uid

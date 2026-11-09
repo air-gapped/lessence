@@ -130,9 +130,19 @@ impl UuidDetector {
                     tokens.push(Token::Uuid(id.to_string()));
                 }
             }
-            // Folded whether or not the value looked like an id: the
-            // surrounding keyword is evidence enough that the field is one.
-            result = regex.replace_all(&result, Self::keep_prefix).to_string();
+            // Folded only when the value looks like an id, the same test
+            // the token uses: `session=opened` and `session=closed` are
+            // words, and folding them anyway made two events one with no
+            // value recorded for either.
+            result = regex
+                .replace_all(&result, |caps: &regex::Captures| {
+                    if Self::is_likely_id(&caps[1]) {
+                        Self::keep_prefix(caps)
+                    } else {
+                        caps[0].to_string()
+                    }
+                })
+                .to_string();
         }
 
         if result.contains("id=") || result.contains("Id=") || result.contains("ID=") {
@@ -288,6 +298,21 @@ mod tests {
         assert_eq!(result, "session=<UUID> authenticated");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::Uuid(_)));
+    }
+
+    /// A trace, session or correlation keyword in front of a plain word is
+    /// a state, not an id: the word stays and no token is recorded.
+    #[test]
+    fn a_keyword_before_a_word_is_not_an_id() {
+        for text in [
+            "user alice session=opened by uid",
+            "span done trace=disabled now",
+            "request correlation_id=none set",
+        ] {
+            let (result, tokens) = UuidDetector::detect_and_replace(text);
+            assert_eq!(result, text);
+            assert!(tokens.is_empty(), "{text}: {tokens:?}");
+        }
     }
 
     #[test]
