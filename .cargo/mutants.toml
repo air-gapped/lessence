@@ -37,7 +37,7 @@ exclude_re = [
     # flush_oldest_safe_group: the map entry equal to the removed index is
     # deleted on the line above, so > vs >= over the remaining values is
     # indistinguishable.
-    '^src/folder/mod\.rs:2800:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
+    '^src/folder/mod\.rs:2790:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
     # token_lcs prefix/suffix trims and the early-exit bound are exact
     # optimizations: disabling a trim (< → == / >) or loosening the bound
     # (- → + / /) can never change the returned LCS or decision, only speed.
@@ -69,14 +69,6 @@ exclude_re = [
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
     '^src/folder/render\.rs:462:34: replace > with >= in PatternFolder::build_briefing$',
-
-    # --- lessence-e8v: merge_retained's Counted arm is unreachable ---
-    # A `Counted` accumulator only exists after `finalize` inserts the
-    # VARIES entry, and merge_retained runs before finalize, so the arm
-    # that merges two Counted maps never executes: deleting it or changing
-    # its `+=` cannot be observed.
-    'delete match arm \(Accumulator::Counted\(m\), Accumulator::Counted\(other\)\) in RollupComputer::merge_retained$',
-    '^src/folder/mod\.rs:2178:50: replace \+= with .* in RollupComputer::merge_retained$',
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.

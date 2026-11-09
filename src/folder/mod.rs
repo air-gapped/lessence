@@ -1757,16 +1757,15 @@ fn render_compact_marker(
 
 /// Intermediate accumulator for one (group, token_type) pair during
 /// rollup computation. Sample-worthy types retain strings; count-only
-/// types retain u64 hashes. Both cap at `distinct_cap`.
+/// types retain u64 hashes. Both cap at `distinct_cap`. The `VARIES`
+/// words are not a token type: they are counted per word in
+/// `RetainedState::varies` and turned into their entry by `finalize`.
 #[derive(Debug)]
 enum Accumulator {
     /// Sample-worthy: retain full values so we can draw samples.
     Values(HashSet<String>),
     /// Count-only: retain only hashes so memory stays bounded.
     Hashes(HashSet<u64>),
-    /// Words no detector claimed, with how many members carried each: the
-    /// samples are the most frequent plus the rarest, never a random draw.
-    Counted(HashMap<String, usize>),
 }
 
 impl Accumulator {
@@ -1774,7 +1773,6 @@ impl Accumulator {
         match self {
             Self::Values(s) => s.len(),
             Self::Hashes(s) => s.len(),
-            Self::Counted(m) => m.len(),
         }
     }
 
@@ -1783,7 +1781,6 @@ impl Accumulator {
         match other {
             Self::Values(_) => Self::Values(HashSet::new()),
             Self::Hashes(_) => Self::Hashes(HashSet::new()),
-            Self::Counted(_) => Self::Counted(HashMap::new()),
         }
     }
 }
@@ -1879,8 +1876,6 @@ impl RollupComputer {
                             s.insert(v);
                         }
                     }
-                    // words are counted in their own pass below
-                    Accumulator::Counted(_) => {}
                 }
             }
         }
@@ -2173,11 +2168,6 @@ impl RollupComputer {
                         s.insert(v);
                     }
                 }
-                (Accumulator::Counted(m), Accumulator::Counted(other)) => {
-                    for (k, n) in other {
-                        *m.entry(k).or_insert(0) += n;
-                    }
-                }
                 // The two groups share a template, so a token type is
                 // sample-worthy in both or in neither; a mismatch cannot
                 // happen, and if it did the entry is left as it was.
@@ -2203,15 +2193,12 @@ impl RollupComputer {
     /// extensions).
     fn finalize(
         &self,
-        mut per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+        per_type: BTreeMap<&'static str, (Accumulator, bool)>,
         varies: HashMap<String, usize>,
         varies_capped: bool,
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
-        if template.contains(VARIES_MARK) {
-            per_type.insert(VARIES, (Accumulator::Counted(varies), varies_capped));
-        }
         let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(seed_key));
         let mut out: GroupRollup = BTreeMap::new();
         for (name, (acc, capped)) in per_type {
@@ -2236,31 +2223,6 @@ impl RollupComputer {
                     drawn
                 }
                 Accumulator::Hashes(_) => Vec::new(),
-                Accumulator::Counted(m) => {
-                    let mut by_count: Vec<(String, usize)> = m.into_iter().collect();
-                    by_count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-                    let mut picked: Vec<(String, usize)> = if by_count.len() > self.k {
-                        // the top k-1, and the rarest: rare is signal
-                        let rarest = by_count.pop().unwrap();
-                        by_count.truncate(self.k - 1);
-                        by_count.push(rarest);
-                        by_count
-                    } else {
-                        by_count
-                    };
-                    let counts: Vec<usize> = picked.iter().map(|(_, n)| *n).collect();
-                    let samples: Vec<String> = picked.drain(..).map(|(w, _)| w).collect();
-                    out.insert(
-                        name,
-                        VariationEntry {
-                            distinct_count,
-                            samples,
-                            capped,
-                            counts: Some(counts),
-                        },
-                    );
-                    continue;
-                }
             };
             out.insert(
                 name,
@@ -2269,6 +2231,34 @@ impl RollupComputer {
                     samples,
                     capped,
                     counts: None,
+                },
+            );
+        }
+        // Words no detector claimed, with how many members carried each:
+        // the samples are the most frequent plus the rarest, never a random
+        // draw, so this takes nothing from `rng`.
+        if template.contains(VARIES_MARK) {
+            let distinct_count = varies.len();
+            let mut by_count: Vec<(String, usize)> = varies.into_iter().collect();
+            by_count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let mut picked: Vec<(String, usize)> = if by_count.len() > self.k {
+                // the top k-1, and the rarest: rare is signal
+                let rarest = by_count.pop().unwrap();
+                by_count.truncate(self.k - 1);
+                by_count.push(rarest);
+                by_count
+            } else {
+                by_count
+            };
+            let counts: Vec<usize> = picked.iter().map(|(_, n)| *n).collect();
+            let samples: Vec<String> = picked.drain(..).map(|(w, _)| w).collect();
+            out.insert(
+                VARIES,
+                VariationEntry {
+                    distinct_count,
+                    samples,
+                    capped: varies_capped,
+                    counts: Some(counts),
                 },
             );
         }
