@@ -1341,8 +1341,6 @@ impl Normalizer {
             || small_int_tail(a).is_some_and(|t| small_int_tail(b) == Some(t))
     }
 
-    /// Size of the multiset intersection of two ascending-sorted hash
-    /// slices (standard two-pointer merge).
     /// Similarity from the token multisets, on the same 2*common/total scale
     /// the LCS path uses so the threshold means the same thing either way.
     ///
@@ -1367,6 +1365,8 @@ impl Normalizer {
         Some((2.0 * common as f64 / (a.len() + b.len()) as f64) * 100.0)
     }
 
+    /// Size of the multiset intersection of two ascending-sorted hash
+    /// slices (standard two-pointer merge).
     fn multiset_intersection(a: &[u64], b: &[u64]) -> usize {
         let (mut i, mut j, mut common) = (0, 0, 0);
         while i < a.len() && j < b.len() {

@@ -11,7 +11,7 @@
 //! flush-time cost per byte without needing to expose `PatternGroup` or
 //! `format_group()` publicly.
 //!
-//! The 1000-group `should_flush_buffer()` threshold at `src/folder.rs:439`
+//! The 1000-group `should_flush_buffer()` threshold at `src/folder/mod.rs`
 //! is the risk: if buffer growth trips it inside the streaming loop,
 //! `format_group()` runs anyway and `T_stream` is contaminated. Tier 1 +
 //! Tier 2 inputs must stay under that threshold; Phase 1.6 verifies this

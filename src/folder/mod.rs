@@ -35,11 +35,6 @@ pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
 
 use crate::sanitize::{CREDENTIAL_ASSIGNMENT, JWT, PROVIDER_KEY, Sanitizer};
 
-/// Mask credential-class values: assignments to credential-named keys,
-/// JWTs, and provider-prefixed API keys. Runs as part of the single
-/// --sanitize-pii pass (all callers gate on the flag), so every output
-/// mode and field masks identically. Assignment masking runs first so
-/// `token: eyJ...` collapses to one `<SECRET>` rather than a nested mask.
 /// Shortest value the assignment locator will call a credential. The
 /// harvest scrubber's floor: below it the match is prose, not a secret.
 const MIN_CREDENTIAL_VALUE: usize = 6;
@@ -81,6 +76,11 @@ pub(crate) fn credential_spans(text: &str) -> Vec<std::ops::Range<usize>> {
     spans
 }
 
+/// Mask credential-class values: assignments to credential-named keys,
+/// JWTs, and provider-prefixed API keys. Runs as part of the single
+/// --sanitize-pii pass (all callers gate on the flag), so every output
+/// mode and field masks identically. Assignment masking runs first so
+/// `token: eyJ...` collapses to one `<SECRET>` rather than a nested mask.
 #[cfg(test)]
 fn mask_credentials(text: &str) -> String {
     Sanitizer::legacy().mask_text(text)
@@ -309,7 +309,6 @@ impl PatternGroup {
             self.last_line_no = other.last_line_no;
             self.last_source_id = other.last_source_id;
         }
-        self.member_line_nos.extend(other.member_line_nos);
 
         let all_held = self.count < min_collapse;
         if all_held || (self.retained.is_none() && other.retained.is_none()) {
@@ -372,7 +371,7 @@ impl PatternGroup {
     fn mark_varying_words(&mut self, member: &str) {
         let edits = varying_spans(&self.template, member);
         for (at, len) in edits.into_iter().rev() {
-            self.template.replace_range(at..at + len, "<VARIES>");
+            self.template.replace_range(at..at + len, VARIES_MARK);
         }
     }
 
@@ -779,14 +778,12 @@ struct PatternHits {
 // --preflight JSON schema is the Briefing (src/briefing.rs), serialized
 // pretty to stdout. See `PatternFolder::build_briefing`.
 // -------------------------------------------------------------------------
-// JSONL output schema (Phase 2 — no rollups yet).
+// JSONL output schema.
 //
 // One `GroupRecord` per flushed PatternGroup is emitted to stdout. After the
 // main loop, exactly one `SummaryRecord` terminates the stream. The `type`
-// field discriminates the two. The schema is documented in docs/format-json-schema.md.
-//
-// Phase 3 will add a `variation` field to `GroupRecord`. Phase 2 leaves room
-// for it but does not emit it.
+// field discriminates the two. Each `GroupRecord` carries its `variation`
+// rollup. The schema is documented in docs/format-json-schema.md.
 // -------------------------------------------------------------------------
 
 /// A reference to a line of the original input. `line_no` is the exact
@@ -919,8 +916,7 @@ fn group_epoch_range(group: &PatternGroup) -> (Option<i64>, Option<i64>) {
 // triage questions without re-reading the raw log — "is this one UUID
 // repeating or 1273 distinct UUIDs?", "which paths were affected?", etc.
 //
-// See .ideas/structured-folding-output-for-agents.md for design rationale
-// and docs/rollup-calibration.md for the evidence behind the constants
+// See docs/rollup-calibration.md for the evidence behind the constants
 // below.
 // -------------------------------------------------------------------------
 
@@ -1190,14 +1186,6 @@ fn hash_token_value(token: &Token) -> u64 {
     h
 }
 
-/// Seed for the deterministic sample RNG. Derived from the group's
-/// normalized template so the same template → the same seed → the same
-/// sample draw. This is the non-negotiable determinism contract.
-///
-/// Uses FNV-1a — NOT `ahash::AHasher::default()`, which seeds randomly
-/// per process and breaks determinism across runs. FNV-1a is trivially
-/// cross-platform and cross-version stable. Quality is sufficient for
-/// seeding a ChaCha8Rng; we're not defending a hash table.
 /// Rollup key for words that differ between members of a group without any
 /// detector having tokenised them. Sample-worthy: the values are the point.
 pub(super) const VARIES: &str = "VARIES";
@@ -1639,6 +1627,14 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
             .count()
 }
 
+/// Seed for the deterministic sample RNG. Derived from the group's
+/// normalized template so the same template → the same seed → the same
+/// sample draw. This is the non-negotiable determinism contract.
+///
+/// Uses FNV-1a — NOT `ahash::AHasher::default()`, which seeds randomly
+/// per process and breaks determinism across runs. FNV-1a is trivially
+/// cross-platform and cross-version stable. Quality is sufficient for
+/// seeding a ChaCha8Rng; we're not defending a hash table.
 fn seed_for_group(normalized: &str) -> u64 {
     let mut h = FNV_OFFSET;
     fnv1a_fold(&mut h, normalized.as_bytes());
@@ -1655,8 +1651,7 @@ fn seed_for_group(normalized: &str) -> u64 {
 ///   existing test suite (many tests grep for it).
 /// - The time-range segment is only included when both `first_ts` and
 ///   `last_ts` are present (they come from the first `Token::Timestamp`
-///   in the respective line's tokens). In essence mode, timestamps are
-///   omitted even when present.
+///   in the respective line's tokens).
 /// - Variation entries render with samples inline when
 ///   `distinct_count <= inline_threshold` and the entry is not capped,
 ///   else count-only (with a trailing `+` for capped entries).
@@ -1670,13 +1665,12 @@ fn render_compact_marker(
     first_ts: Option<&str>,
     last_ts: Option<&str>,
     inline_threshold: usize,
-    essence_mode: bool,
 ) -> String {
     let mut out = format!("[+{count} similar");
 
     // Time range segment. Keep raw strings — the plan deliberately
     // avoided timestamp parsing (see design doc §Why flush-time).
-    if !essence_mode && let (Some(a), Some(b)) = (first_ts, last_ts) {
+    if let (Some(a), Some(b)) = (first_ts, last_ts) {
         out.push_str(" | ");
         out.push_str(a);
         out.push_str(" → ");
@@ -3240,7 +3234,6 @@ impl PatternFolder {
         Ok(())
     }
 
-    /// Sequential processing for constitutional compliance (used internally)
     /// Get current statistics (for preflight analysis)
     pub fn get_stats(&self) -> &FoldingStats {
         &self.stats

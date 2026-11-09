@@ -28,6 +28,11 @@ static DECIMAL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d+\.\d+
 // mode rather than tightening this default.
 static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3,}\b").unwrap()); // 3+ digits to avoid matching small numbers like "3 retries"
 
+// auditd's record id: `msg=audit(<epoch>:<seq>)`. The sequence counter is
+// a counter whatever its digit count; kept apart 324 boot lines in one corpus.
+static AUDIT_SEQ_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\baudit\([^():\s]+:)(\d+)\)").unwrap());
+
 // An integer standing alone as the whole value of a JSON field: `"diff_ms":82`.
 // The 3-digit floor above exists so prose like "3 retries" survives, but a
 // field value is not prose — and leaving it in place meant a latency crossing
@@ -40,11 +45,6 @@ static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3,}\b
 // folding all of them pushed records for different syscalls over the
 // similarity threshold and merged them (linux_auditd 649 -> 344 output lines).
 // The JSON form carries the whole measured win without that.
-// auditd's record id: `msg=audit(<epoch>:<seq>)`. The sequence counter is
-// a counter whatever its digit count; kept apart 324 boot lines in one corpus.
-static AUDIT_SEQ_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\baudit\([^():\s]+:)(\d+)\)").unwrap());
-
 static FIELD_INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"("[A-Za-z_][A-Za-z0-9_.-]*"\s*:\s*)(-?\d+)\b"#)
         .expect("Failed to compile field integer regex")

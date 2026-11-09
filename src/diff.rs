@@ -32,7 +32,7 @@ struct Line {
 /// a group across builds, since ids are assigned in flush order.
 type Key = (Option<String>, usize);
 
-/// A run's groups keyed by their founding line, plus each line's own group.
+/// A run's groups keyed by their founding line.
 struct Fold {
     groups: BTreeMap<Key, Group>,
 }

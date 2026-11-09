@@ -35,8 +35,6 @@ pub struct Options {
     /// `--distill`: select members. False means `--anonymize` alone, which
     /// keeps every line.
     pub distill: bool,
-    /// `--members N`.
-    pub members: usize,
     /// `--anonymize`, or `--anonymize-words` (which implies it).
     pub anonymize: bool,
     /// `--anonymize-words FILE`.
@@ -467,12 +465,6 @@ fn cheapest(groups: &[DistillGroup], want: impl Fn(&DistillGroup) -> bool) -> Op
         .map(|(i, _)| i)
 }
 
-/// Contract 1: everything the input proved, the output still proves.
-///
-/// Not template equality — `--distill` drops redundant spellings of a
-/// shape on purpose, so the output's template set is a subset by design.
-/// What may not shrink is the coverage: the structures, the token types,
-/// the splits, and the three variation states.
 /// A template's literal words — everything outside a `<PLACEHOLDER>`.
 ///
 /// Two templates with the same literal words say the same thing and
@@ -512,6 +504,12 @@ fn merged_templates<'a>(cover: &'a Cover, output: &Fold) -> Vec<&'a String> {
         .collect()
 }
 
+/// Contract 1: everything the input proved, the output still proves.
+///
+/// Not template equality — `--distill` drops redundant spellings of a
+/// shape on purpose, so the output's template set is a subset by design.
+/// What may not shrink is the coverage: the structures, the token types,
+/// the splits, and the three variation states.
 fn compare_coverage(source: &Fold, output: &Fold, cover: &Cover) -> bool {
     let want = source.coverage();
     let have = output.coverage();
@@ -673,7 +671,6 @@ mod tests {
     fn opts() -> Options {
         Options {
             distill: true,
-            members: 3,
             anonymize: false,
             words_file: None,
             seed: None,

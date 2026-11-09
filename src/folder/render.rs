@@ -221,7 +221,6 @@ impl PatternFolder {
                     first_ts.as_deref(),
                     last_ts.as_deref(),
                     ROLLUP_TEXT_SAMPLE_THRESHOLD,
-                    self.config.essence_mode,
                 )
             } else {
                 self.format_collapsed_line(
@@ -231,39 +230,23 @@ impl PatternFolder {
                 )
             };
 
-            // Format output: first line, collapsed summary, last line
+            // Format output: first line, collapsed summary, last line. This
+            // branch never runs in essence mode (see the condition above),
+            // so the lines shown are the original text, with optional PII
+            // masking.
             let mut result = String::new();
-            let first_line: &str = if self.config.essence_mode {
-                // Constitutional essence mode: the group's template
-                group.template()
-            } else {
-                // Standard mode: use original text (with optional PII masking)
-                &group.first().original
-            };
-
-            let first_line_output = self.maybe_mask_pii(first_line, &group.first().tokens);
+            let first_line_output =
+                self.maybe_mask_pii(&group.first().original, &group.first().tokens);
             result.push_str(&first_line_output);
             result.push('\n');
             result.push_str(&collapsed_line);
 
             // Only add last line if it's different from first
             if group.count() > 1 {
-                let last_line: &str = if self.config.essence_mode {
-                    // Constitutional essence mode: use timestamp-removed text
-                    &group.last().normalized
-                } else {
-                    // Standard mode: use original text (with optional PII masking)
-                    &group.last().original
-                };
-
-                // In essence mode, only show last line if it's actually different from first
-                // (after timestamp tokenization, truly similar lines should have identical normalized text)
-                if !self.config.essence_mode || first_line != last_line {
-                    result.push('\n');
-
-                    let last_line_output = self.maybe_mask_pii(last_line, &group.last().tokens);
-                    result.push_str(&last_line_output);
-                }
+                result.push('\n');
+                let last_line_output =
+                    self.maybe_mask_pii(&group.last().original, &group.last().tokens);
+                result.push_str(&last_line_output);
             }
 
             Ok(result)
@@ -725,11 +708,6 @@ impl PatternFolder {
             .collect();
 
         for token_type in all_types {
-            // In essence mode, ignore timestamp variations as they're tokenized for temporal independence
-            if self.config.essence_mode && token_type == "timestamp" {
-                continue;
-            }
-
             let first_vals = first_values.get(token_type).cloned().unwrap_or_default();
             let last_vals = last_values.get(token_type).cloned().unwrap_or_default();
 

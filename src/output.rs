@@ -34,6 +34,7 @@ impl<W: Write> PipeTolerant<W> {
     }
 
     /// Did the reader close its end?
+    #[cfg(test)]
     pub fn closed(&self) -> bool {
         self.closed
     }

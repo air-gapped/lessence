@@ -256,7 +256,6 @@ fn main() -> Result<()> {
     if distilling {
         let opts = lessence::distill::Options {
             distill: cli.distill,
-            members: cli.members,
             // A vocabulary with nothing to anonymise would be a no-op the
             // caller could not see; asking for words asks for anonymisation.
             anonymize: cli.anonymize || cli.anonymize_words.is_some(),

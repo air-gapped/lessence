@@ -64,7 +64,7 @@ fn variation_field_exists_on_every_group_record() {
 
 #[test]
 fn variation_samples_never_exceed_k() {
-    // K is ROLLUP_K in src/folder.rs. The calibrated value is 7 as of
+    // K is ROLLUP_K in src/folder/mod.rs. The calibrated value is 7 as of
     // Phase 5 (P95 of distinct_count on sample-worthy types across
     // the full corpus, capped at terminal-width ceiling of 8).
     // Any sample list longer than K is a bug in the sampler.

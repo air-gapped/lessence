@@ -551,10 +551,6 @@ impl LogLine {
     }
 }
 
-/// The kubernetes deference rule for plain-text detectors: lines carrying
-/// these indicators belong to KubernetesDetector, so the bracket and
-/// log-module detectors skip them. Declared per-entry in the detector
-/// ordering table in `normalize.rs` (`defers_to_kubernetes`).
 /// Fold every match of `regex` that `recognise` accepts, pushing one token per
 /// fold and leaving unrecognised matches in the text verbatim.
 ///
@@ -593,6 +589,10 @@ pub(crate) fn fold_matches(
     }
 }
 
+/// The kubernetes deference rule for plain-text detectors: lines carrying
+/// these indicators belong to KubernetesDetector, so the bracket and
+/// log-module detectors skip them. Declared per-entry in the detector
+/// ordering table in `normalize.rs` (`defers_to_kubernetes`).
 pub(crate) fn has_kubernetes_indicators(text: &str) -> bool {
     has_k8s_resource_indicators(text) || has_k8s_component_names(text)
 }

@@ -1359,7 +1359,7 @@ fn rollup_variation_keys_are_sorted() {
 
 #[test]
 fn marker_empty_rollup() {
-    let result = render_compact_marker(42, &BTreeMap::new(), None, None, 3, false);
+    let result = render_compact_marker(42, &BTreeMap::new(), None, None, 3);
     assert_eq!(result, "[+42 similar]");
 }
 
@@ -1375,7 +1375,7 @@ fn marker_inline_samples_below_threshold() {
             counts: None,
         },
     );
-    let result = render_compact_marker(10, &rollup, None, None, 3, false);
+    let result = render_compact_marker(10, &rollup, None, None, 3);
     assert_eq!(result, "[+10 similar | path×2 {/var/a, /var/b}]");
 }
 
@@ -1397,7 +1397,7 @@ fn marker_count_only_above_threshold() {
             counts: None,
         },
     );
-    let result = render_compact_marker(10, &rollup, None, None, 3, false);
+    let result = render_compact_marker(10, &rollup, None, None, 3);
     // distinct > threshold → count-only, no inline samples
     assert_eq!(result, "[+10 similar | path×5]");
 }
@@ -1414,7 +1414,7 @@ fn marker_capped_entry_has_plus_suffix() {
             counts: None,
         },
     );
-    let result = render_compact_marker(100, &rollup, None, None, 3, false);
+    let result = render_compact_marker(100, &rollup, None, None, 3);
     assert!(
         result.contains("hash×64+"),
         "capped entry needs '+': {result}"
@@ -1428,31 +1428,8 @@ fn marker_capped_entry_has_plus_suffix() {
 
 #[test]
 fn marker_time_range_present() {
-    let result = render_compact_marker(
-        5,
-        &BTreeMap::new(),
-        Some("10:00:00"),
-        Some("10:05:00"),
-        3,
-        false,
-    );
+    let result = render_compact_marker(5, &BTreeMap::new(), Some("10:00:00"), Some("10:05:00"), 3);
     assert_eq!(result, "[+5 similar | 10:00:00 → 10:05:00]");
-}
-
-#[test]
-fn marker_time_range_suppressed_in_essence_mode() {
-    let result = render_compact_marker(
-        5,
-        &BTreeMap::new(),
-        Some("10:00:00"),
-        Some("10:05:00"),
-        3,
-        true, // essence mode
-    );
-    assert_eq!(
-        result, "[+5 similar]",
-        "essence mode must suppress time range"
-    );
 }
 
 #[test]
@@ -1469,7 +1446,7 @@ fn marker_sample_truncation_at_50_chars() {
             counts: None,
         },
     );
-    let result = render_compact_marker(10, &rollup, None, None, 3, false);
+    let result = render_compact_marker(10, &rollup, None, None, 3);
     // 50-char value: not truncated
     assert!(
         result.contains(&exact_value),
@@ -1504,7 +1481,7 @@ fn marker_multiple_entries_comma_separated() {
             counts: None,
         },
     );
-    let result = render_compact_marker(10, &rollup, None, None, 3, false);
+    let result = render_compact_marker(10, &rollup, None, None, 3);
     // BTreeMap order: IPV4 before UUID
     assert!(
         result.contains("ipv4×4, uuid×7"),
@@ -1535,7 +1512,7 @@ fn marker_count_only_types_filtered_out() {
             counts: None,
         },
     );
-    let result = render_compact_marker(10, &rollup, None, None, 3, false);
+    let result = render_compact_marker(10, &rollup, None, None, 3);
     assert!(
         !result.contains("timestamp"),
         "count-only type with high cardinality should be filtered: {result}"
@@ -1564,7 +1541,7 @@ fn marker_zero_distinct_count_filtered_out() {
             counts: None,
         },
     );
-    let result = render_compact_marker(10, &rollup, None, None, 3, false);
+    let result = render_compact_marker(10, &rollup, None, None, 3);
     assert_eq!(
         result, "[+10 similar]",
         "zero-distinct entry must be filtered out"
@@ -1586,7 +1563,7 @@ fn marker_truncation_exact_length() {
             counts: None,
         },
     );
-    let result = render_compact_marker(5, &rollup, None, None, 3, false);
+    let result = render_compact_marker(5, &rollup, None, None, 3);
     // Extract the truncated sample from the marker: between { and }
     let start = result.find('{').expect("should have inline samples") + 1;
     let end = result.find('}').expect("should have closing brace");
@@ -4029,21 +4006,6 @@ fn summary_line_avail_21_does_truncate() {
     assert!(line.ends_with("..."), "avail=21 should truncate: {line}");
 }
 
-// finish_summary line 1051: replace with Ok(()) — verify it actually does something
-#[test]
-fn finish_summary_does_not_panic() {
-    let mut f = make_folder();
-    f.stats.total_lines = 10;
-    for i in 0..3 {
-        f.buffer.push(PatternGroup::new(
-            make_line(&format!("error {i}"), vec![]),
-            i + 1,
-        ));
-    }
-    // finish_summary prints to stdout — verify it runs without error
-    f.finish_summary(None, None).unwrap();
-}
-
 // finish_summary line 1068: fit_truncated > 0 boundary
 #[test]
 fn finish_summary_with_fit_truncation() {
@@ -5072,21 +5034,6 @@ fn variation_types_same_tokens_no_variation() {
     assert!(
         f.summarize_variation_types(&tokens, &tokens).is_empty(),
         "Same tokens should produce no variation"
-    );
-}
-
-#[test]
-fn variation_types_essence_mode_skips_timestamps() {
-    let f = PatternFolder::new(Config {
-        essence_mode: true,
-        thread_count: Some(1),
-        ..Config::default()
-    });
-    let first = vec![Token::Timestamp("2025-01-01T00:00:00Z".to_string())];
-    let last = vec![Token::Timestamp("2025-01-02T00:00:00Z".to_string())];
-    assert!(
-        f.summarize_variation_types(&first, &last).is_empty(),
-        "Essence mode should skip timestamp variations"
     );
 }
 
@@ -6408,10 +6355,10 @@ fn the_compact_marker_ellipsis_means_more_values_than_shown() {
     };
     let mut more = BTreeMap::new();
     more.insert(VARIES, entry(3, &["a", "b"]));
-    assert!(render_compact_marker(10, &more, None, None, 3, false).contains('…'));
+    assert!(render_compact_marker(10, &more, None, None, 3).contains('…'));
     let mut all = BTreeMap::new();
     all.insert(VARIES, entry(2, &["a", "b"]));
-    assert!(!render_compact_marker(10, &all, None, None, 3, false).contains('…'));
+    assert!(!render_compact_marker(10, &all, None, None, 3).contains('…'));
 }
 
 /// retain_realign_form 1965, accumulate_new_varies 2005/2006,

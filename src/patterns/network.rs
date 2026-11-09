@@ -362,9 +362,10 @@ impl NetworkDetector {
     }
 
     /// Heuristic separating real domain names from dotted code identifiers
-    /// (hibernate.SQL, scope.go, module.function). Requires the final label
-    /// to be a known TLD. Deliberately no "lowercase multi-label" fallback:
-    /// Java package names are lowercase dotted and would all match.
+    /// (hibernate.SQL, scope.go, module.function). Any dotted name is a
+    /// candidate except a syslog `facility.level` pair; whether a candidate
+    /// is a host is decided by evidence on the line
+    /// (`fqdn_has_endpoint_evidence`), not by its last label.
     fn is_likely_fqdn(s: &str) -> bool {
         // `daemon.info`, `kern.warn`, `authpriv.notice`: the syslog
         // facility.level field, a closed set on both sides (RFC 5424), on
@@ -628,9 +629,9 @@ impl NetworkDetector {
 
     /// Lightweight pre-filter to validate IPv6 structural plausibility before regex execution
     ///
-    /// This function provides ReDoS protection by quickly rejecting obviously malformed patterns
-    /// that could cause catastrophic backtracking in the complex IPv6 regex. It performs O(n)
-    /// validation with minimal overhead (<1% for valid inputs).
+    /// This function is a cheap guard that rejects obviously malformed candidates before the
+    /// IPv6 regex scans them. It performs O(n) validation with minimal overhead (<1% for
+    /// valid inputs). (The `regex` crate does not backtrack; the cost avoided is a long scan.)
     ///
     /// # Validation Rules
     /// - Length: 2-100 characters (allows "::" up to zone identifiers)
@@ -708,8 +709,8 @@ impl NetworkDetector {
         if normalize_ports && text.contains(':') {
             return true; // Potential port number
         }
-        // Any dotted text is a potential FQDN — precision comes from
-        // is_likely_fqdn's TLD gate, not from this prefilter. (With
+        // Any dotted text is a potential FQDN — precision comes from the
+        // endpoint-evidence check, not from this prefilter. (With
         // normalize_ips on, dotted lines already pass the check above.)
         if normalize_fqdns && text.contains('.') {
             return true;
@@ -1220,8 +1221,8 @@ mod tests {
 
     #[test]
     fn net_ind_fqdn_any_dot_passes() {
-        // The fqdn prefilter arm is dot-only; precision lives in
-        // is_likely_fqdn's TLD gate, so "file.txt" passes the prefilter
+        // The fqdn prefilter arm is dot-only; precision lives in the
+        // endpoint-evidence check, so "file.txt" passes the prefilter
         // but produces no token or rewrite downstream.
         assert!(NetworkDetector::has_network_indicators(
             "file.txt", false, false, true

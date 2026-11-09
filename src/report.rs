@@ -12,7 +12,7 @@
 //! Filesystem policy: for automatic placement (no `--report-dir`) the
 //! directory must sit on a filesystem whose statfs magic is in the
 //! documented list below. tmpfs and ramfs are rejected; anything unknown
-//! (fuse, overlay, a magic we do not know) is rejected as unknown backing,
+//! (fuse, a magic we do not know) is rejected as unknown backing,
 //! never described as tmpfs. The classification is conservative — it is
 //! never proof of physical storage. An explicit `--report-dir` together
 //! with an explicit positive `--report-max-bytes` is the bounded,
@@ -105,8 +105,7 @@ fn classify(dir: &Path) -> Result<(u64, &'static str)> {
     }
     let stat = nix::sys::statfs::statfs(probe)
         .with_context(|| format!("statfs {} failed", probe.display()))?;
-    #[allow(clippy::cast_sign_loss, clippy::useless_conversion)]
-    let magic = u64::from(stat.filesystem_type().0 as u64);
+    let magic = stat.filesystem_type().0 as u64;
     for (m, name) in LOCAL_BACKING.iter().chain(REMOTE_BACKING) {
         if *m == magic {
             return Ok((magic, name));

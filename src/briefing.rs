@@ -8,10 +8,6 @@
 //! the text footer (`render_text`), `--preflight` JSON, and the `briefing`
 //! field of `--explain`'s summary record — from one struct so the three
 //! views can never drift apart.
-//!
-//! Wave 2 fills in `Span::duration_seconds`; wave 3 adds distinct-value
-//! cardinality. Both are represented here (the field exists, the vec is
-//! typed) but neither is computed yet.
 
 use ahash::{AHashMap, AHashSet};
 use serde::Serialize;
@@ -328,8 +324,7 @@ impl LevelScan {
 }
 
 /// One byte position's worth of the four level-shape checks, folded into
-/// `scan`. Shared by `scan_level` and `scan_format_and_level` so the two
-/// don't drift; the caller decides whether to also track logfmt pairs.
+/// `scan`. Called by `scan_level`, which owns the loop over the line.
 fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
     // -- bracketed level: `[LEVEL]` --
     if scan.bracket_level.is_none()

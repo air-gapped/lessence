@@ -3,7 +3,7 @@
 //! Measures `PatternFolder::process_line()` loop + `finish()` on the
 //! Tier 1 corpus files in single-threaded text mode.
 //! `thread_count = Some(1)` is the deterministic control path (see
-//! `src/folder.rs:171`).
+//! `src/folder/mod.rs`).
 //!
 //! **All inputs are truncated to the first `SLICE_MAX_LINES` lines**
 //! (see constant below). This is load-bearing for tolerable bench
@@ -31,7 +31,7 @@ use std::time::Duration;
 ///
 /// `epyc_7days_journalctl.log` was considered but dropped: its pattern density
 /// is extreme (1000+ distinct groups by line ~5000), which trips the
-/// `should_flush_buffer()` cap at `src/folder.rs:439` during streaming and
+/// `should_flush_buffer()` cap at `src/folder/mod.rs` during streaming and
 /// contaminates the subtraction-method measurement. Journalctl coverage is
 /// deferred to the Phase 5 manual calibration sweep.
 const TIER1_CORPUS: &[(&str, &str)] = &[
@@ -82,7 +82,7 @@ fn load_corpus_sliced(relative_path: &str) -> Option<String> {
 
 /// Canonical text-mode config: single-threaded, defaults otherwise.
 /// Single-threaded mode is a clean conditional branch in `process_line()`
-/// (`src/folder.rs:171`), not a separate code path — ideal as a bench control.
+/// (`src/folder/mod.rs`), not a separate code path — ideal as a bench control.
 fn canonical_config() -> Config {
     Config {
         thread_count: Some(1),

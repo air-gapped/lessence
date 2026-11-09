@@ -2,7 +2,7 @@
 //!
 //! Same corpus and measurement strategy as `folder_e2e`, but uses the
 //! default `thread_count = None` which lets rayon auto-detect CPU count.
-//! This exercises the parallel batch path at `src/folder.rs:880` —
+//! This exercises the parallel batch path at `src/folder/mod.rs` —
 //! `parallel_pattern_detection()` inside the rayon thread pool, followed
 //! by `sequential_clustering()` on the main thread.
 //!

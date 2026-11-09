@@ -549,7 +549,8 @@ impl UnifiedTimestampDetector {
             || Self::has_compact_stamp(text)
     }
 
-    /// Resolve overlapping matches using longest-match-first rule
+    /// Resolve overlapping matches: lowest score (strongest pattern) wins,
+    /// ties fall back to position and then table order.
     fn resolve_overlaps(mut matches: Vec<TimestampMatch>) -> Vec<TimestampMatch> {
         if matches.is_empty() {
             return matches;

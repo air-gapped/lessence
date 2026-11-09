@@ -112,7 +112,7 @@ impl Default for Config {
 /// One user-facing pattern group: the `--disable-patterns` name and the
 /// detector gates it expands to. [`PATTERN_REGISTRY`] is the single source
 /// of truth for these names — the CLI name list and help text
-/// (`src/cli/mod.rs`) and the flag-to-`Config` mapping (`src/main.rs`)
+/// (`src/cli.rs`) and the flag-to-`Config` mapping (`src/main.rs`)
 /// both derive from it.
 pub struct PatternEntry {
     /// User-facing name accepted by `--disable-patterns`.
@@ -237,62 +237,6 @@ pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_default_config_thread_count_is_none() {
-        let config = Config::default();
-        assert!(
-            config.thread_count.is_none(),
-            "Default thread_count should be None (auto-detect)"
-        );
-    }
-
-    #[test]
-    fn test_single_threaded_mode_detection() {
-        let config = Config {
-            thread_count: Some(1),
-            ..Default::default()
-        };
-        // Test will fail until single_thread field is removed
-        // This validates that thread_count == Some(1) replaces single_thread
-        assert_eq!(
-            config.thread_count,
-            Some(1),
-            "Single-threaded mode should be detected via thread_count == Some(1)"
-        );
-    }
-
-    #[test]
-    fn test_auto_detect_mode_detection() {
-        let config = Config::default();
-        // Auto-detect mode = thread_count is None
-        assert!(
-            config.thread_count.is_none(),
-            "Auto-detect mode when thread_count is None"
-        );
-    }
-
-    #[test]
-    fn test_multi_thread_mode_detection() {
-        let config = Config {
-            thread_count: Some(4),
-            ..Default::default()
-        };
-        assert_eq!(
-            config.thread_count,
-            Some(4),
-            "Multi-threaded mode with explicit count"
-        );
-    }
-
-    #[test]
-    fn test_thread_count_validation() {
-        let config = Config {
-            thread_count: Some(0),
-            ..Default::default()
-        };
-        assert_eq!(config.thread_count, Some(0));
-    }
 
     // ---- parse_size_suffix ----
 
