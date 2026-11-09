@@ -19,9 +19,12 @@ retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s
 # Two kinds of test leave the default profile for `slow`, which
 # `make release-check` runs alone:   cargo nextest run --release --profile slow
 #
-#  - The wall-clock tests: every `*scales_linearly*` test and the kubelet
-#    speed requirement. A duration is not evidence (CLAUDE.md) and flakes
-#    under load.
+#  - The wall-clock tests: every `*scales_linearly*` test, the kubelet
+#    speed requirement, and the tests that assert on elapsed time or a
+#    timing ratio without carrying that name (listed by name below:
+#    test_detection_performance, security_compliance, the email
+#    performance check, the validation fail-fast check). A duration is not
+#    evidence (CLAUDE.md) and flakes under load.
 #  - `a_write_failure_mid_spool*`. Its assertions are sound and its fixture
 #    is not padding: the report only spools mid-ingest once a run passes
 #    RETAINED_TEMPLATE_CAP, so the failure path it proves does not happen
@@ -33,7 +36,7 @@ retries = { count = 2, backoff = "exponential", delay = "500ms", max-delay = "5s
 #    `a_failure_writing_the_summary_record_never_claims_a_complete_report`
 #    on a small fixture.
 [profile.default]
-default-filter = "not (test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool))"
+default-filter = "not (test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool) | test(test_long_text_performance) | test(test_overlap_resolution_performance) | test(test_no_match_performance) | test(test_pattern_priority_performance) | test(test_backward_compatibility_performance) | test(test_unix_timestamp_penalty_performance) | test(test_memory_allocation_consistency) | test(test_scalability_with_pattern_count) | test(test_redos_protection_email) | test(test_redos_protection_timestamp) | test(test_redos_protection_ipv6) | test(test_security_performance_overhead) | test(test_email_performance_impact) | test(test_validation_fails_fast_no_stdin_read))"
 
 [profile.slow]
-default-filter = "test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool)"
+default-filter = "test(scales_linearly) | test(test_processing_speed_requirement) | test(a_write_failure_mid_spool) | test(test_long_text_performance) | test(test_overlap_resolution_performance) | test(test_no_match_performance) | test(test_pattern_priority_performance) | test(test_backward_compatibility_performance) | test(test_unix_timestamp_penalty_performance) | test(test_memory_allocation_consistency) | test(test_scalability_with_pattern_count) | test(test_redos_protection_email) | test(test_redos_protection_timestamp) | test(test_redos_protection_ipv6) | test(test_security_performance_overhead) | test(test_email_performance_impact) | test(test_validation_fails_fast_no_stdin_read)"

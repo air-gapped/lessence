@@ -110,7 +110,6 @@ fn test_edge_case_handling() {
     for input in edge_cases {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
         // Should not panic or crash
-        assert!(result.len() >= 0); // Basic sanity check
-        assert!(tokens.len() >= 0); // Basic sanity check
+        let _ = (result, tokens);
     }
 }

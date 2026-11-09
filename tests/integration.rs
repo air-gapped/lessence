@@ -1,6 +1,6 @@
 // Barrel file: consolidates all integration tests into one binary.
 // Each test file is a submodule — one link step instead of 23.
-#![allow(clippy::all, unused_comparisons)]
+#![allow(clippy::all)]
 
 mod common;
 

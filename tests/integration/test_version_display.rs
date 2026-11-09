@@ -56,14 +56,18 @@ fn test_version_short_flag() {
         .output()
         .expect("lessence binary should exist");
 
-    // -V should work the same as --version
-    if output.status.success() {
-        let version_output = String::from_utf8_lossy(&output.stdout);
-        assert!(
-            version_output.to_lowercase().contains("lessence") || !version_output.trim().is_empty(),
-            "Short version flag should work, got: {version_output}"
-        );
-    }
+    assert!(output.status.success(), "-V should succeed");
+    let long = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        .arg("--version")
+        .output()
+        .expect("lessence binary should exist");
+    assert!(long.status.success(), "--version should succeed");
+    assert!(!output.stdout.is_empty(), "-V should print the version");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&long.stdout),
+        "-V must print what --version prints"
+    );
 }
 
 #[test]

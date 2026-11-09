@@ -5,7 +5,6 @@ use lessence::patterns::structured::StructuredMessageDetector;
 mod tests {
     use super::*;
 
-    #[ignore = "stale: detector behavior changed, test expectations need updating"]
     #[test]
     fn test_kubernetes_structured_logs() {
         let k8s_logs = vec![
@@ -288,22 +287,6 @@ mod tests {
 
         // After normalization, structured logs with same service+level+message
         // should group better for folding
-        let service_patterns: Vec<_> = normalized_lines
-            .iter()
-            .map(|line| {
-                // Count structured message tokens
-                line.matches("<STRUCTURED_MESSAGE>").count()
-            })
-            .collect();
-
-        // Each structured log should have at least one structured message token
-        for count in service_patterns {
-            assert!(
-                count >= 0,
-                "Should detect structured patterns in microservices logs"
-            );
-        }
-
         // Similar service patterns should help compression
         let user_api_lines: Vec<_> = normalized_lines
             .iter()

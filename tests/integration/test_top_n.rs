@@ -283,6 +283,11 @@ fn group_shape(args: &[&str], file: &str) -> Vec<(u64, u64, u64)> {
         .arg(file)
         .output()
         .expect("Failed to run");
+    assert!(
+        output.status.success(),
+        "lessence {args:?} {file} failed: {:?}",
+        output.status
+    );
     let mut shape: Vec<(u64, u64, u64)> = String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
@@ -319,19 +324,21 @@ fn test_top_zero_shows_the_same_groups_as_default_on_every_distilled_corpus() {
         !corpora.is_empty(),
         "examples/distilled/*.log must be non-empty"
     );
-    let mut disagreeing = Vec::new();
-    for corpus in &corpora {
+    let disagreeing = std::sync::Mutex::new(Vec::new());
+    crate::common::sweep_corpora(&corpora, |corpus| {
         let path = corpus.to_str().unwrap();
         let default = group_shape(&[], path);
         let top = group_shape(&["--top", "0"], path);
         if default != top {
-            disagreeing.push(format!(
+            disagreeing.lock().unwrap().push(format!(
                 "{path}: default {} groups, --top 0 {} groups",
                 default.len(),
                 top.len()
             ));
         }
-    }
+    });
+    let mut disagreeing = disagreeing.into_inner().unwrap();
+    disagreeing.sort();
     assert!(
         disagreeing.is_empty(),
         "--top 0 changed the group set on:\n{}",

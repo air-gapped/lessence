@@ -67,12 +67,7 @@ fn test_constitutional_compliance_generated() {
 #[test]
 fn test_constitutional_compliance_kubelet() {
     // Bonus test against real kubelet.log when available (gitignored).
-    // Skipped in debug builds and when the file is missing.
-    if cfg!(debug_assertions) {
-        eprintln!("Skipping kubelet.log test: debug build (use --release)");
-        return;
-    }
-
+    // Skipped when the file is missing.
     let Some(file) = crate::common::require_example("examples/distilled/kubelet.log") else {
         return;
     };
