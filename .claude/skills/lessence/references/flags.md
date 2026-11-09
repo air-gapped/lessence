@@ -1,5 +1,3 @@
-<!-- Printed by `lessence --skill` from lessence 0.7.0 (796e36d48, x86_64-unknown-linux-gnu). The installed `lessence --help` is authoritative over anything this text remembers about flags; re-run `lessence --skill` after upgrading. -->
-
 # lessence — Complete Flag Reference
 
 ## Analysis Modes
@@ -8,7 +6,7 @@
 |------|-------------|
 | `--fit` / `--human` | One screen overview that stays visible after the command returns. Adapts to terminal height — no scrolling. Implies `--summary`. |
 | `--summary` | One-line-per-pattern frequency overview. Shows original representative lines, not normalized tokens. Combine with `--top N` for compact output. |
-| `--preflight` | JSON analysis report to stdout for automation/CI. Shows compression ratio, pattern counts, recommendations. |
+| `--preflight` | JSON to stdout for automation/CI: the briefing (line count, levels, time span and histogram, templates, token counts) plus run metadata (version, schema_version, source, input_hash, format, degraded). |
 
 Start with `--fit` to see what's going on at a glance. Use `--summary --top 15`
 for a specific count, or drill into specific patterns with default mode.
