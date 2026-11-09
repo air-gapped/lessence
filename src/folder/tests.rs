@@ -679,6 +679,7 @@ fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
                     make(text),
                     LineLocation::new(SourceId::STDIN, i),
                     &computer,
+                    3,
                 );
                 assert_eq!(
                     retained.lines.len(),
@@ -2452,7 +2453,7 @@ fn format_group_json_at_min_collapse_updates_stats() {
 }
 
 #[test]
-fn format_group_json_essence_mode_skips_stats() {
+fn format_group_json_essence_mode_saves_like_text_mode() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -2473,9 +2474,11 @@ fn format_group_json_essence_mode_skips_stats() {
         f.stats.collapsed_groups, 0,
         "essence_mode should skip collapsed_groups"
     );
+    // Essence shows a group once, so each further member is saved: the
+    // same arithmetic as the text renderer (3 members -> 2 saved).
     assert_eq!(
-        f.stats.lines_saved, 0,
-        "essence_mode should skip lines_saved"
+        f.stats.lines_saved, 2,
+        "essence_mode saves count - 1, as text mode does"
     );
 }
 
@@ -2659,6 +2662,42 @@ fn finish_top_n_derives_json_group_completeness() {
     assert_eq!(groups["omitted_by_summary_cap"]["value"], 0);
     assert_eq!(groups["omitted_by_fit"]["value"], 2);
     assert!(!groups["complete"].as_bool().unwrap());
+}
+
+#[test]
+fn summary_keeps_groups_that_share_a_template_but_not_an_anchor() {
+    // `merge_converged` keys on (template, anchor); the summary merge must
+    // too, or two events the fold keeps apart read as one in --summary.
+    let mut f = make_folder();
+    for (anchor, pos) in [(11_u64, 0), (22, 1)] {
+        let mut line = make_line("svc <PATH> failed", vec![]);
+        line.anchor = anchor;
+        f.buffer.push(PatternGroup::new(line, pos));
+    }
+    let (shown, total, _, _) = f.prepare_summary(None, None).unwrap();
+    assert_eq!(total, 2);
+    assert_eq!(shown.len(), 2);
+}
+
+#[test]
+fn finish_top_n_coverage_counts_only_the_groups_shown_after_fit() {
+    // Groups of 4, 3, 2 and 1 lines (10 in all). Top 3 with a fit budget of
+    // 2 shows only the 4-line group: 40% of the input, not the 90% the
+    // three groups ranked before the fit cut would claim.
+    let mut f = make_folder();
+    for i in 0..4 {
+        for _ in 0..(4 - i) {
+            f.process_line(&format!(
+                "{} event",
+                ["alpha", "bravo", "charlie", "delta"][i]
+            ))
+            .unwrap();
+        }
+    }
+    let (shown, _total, coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(fit_truncated, 2);
+    assert_eq!(coverage, 40);
 }
 
 #[test]
@@ -5957,7 +5996,7 @@ fn absorb_uses_position_to_break_equal_source_line_numbers() {
     first.template = "svc <VARIES>".into();
     let mut second = second;
     second.template = first.template.clone();
-    first.absorb(second, &RollupComputer::with_defaults());
+    first.absorb(second, &RollupComputer::with_defaults(), 3);
     assert_eq!(first.last().normalized, "svc beta");
 }
 
@@ -6900,7 +6939,7 @@ fn fit_budget_equal_to_group_count_keeps_every_entry() {
     assert_eq!(truncated, 0);
 }
 #[test]
-fn converging_groups_from_one_batch_keep_the_first_groups_last_member_on_a_tie() {
+fn converging_groups_from_one_batch_end_on_the_true_last_member() {
     let mut f = PatternFolder::new(Config {
         thread_count: None,
         output_format: "json".into(),
@@ -6919,13 +6958,16 @@ fn converging_groups_from_one_batch_keep_the_first_groups_last_member_on_a_tie()
     }
     f.process_batch().unwrap();
     assert_eq!(f.buffer.len(), 2);
+    // Grouping position stays batch-granular, but every line carries its
+    // own line number, so the two groups do not tie on where they ended.
     assert_eq!(f.buffer[0].position, f.buffer[1].position);
-    assert_eq!(f.buffer[0].last_line_no, f.buffer[1].last_line_no);
+    assert_ne!(f.buffer[0].last_line_no, f.buffer[1].last_line_no);
     let out = f.finish().unwrap();
     assert_eq!(out.len(), 1);
     let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
     assert_eq!(record["count"], 6);
-    assert_eq!(record["last"]["line"], format!("{stem} alpha state three"));
+    assert_eq!(record["last"]["line"], format!("{stem} beta state four"));
+    assert_eq!(record["last"]["line_no"], 6);
 }
 
 #[test]

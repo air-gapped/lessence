@@ -138,10 +138,7 @@ impl PatternFolder {
         // Agents cross-check the JSONL summary record against --stats-json
         // and the text footer, so the numbers must agree; the per-record
         // `count` field is the ground truth for any other arithmetic.
-        if group.count() >= self.config.min_collapse && !self.config.essence_mode {
-            self.stats.collapsed_groups += 1;
-            self.stats.lines_saved += group.count().saturating_sub(3);
-        }
+        self.account_savings(group);
 
         // Collect unique token type names from first and last lines.
         // BTreeSet gives us deterministic sorted output for free.
@@ -184,20 +181,31 @@ impl PatternFolder {
         Ok(serde_json::to_string(&record)?)
     }
 
+    /// The one definition of what a group saves (invariant 2 above), shared
+    /// by the text and JSON renderers so every mode reports the same
+    /// `lines_saved` for the same fold. A collapsed group preserves 3 lines
+    /// (first + marker + last); in essence mode a group is shown once, so
+    /// every further member is saved. `saturating_sub` guards a
+    /// directly-constructed Config (the CLI floor is 3, but
+    /// `Config.min_collapse` is a public field) that lets a 2-line group
+    /// reach here and underflow count - 3.
+    fn account_savings(&mut self, group: &PatternGroup) {
+        if self.config.essence_mode {
+            self.stats.lines_saved += group.count().saturating_sub(1);
+        } else if group.should_collapse(self.config.min_collapse) {
+            self.stats.collapsed_groups += 1;
+            self.stats.lines_saved += group.count().saturating_sub(3);
+        }
+    }
+
     #[cfg_attr(test, mutants::skip)] // PII masking interactions with essence_mode create equivalent mutants: sanitize_pii && !essence_mode branch is hard to distinguish from replacing the whole conditional
     pub(super) fn format_group(
         &mut self,
         group: &PatternGroup,
         rollup: &GroupRollup,
     ) -> Result<String> {
+        self.account_savings(group);
         if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
-            self.stats.collapsed_groups += 1;
-            // First, summary, and last lines are output. saturating_sub
-            // guards against a directly-constructed Config (the CLI floor
-            // is 3, but `Config.min_collapse` is a public field) that lets
-            // a 2-line group reach here and underflow count - 3.
-            self.stats.lines_saved += group.count().saturating_sub(3);
-
             // Phase 4: when the rollup has any worthwhile content, render
             // the richer compact marker directly. Otherwise fall through
             // to the legacy `format_collapsed_line` path — this applies
@@ -267,10 +275,6 @@ impl PatternFolder {
                 // In essence mode, show only the first occurrence of each unique pattern
                 let line_text = self.maybe_mask_pii(group.template(), &group.first().tokens);
                 result.push_str(&line_text);
-                // Track lines saved (all duplicate lines in the group)
-                if group.count() > 1 {
-                    self.stats.lines_saved += group.count().saturating_sub(1);
-                }
             } else {
                 // Standard mode: output all lines individually (with optional PII masking)
                 for (i, line) in group.lines.iter().enumerate() {

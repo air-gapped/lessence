@@ -249,12 +249,14 @@ impl PatternGroup {
     /// live buffer. A similar member can introduce a new varying slot:
     /// its former literal held for every earlier positional member, so seed
     /// that value with their count before adding the new member (lessence-3ck).
-    /// `lines` stays at its truncated [first, last] shape.
+    /// Below `min_collapse` the group renders every member, so `lines` keeps
+    /// them all; from `min_collapse` on it is the truncated [first, last].
     fn retained_rejoin(
         &mut self,
         line: LogLine,
         location: LineLocation,
         rollup_computer: &RollupComputer,
+        min_collapse: usize,
     ) {
         if line.hash != self.first().hash {
             let edits = varying_spans(&self.template, &line.normalized);
@@ -272,8 +274,14 @@ impl PatternGroup {
             rollup_computer.accumulate_tokens(std::slice::from_ref(&line), &mut state.per_type);
             rollup_computer.accumulate_retained_varies(&line, &self.template, state);
         }
-        if self.lines.len() < 2 {
+        if self.lines.len() + 1 == self.count {
+            // Every earlier member is still held.
             self.lines.push(line);
+            if self.count >= min_collapse && self.lines.len() > 2 {
+                let last = self.lines.pop().expect("pushed above");
+                self.lines.truncate(1);
+                self.lines.push(last);
+            }
         } else {
             self.lines[1] = line;
         }
@@ -287,7 +295,12 @@ impl PatternGroup {
     /// been through eviction the merged group carries an accumulator
     /// instead, extended from the other's members or accumulator without
     /// a rescan.
-    fn absorb(&mut self, other: PatternGroup, rollup_computer: &RollupComputer) {
+    fn absorb(
+        &mut self,
+        other: PatternGroup,
+        rollup_computer: &RollupComputer,
+        min_collapse: usize,
+    ) {
         debug_assert_eq!(self.template, other.template);
         self.count += other.count;
         let other_is_later = other.last_line_no > self.last_line_no
@@ -298,9 +311,17 @@ impl PatternGroup {
         }
         self.member_line_nos.extend(other.member_line_nos);
 
-        if self.retained.is_none() && other.retained.is_none() {
+        let all_held = self.count < min_collapse;
+        if all_held || (self.retained.is_none() && other.retained.is_none()) {
             // Both fully materialized: one member list, with the true last
-            // member kept at the end so `last()` stays honest.
+            // member kept at the end so `last()` stays honest. A merged
+            // group still below `min_collapse` also lands here: both sides
+            // hold every member (that is what keeps a group that renders
+            // line by line complete), and the accumulator is dropped
+            // because nothing reads it until the group collapses.
+            if all_held {
+                self.retained = None;
+            }
             let own_last = self.lines.pop().unwrap();
             let mut other_lines = other.lines;
             if other_is_later {
@@ -1566,8 +1587,11 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
         .into_iter()
         .map(|(at, len)| &b[at..at + len])
         .collect();
+    // Lines too long to align exactly cannot be shown to agree, and "no
+    // difference" would let any two of them join and the template claim a
+    // literal half its members lack. Refuse the join.
     let Some(aligned) = align_words(&ua, &ub) else {
-        return 0;
+        return MAX_PLAIN_WORD_DIFFS + 1;
     };
     // Two units that differ: word by word, for single words and quoted
     // sentences alike; a unit shorter than its counterpart is at most one
@@ -1842,18 +1866,23 @@ impl RollupComputer {
                 }
 
                 match &mut entry.0 {
+                    // A repeat of a value already held loses nothing, so only a
+                    // value that would need room the set no longer has is
+                    // "capped" (`merge_retained` checks `contains` first too).
                     Accumulator::Values(s) => {
-                        if s.len() >= self.distinct_cap {
+                        let v = token_value_string(token);
+                        if s.len() >= self.distinct_cap && !s.contains(&v) {
                             entry.1 = true;
                         } else {
-                            s.insert(token_value_string(token));
+                            s.insert(v);
                         }
                     }
                     Accumulator::Hashes(s) => {
-                        if s.len() >= self.distinct_cap {
+                        let v = hash_token_value(token);
+                        if s.len() >= self.distinct_cap && !s.contains(&v) {
                             entry.1 = true;
                         } else {
-                            s.insert(hash_token_value(token));
+                            s.insert(v);
                         }
                     }
                     // words are counted in their own pass below
@@ -2474,7 +2503,12 @@ impl PatternFolder {
         if let Some(group) = self.retained.get_mut(&normalized_line.hash) {
             let loc = location
                 .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
-            group.retained_rejoin(normalized_line, loc, &self.rollup_computer);
+            group.retained_rejoin(
+                normalized_line,
+                loc,
+                &self.rollup_computer,
+                self.config.min_collapse,
+            );
             return;
         }
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
@@ -2524,7 +2558,12 @@ impl PatternFolder {
                 self.retained
                     .get_mut(&key)
                     .expect("indexed retained group")
-                    .retained_rejoin(normalized_line, loc, &self.rollup_computer);
+                    .retained_rejoin(
+                        normalized_line,
+                        loc,
+                        &self.rollup_computer,
+                        self.config.min_collapse,
+                    );
                 return;
             }
             live_match
@@ -2824,11 +2863,16 @@ impl PatternFolder {
         }
         let state = self.rollup_computer.seed(&group);
         let first = group.first().clone();
-        group.lines = if group.count() <= 1 {
-            vec![first]
-        } else {
-            vec![first, group.last().clone()]
-        };
+        // A group that never reached `min_collapse` renders every member,
+        // so every member stays; the cut to [first, last] applies only to
+        // groups that collapse.
+        if group.count() >= self.config.min_collapse {
+            group.lines = if group.count() <= 1 {
+                vec![first]
+            } else {
+                vec![first, group.last().clone()]
+            };
+        }
         group.retained = Some(state);
         if !self.retained.contains_key(&key) {
             self.retained_index.insert(group.first());
@@ -2850,10 +2894,12 @@ impl PatternFolder {
         }
 
         // Merge groups with the same normalized text (default mode keeps them
-        // separate for chronological ordering, but summary wants global counts)
-        let mut merged: HashMap<String, (usize, String)> = HashMap::new();
+        // separate for chronological ordering, but summary wants global counts).
+        // Keyed like `merge_converged`: a template and its anchor are one
+        // claim, so two groups that differ in anchor stay two entries.
+        let mut merged: HashMap<(String, u64), (usize, String)> = HashMap::new();
         for group in &self.buffer {
-            let key = group.template().to_string();
+            let key = (group.template().to_string(), group.first().anchor);
             let count = group.count();
             // The summary shows original lines, so --sanitize-pii masks
             // the representative here, before any renderer sees it.
@@ -2957,7 +3003,7 @@ impl PatternFolder {
         for group in groups {
             let key = (group.template().to_string(), group.first().anchor);
             if let Some(&at) = by_claim.get(&key) {
-                out[at].absorb(group, &self.rollup_computer);
+                out[at].absorb(group, &self.rollup_computer, self.config.min_collapse);
             } else {
                 by_claim.insert(key, out.len());
                 out.push(group);
@@ -3037,8 +3083,6 @@ impl PatternFolder {
             }
         }
 
-        let lines_covered: usize = top_groups.iter().map(|(c, _)| c).sum();
-
         let mut output = Vec::new();
         for (count, mut group) in top_groups {
             let formatted = self.format_group_dispatch(&mut group)?;
@@ -3057,6 +3101,9 @@ impl PatternFolder {
             }
             _ => 0,
         };
+        // Coverage is of what is shown: counted after the --fit cut, so the
+        // percentage never claims the groups it just dropped.
+        let lines_covered: usize = output.iter().map(|(c, _)| c).sum();
 
         // Derive the group-completeness facts for the JSON summary record
         // from what this ranking pass actually did.
@@ -3124,9 +3171,18 @@ impl PatternFolder {
         let locations = std::mem::take(&mut self.batch_locations);
         debug_assert!(locations.is_empty() || locations.len() == batch.len());
         let processed_lines = self.parallel_pattern_detection(&batch)?;
+        // Text mode records no locations. Without one, every line of a batch
+        // would carry the batch-end count as its last line, and two groups
+        // merging later could not tell which really ended last. Give each
+        // line the counter it would have had one at a time.
+        let batch_start = self.position_counter.saturating_sub(batch.len());
 
         for (index, processed_line) in processed_lines.into_iter().enumerate() {
-            self.sequential_clustering_at(processed_line, locations.get(index).copied())?;
+            let location = locations
+                .get(index)
+                .copied()
+                .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, batch_start + index + 1));
+            self.sequential_clustering_at(processed_line, Some(location))?;
         }
         Ok(())
     }
