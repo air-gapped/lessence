@@ -58,20 +58,28 @@ fi
 rm -f /tmp/gate-perf-check.$$
 
 # ── 2. Baseline: build GATE_BASE in a throwaway worktree, cached per commit ─
+# Every baseline builds into one shared target dir, so only the first build
+# is cold, and the worktree is removed once its binary is copied out: what
+# stays per commit is the binary alone.
 
 base_commit="$(git rev-parse "$GATE_BASE")"
 base_worktree="$GATE_DIR/base-${base_commit}-wt"
 base_dir="$GATE_DIR/base-${base_commit}"
 base_bin="$base_dir/lessence"
+base_target="$ROOT/$GATE_DIR/base-target"
 
 if [ ! -x "$base_bin" ]; then
     echo "Building baseline ($GATE_BASE = $base_commit)..." >&2
     if [ ! -d "$base_worktree" ]; then
         git worktree add --detach "$base_worktree" "$base_commit" >/dev/null
     fi
-    ( cd "$base_worktree" && cargo build --release >/dev/null )
+    ( cd "$base_worktree" && CARGO_TARGET_DIR="$base_target" cargo build --release >/dev/null )
     mkdir -p "$base_dir"
-    cp "$base_worktree/target/release/lessence" "$base_bin"
+    # Copy then rename: an interrupted copy must not leave an executable
+    # that the cache check above would trust.
+    cp "$base_target/release/lessence" "$base_bin.partial"
+    mv "$base_bin.partial" "$base_bin"
+    git worktree remove --force "$base_worktree"
 fi
 
 # ── 3. New: build the working tree (uncommitted changes included) ──────────

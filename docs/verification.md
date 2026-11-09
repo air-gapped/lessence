@@ -21,8 +21,10 @@ No target other than `make distill` reads an original corpus.
    instructions:u` must work unprivileged (`/proc/sys/kernel/perf_event_paranoid`
    ≤ 2), else exit 2.
 2. Baseline: `GATE_BASE` (default `HEAD`) checked out into a worktree under
-   `target/gate/`, built with the current toolchain, cached as
-   `target/gate/base-<commit>/lessence`. A binary path is never accepted.
+   `target/gate/`, built with the current toolchain into the shared
+   `target/gate/base-target`, cached as `target/gate/base-<commit>/lessence`;
+   the worktree is removed once the binary is copied out. A cached binary is
+   reused without a checkout or a build. A binary path is never accepted.
    If `git diff <base>` over the binary's inputs — `src/`, `Cargo.toml`,
    `Cargo.lock`, `build.rs` and the two skill files `src/skill.rs` embeds
    (`.claude/skills/lessence/SKILL.md`, `references/flags.md`) — is empty
