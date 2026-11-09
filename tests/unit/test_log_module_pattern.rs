@@ -319,53 +319,19 @@ mod tests {
             "[Sun Dec 04 04:55:45 2005] [info] mod_rewrite URL rewrite enabled",
         ];
 
-        let mut normalized_lines = Vec::new();
+        // The level and the module are what tells these events apart, so
+        // the detector leaves them on the line and only records the token;
+        // folding the repeated mod_jk lines is the folder's job, on the
+        // varying number, never on an erased level or module.
         for line in &apache_samples {
-            let (normalized, _tokens) = LogWithModuleDetector::detect_and_replace(line);
-            normalized_lines.push(normalized);
-        }
-
-        // After normalization, similar log patterns with same level+module
-        // should group better for folding
-        let module_patterns: Vec<_> = normalized_lines
-            .iter()
-            .map(|line| {
-                // Count LOG_WITH_MODULE tokens
-                line.matches("<LOG_WITH_MODULE>").count()
-            })
-            .collect();
-
-        // Each Apache log line should have log-with-module pattern
-        for count in module_patterns {
+            let (normalized, tokens) = LogWithModuleDetector::detect_and_replace(line);
+            assert_eq!(&normalized, line, "the line must come back unchanged");
             assert!(
-                count > 0,
-                "Each Apache log should have log-with-module pattern"
+                tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::LogWithModule { .. })),
+                "each Apache line still yields its level+module token: {line}"
             );
         }
-
-        // Lines with same module should be more similar after normalization
-        let mod_jk_lines: Vec<_> = normalized_lines
-            .iter()
-            .filter(|line| line.contains("mod_jk") || line.contains("<LOG_WITH_MODULE>"))
-            .collect();
-
-        assert!(
-            !mod_jk_lines.is_empty(),
-            "Should have mod_jk lines for compression grouping"
-        );
-
-        // Similar module patterns should help compression
-        let unique_patterns: std::collections::HashSet<_> = normalized_lines
-            .iter()
-            .map(|line| {
-                // Extract structural pattern after normalization
-                line.replace(|c: char| c.is_ascii_digit(), "N")
-            })
-            .collect();
-
-        assert!(
-            unique_patterns.len() < apache_samples.len(),
-            "Module normalization should reduce pattern variety for better compression"
-        );
     }
 }
