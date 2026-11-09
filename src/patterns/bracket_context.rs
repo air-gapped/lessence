@@ -169,9 +169,13 @@ impl BracketContextDetector {
             "network", "storage", "memory",
         ];
 
+        // Whole words only: a substring test made `[domain]` and
+        // `[remainder]` contexts (they contain `main`), `[score]` one
+        // (`core`) and `[events]` one (`event`), and then all of them one
+        // `<BRACKET_CONTEXT>` group.
         log_levels.contains(&lower_context.as_str()) ||
         log_components.contains(&lower_context.as_str()) ||
-        web_modules.iter().any(|&module| lower_context.contains(module)) ||
+        web_modules.contains(&lower_context.as_str()) ||
         system_contexts.contains(&lower_context.as_str()) ||
         // Pattern-based detection
         lower_context.ends_with("_service") ||

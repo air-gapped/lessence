@@ -4529,3 +4529,11 @@ svc-probe bababa babako babari babamu babate babaso babala babavi babane babapu 
 ##FROM invented nginx error lines; `param=` keeps the bracket detector off the line
 2024/01/01 10:00:00 [error] 12345#0: *1 ngx_http_core_module: client closed param=1
 2024/01/01 10:00:01 [error] 12345#0: *1 ngx_http_core_module: client closed param=1
+
+##CASE lessence-bmp groups=2
+##WHY a bracketed word is a known context only as a whole word: `[domain]` and `[remainder]` contain `main` and used to fold together as one `<BRACKET_CONTEXT>`
+##FROM invented resolver lines
+2024-01-01 10:00:00 [domain] lookup failed
+2024-01-01 10:00:01 [domain] lookup failed
+2024-01-01 10:00:02 [remainder] lookup failed
+2024-01-01 10:00:03 [remainder] lookup failed
