@@ -3,10 +3,10 @@
 //! text modes agree on what folding saved. All input is invented.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn run_lessence(args: &[&str], input: &str) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

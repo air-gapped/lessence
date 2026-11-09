@@ -4,13 +4,13 @@
 //! will add `variation` field coverage in a separate test file.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::str;
 use tempfile::NamedTempFile;
 
 /// Run lessence on a fixture and return stdout as a string.
 fn run_lessence_json(fixture: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "json", "--threads", "1", fixture])
         .output()
         .expect("failed to run lessence");
@@ -50,7 +50,7 @@ fn provenance_fixture(start: usize) -> NamedTempFile {
 fn run_provenance_files(threads: Option<&str>) -> Vec<serde_json::Value> {
     let first = provenance_fixture(100);
     let second = provenance_fixture(200);
-    let mut command = Command::new(env!("CARGO_BIN_EXE_lessence"));
+    let mut command = crate::common::lessence();
     command.args(["--format", "json"]);
     if let Some(threads) = threads {
         command.args(["--threads", threads]);
@@ -286,7 +286,7 @@ fn json_output_includes_expected_group_count_for_microservices_fixture() {
 
 #[test]
 fn json_top_n_remains_valid_jsonl_with_terminal_summary() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--format",
             "json",
@@ -331,7 +331,7 @@ fn json_top_n_remains_valid_jsonl_with_terminal_summary() {
 
 #[test]
 fn json_reports_max_lines_as_an_unknown_unprocessed_remainder() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--format",
             "json",
@@ -351,7 +351,7 @@ fn json_reports_max_lines_as_an_unknown_unprocessed_remainder() {
 
 #[test]
 fn json_reports_overlong_lines_with_an_exact_count() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--format",
             "json",
@@ -370,7 +370,7 @@ fn json_reports_overlong_lines_with_an_exact_count() {
 
 #[test]
 fn json_reports_failed_sources_and_keeps_stdout_valid_jsonl() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--format",
             "json",
@@ -407,7 +407,7 @@ fn json_summary_cap_stays_jsonl_and_reports_exact_omissions() {
         .unwrap();
     }
     file.flush().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "json", "--summary", "--threshold", "100"])
         .arg(file.path())
         .output()
@@ -421,7 +421,7 @@ fn json_summary_cap_stays_jsonl_and_reports_exact_omissions() {
 
 #[test]
 fn json_fit_without_a_tty_stays_valid_jsonl() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--format",
             "json",
@@ -447,7 +447,7 @@ fn json_variation_caps_are_explicit_lower_bounds() {
         writeln!(file, "ERROR request 00000000-0000-4000-8000-{i:012}").unwrap();
     }
     file.flush().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "json", "--threads", "1"])
         .arg(file.path())
         .output()
@@ -483,7 +483,7 @@ fn json_locations_are_exact_for_multiple_files_in_single_and_parallel_modes() {
 
 #[test]
 fn json_stdin_location_has_no_invented_source() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--format", "json"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -516,7 +516,7 @@ fn json_stdin_location_has_no_invented_source() {
 #[test]
 fn json_mixed_file_and_stdin_preserves_each_source() {
     let file = provenance_fixture(100);
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--format", "json"])
         .arg(file.path())
         .arg("-")

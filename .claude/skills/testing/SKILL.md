@@ -38,9 +38,12 @@ and hide behind CI where no one watches them.
 2. Skip expensive operations in debug builds via `cfg!(debug_assertions)`.
    Processing 70k lines through a debug binary takes 50s vs 2s in release.
    The compression ratio is identical — only speed differs.
-3. Use `env!("CARGO_BIN_EXE_lessence")` in integration tests, never
-   `./target/release/lessence`. The hardcoded path breaks under cargo-mutants
-   and ties tests to a specific build profile.
+3. Spawn the binary with `crate::common::lessence()` (it wraps
+   `env!("CARGO_BIN_EXE_lessence")`), never `./target/release/lessence` or a
+   bare `Command::new`. The hardcoded path breaks under cargo-mutants and
+   ties tests to a build profile; a bare `Command` lets every default run
+   save its report in the user's `$XDG_STATE_HOME` instead of
+   `target/test-reports/`.
 4. Timing-sensitive tests run in a nextest serial group (`.config/nextest.toml`)
    with `max-threads = 1` to eliminate CPU contention flakes.
 
@@ -54,10 +57,13 @@ Use the `make_line` / `make_group` helpers in `src/folder/tests.rs` to build syn
 
 ### Integration Tests (in tests/)
 
-Use `env!("CARGO_BIN_EXE_lessence")` to find the binary:
+Spawn the binary through `tests/common` (every barrel declares
+`mod common;`), which points its saved reports at `target/test-reports/`;
+`crate::common::command(program)` does the same for a wrapper whose child
+is lessence:
 
 ```rust
-let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+let output = crate::common::lessence()
     .args(["--no-stats", "--threads", "1"])
     .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").unwrap())
     .output()

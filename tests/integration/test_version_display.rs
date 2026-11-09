@@ -1,11 +1,9 @@
-use std::process::Command;
-
 #[test]
 fn test_version_shows_lessence_name() {
     // T007: CLI contract test for version display
     // Verifies that version output contains lessence name
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--version")
         .output()
         .expect("lessence binary should exist");
@@ -33,7 +31,7 @@ fn test_version_shows_lessence_name() {
 #[test]
 fn test_version_format() {
     // Verify version follows semantic versioning
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--version")
         .output()
         .expect("lessence binary should exist");
@@ -51,13 +49,13 @@ fn test_version_format() {
 #[test]
 fn test_version_short_flag() {
     // Test -V short flag works
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("-V")
         .output()
         .expect("lessence binary should exist");
 
     assert!(output.status.success(), "-V should succeed");
-    let long = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let long = crate::common::lessence()
         .arg("--version")
         .output()
         .expect("lessence binary should exist");
@@ -76,7 +74,7 @@ fn test_version_reports_build_identity() {
     // releases changes behaviour without bumping Cargo.toml, and the musl
     // and glibc builds differ in allocator. `--version` must therefore also
     // name the commit it was built from and the target triple.
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--version")
         .output()
         .expect("lessence binary should exist");

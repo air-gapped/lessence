@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_lessence"))
+    crate::common::lessence()
 }
 
 /// A disk-backed scratch directory. Not `tempfile::tempdir()`: `/tmp` is a

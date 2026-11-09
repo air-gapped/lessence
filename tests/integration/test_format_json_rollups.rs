@@ -6,10 +6,8 @@
 //! this file adds rollup-specific shape checks and a hard-coded sample
 //! assertion that would fail if the RNG or seed function ever changed.
 
-use std::process::Command;
-
 fn run_lessence_json(fixture: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "json", "--threads", "1", fixture])
         .output()
         .expect("failed to run lessence");

@@ -1,5 +1,4 @@
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
 
 #[test]
 fn diff_reports_changes_and_uses_diff_exit_status() {
@@ -28,7 +27,7 @@ fn diff_reports_changes_and_uses_diff_exit_status() {
     std::fs::set_permissions(&old, std::fs::Permissions::from_mode(0o700)).unwrap();
 
     let bin = env!("CARGO_BIN_EXE_lessence");
-    let output = Command::new(bin)
+    let output = crate::common::command(bin)
         .arg("--diff")
         .arg(&old)
         .arg(&log)
@@ -47,7 +46,7 @@ fn diff_reports_changes_and_uses_diff_exit_status() {
         )
     );
 
-    let identical = Command::new(bin)
+    let identical = crate::common::command(bin)
         .args(["--diff", bin])
         .arg(&log)
         .output()

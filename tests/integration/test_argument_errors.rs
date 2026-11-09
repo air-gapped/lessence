@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_lessence"))
+    crate::common::lessence()
 }
 
 /// Run with `input` on stdin; kill and fail if it does not finish in 20 s.

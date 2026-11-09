@@ -1,10 +1,9 @@
-use std::process::Command;
 use std::str;
 
 #[test]
 fn test_nginx_compression_improvement() {
     // Test compression on nginx_sample.log
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -66,7 +65,7 @@ fn test_nginx_baseline_without_new_patterns() {
     // This test documents the baseline before new patterns
     // Used for comparison to validate improvement
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")

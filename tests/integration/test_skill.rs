@@ -1,9 +1,9 @@
 //! `--skill` ships the agent skill from the binary (lessence-xo4).
 
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let out = crate::common::lessence()
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -71,7 +71,7 @@ fn skill_unknown_topic_exits_2_and_names_the_topics() {
 /// Run lessence with `args` on `input` and parse every stdout line as JSON.
 fn jsonl(args: &[&str], input: &[u8]) -> Vec<serde_json::Value> {
     use std::io::Write;
-    let out = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let out = crate::common::lessence()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

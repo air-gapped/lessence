@@ -1,5 +1,46 @@
+use std::ffi::OsStr;
 use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+/// The binary under test. Every test spawns it through here (or through
+/// [`command`]) so that a run without `--report-dir` saves its report under
+/// this crate's `target/`, never in the user's `$XDG_STATE_HOME`, where every
+/// suite run used to leave a few dozen. A test of report placement itself
+/// overrides or removes `LESSENCE_REPORT_DIR` on the returned `Command`.
+#[allow(dead_code)] // each harness uses a different subset of this module
+pub fn lessence() -> Command {
+    command(env!("CARGO_BIN_EXE_lessence"))
+}
+
+/// `program` with the suite's report directory in its environment, for a
+/// spawn whose child is lessence: the `LESSENCE_BIN` override, the pty
+/// wrapper.
+#[allow(dead_code)]
+pub fn command(program: impl AsRef<OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env("LESSENCE_REPORT_DIR", report_dir());
+    cmd
+}
+
+/// One fresh directory per test process under `target/test-reports`.
+/// Disk-backed on purpose: `LESSENCE_REPORT_DIR` is automatic placement,
+/// which refuses tmpfs, and `/tmp` is a tmpfs on most Linux systems. Kept
+/// after the run (`cargo clean` removes it), like the rest of `target/`.
+fn report_dir() -> &'static Path {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-reports");
+        std::fs::create_dir_all(&base).expect("test report directory");
+        tempfile::Builder::new()
+            .prefix("spawned-")
+            .tempdir_in(&base)
+            .expect("test report directory")
+            .keep()
+    })
+}
 
 /// Open a gitignored `examples/distilled/` corpus a test depends on. `None` means "print
 /// a skip line and return" — the caller does the returning. Silently passing
@@ -28,6 +69,7 @@ pub fn require_example(path: &str) -> Option<File> {
 /// from background processes and CPU contention. Combined with nextest
 /// retries (2 attempts) and serial execution, this makes flakes
 /// vanishingly rare while still catching genuine regressions.
+#[allow(dead_code)] // the unit, contract and doc_contract harnesses share the module
 pub fn assert_linear_scaling<F: Fn(&str)>(label: &str, small: &str, large: &str, f: F) {
     // Warmup — settle allocator and caches
     for _ in 0..20 {

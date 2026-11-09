@@ -1,12 +1,11 @@
 use std::fs::File;
-use std::process::Command;
 
 #[test]
 fn json_output_has_one_stats_surface_even_when_stats_json_is_requested() {
     let input = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(input.path(), "worker finished\n").unwrap();
     for extra in [vec![], vec!["--top", "1"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        let output = crate::common::lessence()
             .args(["--format", "json", "--stats-json", "--threads", "1"])
             .args(&extra)
             .stdin(File::open(input.path()).unwrap())

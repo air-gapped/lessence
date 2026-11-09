@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Instant;
 
 #[test]
@@ -9,7 +9,7 @@ fn test_validation_fails_fast_no_stdin_read() {
 
     let start = Instant::now();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--threads", "0"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -42,7 +42,7 @@ fn test_validation_fails_fast_no_stdin_read() {
 
 #[test]
 fn test_pattern_error_lists_all_valid_patterns() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--disable-patterns", "invalid"])
         .output()
         .expect("Failed to run command");
@@ -80,7 +80,7 @@ fn test_pattern_error_lists_all_valid_patterns() {
 
 #[test]
 fn test_validation_accepts_large_valid_values() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--threads", "999999"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

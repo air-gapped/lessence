@@ -1,11 +1,9 @@
-use std::process::Command;
-
 #[test]
 fn test_help_text_contains_lessence_branding() {
     // T006: CLI contract test for help text branding
     // Verifies that help text contains proper lessence branding
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--help")
         .output()
         .expect("lessence binary should exist");
@@ -33,7 +31,7 @@ fn test_help_text_contains_lessence_branding() {
 #[test]
 fn test_help_text_contains_seo_description() {
     // Verify SEO-optimized description appears in help
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--help")
         .output()
         .expect("lessence binary should exist");
@@ -56,7 +54,7 @@ fn test_help_text_contains_seo_description() {
 #[test]
 fn test_help_text_structure() {
     // Verify help text has proper structure
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--help")
         .output()
         .expect("lessence binary should exist");
@@ -86,7 +84,7 @@ fn test_help_text_structure() {
 #[test]
 fn test_help_is_agent_first() {
     for flag in ["--help", "-h"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        let output = crate::common::lessence()
             .arg(flag)
             .output()
             .expect("lessence binary should exist");
@@ -116,7 +114,7 @@ fn test_help_is_agent_first() {
 /// before touching input.
 #[test]
 fn test_help_human() {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--help-human", "/nonexistent/never.log"])
         .stdin(std::process::Stdio::null())
         .output()
@@ -138,7 +136,7 @@ fn test_help_human() {
 fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
     // python's pty module lends the child a pseudo-terminal on stdin; the
     // parent's stdin is /dev/null so nothing ever arrives on it.
-    let output = Command::new("python3")
+    let output = crate::common::command("python3")
         .args([
             "-c",
             "import pty, sys; sys.exit(pty.spawn([sys.argv[1]]) >> 8)",
@@ -164,7 +162,7 @@ fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
     );
 
     // a pipe is input, even an empty one: no help, an empty fold
-    let piped = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let piped = crate::common::lessence()
         .arg("-q")
         .stdin(std::process::Stdio::null())
         .output()

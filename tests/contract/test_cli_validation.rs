@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 /// A default run saves a report; keep it under target/ rather than in the
 /// caller's home, which may be unwritable (the cross container's is `/`).
 fn lessence() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_lessence"));
+    let mut cmd = crate::common::lessence();
     cmd.env("LESSENCE_REPORT_DIR", env!("CARGO_TARGET_TMPDIR"));
     cmd
 }

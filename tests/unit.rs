@@ -2,6 +2,8 @@
 // Allow warnings in legacy test code — these files predate the barrel consolidation.
 #![allow(clippy::all, unused_variables)]
 
+mod common;
+
 mod unit {
     mod test_bracket_context_pattern;
     mod test_http_status_pattern;
