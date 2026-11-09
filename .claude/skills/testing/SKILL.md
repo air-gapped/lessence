@@ -15,8 +15,8 @@ description: >-
 
 ```bash
 cargo test --lib              # Unit tests only (fast, <2s)
-cargo nextest run --release   # Full suite in release mode (CI)
-make ci                       # Full CI pipeline (fmt + clippy + doc + build + test + deny)
+cargo nextest run             # Full suite on the test profile (what CI runs)
+make ci                       # Full CI pipeline (fmt + clippy + doc + test + deny)
 ```
 
 `make ci` runs automatically via `.githooks/pre-push` before every
@@ -49,7 +49,7 @@ and hide behind CI where no one watches them.
 ### Unit Tests (in src/)
 
 Private functions need tests inside `#[cfg(test)] mod tests` in the same file.
-Use the `make_line` / `make_group` helpers in `src/folder.rs` to build synthetic
+Use the `make_line` / `make_group` helpers in `src/folder/tests.rs` to build synthetic
 `PatternGroup` values for rollup and folding tests.
 
 ### Integration Tests (in tests/)
@@ -59,7 +59,7 @@ Use `env!("CARGO_BIN_EXE_lessence")` to find the binary:
 ```rust
 let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
     .args(["--no-stats", "--threads", "1"])
-    .stdin(std::fs::File::open("tests/fixtures/sample.log").unwrap())
+    .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").unwrap())
     .output()
     .expect("failed to run lessence");
 ```
@@ -160,16 +160,16 @@ include it.
 observable behavior because of an earlier guard or redundant check
 — live in `.cargo/mutants.toml` under `exclude_re`. Currently:
 
-- `network.rs:207` — FQDN regex's `\b` anchors already guarantee
+- `network.rs` (`FQDN` check) — FQDN regex's `\b` anchors already guarantee
   the `contains('.')` / `starts_with` / `ends_with` checks
-- `normalize.rs:59` — PathDetector (step 3) replaces `&Event{}`
+- `normalize.rs` (`normalize_json` guard) — PathDetector (step 3) replaces `&Event{}`
   before JsonDetector (step 4) can see it, so the `normalize_json`
   guard is structurally unreachable for that input shape
-- `normalize.rs:173` — `QuotedStringDetector` has its own
+- `normalize.rs` (quoted-string `prefilter` in `DETECTOR_ORDER`) — `QuotedStringDetector` has its own
   `if !text.contains('"')` fast path, making the normalizer's
   `|| contains('\'')` branch dead for token emission
 
-If cargo-mutants reports a "missed" mutant on one of those lines,
+If cargo-mutants reports a "missed" mutant on one of those patterns (`.cargo/mutants.toml` holds the exact ids),
 don't try to kill it — add to the exclusion list if a new equivalent
 is found.
 

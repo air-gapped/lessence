@@ -3,7 +3,7 @@
 Orientation for an agent arriving cold. Everything here is what the code does
 *not* say: vocabulary, what the gates actually prove, what is on disk but not in
 git. Commands and architecture are in `CLAUDE.md`; the design principles and who
-the tool is for are in `CLAUDE.local.md`; gate mechanics in `docs/verification.md`;
+the tool is for follow from the first paragraph of `CLAUDE.md`; gate mechanics in `docs/verification.md`;
 the dev flags in `docs/distill.md`. This file does not restate them.
 
 Numbers below were measured on 2026-08-30 at commit `d3fdf21`. They are facts
@@ -60,13 +60,18 @@ Other terms as this repo uses them:
 
 ## What the gates prove — and what they do not
 
-`scripts/gate.sh` sets its verdict to FAIL on exactly three conditions:
+`scripts/gate.sh` sets its verdict to FAIL on exactly these conditions:
 
 1. a newly added `##CASE` that is **vacuous** — it passes on the baseline
-   binary, so it could never have caught anything;
+   binary, so it could never have caught anything (counted but not failed
+   when `release-check` compares against the last release);
 2. a **perf regression** over +1% (`instructions:u` on distilled kubelet);
 3. `--explain` and `--format json` **disagreeing on a corpus where the
-   baseline agreed exactly** (the `modes` line; see below).
+   baseline agreed exactly** (the `modes` line; see below);
+4. **peak RSS** over the +32 MiB allowance, or not established at all
+   (default run and `--overview all`);
+5. the **default output size** (stdout/stderr bytes or tokens) over the
+   reviewed baseline plus max(128, 1%), or the size check erroring out.
 
 **Vacuity is a per-commit property.** The check runs with `GATE_BASE=HEAD`
 before every commit, so a `##CASE` added since the check existed failed on
@@ -147,7 +152,7 @@ ls examples/distilled/*.log | wc -l
 /usr/bin/grep -l '^\[pod/' examples/distilled/*.log | wc -l
 ```
 
-As of 2026-09-20: **80 corpora, 11,463 distilled lines, 4.14 MB** (they
+As of 2026-11-09: **81 corpora, 12,626 distilled lines, 7.62 MB** (they
 were 85,606 lines and 57.6 MB until `--distill` became minimum-sufficient).
 By shape:
 
@@ -162,8 +167,8 @@ By shape:
 | JSON per line | 4 |
 | klog | 2 |
 
-Largest: `k8s_rook_ceph` 14,920 · `epyc_7days_journalctl` 8,654 ·
-`host_fedora_journal` 5,771 · `openssh_brute_force` 4,100 · `kubelet` 3,951.
+Largest by lines: `epyc_7days_journalctl` 1,136 · `cilium_full` 874 ·
+`k8s_rook_ceph` 789 · `kubelet` 749 · `host_fedora_journal` 629.
 
 Two facts that matter when judging a diff:
 

@@ -180,25 +180,27 @@ Exactly one, at the end of the stream.
   "patterns_detected": 73421,
   "elapsed_ms": 847,
   "pattern_hits": {
-    "timestamps": 73421,
-    "ips": 12043,
-    "ports": 1204,
-    "hashes": 8734,
-    "uuids": 2891,
-    "pids": 421,
-    "durations": 1832,
+    "timestamps": 70000,
+    "ips": 10000,
+    "ports": 1000,
+    "fqdns": 500,
+    "hashes": 8000,
+    "uuids": 3000,
+    "pids": 400,
+    "durations": 2000,
+    "cpu_quantities": 0,
     "http_status": 0,
-    "sizes": 15,
-    "percentages": 3401,
-    "paths": 23811,
-    "json": 88,
-    "quoted_strings": 412,
-    "names": 96,
-    "brackets": 1031,
-    "key_values": 2210,
-    "log_modules": 14,
-    "structured": 7,
-    "kubernetes": 312,
+    "sizes": 20,
+    "numbers": 5000,
+    "paths": 20000,
+    "json": 100,
+    "quoted_strings": 400,
+    "names": 100,
+    "brackets": 1000,
+    "key_values": 2000,
+    "log_modules": 10,
+    "structured": 10,
+    "kubernetes": 300,
     "emails": 0,
     "macs": 0
   },
@@ -217,7 +219,8 @@ Exactly one, at the end of the stream.
       "total": {"value": 2841, "kind": "exact"},
       "omitted_by_top": {"value": 0, "kind": "exact"},
       "omitted_by_summary_cap": {"value": 0, "kind": "exact"},
-      "omitted_by_fit": {"value": 0, "kind": "exact"}
+      "omitted_by_fit": {"value": 0, "kind": "exact"},
+      "fragmented_by_retention_cap": 0
     },
     "variation_values": {
       "complete": false,
@@ -247,7 +250,8 @@ Exactly one, at the end of the stream.
 
 ### Completeness and count kinds
 
-Every omission count is an object with `value` and `kind`:
+Every omission count is an object with `value` and `kind`, with one exception,
+`groups.fragmented_by_retention_cap`:
 
 1. `exact`: `value` is the complete count.
 2. `lower_bound`: at least `value` items were omitted; more may exist.
@@ -258,6 +262,13 @@ Every omission count is an object with `value` and `kind`:
 `--top`, the 30-pattern JSON `--summary` cap, and `--fit`. `variation_values`
 aggregates bounded samples and rollup caps; groups below `--min-collapse` have
 no computed rollup and therefore make the omitted-value count unknown.
+
+`groups.fragmented_by_retention_cap` is a bare integer, not a `{value, kind}`
+object: it is always exact. It counts groups that could not be kept mergeable
+across an eviction because the retained-template cap was already full, so they
+were emitted immediately instead of staying open for later lines. Each one is
+a possible under-fold (one event shown as several lines), never an over-fold.
+Any value above zero makes `groups.complete` false.
 
 `--summary --format json` remains JSONL: it emits at most 30 ordinary group
 records followed by this summary record. Omit `--summary` when every group
@@ -441,14 +452,16 @@ A fail-pattern match can exit 1 with a complete digest and empty `degraded`.
 ## `Briefing` schema
 
 The orientation block an agent should read before deciding what to run next.
-It appears in two places, both from the same struct so they can never drift:
+It appears in three places, all from the same struct so they can never drift:
 
 1. **`lessence --preflight <log>`** — the `Briefing` printed directly as the
    entire stdout JSON document, alongside the additive run metadata above
    (not wrapped in a record; there is no other
    `--preflight` output).
-2. **`--explain`'s (`--format json --explain`) summary record**, under a new
-   `briefing` field alongside `input_lines`, `pattern_hits`, etc.
+2. **The plain `--format json` summary record**, under a `briefing` field
+   alongside `input_lines`, `pattern_hits`, etc.
+3. **`--explain`'s (`--format json --explain`) summary record**, under the
+   same `briefing` field.
 
 `--preflight` used to print a `PreflightReport` — four duplicate
 `estimated_compression` figures and an always-empty `sample_patterns` array.
@@ -556,5 +569,3 @@ When `span.year_inferred` is `true`, `templates.shown[].first_epoch` and
   rollup constants (`ROLLUP_K`, `ROLLUP_DISTINCT_CAP`,
   `ROLLUP_TEXT_SAMPLE_THRESHOLD`).
 - `docs/bench.md` — how to run the performance benchmarks.
-- `.ideas/structured-folding-output-for-agents.md` — design
-  rationale for the feature.

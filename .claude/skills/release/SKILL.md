@@ -96,16 +96,17 @@ no PR to hang it on it moved into `release-check`, because a check that only
 fires on a branch nobody creates is a check that never runs.
 
 **Perf against the last published release is separate** and is not in
-`release-check`: see `CLAUDE.local.md` for the script, and state the
-cumulative number in the handoff.
+`release-check`: measure it before the release and state the cumulative
+number in the handoff.
 
 ## Version rules
 
 - `Cargo.toml` is edited by hand now. Nothing rewrites it.
 - The tag is `vX.Y.Z`; `Cargo.toml` carries `X.Y.Z`.
-- **The version string comes from the tag**, via `git describe`. A tag with
-  no release behind it makes every later build claim that version — which is
-  how builds nine commits past `v0.7.0` came to report `0.7.0`.
+- **The version string is `CARGO_PKG_VERSION`** (`src/cli.rs`) plus the
+  short commit sha from `git rev-parse --short=9` (`build.rs`). It does not
+  come from the tag: a build past a release reports the `Cargo.toml` version
+  with its own sha, so bump `Cargo.toml` in the release commit.
 - A tag is public the moment it is pushed. Do not push one speculatively.
 
 ## If something goes wrong

@@ -9,8 +9,8 @@ and the commit hooks. Rationale is not here; the rules are in CLAUDE.md.
 |---|---|---|---|---|
 | `make ci` | every commit | tests, `tests/fixtures/` | — | non-zero on any failure |
 | `make gate` | before a commit touching `src/` or `Cargo.lock` | `examples/distilled/*.log`, `*.golden`, `tests/fixtures/fold_regressions.log` | `target/gate/gate.json` | 0 PASS · 1 FAIL · 2 cannot run |
-| `make distill` | after a corpus is added or re-harvested; `BLESS=1` after an intended fold change | `examples/*.log` (originals, this step only) | `examples/distilled/<name>.log`, `<name>.golden` | non-zero names the corpus |
-| `make release-check` | before a release | distilled set, `<last-tag>..HEAD`, the `slow` nextest profile | `target/gate/release.json` | as gate |
+| `make distill` | after a corpus is added or re-harvested; `BLESS=1` after an intended fold change | `examples/originals/*.log` (originals, this step only) | `examples/distilled/<name>.log`, `<name>.golden` | non-zero names the corpus |
+| `make release-check` | before a release | distilled set, `<last-published-release>..HEAD`, the `slow` nextest profile, README compression table, skill `sources.md` | `target/gate/release.json` | as gate |
 
 No target other than `make distill` reads an original corpus.
 
@@ -127,10 +127,16 @@ live outside the tree.
 
 ## `scripts/release-check.sh`
 
-`GATE_BASE=$(git describe --tags --abbrev=0) scripts/gate.sh`; `cargo mutants
---in-diff <(git diff <tag>..HEAD)` with the flags `make mutants` uses
-(`mutants.out/outcomes.json` is the score); `make ci`; `cargo nextest run
---release --profile slow`. Writes `target/gate/release.json`, prints ≤ 25
+The base is the last **published** release, found with `gh release list
+--exclude-drafts --exclude-pre-releases` (`RELEASE_BASE=vX.Y.Z` overrides;
+without `gh` the newest tag is used and a warning says so). Checks, in order:
+`scripts/gate.sh` against that base (new-case vacuity is counted, not failed);
+`cargo mutants --in-diff` on `<base>..HEAD` via `scripts/mutants.sh`
+(`mutants.out/outcomes.json` is the score); the README compression table was
+generated at a commit whose `src/` equals HEAD's
+(`scripts/readme-compression.sh --check`); the agent skill's `sources.md`
+`verified-at:` sha is an ancestor of HEAD and covers every user-facing `src/`
+commit since; `make ci`; `cargo nextest run --release --profile slow`. Writes `target/gate/release.json`, prints ≤ 25
 lines. `RELEASE_CHECK_SKIP_MUTANTS=1` skips mutants (testing only).
 
 ## Test profiles (`.config/nextest.toml`)

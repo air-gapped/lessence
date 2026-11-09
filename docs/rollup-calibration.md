@@ -1,15 +1,14 @@
 # Rollup Parameter Calibration
 
 This document records the measurement-driven calibration of the three
-rollup constants in `src/folder.rs`:
+rollup constants in `src/folder/mod.rs`:
 
 - `ROLLUP_K` — max samples surfaced per token type in JSON mode
 - `ROLLUP_DISTINCT_CAP` — per-group, per-token-type distinct-value cap
 - `ROLLUP_TEXT_SAMPLE_THRESHOLD` — text-mode inline-sample threshold
 
 These were initially shipped as `PLACEHOLDER_*` constants during Phases
-3–4 of the structured-folding-output feature (see
-`.ideas/structured-folding-output-for-agents.md`) and retired in Phase 5
+3–4 of the structured-folding-output feature and retired in Phase 5
 using a one-shot calibration harness (`benches/calibrate_rollup.rs`,
 deleted after this report was recorded — recover it from git history at
 tag v0.4.5 if the corpus changes or pattern detectors are revised).
@@ -189,5 +188,5 @@ shortening the marker enough to matter.
 
 The harness is fast (<60s on a full corpus) and the values can be
 tightened or loosened without any schema change — only the constants
-in `src/folder.rs` need updating. Tests assert relative invariants
+in `src/folder/mod.rs` need updating. Tests assert relative invariants
 (samples ≤ K, capped=true when cap is hit) rather than absolute values.

@@ -74,21 +74,21 @@ Key files:
 4. Add `pub mod your_pattern;` to `patterns/mod.rs`
 5. Add a `DetectorEntry` to `DETECTOR_ORDER` in `normalize.rs` at the correct position (set `enabled`, a `prefilter` if a cheap byte check exists, and `defers_to_kubernetes` if the pattern must yield to KubernetesDetector)
 6. Add to `--disable-patterns` handling in `main.rs` (the `disable_patterns` → `config.normalize_*` mapping)
-7. Add stats counter to `FoldingStats` in `folder.rs`
+7. Add stats counter to `FoldingStats` in `folder/mod.rs`
 8. Write unit tests with realistic log samples
 9. Test ReDoS resistance with malicious inputs (see `testing` skill)
 
 ## Essence Mode
 
-`--essence` is a flag on `Config` (`config.rs:24` `essence_mode: bool`), not a
+`--essence` is a flag on `Config` (`essence_mode: bool` in `src/config.rs`), not a
 separate module. The standalone `essence/` module was deleted as dead code.
 
 Timestamps are already tokenized to `<TIMESTAMP>` by the normal `TimestampDetector`
 in every mode — that's not essence-specific. What `--essence` actually does is
-**suppress timestamp variations during variation-type aggregation**
-(`normalize.rs:355-358`): when comparing the first and last line in a group,
-timestamp token differences are ignored, so groups that differ only by timestamp
-don't get flagged as "varying: timestamp" in the rollup.
+**omit the time-range segment of the text rollup marker**
+(`render_compact_marker` in `src/folder/mod.rs`): the `[+N similar | first → last | …]`
+marker is printed without its `first → last` timestamps, so two runs of the same
+log over different periods render identically.
 
 Net effect: structural comparison between log periods works, because the same
 template with a different time now counts as the same pattern.

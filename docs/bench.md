@@ -9,7 +9,7 @@ The per-commit perf gate is not this suite: `make gate` counts
 instructions on one sentinel corpus (see `docs/verification.md`), which
 is repeatable to ~0.1% and needs no quiet machine. The criterion suite
 below is the release-time wall-clock view — thread scaling, throughput
-per corpus — and is run by `make release-check`.
+per corpus — and is run by hand.
 
 When you change hot-path or flush-path code, record a baseline
 before the change and compare after. Any regression above **3%** on
@@ -42,16 +42,16 @@ Six files under `examples/distilled/`. Each exercises a different pattern mix:
 
 | File | Size | Coverage |
 |---|---|---|
-| `kubelet.log` | 1.2 MB | K8s: UUIDs, paths, kubernetes tokens, high volume |
-| `argocd_controller_production.log` | 20 KB | Structured app logs, high token density |
-| `harbor_postgres_primary.log` | 8 KB | Postgres: duration/timestamp/number-heavy (count-only dominant) |
-| `openssh_brute_force.log` | 396 KB | One-template pathological case — stress-tests single-group flush |
-| `apache_error_production.log` | 192 KB | Apache: brackets, quoted strings |
-| `nginx_sample.log` | 4 KB | Tiny — fixed-overhead floor |
+| `kubelet.log` | 284 KB | K8s: UUIDs, paths, kubernetes tokens, high volume |
+| `argocd_controller_production.log` | 6 KB | Structured app logs, high token density |
+| `harbor_postgres_primary.log` | 3 KB | Postgres: duration/timestamp/number-heavy (count-only dominant) |
+| `openssh_brute_force.log` | 9 KB | One-template pathological case — stress-tests single-group flush |
+| `apache_error_production.log` | 16 KB | Apache: brackets, quoted strings |
+| `nginx_sample.log` | 2 KB | Tiny — fixed-overhead floor |
 
 `epyc_7days_journalctl.log` is **not** in the Tier 1 gate. Its pattern
 density (1000+ distinct templates in the first 5k lines) trips the
-`should_flush_buffer()` cap at `src/folder.rs:439`, which contaminates
+`should_flush_buffer()` cap in `src/folder/mod.rs`, which contaminates
 the subtraction method. Journalctl coverage is deferred to the Phase 5
 manual sweep (`docs/rollup-calibration.md`).
 
@@ -98,18 +98,15 @@ Criterion reports each result as one of:
 | > +3% and ≤ +5% *only* on `openssh_brute_force.log` | Flagged worst case. Justify or autoresearch. |
 | > +3% on any other Tier 1 file | **Fail.** Invoke autoresearch; do not merge. |
 
-See `.claude/plans/harmonic-churning-karp.md` for the full gate
-criteria per implementation phase.
-
 ## Configuration knobs
 
 Each bench configures criterion with these settings (defined inline
 in each bench file):
 
 ```rust
-group.sample_size(50);                          // default is 100
-group.measurement_time(Duration::from_secs(30));
-group.warm_up_time(Duration::from_secs(5));
+group.sample_size(30);                          // default is 100
+group.measurement_time(Duration::from_secs(15));  // 10 s in normalize_line
+group.warm_up_time(Duration::from_secs(3));       // 2 s in normalize_line
 group.noise_threshold(0.02);                    // 2% = "no change"
 group.significance_level(0.01);                 // 1% false-positive rate
 ```
@@ -130,7 +127,7 @@ gate — "the bench is 3% slower" is equivalent to "throughput dropped
 ## Single-threaded mode is the control
 
 `thread_count == Some(1)` takes an early branch in
-`PatternFolder::process_line()` at `src/folder.rs:171`. It avoids
+`PatternFolder::process_line()` in `src/folder/mod.rs`. It avoids
 rayon entirely — no thread pool, no batching. This makes it the
 deterministic bench control: no cross-thread scheduling noise, no
 batch-size artifacts.
