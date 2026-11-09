@@ -531,6 +531,10 @@ impl PatternFolder {
                 last: stats.span_last.clone(),
                 duration_seconds,
                 lines_per_second,
+                year_inferred: crate::briefing::span_year_inferred(
+                    stats.span_first.as_deref(),
+                    stats.span_last.as_deref(),
+                ),
             },
             format: FormatSniff {
                 json,

@@ -463,7 +463,8 @@ both gone; `Briefing` replaces them everywhere.
     "first": "E0909 13:07:09.181236",
     "last": "E0920 14:52:55.728948",
     "duration_seconds": 956746,
-    "lines_per_second": 0.004129622700277817
+    "lines_per_second": 0.004129622700277817,
+    "year_inferred": true
   },
   "format": {"json": 0, "logfmt": 50, "plain": 3901, "dominant": "plain", "mixed": false},
   "levels": {
@@ -508,6 +509,7 @@ both gone; `Briefing` replaces them everywhere.
 | `lines` | integer | Total input lines. |
 | `span.first` / `span.last` | string \| null | Raw first/last timestamp string, unparsed. `null` on both when no line carried a recognised timestamp — nothing else in `span` is meaningful then. |
 | `span.duration_seconds` | integer \| null | `last - first` in seconds. `null` when either endpoint is missing or the pair is unparseable. |
+| `span.year_inferred` | boolean | `true` when `span.first` or `span.last` carries no year (klog, BSD syslog), so the epochs in the briefing were placed on the current UTC year; `false` when both endpoints state their own year. Absent when `span` has no timestamps. See "Year inference". |
 | `span.lines_per_second` | number \| null | `lines / duration_seconds`. `null` when duration is `null` or 0. A low rate on a long span (kubelet: 0.004 lines/s over 11 days) says this is a sparse control-plane log, not a busy one — don't expect a hot loop. |
 | `format.json` / `.logfmt` / `.plain` | integer | Line counts by surface format. |
 | `format.dominant` | string | `"json"`, `"logfmt"`, or `"plain"` — the largest of the three. Decide `jq` vs `awk`/`grep` from this before the first command. |
@@ -544,6 +546,9 @@ about (it reports only the epoch-derived numbers above), but the stderr
 briefing's `shape:` line prints `MM-DD HH:MM` instead of `YYYY-MM-DD HH:MM`
 for a year-less source, rather than printing an inferred year as if the log
 had stated it.
+
+When `span.year_inferred` is `true`, `templates.shown[].first_epoch` and
+`last_epoch` are good for differences and ordering, not as absolute dates.
 
 ## See also
 

@@ -146,6 +146,7 @@ output; `--preflight` prints the same facts as its entire JSON document;
 `--explain`'s summary record carries it as `briefing`. `-q` drops that rendered
 block — on stdout in a default run, on stderr under `--no-report` — and never
 touches the JSON.
+In the JSON, `span.year_inferred: true` means the stamps (klog, BSD syslog) carry no year and the epochs assume the current one: use them for differences and ordering, not as absolute dates.
 
 ```
 --- lessence briefing: kubelet.log (4,092 lines)

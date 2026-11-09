@@ -55,6 +55,11 @@ pub struct Span {
     pub duration_seconds: Option<u64>,
     /// `lines / duration_seconds`. `None` when the duration is `None` or 0.
     pub lines_per_second: Option<f64>,
+    /// `true` when the span's timestamps carry no year of their own (klog,
+    /// BSD syslog) and the epochs were placed on the current UTC year.
+    /// Absent when the span has no timestamps at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub year_inferred: Option<bool>,
 }
 
 /// A run-length time histogram, bucketed adaptively so its footprint stays
@@ -908,6 +913,15 @@ pub(crate) fn span_epochs(first: &str, last: &str) -> Option<(i64, i64)> {
         last_epoch = add_one_year_utc(last_epoch).unwrap_or(last_epoch);
     }
     Some((first_epoch, last_epoch))
+}
+
+/// Whether a span's epochs rest on an assumed year: true when either endpoint
+/// is a year-less stamp. `None` when there is no span endpoint to judge.
+pub(crate) fn span_year_inferred(first: Option<&str>, last: Option<&str>) -> Option<bool> {
+    match (first, last) {
+        (None, None) => None,
+        (f, l) => Some(f.is_some_and(|t| !carries_year(t)) || l.is_some_and(|t| !carries_year(t))),
+    }
 }
 
 pub(crate) fn span_duration_seconds(first: &str, last: &str) -> Option<u64> {
@@ -1886,6 +1900,7 @@ mod tests {
                 last: Some("E0920 14:52:55.728948".to_string()),
                 duration_seconds: None,
                 lines_per_second: None,
+                year_inferred: Some(true),
             },
             format: FormatSniff {
                 json: 0,
@@ -2260,5 +2275,59 @@ mod tests {
             singleton_pct: 0.0,
         };
         assert!(render_rare_line(&t).is_none());
+    }
+
+    #[test]
+    fn year_inferred_true_for_klog_span() {
+        assert_eq!(
+            span_year_inferred(Some("E0909 13:07:09.181236"), Some("E0920 14:52:55.728948")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn year_inferred_true_for_syslog_span() {
+        assert_eq!(
+            span_year_inferred(Some("Sep  9 13:07:09"), Some("Sep 10 01:00:00")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn year_inferred_false_for_iso_span() {
+        assert_eq!(
+            span_year_inferred(Some("2025-09-20T09:10:38Z"), Some("2025-09-21T09:10:38Z")),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn year_inferred_true_when_only_one_endpoint_lacks_a_year() {
+        assert_eq!(
+            span_year_inferred(Some("2025-09-20T09:10:38Z"), Some("E0921 09:10:38.000001")),
+            Some(true)
+        );
+        assert_eq!(
+            span_year_inferred(Some("E0921 09:10:38.000001"), Some("2025-09-20T09:10:38Z")),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn year_inferred_absent_without_a_span() {
+        assert_eq!(span_year_inferred(None, None), None);
+        let json = serde_json::to_value(Span::default()).unwrap();
+        assert!(json.get("year_inferred").is_none(), "{json}");
+    }
+
+    #[test]
+    fn year_inferred_serialises_as_bool() {
+        let span = Span {
+            first: Some("Sep  9 13:07:09".into()),
+            year_inferred: Some(true),
+            ..Span::default()
+        };
+        let json = serde_json::to_value(span).unwrap();
+        assert_eq!(json["year_inferred"], serde_json::Value::Bool(true));
     }
 }
