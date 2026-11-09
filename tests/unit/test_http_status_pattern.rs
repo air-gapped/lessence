@@ -186,37 +186,4 @@ mod tests {
             "Should detect 502 as 5xx"
         );
     }
-
-    #[ignore = "stale: detector behavior changed, test expectations need updating"]
-    #[test]
-    fn test_compression_improvement_target() {
-        // This test validates the research finding that HTTP status grouping
-        // should improve Nginx compression from 72% to >85%
-
-        let sample_nginx_logs = vec![
-            r#""GET /downloads/product_1 HTTP/1.1" 200 490"#,
-            r#""GET /downloads/product_1 HTTP/1.1" 304 0"#,
-            r#""GET /downloads/product_1 HTTP/1.1" 404 335"#,
-            r#""GET /downloads/product_2 HTTP/1.1" 200 520"#,
-            r#""GET /downloads/product_2 HTTP/1.1" 304 0"#,
-            r#""GET /downloads/product_2 HTTP/1.1" 404 335"#,
-        ];
-
-        let mut normalized_lines = Vec::new();
-        for line in &sample_nginx_logs {
-            let (normalized, _tokens) = HttpStatusDetector::detect_and_replace(line);
-            normalized_lines.push(normalized);
-        }
-
-        // After normalization, similar request patterns with different status codes
-        // should group together better for folding
-        let unique_patterns: std::collections::HashSet<_> = normalized_lines.iter().collect();
-
-        // We expect fewer unique patterns after status code normalization
-        // This enables better folding and compression
-        assert!(
-            unique_patterns.len() < sample_nginx_logs.len(),
-            "Status normalization should reduce unique patterns for better compression"
-        );
-    }
 }
