@@ -94,20 +94,32 @@ fn test_evil_ipv4_like_with_colons_scales_linearly() {
 
 #[test]
 fn test_evil_short_but_malformed() {
-    let (_normalized, _tokens) = NetworkDetector::detect_and_replace("a:b", true, false, false);
-    // Just verifying it doesn't panic
+    let (normalized, tokens) = NetworkDetector::detect_and_replace("a:b", true, false, false);
+    assert_eq!(normalized, "a:b", "{tokens:?}");
+    assert!(tokens.is_empty(), "{tokens:?}");
 }
 
 #[test]
 fn test_evil_alphabetic_only() {
     let evil = "ghijklmnopqrstuvwxyz:ghijklmnopqrstuvwxyz:ghijklmnopqrstuvwxyz";
-    let (_normalized, _tokens) = NetworkDetector::detect_and_replace(evil, true, false, false);
+    let (normalized, tokens) = NetworkDetector::detect_and_replace(evil, true, false, false);
+    assert_eq!(normalized, evil, "{tokens:?}");
+    assert!(tokens.is_empty(), "{tokens:?}");
 }
 
 #[test]
 fn test_evil_hex_with_special_chars() {
     let evil = "2001:0db8:85a3:0000:0000:8a2e:0370:7334<>:\"{}|\\?/";
-    let (_normalized, _tokens) = NetworkDetector::detect_and_replace(evil, true, false, false);
+    let (normalized, tokens) = NetworkDetector::detect_and_replace(evil, true, false, false);
+    // A complete address followed by junk: the address is recognised and
+    // the junk stays verbatim.
+    assert_eq!(normalized, "<IP><>:\"{}|\\?/");
+    assert_eq!(
+        tokens,
+        vec![lessence::patterns::Token::IPv6(
+            "2001:0db8:85a3:0000:0000:8a2e:0370:7334".to_string()
+        )]
+    );
 }
 
 #[test]

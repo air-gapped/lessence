@@ -235,33 +235,16 @@ mod tests {
         for test_case in non_module_cases {
             let (result, tokens) = LogWithModuleDetector::detect_and_replace(test_case);
 
-            // Should not detect log-with-module pattern in non-logging contexts
-            let has_log_module = tokens.iter().any(|token| {
-                matches!(
-                    token,
-                    Token::LogWithModule {
-                        level: _,
-                        module: _
-                    }
-                )
-            });
-
-            if has_log_module {
-                // If detected, it should be a valid logging pattern
-                if let Some(Token::LogWithModule { level, module }) = tokens
-                    .iter()
-                    .find(|t| matches!(t, Token::LogWithModule { .. }))
-                {
-                    // Strict validation for potential false positives
-                    assert!(
-                        [
-                            "ERROR", "INFO", "WARN", "DEBUG", "error", "info", "warn", "debug"
-                        ]
-                        .contains(&level.as_str()),
-                        "Detected level should be valid log level: {level}"
-                    );
-                }
-            }
+            // A non-logging line never reads as a level and a module, and
+            // nothing on it is rewritten.
+            let has_log_module = tokens
+                .iter()
+                .any(|token| matches!(token, Token::LogWithModule { .. }));
+            assert!(
+                !has_log_module,
+                "not a level+module line: {test_case:?} -> {result:?} {tokens:?}"
+            );
+            assert_eq!(result, test_case, "rewritten: {tokens:?}");
         }
     }
 

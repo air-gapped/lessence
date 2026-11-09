@@ -234,34 +234,16 @@ mod tests {
         for test_case in non_structured_cases {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
-            // Should not detect structured logging patterns in non-log JSON or plain text
-            let has_structured = tokens.iter().any(|token| {
-                matches!(
-                    token,
-                    Token::StructuredMessage {
-                        component: _,
-                        level: _
-                    }
-                )
-            });
-
-            if has_structured {
-                // If detected, should be a valid structured log
-                if let Some(Token::StructuredMessage { component, level }) = tokens
-                    .iter()
-                    .find(|t| matches!(t, Token::StructuredMessage { .. }))
-                {
-                    // Very strict validation for potential false positives
-                    assert!(
-                        [
-                            "INFO", "ERROR", "WARN", "DEBUG", "TRACE", "FATAL", "info", "error",
-                            "warn", "debug", "trace", "fatal"
-                        ]
-                        .contains(&level.as_str()),
-                        "Detected level should be valid log level: {level}"
-                    );
-                }
-            }
+            // Data JSON and plain text carry no level+component structure,
+            // and nothing on them is rewritten.
+            let has_structured = tokens
+                .iter()
+                .any(|token| matches!(token, Token::StructuredMessage { .. }));
+            assert!(
+                !has_structured,
+                "not a structured log line: {test_case:?} -> {result:?} {tokens:?}"
+            );
+            assert_eq!(result, test_case, "rewritten: {tokens:?}");
         }
     }
 
