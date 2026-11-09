@@ -222,8 +222,12 @@ impl Ingestor {
                     report.fail_pattern_matched = true;
                 }
 
-                if self.strip_escapes {
-                    line = strip_terminal_escapes(&line);
+                // Borrowed when nothing was stripped, which is nearly every
+                // line: only a line that changed is copied.
+                if self.strip_escapes
+                    && let std::borrow::Cow::Owned(stripped) = strip_terminal_escapes(&line)
+                {
+                    line = stripped;
                 }
 
                 if !self.frame_continuations {
@@ -349,7 +353,9 @@ fn is_continuation(line: &str) -> bool {
 /// handles without backtracking (no nested unbounded quantifiers). Order
 /// matters: the OSC and DCS-family arms run before the generic CSI / lone-ESC
 /// arm so a whole `ESC ] ... ST` / `ESC P ... ST` is consumed as one unit.
-pub fn strip_terminal_escapes(text: &str) -> String {
+///
+/// Returns the input borrowed when there is nothing to strip.
+pub fn strip_terminal_escapes(text: &str) -> std::borrow::Cow<'_, str> {
     static ESCAPE_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(concat!(
             // OSC: ESC ] ... terminated by BEL or ST (ESC \), or unterminated to EOL.
@@ -366,7 +372,7 @@ pub fn strip_terminal_escapes(text: &str) -> String {
         ))
         .unwrap()
     });
-    ESCAPE_REGEX.replace_all(text, "").to_string()
+    ESCAPE_REGEX.replace_all(text, "")
 }
 
 #[cfg(test)]
@@ -609,6 +615,18 @@ mod tests {
         let input = "\x1b[31mERROR\x1b[0m: something failed";
         let result = strip_terminal_escapes(input);
         assert_eq!(result, "ERROR: something failed");
+    }
+
+    #[test]
+    fn a_line_with_nothing_to_strip_is_borrowed_not_copied() {
+        assert!(matches!(
+            strip_terminal_escapes("plain text"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            strip_terminal_escapes("\x1b[31mred\x1b[0m"),
+            std::borrow::Cow::Owned(_)
+        ));
     }
 
     #[test]
