@@ -48,14 +48,30 @@ pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, usize) {
     }
     let mut readers = Vec::new();
     let mut failed_sources = 0;
+    // Stdin can be locked once; a second lock would wait for the first
+    // forever, so a repeated `-` is skipped rather than opened.
+    let mut stdin_taken = false;
     for path in files {
         if path.as_os_str() == "-" {
+            if stdin_taken {
+                eprintln!("lessence: -: stdin was already named; reading it once");
+                continue;
+            }
+            stdin_taken = true;
             readers.push(InputReader {
                 source: None,
                 reader: Box::new(BufReader::new(io::stdin().lock())),
             });
         } else {
-            match File::open(path) {
+            match File::open(path).and_then(|f| {
+                // Opening a directory succeeds on Unix; reading it fails
+                // later and would abort the whole run.
+                if f.metadata()?.is_dir() {
+                    Err(io::Error::other("Is a directory"))
+                } else {
+                    Ok(f)
+                }
+            }) {
                 Ok(f) => readers.push(InputReader {
                     source: Some(path.to_string_lossy().into_owned()),
                     reader: Box::new(BufReader::new(f)),
@@ -163,6 +179,7 @@ impl Ingestor {
             sink(Event::BeginInput {
                 source: input.source.as_deref(),
             })?;
+            let input_name = input.source.clone();
             let mut source_hash = self.hash_input.then(SourceHash::default);
             // Hash below the line decoder, so delimiters, skipped lines and
             // read-ahead are included. Only publish after complete EOF.
@@ -175,12 +192,18 @@ impl Ingestor {
                 input.reader
             };
             for (line_index, line) in reader.by_ref().lines().enumerate() {
-                let mut line = line?;
+                let mut line = line.map_err(|e| {
+                    anyhow::anyhow!(
+                        "{}: line {}: {e}",
+                        input_name.as_deref().unwrap_or("<stdin>"),
+                        line_index + 1
+                    )
+                })?;
 
                 if let Some(max_lines) = self.max_lines
                     && lines_seen >= max_lines
                 {
-                    eprintln!("Line limit of {max_lines} reached, stopping processing");
+                    eprintln!("lessence: Line limit of {max_lines} reached, stopping processing");
                     report.max_lines_reached = true;
                     break 'inputs;
                 }

@@ -135,7 +135,7 @@ influences the fold; with the flag off, output is byte-identical.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--diff LESSENCE` | — | Run `LESSENCE` (another lessence binary) on the same input and print only the groups that fold differently: `joined` (used to stand alone, now folds into another), `split` (the reverse), `resized` (same group, different membership). Ends with `groups: A -> B   moved: N`. Exit 1 if anything moved, like `diff(1)`. |
+| `--diff LESSENCE` | — | Run `LESSENCE` (another lessence binary) on the same input and print only the groups that fold differently: `joined` (used to stand alone, now folds into another), `split` (the reverse), `resized` (same group, different membership). Ends with `groups: A -> B   moved: N`. Exit 1 if anything moved, like `diff(1)`; exit 2 if the comparison itself failed. Needs a FILE argument (not stdin) and takes no fold flags (`--threshold`, `--min-collapse`, `--disable-patterns`, `--frame-continuations`, `--essence`). |
 
 Reach for it after any change to `src/normalize.rs` or `src/folder/`, with the
 previous release binary as the argument. It replaces running two binaries by
@@ -214,7 +214,7 @@ sections above explain, this block is the authoritative list.
 --max-lines <MAX_LINES>    Maximum number of lines to process (stop after this count, default: no limit)
 --fail-on-pattern <FAIL_ON_PATTERN>    Exit 1 if any input line matches this regex (for CI gating)
 --threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
---diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved
+--diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved, 2 on error. Needs a FILE argument and takes no fold flags
 --completions <COMPLETIONS>    Generate shell completion script and exit
 --help-human    Short help for people and exit (this --help is written for agents) [default: false]
 FILE...    Input files (reads stdin if none given, use - for explicit stdin)

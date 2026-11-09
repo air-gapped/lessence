@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{FromArgMatches, parser::ValueSource};
 use std::io::{self, IsTerminal, Write};
 use std::time::{Duration, Instant};
 
@@ -22,7 +22,9 @@ use lessence::ingest::{self, Event, Ingestor};
 use lessence::output::write_output;
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let matches = cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let format_given = matches.value_source("format") == Some(ValueSource::CommandLine);
 
     // The early and dev dispatches below return before the fold is
     // configured, so the report flags are validated here rather than after
@@ -66,8 +68,23 @@ fn main() -> Result<()> {
     // --diff is a comparison of two binaries' output, not a fold of its own.
     // Everything below configures a fold, so it dispatches out here.
     if let Some(other) = &cli.diff {
-        let me = std::env::current_exe()?;
-        let moved = lessence::diff::run(other, &me, &cli.files, "1")?;
+        let checked = if cli.distill || cli.anonymize || cli.anonymize_words.is_some() {
+            cli.validate_distill()
+        } else {
+            cli.validate_diff()
+        };
+        if let Err(e) = checked {
+            eprintln!("lessence: {e}");
+            std::process::exit(2);
+        }
+        // 0 same, 1 something moved, 2 the comparison itself failed.
+        let moved = std::env::current_exe()
+            .map_err(anyhow::Error::from)
+            .and_then(|me| lessence::diff::run(other, &me, &cli.files, "1"))
+            .unwrap_or_else(|e| {
+                eprintln!("lessence: --diff: {e:#}");
+                std::process::exit(2);
+            });
         std::process::exit(i32::from(moved > 0));
     }
 
@@ -89,10 +106,25 @@ fn main() -> Result<()> {
 
     // Validate output format before creating config; downstream dispatch
     // compares against the canonical spelling this returns.
-    let mut format = cli::validate_format(if cli.json { "json" } else { &cli.format })?;
+    let mut format = match cli::validate_format(if cli.json { "json" } else { &cli.format }) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("lessence: {e}");
+            std::process::exit(2);
+        }
+    };
     // --explain annotates the JSON group records; there is nothing to
-    // annotate in the other formats.
+    // annotate in the other formats. A format asked for by name that cannot
+    // carry them is an error, not a silent switch to JSON.
     if cli.explain && !matches!(format.as_str(), "json" | "jsonl") {
+        if format_given {
+            eprintln!(
+                "lessence: --explain annotates JSON group records; --format {} cannot carry \
+                 them. Drop --format or use --format json",
+                cli.format
+            );
+            std::process::exit(2);
+        }
         format = "json".to_string();
     }
 
@@ -257,7 +289,9 @@ fn main() -> Result<()> {
         // Flush remaining batch buffer (parallel mode collects lines in batches)
         let _ = folder.finish()?;
 
-        folder.record_ingest_metadata(&ingest_report, failed_sources);
+        // Same accounting as the default briefing, so the two agree on the
+        // input's line count when continuations were merged.
+        folder.absorb_ingest_report(&ingest_report, failed_sources);
 
         // Output JSON analysis only
         folder.print_preflight_json(&mut io::stdout())?;

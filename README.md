@@ -207,7 +207,7 @@ the release check refuses a table generated on older folding code.
 --max-lines <MAX_LINES>    Maximum number of lines to process (stop after this count, default: no limit)
 --fail-on-pattern <FAIL_ON_PATTERN>    Exit 1 if any input line matches this regex (for CI gating)
 --threads <THREADS>    Number of threads for parallel processing (1=single-threaded, auto-detect if not specified)
---diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved
+--diff <LESSENCE>    Dev mode: run this other lessence binary on the same input and print only the groups that fold differently. Exit 1 if anything moved, 2 on error. Needs a FILE argument and takes no fold flags
 --completions <COMPLETIONS>    Generate shell completion script and exit
 --help-human    Short help for people and exit (this --help is written for agents) [default: false]
 FILE...    Input files (reads stdin if none given, use - for explicit stdin)

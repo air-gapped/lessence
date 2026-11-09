@@ -220,10 +220,12 @@ pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
             .strip_suffix(suffix)
             .or_else(|| input.strip_suffix(lower))
         {
-            return num_str
+            let n = num_str
                 .parse::<usize>()
-                .map(|n| n * multiplier)
-                .map_err(|_| format!("Invalid number before '{suffix}': {num_str}"));
+                .map_err(|_| format!("Invalid number before '{suffix}': {num_str}"))?;
+            return n
+                .checked_mul(multiplier)
+                .ok_or_else(|| format!("Size too large: {input}"));
         }
     }
 

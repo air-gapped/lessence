@@ -51,6 +51,15 @@ fn validate_threads(s: &str) -> Result<usize, String> {
     validate_count(s, 1, " (use --threads 1 for single-threaded mode)")
 }
 
+fn validate_report_max_bytes(s: &str) -> Result<usize, String> {
+    // A zero cap can never hold a report: the run would read all its input
+    // and then fail. Refuse it before any input is read.
+    match crate::config::parse_size_suffix(s)? {
+        0 => Err("must be at least 1 byte (a zero cap can never hold a report)".to_string()),
+        n => Ok(n),
+    }
+}
+
 fn validate_max_lines(s: &str) -> Result<usize, String> {
     validate_count(s, 1, "")
 }
@@ -60,15 +69,14 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
 /// `json`, or `jsonl`. Accepted aliases (`plain`, `md`, any case)
 /// normalize here so `--format md` and `--format JSON` behave exactly
 /// like their canonical forms. Called from `main` (not a clap
-/// value_parser) so the error message and exit path stay exactly as they
-/// were when this lived behind the `output::OutputFormat` enum.
+/// value_parser) so a bad value is a `lessence:` usage error with exit 2.
 pub fn validate_format(s: &str) -> anyhow::Result<String> {
     match s.to_lowercase().as_str() {
         "text" | "plain" => Ok("text".to_string()),
         "markdown" | "md" => Ok("markdown".to_string()),
         canonical @ ("json" | "jsonl") => Ok(canonical.to_string()),
         _ => Err(anyhow::anyhow!(
-            "Error: Invalid format '{s}'. Supported formats: text, markdown, json"
+            "Invalid format '{s}'. Supported formats: text (plain), markdown (md), json, jsonl"
         )),
     }
 }
@@ -233,7 +241,7 @@ pub struct Cli {
 
     /// Per-run cap on the report file (default 1G, supports K/M/G). Nothing
     /// bounds accumulated disk use across runs (default text run only)
-    #[arg(long, value_name = "N", value_parser = crate::config::parse_size_suffix, help_heading = "Output")]
+    #[arg(long, value_name = "N", value_parser = validate_report_max_bytes, help_heading = "Output")]
     pub report_max_bytes: Option<usize>,
 
     /// Do not save a report: stream today's folded text to stdout and the
@@ -281,7 +289,8 @@ pub struct Cli {
 
     // ---- Developer ----
     /// Dev mode: run this other lessence binary on the same input and print
-    /// only the groups that fold differently. Exit 1 if anything moved.
+    /// only the groups that fold differently. Exit 1 if anything moved, 2 on
+    /// error. Needs a FILE argument and takes no fold flags.
     #[arg(long, value_name = "LESSENCE", help_heading = "Developer")]
     pub diff: Option<std::path::PathBuf>,
 
@@ -419,6 +428,38 @@ impl Cli {
         }))
     }
 
+    /// `--diff` runs two other binaries over FILE and compares their JSON, so
+    /// it needs a real file path (stdin cannot be given to both) and takes
+    /// none of the flags that configure a fold: they would be silently
+    /// ignored. Every such combination is a usage error naming the flag.
+    pub fn validate_diff(&self) -> Result<(), String> {
+        if self.files.is_empty() || self.files.iter().any(|f| f.as_os_str() == "-") {
+            return Err(
+                "--diff needs a file path to compare on (stdin cannot be read by both builds)"
+                    .to_string(),
+            );
+        }
+        let ignored = [
+            (
+                self.threshold != crate::config::DEFAULT_THRESHOLD,
+                "--threshold",
+            ),
+            (
+                self.min_collapse != crate::config::DEFAULT_MIN_COLLAPSE,
+                "--min-collapse",
+            ),
+            (!self.disable_patterns.is_empty(), "--disable-patterns"),
+            (self.frame_continuations, "--frame-continuations"),
+            (self.essence, "--essence"),
+        ];
+        match ignored.into_iter().find(|(hit, _)| *hit) {
+            Some((_, flag)) => Err(format!(
+                "--diff compares the default fold of FILE; {flag} would be ignored, so it cannot be combined with --diff"
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// `--distill` / `--anonymize` write a log, not a report. Every
     /// output-mode flag would be silently ignored, so a run that asks for
     /// both is a usage error naming the pair.
@@ -550,7 +591,7 @@ mod tests {
         let err = validate_format("xml").expect_err("xml must be rejected");
         assert_eq!(
             err.to_string(),
-            "Error: Invalid format 'xml'. Supported formats: text, markdown, json"
+            "Invalid format 'xml'. Supported formats: text (plain), markdown (md), json, jsonl"
         );
     }
 }
