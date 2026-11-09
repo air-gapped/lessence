@@ -175,7 +175,9 @@ fn main() -> Result<()> {
     // JSON summary uses the regular JSONL group schema with the summary-mode
     // default cap. This keeps every flag combination machine-parseable.
     let effective_summary = requested_summary && !json_summary;
-    let effective_top = cli.top.or(json_summary.then_some(30));
+    let effective_top = cli
+        .top
+        .or(json_summary.then_some(config::DEFAULT_SUMMARY_CAP));
 
     // Detector gates start at their defaults (all enabled); each
     // --disable-patterns name expands through config::PATTERN_REGISTRY.

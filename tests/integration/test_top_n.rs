@@ -345,3 +345,12 @@ fn test_top_zero_shows_the_same_groups_as_default_on_every_distilled_corpus() {
         disagreeing.join("\n")
     );
 }
+
+#[test]
+fn summary_caps_text_and_json_at_the_same_default() {
+    let input = forty_five_distinct_patterns();
+    let (text, _) = run_stdin(&["--summary", "-q"], &input);
+    let (json, _) = run_stdin(&["--summary", "--format", "json", "-q"], &input);
+    assert_eq!(text.lines().count(), 30, "{text}");
+    assert_eq!(count_json_groups(&json), 30, "{json}");
+}
