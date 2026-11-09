@@ -6,7 +6,7 @@
 |------|-------------|
 | `--fit` / `--human` | One screen overview that stays visible after the command returns. Adapts to terminal height — no scrolling. Implies `--summary`. |
 | `--summary` | One-line-per-pattern frequency overview. Shows original representative lines, not normalized tokens. Combine with `--top N` for compact output. |
-| `--preflight` | JSON to stdout for automation/CI: the briefing (line count, levels, time span and histogram, templates, token counts) plus run metadata (version, schema_version, source, input_hash, format, degraded). |
+| `--preflight` | JSON to stdout for automation/CI: the briefing (line count, levels, time span and histogram, templates, token counts) plus run metadata (version, schema_version, source, input_hash, format, degraded). Prints nothing else, so `--top`, `--summary`, `--fit`, `--explain` and `--stats-json` with it are a usage error (exit 2) naming the flag; `-q` is accepted. |
 
 Start with `--fit` to see what's going on at a glance. Use `--summary --top 15`
 for a specific count, or drill into specific patterns with default mode.
@@ -162,7 +162,7 @@ is assigned in flush order.
 |------|---------|
 | 0 | Success (also when output pipe closes early, e.g. `\| head`) |
 | 1 | `--fail-on-pattern` matched, or a named input file could not be opened (remaining files are still processed, like cat/grep). A closed output pipe never turns this into 0, in any mode: with `--fail-on-pattern`, lessence reads on to the end of the input for the verdict |
-| 2 | Invalid `--fail-on-pattern` regex |
+| 2 | Invalid `--fail-on-pattern` regex, or a usage error: a flag the chosen mode would ignore is refused by name, never dropped silently |
 
 ## Performance
 

@@ -106,7 +106,8 @@ fn test_fit_piped_shows_full_output() {
 
 #[test]
 fn test_fit_with_preflight() {
-    // --fit --preflight should produce valid JSON (preflight takes priority)
+    // --preflight prints only the briefing, so --fit would be ignored: a
+    // usage error naming it, never a silent choice of one over the other.
     let input = "error: something\nerror: something\nerror: something\n";
 
     let mut child = lessence_bin()
@@ -125,12 +126,11 @@ fn test_fit_with_preflight() {
         .unwrap();
 
     let output = child.wait_with_output().expect("Failed to wait");
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Preflight outputs JSON
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(2), "{stderr}");
+    assert!(output.stdout.is_empty());
     assert!(
-        stdout.contains('{'),
-        "--fit --preflight should still produce JSON. Got:\n{stdout}"
+        stderr.starts_with("lessence: ") && stderr.contains("--fit"),
+        "{stderr}"
     );
 }

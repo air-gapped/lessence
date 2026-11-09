@@ -476,6 +476,7 @@ impl Cli {
             (self.explain, "--explain"),
             (self.diff.is_some(), "--diff"),
             (self.preflight, "--preflight"),
+            (self.stats_json, "--stats-json"),
         ];
         let Some((_, flag)) = conflicts.into_iter().find(|(hit, _)| *hit) else {
             return Ok(());
@@ -488,6 +489,30 @@ impl Cli {
         Err(format!(
             "{mode} writes a log, not a report; {flag} cannot be combined with it"
         ))
+    }
+
+    /// `--preflight` prints the briefing as one JSON document and nothing
+    /// else, so every flag that shapes another output would be silently
+    /// ignored: asking for one is a usage error naming it. `-q` is accepted —
+    /// it drops a rendered briefing, and `--preflight` renders none.
+    pub fn validate_preflight(&self) -> Result<(), String> {
+        if !self.preflight {
+            return Ok(());
+        }
+        let ignored = [
+            (self.top.is_some(), "--top"),
+            (self.summary, "--summary"),
+            (self.fit, "--fit"),
+            (self.explain, "--explain"),
+            (self.stats_json, "--stats-json"),
+        ];
+        match ignored.into_iter().find(|(hit, _)| *hit) {
+            Some((_, flag)) => Err(format!(
+                "--preflight prints only the briefing as JSON; {flag} would be ignored, so drop \
+                 {flag}, or drop --preflight to get the output {flag} shapes"
+            )),
+            None => Ok(()),
+        }
     }
 }
 

@@ -103,6 +103,10 @@ fn main() -> Result<()> {
         eprintln!("lessence: {e}");
         std::process::exit(2);
     }
+    if let Err(e) = cli.validate_preflight() {
+        eprintln!("lessence: {e}");
+        std::process::exit(2);
+    }
 
     // Validate output format before creating config; downstream dispatch
     // compares against the canonical spelling this returns.
@@ -164,7 +168,7 @@ fn main() -> Result<()> {
         format = "json".to_string();
     }
 
-    let requested_summary = cli.summary || (cli.fit && cli.top.is_none() && !cli.preflight);
+    let requested_summary = cli.summary || (cli.fit && cli.top.is_none());
     let json_summary = requested_summary && matches!(format.as_str(), "json" | "jsonl");
     let json_summary_default_cap = json_summary && cli.top.is_none();
     // JSON summary uses the regular JSONL group schema with the summary-mode
