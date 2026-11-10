@@ -322,13 +322,48 @@ impl Sanitizer {
     }
 
     fn mask(&self, text: &str, hints: &[Token]) -> String {
+        let regions = self.regions(text, hints);
+        if regions.is_empty() {
+            return text.to_string();
+        }
+        render(text, &regions)
+    }
+
+    /// The part of `text` at `range` as the masked `text` shows it, and the
+    /// byte offset where that part starts in the masked text. The values are
+    /// found in the whole of `text`, so a piece of one that `range` holds
+    /// (`password=hunter2` as a word of a line) is masked as the line masks
+    /// it, and a value `range` only partly covers is its whole tag.
+    pub fn mask_range(&self, text: &str, hints: &[Token], range: Range<usize>) -> (String, usize) {
+        let regions = self.regions(text, hints);
+        let at = masked_offset(&regions, range.start);
+        if range.is_empty() {
+            return (String::new(), at);
+        }
+        (render_window(text, &regions, range), at)
+    }
+
+    /// The credentials `line` holds, found once so that each value cut from
+    /// the line can be masked where it stands in it. `None` when the run
+    /// masks no credentials or the line holds none.
+    pub fn line_secrets<'a>(&self, line: &'a str) -> Option<LineSecrets<'a>> {
+        let mut spans = Vec::new();
+        self.credential_spans(line, &mut spans);
+        if spans.is_empty() {
+            return None;
+        }
+        Some(LineSecrets {
+            line,
+            regions: self.merge_spans(line, spans),
+        })
+    }
+
+    /// Every region of `text` the masker replaces, in text order.
+    fn regions(&self, text: &str, hints: &[Token]) -> Vec<Region> {
         let mut spans: Vec<Span> = Vec::new();
         self.credential_spans(text, &mut spans);
         self.entity_spans(text, hints, &mut spans);
-        if spans.is_empty() {
-            return text.to_string();
-        }
-        self.replace_spans(text, spans)
+        self.merge_spans(text, spans)
     }
 
     /// Where each credential shape puts its secret, ranked in the order the
@@ -410,14 +445,13 @@ impl Sanitizer {
         }
     }
 
-    /// Replace every span. Overlapping spans are merged into one region,
-    /// and the region takes the tag of its highest-ranked span (a
-    /// credential first, then the longest value), computed over the whole
-    /// region, so a pseudonym is a function of the text it replaces.
-    fn replace_spans(&self, text: &str, mut spans: Vec<Span>) -> String {
+    /// The regions every span is replaced over. Overlapping spans are merged
+    /// into one region, and the region takes the tag of its highest-ranked
+    /// span (a credential first, then the longest value), computed over the
+    /// whole region, so a pseudonym is a function of the text it replaces.
+    fn merge_spans(&self, text: &str, mut spans: Vec<Span>) -> Vec<Region> {
         spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
-        let mut out = String::with_capacity(text.len());
-        let mut copied = 0;
+        let mut regions = Vec::new();
         let mut i = 0;
         while i < spans.len() {
             let start = spans[i].start;
@@ -431,13 +465,14 @@ impl Sanitizer {
                 }
                 j += 1;
             }
-            out.push_str(&text[copied..start]);
-            out.push_str(&self.tag(best.entity, best.class, &text[start..end]));
-            copied = end;
+            regions.push(Region {
+                start,
+                end,
+                tag: self.tag(best.entity, best.class, &text[start..end]),
+            });
             i = j;
         }
-        out.push_str(&text[copied..]);
-        out
+        regions
     }
 
     /// The rollup entries whose samples are values of an enabled entity,
@@ -465,10 +500,101 @@ impl Sanitizer {
         self.tag(entity, class, value)
     }
 
+    /// Whether the run masks values of `entity`.
+    pub fn names(&self, entity: Entity) -> bool {
+        self.action(entity).is_some()
+    }
+
     /// Whether the run credential-masks at all — the essence-mode path
     /// only ever had credentials to mask.
     pub fn masks_credentials(&self) -> bool {
         self.action(Entity::Credential).is_some()
+    }
+}
+
+/// One replaced region of a text: its byte range and the tag it becomes.
+/// Regions are disjoint and in text order.
+struct Region {
+    start: usize,
+    end: usize,
+    tag: String,
+}
+
+/// `text` with every region replaced by its tag.
+fn render(text: &str, regions: &[Region]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for r in regions {
+        out.push_str(&text[copied..r.start]);
+        out.push_str(&r.tag);
+        copied = r.end;
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// The part of `text` at `range` with every region it touches replaced by
+/// its tag: a region the range only partly covers is its whole tag.
+fn render_window(text: &str, regions: &[Region], range: Range<usize>) -> String {
+    let mut out = String::new();
+    let mut copied = range.start;
+    for r in regions
+        .iter()
+        .filter(|r| r.start < range.end && range.start < r.end)
+    {
+        if copied < r.start {
+            out.push_str(&text[copied..r.start]);
+        }
+        out.push_str(&r.tag);
+        copied = r.end;
+    }
+    if copied < range.end {
+        out.push_str(&text[copied..range.end]);
+    }
+    out
+}
+
+/// Where byte `pos` of a text stands once its regions are replaced. A
+/// position inside a region stands at the start of its tag.
+fn masked_offset(regions: &[Region], pos: usize) -> usize {
+    let mut removed = 0;
+    let mut added = 0;
+    for r in regions {
+        if r.end <= pos {
+            removed += r.end - r.start;
+            added += r.tag.len();
+        } else {
+            if r.start < pos {
+                return r.start - removed + added;
+            }
+            break;
+        }
+    }
+    pos - removed + added
+}
+
+/// The credentials of one line ([`Sanitizer::line_secrets`]).
+pub struct LineSecrets<'a> {
+    line: &'a str,
+    regions: Vec<Region>,
+}
+
+impl LineSecrets<'_> {
+    /// `value` as the masked line shows it where it stands in the line:
+    /// `pw@db.example.com`, cut from `scheme://user:pw@db.example.com`,
+    /// reads `<SECRET>@db.example.com`. `None` when no credential of the
+    /// line touches it.
+    pub fn mask(&self, value: &str) -> Option<String> {
+        if value.is_empty() {
+            return None;
+        }
+        self.line.match_indices(value).find_map(|(start, _)| {
+            let range = start..start + value.len();
+            self.regions
+                .iter()
+                .any(|r| r.start < range.end && range.start < r.end)
+                .then(|| render_window(self.line, &self.regions, range))
+        })
     }
 }
 
@@ -509,6 +635,20 @@ impl Span {
             other.start,
         )
     }
+}
+
+/// A rollup sample of an entity type as the token it was cut from, so the
+/// masker can look for it in other text. `None` for any other type.
+pub(crate) fn entity_token(type_name: &str, value: &str) -> Option<Token> {
+    let value = value.to_string();
+    Some(match type_name {
+        "EMAIL" => Token::Email(value),
+        "FQDN" => Token::Fqdn(value),
+        "HOST" => Token::Host(value),
+        "IPV4" => Token::IPv4(value),
+        "IPV6" => Token::IPv6(value),
+        _ => return None,
+    })
 }
 
 /// The entity, tag class and value of a token the masker acts on.
@@ -787,6 +927,57 @@ mod tests {
             ),
             format!("peer {tag} url http://{tag}:80/x")
         );
+    }
+
+    #[test]
+    fn a_range_reads_as_the_masked_text_reads_it() {
+        let z = s(&["credential", "ip"], false).unwrap();
+        let text = r#"api_key: "Heron5 Stoat8" from 198.51.100.21 ok"#;
+        let masked = z.mask_text(text);
+        assert_eq!(masked, "api_key: <SECRET> from <IP> ok");
+        let range = |word: &str| {
+            let at = text.find(word).unwrap();
+            at..at + word.len()
+        };
+        // A word holding part of a value is that value's whole tag.
+        for word in [r#""Heron5"#, r#"Stoat8""#] {
+            let (shown, at) = z.mask_range(text, &[], range(word));
+            assert_eq!((shown.as_str(), at), ("<SECRET>", 9), "{word}");
+        }
+        // A word after a masked value keeps its offset in the masked text.
+        for word in ["from", "198.51.100.21", "ok"] {
+            let (shown, at) = z.mask_range(text, &[], range(word));
+            let expected = if word == "198.51.100.21" {
+                "<IP>"
+            } else {
+                word
+            };
+            assert_eq!(shown, expected);
+            assert_eq!(&masked[at..at + shown.len()], expected, "{word}");
+        }
+        assert_eq!(z.mask_range(text, &[], 0..8), ("api_key:".to_string(), 0));
+        assert_eq!(
+            z.mask_range(text, &[], text.len()..text.len()),
+            (String::new(), masked.len())
+        );
+    }
+
+    #[test]
+    fn a_value_cut_from_a_line_is_masked_where_it_stands() {
+        let line = "dial postgres://app:Gale4Hollow@db.example.com:5432/x as app";
+        assert!(s(&["host"], false).unwrap().line_secrets(line).is_none());
+        let z = s(&["credential"], false).unwrap();
+        assert!(z.line_secrets("dial postgres://db.example.com/x").is_none());
+        let secrets = z.line_secrets(line).unwrap();
+        assert_eq!(
+            secrets.mask("Gale4Hollow@db.example.com").as_deref(),
+            Some("<SECRET>@db.example.com")
+        );
+        assert_eq!(secrets.mask("Hollow@db").as_deref(), Some("<SECRET>@db"));
+        assert_eq!(secrets.mask("app:Gale4").as_deref(), Some("app:<SECRET>"));
+        assert_eq!(secrets.mask("//app"), None);
+        assert_eq!(secrets.mask("absent"), None);
+        assert_eq!(secrets.mask(""), None);
     }
 
     #[test]

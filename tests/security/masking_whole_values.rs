@@ -286,6 +286,179 @@ fn ranked_output_masks_every_template() {
     }
 }
 
+/// `--explain` names the first word two lines differ in. That word is
+/// shown as the masked line shows it, and its offset points into the
+/// masked `normalized` text.
+#[test]
+fn explain_shows_the_first_difference_masked() {
+    let dir = scratch();
+    let mut lines: Vec<String> = (1..=3)
+        .map(|i| format!("login user=bob password=Wren{i}Fable9 ok"))
+        .collect();
+    lines.push("login user=bob token=Quill7Marsh ok then stop".to_string());
+    lines.push("login user=bob api_key: \"Heron5 Stoat8\" from 198.51.100.21".to_string());
+    lines.push("login user=bob api_key: \"Heron6 Stoat8\" from 198.51.100.22".to_string());
+    let input = write_input(dir.path(), &lines);
+    let secrets: &[&str] = &["Fable9", "Quill7Marsh", "Stoat8", "Heron", "198.51.100"];
+    for args in [
+        &["--sanitize", "credential,ip"][..],
+        &["--sanitize", "credential:pseudonym,ip:pseudonym"],
+        &["--sanitize-pii", "--sanitize", "ip"],
+        &[
+            "--sanitize",
+            "credential,ip",
+            "--disable-patterns",
+            "quoted-string",
+        ],
+    ] {
+        let run = bin()
+            .args(args)
+            .arg("--explain")
+            .arg(&input)
+            .output()
+            .expect("run lessence");
+        assert!(run.status.success(), "{args:?}");
+        let out = String::from_utf8_lossy(&run.stdout);
+        let err = String::from_utf8_lossy(&run.stderr);
+        for value in secrets {
+            assert!(
+                !out.contains(value) && !err.contains(value),
+                "{args:?}: {value:?} is in:\n{out}{err}"
+            );
+        }
+        let mut diffs = 0;
+        for record in out.lines() {
+            let record: serde_json::Value = serde_json::from_str(record).expect("JSONL");
+            let Some(diff) = record["nearest"]["first_diff"].as_object() else {
+                continue;
+            };
+            diffs += 1;
+            if record["count"] != 1 {
+                continue;
+            }
+            let normalized = record["normalized"].as_str().expect("normalized");
+            let at = diff["at"].as_u64().expect("at") as usize;
+            let ours = diff["ours"].as_str().expect("ours");
+            assert!(
+                normalized
+                    .get(at..)
+                    .is_some_and(|rest| rest.starts_with(ours)),
+                "{args:?}: {ours:?} is not at {at} of {normalized:?}"
+            );
+        }
+        assert!(diffs >= 3, "{args:?}: no first_diff records:\n{out}");
+    }
+}
+
+/// A rollup sample that holds a longer value beside a shorter one of the
+/// same group (a path through `192.0.2.123` in a group that also names
+/// `192.0.2.1`) has the longer value replaced whole.
+#[test]
+fn a_rollup_sample_masks_each_value_whole() {
+    let dir = scratch();
+    let lines: Vec<String> = (1..=4)
+        .map(|i| format!("copy {i} from 192.0.2.1 to /data/192.0.2.123/out"))
+        .collect();
+    let input = write_input(dir.path(), &lines);
+    let values: &[&str] = &["192.0.2.1", "23/out"];
+    assert_absent_everywhere(
+        &input,
+        &[
+            (&["--sanitize", "ip"], values),
+            (&["--sanitize", "ip:pseudonym"], values),
+        ],
+    );
+    let out = run(&input, &["--sanitize", "ip"], &["--no-report"]);
+    assert!(out.contains("{/data/<IP>/out}"), "{out}");
+}
+
+/// A credential that folds is masked in the rollup too: a sample a
+/// detector reads out of it (the `password@host` of a URL, a path inside a
+/// header's credentials) is counted as the masked line shows it, whichever
+/// entities the run names.
+#[test]
+fn a_folded_credential_is_masked_in_every_sample() {
+    let dir = scratch();
+    let mut lines = Vec::new();
+    for (i, pw) in ["Gale4Hollow", "Brook9Cinder", "Fern6Thistle", "Moss2Quarry"]
+        .iter()
+        .enumerate()
+    {
+        lines.push(format!(
+            "dial postgres://app:{pw}@db.example.com:5432/x ok {i}"
+        ));
+        lines.push(format!(
+            "GET /api {i} Authorization: Basic WnBx/{pw}/cjN0UGFz"
+        ));
+    }
+    let input = write_input(dir.path(), &lines);
+    let secrets: &[&str] = &["Gale4", "Brook9", "Fern6", "Moss2", "cjN0UGFz"];
+    assert_absent_everywhere(
+        &input,
+        &[
+            (&["--sanitize", "credential"], secrets),
+            (&["--sanitize", "credential:pseudonym"], secrets),
+            (&["--sanitize", "credential,host"], secrets),
+            (&["--sanitize-pii"], secrets),
+        ],
+    );
+    let out = run(&input, &["--sanitize", "credential"], &["--no-report"]);
+    assert!(out.contains("{<SECRET>@db.example.com}"), "{out}");
+}
+
+/// An entity `--sanitize` names is still found and folded as one value
+/// when `--disable-patterns` names the detector that finds it, so the
+/// template and the rollup hold its tag, never a piece of it.
+#[test]
+fn a_named_entity_is_found_with_its_detector_disabled() {
+    let dir = scratch();
+    let lines: Vec<String> = (1..=4)
+        .map(|i| {
+            let host = if i % 2 == 0 { "gwlab-b" } else { "gwlab" };
+            format!(
+                "Nov 10 10:00:0{i} {host} sshd[12{i}]: accepted carol{i}@example.com \
+                 from 192.0.2.7{i} port 22 id{i}"
+            )
+        })
+        .collect();
+    let input = write_input(dir.path(), &lines);
+    let ips: &[&str] = &["0.2.7"];
+    let hosts: &[&str] = &["gwlab"];
+    let emails: &[&str] = &["carol"];
+    assert_absent_everywhere(
+        &input,
+        &[
+            (&["--sanitize", "ip", "--disable-patterns", "network"], ips),
+            (
+                &[
+                    "--sanitize",
+                    "ip:pseudonym",
+                    "--disable-patterns",
+                    "network",
+                ],
+                ips,
+            ),
+            (
+                &["--sanitize", "host", "--disable-patterns", "timestamp"],
+                hosts,
+            ),
+            (
+                &[
+                    "--sanitize",
+                    "host:pseudonym",
+                    "--disable-patterns",
+                    "timestamp,network",
+                ],
+                hosts,
+            ),
+            (
+                &["--sanitize", "email", "--disable-patterns", "email,network"],
+                emails,
+            ),
+        ],
+    );
+}
+
 #[test]
 fn an_address_with_any_port_is_replaced() {
     let dir = scratch();

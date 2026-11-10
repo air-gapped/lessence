@@ -83,7 +83,7 @@ The report directory is never pruned. Delete old `run-*` directories yourself.
 | `--essence` | off | Strip timestamps before normalization. Lines differing only by time merge. Useful for comparing log structure across time periods. |
 | `--threshold N` | 83 | Similarity percentage (0-100) required to group lines — since 0.4.4, the share of whitespace tokens two normalized lines have in common (longest common subsequence, so an inserted token no longer breaks grouping). Lower (e.g. 75) = more aggressive grouping but re-merges distinct HTTP status classes and boolean states; raise toward 88-92 only when per-message splitting matters more than fold cost (~2x output and time on diverse corpora). |
 | `--min-collapse N` | 3 | Minimum lines in a group before folding. 3 is also the floor — the binary rejects lower values. |
-| `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. |
+| `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. A detector that finds an entity `--sanitize` names stays on: `email` keeps `email`, `ip` keeps the address part of `network`, `host` keeps the host part of `network` and `timestamp` (a syslog host is placed by the timestamp before it). |
 
 ### Valid pattern names for `--disable-patterns`
 
@@ -97,7 +97,7 @@ Example: `--disable-patterns timestamp,uuid` to keep timestamps and UUIDs litera
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--sanitize ENTITY[:ACTION]` | off | Mask one entity: `email`, `credential`, `host` or `ip`. Action `redact` (default) gives the class tag (`<HOST>`); `pseudonym` gives a keyed tag (`<HOST:1a2b3c4d5e6f7a8b>`, HMAC-SHA256 under a 256-bit per-run key, truncated to 64 bits) that is the same for the same value within a run, so a masked host still folds with itself and the rollup still counts distinct hosts. The key is drawn per run; to correlate hosts across two runs, set `LESSENCE_SANITIZE_KEY` to the same value for both. Repeatable or comma-separated (`--sanitize host,ip:pseudonym`). Masks the shown lines, the template and every rollup sample. |
+| `--sanitize ENTITY[:ACTION]` | off | Mask one entity: `email`, `credential`, `host` or `ip`. Action `redact` (default) gives the class tag (`<HOST>`); `pseudonym` gives a keyed tag (`<HOST:1a2b3c4d5e6f7a8b>`, HMAC-SHA256 under a 256-bit per-run key, truncated to 64 bits) that is the same for the same value within a run, so a masked host still folds with itself and the rollup still counts distinct hosts. The key is drawn per run; to correlate hosts across two runs, set `LESSENCE_SANITIZE_KEY` to the same value for both. Repeatable or comma-separated (`--sanitize host,ip:pseudonym`). Masks the shown lines, the template, every rollup sample and the `--explain` `first_diff` words. |
 | `--sanitize-pii` | off | Exactly `--sanitize email,credential`, never widened. Mask emails (`<EMAIL>`) and credential-class values: `key=value`/`key: value` assignments to credential-named keys (`<SECRET>`), JWTs (`<JWT>`), and `sk-`/`ghp_`/`xox`-style provider keys (`<KEY>`). `credential` also masks the credentials of an `Authorization` header or `Bearer` token and the password in a URL userinfo (`<SECRET>`). |
 | `--max-line-length N` | 1MB | Skip lines exceeding this length. Supports K/M/G suffixes. |
 | `--max-lines N` | unlimited | Stop processing after N lines. |

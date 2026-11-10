@@ -200,6 +200,29 @@ impl Config {
             .or_else(|| self.sanitize_pii.then(crate::sanitize::Sanitizer::legacy))
     }
 
+    /// Turn back on the detectors that find an entity `--sanitize` names,
+    /// whatever `--disable-patterns` said: a value is masked whole only when
+    /// a detector has made it one token, so the folded template and every
+    /// rollup sample hold its tag and never pieces of it. `host` keeps the
+    /// timestamp detector as well, since a syslog host is the word placed
+    /// after a line's timestamp.
+    pub fn keep_sanitized_detectors(&mut self) {
+        use crate::sanitize::Entity;
+        let Some(z) = self.sanitizer() else {
+            return;
+        };
+        if z.names(Entity::Email) {
+            self.normalize_emails = true;
+        }
+        if z.names(Entity::Ip) {
+            self.normalize_ips = true;
+        }
+        if z.names(Entity::Host) {
+            self.normalize_fqdns = true;
+            self.normalize_timestamps = true;
+        }
+    }
+
     /// Enable or disable one user-facing pattern group by name, expanding
     /// it to its detector gates via [`PATTERN_REGISTRY`]. Returns `false`
     /// when the name is not a registered pattern group.
@@ -240,6 +263,43 @@ pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each named entity turns back on exactly the detectors that find it;
+    /// a run that sanitizes nothing keeps every gate as it was set.
+    #[test]
+    fn a_sanitized_entity_keeps_its_detectors() {
+        let all_off = |sanitize: &[&str], pii: bool| {
+            let specs: Vec<String> = sanitize.iter().map(ToString::to_string).collect();
+            let mut c = Config {
+                sanitize: crate::sanitize::Sanitizer::parse(&specs, false).unwrap(),
+                sanitize_pii: pii,
+                ..Config::default()
+            };
+            for entry in PATTERN_REGISTRY {
+                c.set_pattern_enabled(entry.name, false);
+            }
+            c.keep_sanitized_detectors();
+            (
+                c.normalize_emails,
+                c.normalize_ips,
+                c.normalize_fqdns,
+                c.normalize_timestamps,
+                c.normalize_ports || c.normalize_pids || c.normalize_paths,
+            )
+        };
+        assert_eq!(all_off(&[], false), (false, false, false, false, false));
+        assert_eq!(
+            all_off(&["credential"], false),
+            (false, false, false, false, false)
+        );
+        assert_eq!(all_off(&[], true), (true, false, false, false, false));
+        assert_eq!(
+            all_off(&["email"], false),
+            (true, false, false, false, false)
+        );
+        assert_eq!(all_off(&["ip"], false), (false, true, false, false, false));
+        assert_eq!(all_off(&["host"], false), (false, false, true, true, false));
+    }
 
     // ---- parse_size_suffix ----
 
