@@ -5,6 +5,71 @@ fn lessence_bin() -> Command {
     Command::new(env!("CARGO_BIN_EXE_lessence"))
 }
 
+/// stdout, and the `--stats-json` record (the last stderr line) of one run.
+fn stats_of(args: &[&str], input: &str) -> (String, serde_json::Value) {
+    let mut child = lessence_bin()
+        .args(args)
+        .arg("--stats-json")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("Failed to read output");
+    assert!(out.status.success(), "{args:?}: {out:?}");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let record = stderr.lines().last().unwrap_or_default();
+    let stats = serde_json::from_str(record)
+        .unwrap_or_else(|e| panic!("{args:?}: no stats record ({e}): {stderr}"));
+    (String::from_utf8_lossy(&out.stdout).into_owned(), stats)
+}
+
+#[test]
+fn summary_stats_agree_with_top_and_the_default_run() {
+    // Seven physical lines: four that fold, one event, two indented frames
+    // that --frame-continuations attaches to it.
+    let input = "courier 11 picked parcel north\n\
+                 courier 12 picked parcel north\n\
+                 courier 13 picked parcel north\n\
+                 courier 14 picked parcel north\n\
+                 ledger mismatch on drawer seven\n\
+                 \x20   at till reconcile\n\
+                 \x20   at till close\n";
+    for extra in [&[][..], &["--frame-continuations"]] {
+        let (printed, summary) = stats_of(&[&["--summary"][..], extra].concat(), input);
+        let (_, default) = stats_of(&[&["--no-report"][..], extra].concat(), input);
+        let (_, top) = stats_of(&[&["--top", "0"][..], extra].concat(), input);
+
+        assert_eq!(summary["input_lines"], 7, "{extra:?}: {summary}");
+        assert_eq!(summary["input_lines"], default["input_lines"], "{extra:?}");
+        assert_eq!(
+            summary["output_lines"],
+            printed.lines().count(),
+            "{extra:?}: the lines the summary printed: {printed}"
+        );
+        for field in ["compression_ratio", "collapsed_groups", "lines_saved"] {
+            assert_eq!(
+                summary[field], top[field],
+                "{extra:?} {field}: {summary} vs {top}"
+            );
+            assert_eq!(
+                summary[field], default[field],
+                "{extra:?} {field}: {summary} vs {default}"
+            );
+        }
+        assert_ne!(
+            summary["collapsed_groups"], 0,
+            "{extra:?}: the courier lines fold"
+        );
+    }
+}
+
 #[test]
 fn test_stats_json_emits_valid_json_on_stderr() {
     let mut child = lessence_bin()

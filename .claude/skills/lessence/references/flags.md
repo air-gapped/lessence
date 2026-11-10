@@ -17,7 +17,7 @@ for a specific count, or drill into specific patterns with default mode.
 |------|---------|-------------|
 | `--format text\|markdown\|json` | `text` | Output format. `json` emits JSONL with per-group rollup metadata (best for agents — see SKILL.md). Markdown adds headers and code blocks for reports. |
 | `-q` / `--quiet` | off | Suppress statistics footer. Alias: `--no-stats`. |
-| `--stats-json` | off | Emit JSON statistics to stderr instead of the human-readable footer (which also goes to stderr since 0.4.4 — stdout carries only log output). |
+| `--stats-json` | off | Emit JSON statistics to stderr instead of the human-readable footer (which also goes to stderr since 0.4.4 — stdout carries only log output). The default run, `--summary` and `--top N` report the same `input_lines` (every physical line, continuations included) and compute `compression_ratio` and `collapsed_groups` the same way; `output_lines` is what that mode printed. |
 | `--top N` | off | Show only the N most frequent patterns, sorted by count descending. `--top 0` shows all patterns, in every mode. |
 
 ## The saved report (default runs)

@@ -181,20 +181,26 @@ impl PatternFolder {
         Ok(serde_json::to_string(&record)?)
     }
 
-    /// The one definition of what a group saves (invariant 2 above), shared
-    /// by the text and JSON renderers so every mode reports the same
-    /// `lines_saved` for the same fold. A collapsed group preserves 3 lines
-    /// (first + marker + last); in essence mode a group is shown once, so
-    /// every further member is saved. `saturating_sub` guards a
-    /// directly-constructed Config (the CLI floor is 3, but
+    /// What a group saves; see [`Self::account_count`].
+    fn account_savings(&mut self, group: &PatternGroup) {
+        self.account_count(group.count());
+    }
+
+    /// The one definition of what a group of `count` lines saves (invariant
+    /// 2 above), shared by the text, JSON and summary renderers so every
+    /// mode reports the same `lines_saved` for the same fold. A collapsed
+    /// group (`count >= min_collapse`, as `PatternGroup::should_collapse`)
+    /// preserves 3 lines (first + marker + last); in essence mode a group is
+    /// shown once, so every further member is saved. `saturating_sub` guards
+    /// a directly-constructed Config (the CLI floor is 3, but
     /// `Config.min_collapse` is a public field) that lets a 2-line group
     /// reach here and underflow count - 3.
-    fn account_savings(&mut self, group: &PatternGroup) {
+    fn account_count(&mut self, count: usize) {
         if self.config.essence_mode {
-            self.stats.lines_saved += group.count().saturating_sub(1);
-        } else if group.should_collapse(self.config.min_collapse) {
+            self.stats.lines_saved += count.saturating_sub(1);
+        } else if count >= self.config.min_collapse {
             self.stats.collapsed_groups += 1;
-            self.stats.lines_saved += group.count().saturating_sub(3);
+            self.stats.lines_saved += count.saturating_sub(3);
         }
     }
 
@@ -335,6 +341,7 @@ impl PatternFolder {
         let (display, total_patterns, was_capped, fit_truncated) =
             self.prepare_summary(top_n, fit_budget)?;
         let shown_count = display.len();
+        self.account_summary(&display);
 
         // Detect terminal width for summary truncation (unlimited when piped)
         use std::io::IsTerminal;
@@ -376,6 +383,16 @@ impl PatternFolder {
         );
 
         Ok(())
+    }
+
+    /// Count what a `--summary` run shows, so its `--stats-json` agrees with
+    /// `--top N` and the default run: one printed line per entry, and each
+    /// entry's count saved by the arithmetic every mode shares.
+    pub(super) fn account_summary(&mut self, display: &[(usize, String)]) {
+        for (count, _) in display {
+            self.account_count(*count);
+        }
+        self.stats.output_lines += display.len();
     }
 
     /// Emit the terminal summary record for a JSONL stream. Called once,

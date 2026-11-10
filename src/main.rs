@@ -335,6 +335,10 @@ fn main() -> Result<()> {
         }
         // Flush and output as summary (one line per group, sorted by count)
         folder.finish_summary(config.top_n, fit_budget)?;
+        // Absorbed after the summary, not before: its coverage line counts
+        // the records shown against the records read, while the statistics
+        // count the file, continuation lines included, like every other mode.
+        folder.absorb_ingest_report(&ingest_report, failed_sources);
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed())?;
         }
