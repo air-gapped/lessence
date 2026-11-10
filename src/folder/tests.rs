@@ -708,7 +708,13 @@ fn retained_alignment_cap_reports_unknown_counts_instead_of_partial_counts() {
     let mut group = PatternGroup::new(make_line("worker alpha ready now", vec![]), 0);
     let mut state = computer.seed(&group);
     for text in ["worker alpha now", "worker ready now", "worker now"] {
-        computer.accumulate_retained_varies(&make_line(text, vec![]), &group.template, &mut state);
+        let template = VariesSlots::new(&group.template, &unit_spans(&group.template));
+        computer.accumulate_retained_varies(
+            &make_line(text, vec![]),
+            &unit_spans(text),
+            &template,
+            &mut state,
+        );
     }
     assert_eq!(state.realign.len(), 2);
     assert!(state.realign_capped);
@@ -6491,9 +6497,9 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
         ..RetainedState::default()
     };
     state.varies.insert("old".to_string(), 2);
-    rc.accumulate_new_varies("a old b", &[(2, 3)], &mut state);
+    rc.accumulate_new_varies("a old b", &unit_spans("a old b"), &[(2, 3)], &mut state);
     assert_eq!(state.varies["old"], 5);
-    rc.accumulate_new_varies("a new b", &[(2, 3)], &mut state);
+    rc.accumulate_new_varies("a new b", &unit_spans("a new b"), &[(2, 3)], &mut state);
     assert!(state.varies_capped, "{:?}", state.varies);
     assert_eq!(state.varies.len(), 1);
 

@@ -258,13 +258,30 @@ impl PatternGroup {
         rollup_computer: &RollupComputer,
         min_collapse: usize,
     ) {
+        // The line's units and the template's, each split once and shared
+        // by the template edit and the rollup below.
+        let line_units = unit_spans(&line.normalized);
+        let mut template_units = unit_spans(&self.template);
         if line.hash != self.first().hash {
-            let edits = varying_spans(&self.template, &line.normalized);
-            if let Some(state) = &mut self.retained {
-                rollup_computer.accumulate_new_varies(&self.template, &edits, state);
-            }
-            for (at, len) in edits.into_iter().rev() {
-                self.template.replace_range(at..at + len, VARIES_MARK);
+            let edits = varying_spans_in(
+                &self.template,
+                &template_units,
+                &line.normalized,
+                &line_units,
+            );
+            if !edits.is_empty() {
+                if let Some(state) = &mut self.retained {
+                    rollup_computer.accumulate_new_varies(
+                        &self.template,
+                        &template_units,
+                        &edits,
+                        state,
+                    );
+                }
+                for (at, len) in edits.into_iter().rev() {
+                    self.template.replace_range(at..at + len, VARIES_MARK);
+                }
+                template_units = unit_spans(&self.template);
             }
         }
         self.count += 1;
@@ -272,7 +289,8 @@ impl PatternGroup {
         self.last_source_id = location.source_id;
         if let Some(state) = &mut self.retained {
             rollup_computer.accumulate_tokens(std::slice::from_ref(&line), &mut state.per_type);
-            rollup_computer.accumulate_retained_varies(&line, &self.template, state);
+            let template = VariesSlots::new(&self.template, &template_units);
+            rollup_computer.accumulate_retained_varies(&line, &line_units, &template, state);
         }
         if self.lines.len() + 1 == self.count {
             // Every earlier member is still held.
@@ -341,8 +359,10 @@ impl PatternGroup {
             rollup_computer.merge_retained(state, from);
         } else {
             rollup_computer.accumulate_tokens(&other.lines, &mut state.per_type);
+            let template = VariesSlots::new(&self.template, &unit_spans(&self.template));
             for line in &other.lines {
-                rollup_computer.accumulate_retained_varies(line, &self.template, state);
+                let line_units = unit_spans(&line.normalized);
+                rollup_computer.accumulate_retained_varies(line, &line_units, &template, state);
             }
         }
         let first = self.lines[0].clone();
@@ -1381,14 +1401,23 @@ fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
 /// that differs (unless the template already varies there), minus a shared
 /// field prefix, plus every template word the member has no counterpart for.
 fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
-    let spans = unit_spans(template);
+    varying_spans_in(template, &unit_spans(template), member, &unit_spans(member))
+}
+
+/// `varying_spans` for a template and member already split into units.
+fn varying_spans_in(
+    template: &str,
+    spans: &[(usize, usize)],
+    member: &str,
+    member_spans: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
     let tmpl: Vec<&str> = spans
         .iter()
         .map(|&(at, len)| &template[at..at + len])
         .collect();
-    let mem: Vec<&str> = unit_spans(member)
-        .into_iter()
-        .map(|(at, len)| &member[at..at + len])
+    let mem: Vec<&str> = member_spans
+        .iter()
+        .map(|&(at, len)| &member[at..at + len])
         .collect();
     let aligned = align_words(&tmpl, &mem);
     let mut edits = Vec::new();
@@ -1664,6 +1693,32 @@ pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
         }
     }
     split
+}
+
+/// A template as the rollup reads it: its units, and for each `<VARIES>`
+/// slot the unit it sits in and the lengths of the literal text kept
+/// before and after it (`msg=<VARIES>` keeps `msg=`).
+struct VariesSlots<'t> {
+    words: Vec<&'t str>,
+    slots: Vec<(usize, usize, usize)>,
+}
+
+impl<'t> VariesSlots<'t> {
+    fn new(template: &'t str, units: &[(usize, usize)]) -> Self {
+        let words: Vec<&str> = units
+            .iter()
+            .map(|&(at, len)| &template[at..at + len])
+            .collect();
+        let slots = words
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| {
+                w.find(VARIES_MARK)
+                    .map(|k| (i, k, w.len() - k - VARIES_MARK.len()))
+            })
+            .collect();
+        Self { words, slots }
+    }
 }
 
 /// How many words two lines disagree in where the disagreement is one of
@@ -2039,52 +2094,65 @@ impl RollupComputer {
         varies: &mut HashMap<String, usize>,
         varies_capped: &mut bool,
     ) {
-        let tmpl_words: Vec<&str> = unit_spans(template)
-            .into_iter()
-            .map(|(at, len)| &template[at..at + len])
-            .collect();
-        let slots: Vec<(usize, usize, usize)> = tmpl_words
-            .iter()
-            .enumerate()
-            .filter_map(|(i, w)| {
-                w.find(VARIES_MARK)
-                    .map(|k| (i, k, w.len() - k - VARIES_MARK.len()))
-            })
-            .collect();
-        if slots.is_empty() {
+        let template = VariesSlots::new(template, &unit_spans(template));
+        if template.slots.is_empty() {
             return;
         }
         for (normalized, count) in lines {
-            let member: Vec<&str> = unit_spans(normalized)
-                .into_iter()
-                .map(|(at, len)| &normalized[at..at + len])
-                .collect();
-            let aligned = align_words(&tmpl_words, &member);
-            for &(i, k, q) in &slots {
-                let masked;
-                let value = match aligned[i] {
-                    Some(j) => {
-                        let w = if let Some(z) = &self.sanitizer {
-                            masked = z.mask_text(member[j]);
-                            masked.as_str()
-                        } else {
-                            member[j]
-                        };
-                        let prefix = &tmpl_words[i][..k];
-                        let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
-                        w.strip_prefix(prefix)
-                            .and_then(|v| v.strip_suffix(suffix))
-                            .unwrap_or(w)
-                    }
-                    None => "∅",
-                };
-                if let Some(n) = varies.get_mut(value) {
-                    *n += count;
-                } else if varies.len() < self.distinct_cap {
-                    varies.insert(value.to_string(), count);
-                } else {
-                    *varies_capped = true;
+            let units = unit_spans(normalized);
+            self.accumulate_member_varies(
+                &template,
+                normalized,
+                &units,
+                count,
+                varies,
+                varies_capped,
+            );
+        }
+    }
+
+    /// Count one member's word in each of the template's slots: the
+    /// per-member half of `accumulate_varies_counted`, for a member already
+    /// split into units.
+    fn accumulate_member_varies(
+        &self,
+        template: &VariesSlots<'_>,
+        normalized: &str,
+        units: &[(usize, usize)],
+        count: usize,
+        varies: &mut HashMap<String, usize>,
+        varies_capped: &mut bool,
+    ) {
+        let tmpl_words = &template.words;
+        let member: Vec<&str> = units
+            .iter()
+            .map(|&(at, len)| &normalized[at..at + len])
+            .collect();
+        let aligned = align_words(tmpl_words, &member);
+        for &(i, k, q) in &template.slots {
+            let masked;
+            let value = match aligned[i] {
+                Some(j) => {
+                    let w = if let Some(z) = &self.sanitizer {
+                        masked = z.mask_text(member[j]);
+                        masked.as_str()
+                    } else {
+                        member[j]
+                    };
+                    let prefix = &tmpl_words[i][..k];
+                    let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
+                    w.strip_prefix(prefix)
+                        .and_then(|v| v.strip_suffix(suffix))
+                        .unwrap_or(w)
                 }
+                None => "∅",
+            };
+            if let Some(n) = varies.get_mut(value) {
+                *n += count;
+            } else if varies.len() < self.distinct_cap {
+                varies.insert(value.to_string(), count);
+            } else {
+                *varies_capped = true;
             }
         }
     }
@@ -2092,17 +2160,22 @@ impl RollupComputer {
     fn accumulate_retained_varies(
         &self,
         line: &LogLine,
-        template: &str,
+        line_units: &[(usize, usize)],
+        template: &VariesSlots<'_>,
         state: &mut RetainedState,
     ) {
-        if unit_spans(&line.normalized).len() == unit_spans(template).len() {
+        if line_units.len() == template.words.len() {
             state.positional_members += 1;
-            self.accumulate_varies(
-                std::slice::from_ref(line),
-                template,
-                &mut state.varies,
-                &mut state.varies_capped,
-            );
+            if !template.slots.is_empty() {
+                self.accumulate_member_varies(
+                    template,
+                    &line.normalized,
+                    line_units,
+                    1,
+                    &mut state.varies,
+                    &mut state.varies_capped,
+                );
+            }
         } else {
             self.retain_realign_form(state, &line.normalized, 1);
         }
@@ -2125,13 +2198,10 @@ impl RollupComputer {
     fn accumulate_new_varies(
         &self,
         template: &str,
+        units: &[(usize, usize)],
         edits: &[(usize, usize)],
         state: &mut RetainedState,
     ) {
-        if edits.is_empty() {
-            return;
-        }
-        let units = unit_spans(template);
         for &(at, len) in edits {
             let &(start, width) = units
                 .iter()
@@ -2194,8 +2264,10 @@ impl RollupComputer {
     fn seed(&self, group: &PatternGroup) -> RetainedState {
         let mut state = RetainedState::default();
         self.accumulate_tokens(&group.lines, &mut state.per_type);
+        let template = VariesSlots::new(group.template(), &unit_spans(group.template()));
         for line in &group.lines {
-            self.accumulate_retained_varies(line, group.template(), &mut state);
+            let line_units = unit_spans(&line.normalized);
+            self.accumulate_retained_varies(line, &line_units, &template, &mut state);
         }
         state
     }
