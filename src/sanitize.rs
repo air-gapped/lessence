@@ -336,13 +336,26 @@ impl Sanitizer {
     /// it, and a value `range` only partly covers is its whole tag.
     pub fn mask_range(&self, text: &str, hints: &[Token], range: Range<usize>) -> (String, usize) {
         let regions = self.regions(text, hints);
-        let start = masked_offset(&regions, range.start, false);
-        let end = if range.is_empty() {
-            start
-        } else {
-            masked_offset(&regions, range.end, true)
-        };
-        (render(text, &regions)[start..end].to_string(), start)
+        let at = masked_offset(&regions, range.start);
+        if range.is_empty() {
+            return (String::new(), at);
+        }
+        (render_window(text, &regions, range), at)
+    }
+
+    /// The credentials `line` holds, found once so that each value cut from
+    /// the line can be masked where it stands in it. `None` when the run
+    /// masks no credentials or the line holds none.
+    pub fn line_secrets<'a>(&self, line: &'a str) -> Option<LineSecrets<'a>> {
+        let mut spans = Vec::new();
+        self.credential_spans(line, &mut spans);
+        if spans.is_empty() {
+            return None;
+        }
+        Some(LineSecrets {
+            line,
+            regions: self.merge_spans(line, spans),
+        })
     }
 
     /// Every region of `text` the masker replaces, in text order.
@@ -515,10 +528,30 @@ fn render(text: &str, regions: &[Region]) -> String {
     out
 }
 
+/// The part of `text` at `range` with every region it touches replaced by
+/// its tag: a region the range only partly covers is its whole tag.
+fn render_window(text: &str, regions: &[Region], range: Range<usize>) -> String {
+    let mut out = String::new();
+    let mut copied = range.start;
+    for r in regions
+        .iter()
+        .filter(|r| r.start < range.end && range.start < r.end)
+    {
+        if copied < r.start {
+            out.push_str(&text[copied..r.start]);
+        }
+        out.push_str(&r.tag);
+        copied = r.end;
+    }
+    if copied < range.end {
+        out.push_str(&text[copied..range.end]);
+    }
+    out
+}
+
 /// Where byte `pos` of a text stands once its regions are replaced. A
-/// position inside a region stands at the start of its tag, or at the end
-/// when `past` is set, so a range cut inside a value takes the whole tag.
-fn masked_offset(regions: &[Region], pos: usize, past: bool) -> usize {
+/// position inside a region stands at the start of its tag.
+fn masked_offset(regions: &[Region], pos: usize) -> usize {
     let mut removed = 0;
     let mut added = 0;
     for r in regions {
@@ -527,17 +560,37 @@ fn masked_offset(regions: &[Region], pos: usize, past: bool) -> usize {
             added += r.tag.len();
         } else {
             if r.start < pos {
-                let tag_start = r.start - removed + added;
-                return if past {
-                    tag_start + r.tag.len()
-                } else {
-                    tag_start
-                };
+                return r.start - removed + added;
             }
             break;
         }
     }
     pos - removed + added
+}
+
+/// The credentials of one line ([`Sanitizer::line_secrets`]).
+pub struct LineSecrets<'a> {
+    line: &'a str,
+    regions: Vec<Region>,
+}
+
+impl LineSecrets<'_> {
+    /// `value` as the masked line shows it where it stands in the line:
+    /// `pw@db.example.com`, cut from `scheme://user:pw@db.example.com`,
+    /// reads `<SECRET>@db.example.com`. `None` when no credential of the
+    /// line touches it.
+    pub fn mask(&self, value: &str) -> Option<String> {
+        if value.is_empty() {
+            return None;
+        }
+        self.line.match_indices(value).find_map(|(start, _)| {
+            let range = start..start + value.len();
+            self.regions
+                .iter()
+                .any(|r| r.start < range.end && range.start < r.end)
+                .then(|| render_window(self.line, &self.regions, range))
+        })
+    }
 }
 
 /// One value to replace: its byte range in the text, the entity and tag
@@ -902,6 +955,24 @@ mod tests {
             z.mask_range(text, &[], text.len()..text.len()),
             (String::new(), masked.len())
         );
+    }
+
+    #[test]
+    fn a_value_cut_from_a_line_is_masked_where_it_stands() {
+        let line = "dial postgres://app:Gale4Hollow@db.example.com:5432/x as app";
+        assert!(s(&["host"], false).unwrap().line_secrets(line).is_none());
+        let z = s(&["credential"], false).unwrap();
+        assert!(z.line_secrets("dial postgres://db.example.com/x").is_none());
+        let secrets = z.line_secrets(line).unwrap();
+        assert_eq!(
+            secrets.mask("Gale4Hollow@db.example.com").as_deref(),
+            Some("<SECRET>@db.example.com")
+        );
+        assert_eq!(secrets.mask("Hollow@db").as_deref(), Some("<SECRET>@db"));
+        assert_eq!(secrets.mask("app:Gale4").as_deref(), Some("app:<SECRET>"));
+        assert_eq!(secrets.mask("//app"), None);
+        assert_eq!(secrets.mask("absent"), None);
+        assert_eq!(secrets.mask(""), None);
     }
 
     #[test]

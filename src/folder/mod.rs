@@ -2267,6 +2267,10 @@ struct RollupComputer {
     /// `--sanitize`: a VARIES value is counted in its masked form, so
     /// `password=FIXVALUEA1` lands in the rollup as `<SECRET>` — the slot
     /// has already dropped the `password=` that the credential mask keys on.
+    /// A token sample is counted as its masked line shows it, for the same
+    /// reason: `pw@db.example.com`, read out of
+    /// `scheme://user:pw@db.example.com`, no longer carries the `user:` that
+    /// marks `pw` as a password.
     sanitizer: Option<Sanitizer>,
 }
 
@@ -2308,6 +2312,10 @@ impl RollupComputer {
         let capacity_hint = lines.len().min(self.distinct_cap);
 
         for line in lines {
+            let secrets = self
+                .sanitizer
+                .as_ref()
+                .and_then(|z| z.line_secrets(&line.original));
             for token in &line.tokens {
                 let name = token_type_name(token);
                 let sample_worthy = is_sample_worthy(token);
@@ -2334,7 +2342,10 @@ impl RollupComputer {
                     // value that would need room the set no longer has is
                     // "capped" (`merge_retained` checks `contains` first too).
                     Accumulator::Values(s) => {
-                        let v = token_value_string(token);
+                        let mut v = token_value_string(token);
+                        if let Some(masked) = secrets.as_ref().and_then(|x| x.mask(&v)) {
+                            v = masked;
+                        }
                         if s.len() >= self.distinct_cap && !s.contains(&v) {
                             entry.1 = true;
                         } else {

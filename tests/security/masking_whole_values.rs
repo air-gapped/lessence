@@ -372,6 +372,40 @@ fn a_rollup_sample_masks_each_value_whole() {
     assert!(out.contains("{/data/<IP>/out}"), "{out}");
 }
 
+/// A credential that folds is masked in the rollup too: a sample a
+/// detector reads out of it (the `password@host` of a URL, a path inside a
+/// header's credentials) is counted as the masked line shows it, whichever
+/// entities the run names.
+#[test]
+fn a_folded_credential_is_masked_in_every_sample() {
+    let dir = scratch();
+    let mut lines = Vec::new();
+    for (i, pw) in ["Gale4Hollow", "Brook9Cinder", "Fern6Thistle", "Moss2Quarry"]
+        .iter()
+        .enumerate()
+    {
+        lines.push(format!(
+            "dial postgres://app:{pw}@db.example.com:5432/x ok {i}"
+        ));
+        lines.push(format!(
+            "GET /api {i} Authorization: Basic WnBx/{pw}/cjN0UGFz"
+        ));
+    }
+    let input = write_input(dir.path(), &lines);
+    let secrets: &[&str] = &["Gale4", "Brook9", "Fern6", "Moss2", "cjN0UGFz"];
+    assert_absent_everywhere(
+        &input,
+        &[
+            (&["--sanitize", "credential"], secrets),
+            (&["--sanitize", "credential:pseudonym"], secrets),
+            (&["--sanitize", "credential,host"], secrets),
+            (&["--sanitize-pii"], secrets),
+        ],
+    );
+    let out = run(&input, &["--sanitize", "credential"], &["--no-report"]);
+    assert!(out.contains("{<SECRET>@db.example.com}"), "{out}");
+}
+
 #[test]
 fn an_address_with_any_port_is_replaced() {
     let dir = scratch();
