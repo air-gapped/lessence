@@ -17,7 +17,7 @@ for a specific count, or drill into specific patterns with default mode.
 |------|---------|-------------|
 | `--format text\|markdown\|json` | `text` | Output format. `json` emits JSONL with per-group rollup metadata (best for agents — see SKILL.md). Markdown adds headers and code blocks for reports. |
 | `-q` / `--quiet` | off | Suppress statistics footer. Alias: `--no-stats`. |
-| `--stats-json` | off | Emit JSON statistics to stderr instead of the human-readable footer (which also goes to stderr since 0.4.4 — stdout carries only log output). The default run, `--summary` and `--top N` report the same `input_lines` (every physical line, continuations included) and compute `compression_ratio` and `collapsed_groups` the same way; `output_lines` is what that mode printed. |
+| `--stats-json` | off | Emit JSON statistics to stderr instead of the human-readable footer (which also goes to stderr since 0.4.4 — stdout carries only log output). The default run, `--summary` and `--top N` report the same `input_lines` (every physical line, continuations included); `output_lines` is what that mode printed. `compression_ratio` is the same for the default run and `--summary`; under `--top N` it covers only the N groups shown, so take the ratio from a run without `--top`. |
 | `--top N` | off | Show only the N most frequent patterns, sorted by count descending. `--top 0` shows all patterns, in every mode. |
 
 ## The saved report (default runs)
@@ -52,7 +52,8 @@ or an overview.
 
 How to read the overview:
 
-1. The **head locator** is the first line and the **tail locator** the last, so
+1. The **head locator** follows the briefing (first line under `-q`) and the
+   **tail locator** follows the last entry, above the jq recipes, so
    a truncated capture keeps one of them. It names the report path, whether the
    file is complete, whether the input was complete or `degraded(<codes>)`, the
    run id, the report size, and `<total> total, <selected> selected, <printed>
@@ -83,7 +84,7 @@ The report directory is never pruned. Delete old `run-*` directories yourself.
 | `--essence` | off | Strip timestamps before normalization. Lines differing only by time merge. Useful for comparing log structure across time periods. |
 | `--threshold N` | 83 | Similarity percentage (0-100) required to group lines — since 0.4.4, the share of whitespace tokens two normalized lines have in common (longest common subsequence, so an inserted token no longer breaks grouping). Lower (e.g. 75) = more aggressive grouping but re-merges distinct HTTP status classes and boolean states; raise toward 88-92 only when per-message splitting matters more than fold cost (~2x output and time on diverse corpora). |
 | `--min-collapse N` | 3 | Minimum lines in a group before folding. 3 is also the floor — the binary rejects lower values. |
-| `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. A detector that finds an entity `--sanitize` names stays on: `email` keeps `email`, `ip` keeps the address part of `network`, `host` keeps the host part of `network` and `timestamp` (a syslog host is placed by the timestamp before it). |
+| `--disable-patterns X,Y` | none | Comma-separated list of pattern detectors to skip. It also reaches values inside quoted strings. A detector that finds an entity `--sanitize` names stays on: `email` keeps `email`, `ip` keeps the address part of `network`, `host` keeps the host part of `network` and `timestamp` (a syslog host is placed by the timestamp before it). |
 
 ### Valid pattern names for `--disable-patterns`
 
@@ -121,7 +122,7 @@ physical line, so a match hiding inside a frame still fails the run.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--explain` | off | Annotate each JSON group record with `nearest`: the `first.line_no` of the existing group this line scored highest against before founding its own, the `score` (percent), and `first_diff` — the first whitespace token where the two disagree. Implies `--format json`. |
+| `--explain` | off | Annotate each JSON group record with `nearest`: `group_line_no` (the `first.line_no` of the existing group this line scored highest against before founding its own), the `score` (percent), `anchor_mismatch: true` when an exact-match field kept them apart whatever the score, and `first_diff` — `{ours, theirs, at}`, the first whitespace token where the two disagree and its position. Implies `--format json`. |
 
 Reach for it when a log folds worse than expected and the question is *why
 these lines did not join*. A singleton whose `nearest.score` sits just under

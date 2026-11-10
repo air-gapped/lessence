@@ -88,7 +88,7 @@ cargo test 2>&1 | lessence            # capture stderr too
 # Agent-friendly output (prefer these when piping into Claude)
 lessence --format json < app.log      # JSONL with rollup metadata — best for follow-up jq queries
 lessence --preflight < app.log        # orientation briefing as JSON (no folded output; takes no --top/--summary/--fit/--explain/--stats-json)
-lessence --stats-json < app.log       # machine-readable stats on stderr (same input_lines and ratio with --summary/--top)
+lessence --stats-json < app.log       # machine-readable stats on stderr (same input_lines and ratio with --summary)
 lessence --summary < app.log          # compact one-line-per-pattern overview (caps at 30, use --top N to adjust)
 
 # The default run: complete report on disk, bounded overview on stdout
@@ -117,8 +117,9 @@ lost: the report is complete, stdout is bounded and says so.
 report: ~/.local/state/lessence/reports/run-20260919-161814-f1362b46/report.jsonl  file: complete  input: complete  run: run-…  size: 673464 bytes  groups: 254 total, 40 selected, 15 printed, 239 omitted
 ```
 
-That head locator is the first line and repeats as the last line, so a
-truncated capture keeps one of them. `printed < selected` means the byte
+That locator line follows the briefing (under `-q` it is the first line) and
+repeats after the last entry, above the jq recipes, so a truncated capture
+keeps one of them. `printed < selected` means the byte
 budget stopped the entries early — the report still has every group. The four
 jq recipes at the end query the file by group id; none of them cats it.
 
@@ -136,6 +137,10 @@ or any source that never reaches EOF**, since the report needs input EOF.
 It is harmless in every other mode (`--format json`, `--summary`, `--top`,
 `--preflight`, …): they save no report, so there it does nothing.
 The report directory is never pruned: it grows until you delete it.
+If stdout is empty and the exit code is 1 with `report: not written (…)` on
+stderr, the report directory is on memory-backed storage (tmpfs) or the report
+passed `--report-max-bytes`: rerun with `--report-dir DIR` on disk, or
+`--no-report` for the folded text alone.
 See references/flags.md for `--report-dir`, `--report-max-bytes` and the rest.
 
 ### The briefing (read this first, every time)
@@ -150,16 +155,16 @@ touches the JSON.
 In the JSON, `span.year_inferred: true` means the stamps (klog, BSD syslog) carry no year and the epochs assume the current one: use them for differences and ordering, not as absolute dates.
 
 ```
---- lessence briefing: kubelet.log (4,092 lines)
-span:    E0909 13:07:09.181236 → E0920 14:52:55.728948  (11d 1h, 0.004 lines/s)
-shape:   ▆▁▁▁ ▁ ▁ ▁█▁▁▁▁▁▁▁▁▁▂▁▁▁  busiest 09-14 03:51 +11h 4m holds 1,786 (46.7%)
-format:  plain 4,042 (99%), logfmt 50 (1%)
-levels:  error 1,050 (27.9%), warn 48 (1.3%), info 2,672 (70.9%) — on 3,770 lines (92%)
-top templates (10 of 273, 50.1% of all lines):
-   17.4%  710  over 10d 13h  <TIMESTAMP>    <PID> reconciler_common.go:245] "operationExecutor…
+--- lessence briefing: kubelet.log (749 lines)
+span:    E0909 13:07:09.181236 → I0920 08:26:00.404337  (10d 19h, 0.001 lines/s)
+shape:   █▁▁▁     ▁█▁       ▁▁ ▁▁  busiest 09-09 13:07 +10h 48m holds 317 (47.9%)
+format:  plain 728 (97%), logfmt 21 (3%)
+levels:  error 252 (38.9%), warn 19 (2.9%), info 376 (58.1%) — on 647 lines (86%)
+top templates (10 of 224, 18.4% of all lines):
+   8.7%  65  over 4d 20h   <TIMESTAMP>    <PID> reconciler_common.go:159] "operationExecutor…
    ...
-rare:    35 templates occur once (0.9% of lines)
-tokens:  quoted_strings 8,078/797, timestamps 6,049/~4,718, uuids 5,334/313, kubernetes 4,400/688, ...
+rare:    26 templates occur once (3.5% of lines)
+tokens:  quoted_strings 945/227, timestamps 913/733, uuids 683/74, kubernetes 656/150, ...
 ---
 ```
 
@@ -180,8 +185,8 @@ Read it top to bottom, and let it decide the next command:
   first and the answer last; always check the span column, not just the count.
 - **`tokens:`** — `occurrences/distinct` per class decides whether a class is
   a facet or a correlation key:
-  - **Low distinct relative to occurrences** (`uuids 5,334/313`, kubelet) is a
-    facet: 313 pods, each recurring. Group by it — `jq` the `K8S_POD` samples,
+  - **Low distinct relative to occurrences** (`uuids 683/74`, kubelet) is a
+    facet: 74 pods, each recurring. Group by it — `jq` the `K8S_POD` samples,
     or grep one and expect many hits.
   - **Distinct near occurrences** (`uuids 46,662/~46,001`) is a per-request
     correlation key: almost every occurrence is a different value. Pull one
@@ -200,18 +205,23 @@ Full field reference (every field, every type, both JSON locations):
 ### Text mode (default)
 
 ```
-ERROR [handler-3] Failed to connect to 10.0.1.50:5432 - timeout
-[+847 similar | 13:07:09 → 14:52:33 | ipv4×4, port×2 {5432, 6379}]
-ERROR [handler-3] Failed to connect to 10.0.1.99:6379 - timeout
-WARN [pool-1] Connection pool exhausted
-[+312 similar | duration×1]
+2026-09-09T13:07:09Z ERROR [handler-3] Failed to connect to 10.0.1.50:5432 - timeout
+[+847 similar | 2026-09-09T13:07:09Z → 2026-09-09T14:52:33Z | ipv4×4, port×2]
+2026-09-09T14:52:33Z ERROR [handler-3] Failed to connect to 10.0.1.99:6379 - timeout
+WARN [pool-1] slow query took 3ms user=u1
+[+312 similar | duration×40, varies×2 {u0×200, u1×114}]
+WARN [pool-1] slow query took 120ms user=u0
 INFO [auth] Login succeeded user="admin@corp.com"
 ```
 
-- **`[+N similar]`** = repeated N more times. High N = repeating problem.
-- **`13:07:09 → 14:52:33`** = time range of the group (first and last timestamp).
+A folded group prints its first member, the marker, then its last member.
+
+- **`[+N similar]`** = N more members between the two shown lines. High N = repeating problem.
+- **`… → …`** = the group's first and last timestamp, in the log's own stamp format.
 - **`ipv4×4`** = 4 distinct IP addresses in this group. Low count = narrow problem; high count = widespread.
-- **`port×2 {5432, 6379}`** = only 2 distinct ports, both shown inline (complete set).
+- **`ipv4×2 {10.0.1.50, 10.0.1.51}`** = up to 3 distinct values are listed inline, and the list is then complete; from 4 up only the count shows — the values are in the JSON `samples`.
+- **`port×2`, `duration×40`** = count-only classes never list values.
+- **`varies×2 {u0×200, u1×114}`** = an untokenised word that differs between members, each value with its member count.
 - **`hash×64+`** = the distinct-value cap (64) was hit. The `+` means "at least 64 and possibly many more."
 - **Few groups** = one dominant problem (focused debugging)
 - **Many groups** = diverse issues (investigate each group)
@@ -241,26 +251,27 @@ is a `"summary"` with aggregate statistics. Key fields per group:
 {
   "type": "group",
   "count": 847,
-  "normalized": "ERROR [handler-<NUMBER>] Failed to connect to <IP>:<PORT>...",
-  "time_range": {"first_seen": "13:07:09", "last_seen": "14:52:33"},
+  "normalized": "<TIMESTAMP> ERROR [handler-3] Failed to connect to <IP>:<PORT> - timeout",
+  "time_range": {"first_seen": "2026-09-09T13:07:09Z", "last_seen": "2026-09-09T14:52:33Z"},
   "variation": {
     "IPV4": {"distinct_count": 4, "samples": ["10.0.1.50", "10.0.1.51", "10.0.1.99", "10.0.2.1"], "capped": false},
-    "PORT": {"distinct_count": 2, "samples": ["5432", "6379"], "capped": false}
+    "PORT": {"distinct_count": 2, "samples": [], "capped": false}
   }
 }
 ```
 
 - **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation. Hostnames appear under their own `FQDN` key since 0.4.4 (older versions mislabeled them `IPV4`). A syslog/journal line's positional host — `<TIMESTAMP> gw-core dnsmasq[<PID>]:` — folds to `<HOST>` and appears under its own `HOST` key, so the same event from several devices is one group.
-- **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION).
+- **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION, PORT, PID, KEY_VALUE). `samples_complete` says whether the list is every distinct value, and `omitted_sample_values` how many are not listed.
 - **`VARIES`** — where a group's members disagree in something no detector tokenised (`Unreachable` vs `Timeout`, `Busy` vs `Reject`, a bare word vs a placeholder); the group's `normalized` shows `<VARIES>` there, keeping a shared field name in front (`msg=<VARIES>`) and treating a quoted value with spaces as one slot. Its `samples` are ordered by `sample_counts` (most frequent first, the rarest last), so a 1-in-7,000 outcome is visible without reading the raw lines; `∅` counts members that lack the word. Text mode shows the same as `varies×N {word×count, …}`. A line that differs from a group's founder in two or more sentence words (verb and outcome) founds its own group instead.
-- **`capped: true`** — distinct_count is a lower bound. A retained group can also exceed the 64 distinct unequal-length shapes kept for final word alignment; its `VARIES` then has a zero lower bound and empty samples/counts rather than misleading partial counts. The group's occurrence count and other token rollups remain available.
+- **`capped: true`** — distinct_count is a lower bound (`distinct_count_kind: "lower_bound"`; otherwise `"exact"`). A retained group can also exceed the 64 distinct unequal-length shapes kept for final word alignment; its `VARIES` then has a zero lower bound and empty samples/counts rather than misleading partial counts. The group's occurrence count and other token rollups remain available.
 - **`normalized`** — the template with `<TOKEN>` placeholders; this is what lessence groups by.
 - **PCI devices** — exact PCI addresses such as `0000:21:00.0` stay visible because different addresses already keep hardware events apart. An address inside a normalized route is shown beside that route skeleton. An address embedded in a path stays visible when the surrounding path text varies.
 - **Systemd unit subjects** — the template shows the unit identity: `modprobe@loop.service` and `modprobe@fuse.service` remain distinct; numeric instances show `<N>` and opaque hex/UUID runs show `<ID>`. Exact instance names remain in the `NAME` facts. Different instances of the same unit kind can still fold together. This applies when the unit is the subject immediately after `systemd[PID]:`, not to messages about starting a unit or to mount/device units.
-- **CPU quantities** — a `cpu` field with a millicpu value such as `750m` becomes `<CPU_QUANTITY>`, with exact values in `CPU_QUANTITY` samples and a separate `cpu_quantities` count. Plain, JSON and escaped configuration fields are supported. A neighboring `timeout=20m` remains a duration; unitless CPU IDs are not interpreted as millicpu.
+- **CPU quantities** — a `cpu` field with a millicpu value such as `750m` becomes `<CPU_QUANTITY>`, with exact values in `CPU_QUANTITY` samples and a separate `cpu_quantities` count. Plain, JSON and escaped configuration fields are supported. A neighboring `timeout=20m` is not read as CPU (it shows as `timeout=<KEY_VALUE>`); unitless CPU IDs are not interpreted as millicpu.
 - **Decimal measurements** — long fractional digits stay part of the decimal, even when their length resembles an epoch timestamp. `<DECIMAL>` represents the whole measurement; valid epoch timestamps still normalize as timestamps.
 - **HTTP requests** — when methods vary within a group, the quoted request keeps its route visible: `"<VARIES> /route HTTP/<DECIMAL>"`. The `VARIES` facts count methods such as `GET` and `POST`, rather than hiding the whole request. Protocol-version variation has its own slot. Prose requests such as `making POST http request: http://host/promote` and `GET https://host/items/42` keep method and route separate: `http://<HOST>/promote` or `https://<HOST>/items/<N>`. Hosts, object IDs and queries may vary; complete targets remain in `PATH` facts.
-- **Field names and levels** — a placeholder replaces a field's value, never its name: `timeout=<KEY_VALUE>` and `port=<KEY_VALUE>` are different settings, `podStartSLOduration=<DURATION_FIELD>` and `imagePullDuration=<DURATION_FIELD>` different measurements, each in its own group. A log level is never a placeholder — `[error]`, `[NOTICE]` and `level=error` stay literal, so an error and an info line that otherwise read alike are two groups. A context bracket beside a level still folds: `[error] <BRACKET_CONTEXT> upstream gone`.
+- **Field names and levels** — a placeholder replaces a field's value, never its name: `timeout=<KEY_VALUE>` and `port=<KEY_VALUE>` are different settings, `podStartSLOduration=<DURATION_FIELD>` and `imagePullDuration=<DURATION_FIELD>` different measurements, each in its own group. A log level is never a placeholder — `[error]`, `[NOTICE]` and `level=error` stay literal, so an error and an info line that otherwise read alike are two groups. A run of two or more context brackets beside a level still folds (`[error] [main] [proxy-7]` → `[error] <BRACKET_CONTEXT> upstream gone`); a single varying bracket shows as `[<VARIES>]`.
+- **Kubernetes Event objects** — only the event's `ObjectMeta:{…}` folds to `<EVENT_OBJECT>`; its `Reason:`, `Type:` and involved object stay on the line.
 - **Event identity** — anchored call sites, Python traceback frames (file, line, function), and program fields such as `exe=` or `"binary":` stay literal in the template. They already keep different events apart; showing them makes the reason visible. Other file paths still normalize to `<PATH>`.
 - **Audit syscall outcomes** — raw `type=SYSCALL msg=audit(...)` records keep `success=yes` and `success=no` in separate groups, with the outcome visible in the template. Repeated events with the same outcome can still fold across return values.
 - **CLI options** — recognized long and single-letter option names in logged commands stay visible and keep different options in separate groups. Their values may vary, including inside quoted commands. Option names no longer appear as `PATH` samples. Repeated commands can still fold across revision hashes and execution IDs; single-dash words such as `-sdown` remain prose.
@@ -377,7 +388,7 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
 
 - **"Compression too aggressive"** — high compression means few distinct patterns. Check `--stats-json` for exact counts.
 - **"Error didn't appear"** — `--top N` shows the N **most frequent** patterns, which in noisy logs are often the harmless ones; a one-off error gets excluded. `--top` is for dominant behavior (crash loops, capacity); for needle-in-haystack use plain `lessence -q | grep -i error`.
-- **"`varying: IP` — different clients?"** — not necessarily. lessence groups by pattern, not by value. Varying IPs may be the same source.
+- **"`ipv4×40` — forty different clients?"** — not necessarily. lessence groups by pattern, not by value. Varying IPs may be the same source.
 - **"--essence had no effect"** — only helps when timestamps are the sole differentiator between lines.
 - **"Short lines dominate --top"** — JSON fragments like `],` or `}` are high-frequency noise. Filter with `grep -v '^.\{0,10\}$'` first, or increase N.
 
