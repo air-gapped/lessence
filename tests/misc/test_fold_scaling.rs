@@ -140,6 +140,26 @@ fn repeated_quoted_values_scales_linearly() {
     crate::common::assert_linear_scaling("fold_quoted_reuse", &small, &large, fold);
 }
 
+#[test]
+fn long_lines_of_different_length_scales_linearly() {
+    // lessence-gyp: past the exact-alignment cap, lines whose unit counts
+    // differ are aligned inside a band. Each comparison must cost the line
+    // times the band, never the square of the line.
+    let build = |units: usize| {
+        let body: Vec<String> = (0..units).map(|i| format!("w{i}")).collect();
+        lines(20, |i| {
+            let mut words = body.clone();
+            if i % 2 == 1 {
+                words.insert(units / 2, "zone=k2/west".to_string());
+            }
+            format!("evt {}", words.join(" "))
+        })
+    };
+    let small = build(400);
+    let large = build(1600);
+    crate::common::assert_linear_scaling("fold_long_unequal_lines", &small, &large, fold);
+}
+
 /// The guard above is only worth having if it fires. Feed the same helper a
 /// deliberately quadratic function and assert it fails — otherwise a rewrite
 /// that loosens the threshold would silently disarm every test in this file.

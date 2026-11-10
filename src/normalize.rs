@@ -571,140 +571,37 @@ fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
 /// when the line has no anchor, which is the common case; two anchor-free
 /// lines therefore group exactly as they did before.
 ///
-/// Anchors are read from the raw line, before normalization erases them.
-fn anchor_hash(
-    original: &str,
-    pci: &[regex::Match<'_>],
-    options: &[regex::Match<'_>],
-    requests: &[ProseRequest],
-) -> u64 {
+/// Anchors are read from the raw line, before normalization erases them:
+/// `protect_anchored_spans` matches every anchor once and hands its
+/// identities here, so no anchor pattern runs twice on a line.
+fn anchor_hash(identities: &mut [(AnchorClass, AnchorIdentity<'_>)]) -> u64 {
+    if identities.is_empty() {
+        return 0;
+    }
+    // Stable: within a class, the order the line holds them in.
+    identities.sort_by_key(|&(class, _)| class);
     let mut hasher = AHasher::default();
-    let mut found = false;
-
-    // `HTTP/` is a cheap literal the regex engine can prescan for.
-    if original.contains("HTTP/") {
-        for caps in REQUEST_TARGET.captures_iter(original) {
-            hash_route(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
-            found = true;
-        }
-        // A 200 and a 404 for the same route are two events. This used to
-        // hold only because the user-agent folded to one opaque token; once a
-        // quoted sentence keeps its words (lessence-7lj) the shared UA tokens
-        // outvote the one status token and 2xx and 4xx re-merge. The class
-        // is identity, so it is matched here, never scored.
-        for (_, class) in http_status_anchors(original, &REQUEST_STATUS_CLASS) {
-            class.hash(&mut hasher);
-            found = true;
-        }
-    }
-
-    for request in requests {
-        original[request.method.clone()].hash(&mut hasher);
-        let (scheme, route) = prose_target_parts(&original[request.target.clone()]);
-        scheme.hash(&mut hasher);
-        hash_route(route, &mut hasher);
-        found = true;
-    }
-
-    // A PCI address needs both separators; the pair is rare enough together to
-    // keep the scan off most lines.
-    for address in pci {
-        address.as_str().hash(&mut hasher);
-        found = true;
-    }
-    for option in options {
-        option.as_str().hash(&mut hasher);
-        found = true;
-    }
-
-    // Some grammars put the event identity in a fixed position as a name:
-    // klog's call site, systemd's unit, auditd's record type. Each is one
-    // token out of many, so similarity alone merges across them.
-    if original.contains(".go:") {
-        for field in exact_anchor_fields(original, &KLOG_CALL_SITE) {
-            field.as_str().hash(&mut hasher);
-            found = true;
-        }
-    }
-    for unit in systemd_units(original) {
-        visit_unit_skeleton(unit.as_str(), |part| match part {
-            UnitPart::Byte(byte) => byte.hash(&mut hasher),
-            UnitPart::Id => "<id>".hash(&mut hasher),
-            UnitPart::Number => "<d>".hash(&mut hasher),
-        });
-        found = true;
-    }
-    if original.starts_with("type=") {
-        for caps in AUDIT_RECORD_TYPE.captures_iter(original) {
-            caps.get(1).map_or("", |m| m.as_str()).hash(&mut hasher);
-            found = true;
-        }
-    }
-    if original.starts_with("type=SYSCALL ") {
-        for field in exact_anchor_fields(original, &AUDIT_SYSCALL_OUTCOME) {
-            field.as_str().hash(&mut hasher);
-            found = true;
-        }
-    }
-    if original.contains("caller") {
-        for field in exact_anchor_fields(original, &STRUCTURED_CALLER) {
-            field.as_str().hash(&mut hasher);
-            found = true;
-        }
-    }
-    if original.contains(".go:") {
-        for field in exact_anchor_fields(original, &MESSAGE_CALL_SITE) {
-            field.as_str().hash(&mut hasher);
-            found = true;
-        }
-    }
-    if original.contains("File \"") {
-        for field in exact_anchor_fields(original, &TRACEBACK_FRAME) {
-            field.as_str().hash(&mut hasher);
-            found = true;
-        }
-    }
-    // A structured HTTP record: method and status class are matched like
-    // the access-log request line's, and with a method present the request
-    // path is its route.
-    if original.contains("ethod") || original.contains("ETHOD") {
-        let mut method = false;
-        for caps in FIELD_METHOD.captures_iter(original) {
-            let m = caps.get(1).map_or("", |m| m.as_str());
-            m.hash(&mut hasher);
-            method |= matches!(
-                m.to_ascii_uppercase().as_str(),
-                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
-            );
-            found = true;
-        }
-        if method {
-            for caps in FIELD_PATH.captures_iter(original) {
-                hash_route(caps.get(1).map_or("", |m| m.as_str()), &mut hasher);
+    for &(_, identity) in identities.iter() {
+        match identity {
+            AnchorIdentity::Route(route) => hash_route(route, &mut hasher),
+            AnchorIdentity::Text(text) => text.hash(&mut hasher),
+            AnchorIdentity::ProseTarget(target) => {
+                let (scheme, route) = prose_target_parts(target);
+                scheme.hash(&mut hasher);
+                hash_route(route, &mut hasher);
+            }
+            AnchorIdentity::Unit(unit) => visit_unit_skeleton(unit, |part| match part {
+                UnitPart::Byte(byte) => byte.hash(&mut hasher),
+                UnitPart::Id => "<id>".hash(&mut hasher),
+                UnitPart::Number => "<d>".hash(&mut hasher),
+            }),
+            AnchorIdentity::Pod(pod, container) => {
+                pod_skeleton(pod).hash(&mut hasher);
+                container.hash(&mut hasher);
             }
         }
     }
-    if original.contains("tatus") || original.contains("TATUS") {
-        for (_, class) in http_status_anchors(original, &FIELD_STATUS) {
-            class.hash(&mut hasher);
-            found = true;
-        }
-    }
-    if original.contains("exe=") || original.contains("comm=") || original.contains("\"binary\"") {
-        for field in exact_anchor_fields(original, &PROGRAM_FIELD) {
-            field.as_str().hash(&mut hasher);
-            found = true;
-        }
-    }
-    if original.starts_with("[pod/") {
-        for caps in KUBECTL_PREFIX.captures_iter(original) {
-            pod_skeleton(caps.get(1).map_or("", |m| m.as_str())).hash(&mut hasher);
-            caps.get(2).map_or("", |m| m.as_str()).hash(&mut hasher);
-            found = true;
-        }
-    }
-
-    if found { hasher.finish() } else { 0 }
+    hasher.finish()
 }
 
 /// A pod name's identity, with its instance suffixes stripped: the surviving
@@ -981,11 +878,52 @@ impl AnchorRender {
     }
 }
 
-struct ProtectedAnchors {
+struct ProtectedAnchors<'a> {
     text: String,
     renders: Vec<(String, String)>,
     statuses: Vec<ProtectedStatus>,
     unit_names: Vec<String>,
+    /// What `anchor_hash` hashes, in the order the line holds it.
+    identities: Vec<(AnchorClass, AnchorIdentity<'a>)>,
+}
+
+/// The order `anchor_hash` hashes anchor classes in. It is part of the
+/// hash: identities carry no class marker, so a different order could
+/// join or split lines whose identities fall in different classes.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AnchorClass {
+    RequestRoute,
+    RequestStatus,
+    ProseRequest,
+    PciAddress,
+    CliOption,
+    KlogCallSite,
+    SystemdUnit,
+    AuditType,
+    AuditOutcome,
+    Caller,
+    MessageCallSite,
+    TracebackFrame,
+    Method,
+    MethodPath,
+    StatusField,
+    Program,
+    PodPrefix,
+}
+
+/// One identity an anchor matched, as `anchor_hash` hashes it.
+#[derive(Clone, Copy)]
+enum AnchorIdentity<'a> {
+    /// a request target, as its route skeleton
+    Route(&'a str),
+    /// literal text: a method, a status class digit, a call site, a program
+    Text(&'a str),
+    /// a prose request target: its scheme, then its route skeleton
+    ProseTarget(&'a str),
+    /// a systemd unit, as its skeleton
+    Unit(&'a str),
+    /// a kubectl prefix: the pod's workload skeleton, then the container
+    Pod(&'a str, &'a str),
 }
 
 struct ProtectedStatus {
@@ -994,15 +932,16 @@ struct ProtectedStatus {
 }
 
 type AnchoredSpan = (usize, usize, AnchorRender);
-fn protect_anchored_spans(
-    original: &str,
-    pci: &[regex::Match<'_>],
-    options: &[regex::Match<'_>],
+fn protect_anchored_spans<'a>(
+    original: &'a str,
+    pci: &[regex::Match<'a>],
+    options: &[regex::Match<'a>],
     requests: &[ProseRequest],
-) -> ProtectedAnchors {
+) -> ProtectedAnchors<'a> {
     let mut spans: Vec<AnchoredSpan> = Vec::new();
     let mut statuses = Vec::new();
     let mut unit_names = Vec::new();
+    let mut identities = Vec::new();
 
     for request in requests {
         spans.push((
@@ -1015,59 +954,86 @@ fn protect_anchored_spans(
             request.target.end,
             AnchorRender::ProseTarget,
         ));
+        identities.push((
+            AnchorClass::ProseRequest,
+            AnchorIdentity::Text(&original[request.method.clone()]),
+        ));
+        identities.push((
+            AnchorClass::ProseRequest,
+            AnchorIdentity::ProseTarget(&original[request.target.clone()]),
+        ));
     }
 
     if original.contains("HTTP/") {
         for caps in REQUEST_TARGET.captures_iter(original) {
             if let Some(m) = caps.get(1) {
                 spans.push((m.start(), m.end(), AnchorRender::Route));
+                identities.push((AnchorClass::RequestRoute, AnchorIdentity::Route(m.as_str())));
             }
         }
-        for (span, _) in http_status_anchors(original, &REQUEST_STATUS_CLASS) {
+        for (span, class) in http_status_anchors(original, &REQUEST_STATUS_CLASS) {
             statuses.push(ProtectedStatus {
                 code: original[span.clone()].to_string(),
                 is_http: true,
             });
             spans.push((span.start, span.end, AnchorRender::HttpStatus));
+            identities.push((AnchorClass::RequestStatus, AnchorIdentity::Text(class)));
         }
     }
 
     if original.contains("ethod") || original.contains("ETHOD") {
-        let has_method = FIELD_METHOD.captures_iter(original).any(|caps| {
-            caps.get(1).is_some_and(|m| {
-                matches!(
-                    m.as_str().to_ascii_uppercase().as_str(),
-                    "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
-                )
-            })
-        });
+        // Every method field is identity; only an HTTP one makes the
+        // record's path a route.
+        let mut has_method = false;
+        for caps in FIELD_METHOD.captures_iter(original) {
+            let method = caps.get(1).map_or("", |m| m.as_str());
+            identities.push((AnchorClass::Method, AnchorIdentity::Text(method)));
+            has_method |= matches!(
+                method.to_ascii_uppercase().as_str(),
+                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+            );
+        }
         if has_method {
             for caps in FIELD_PATH.captures_iter(original) {
                 if let Some(m) = caps.get(1) {
                     spans.push((m.start(), m.end(), AnchorRender::Route));
+                    identities.push((AnchorClass::MethodPath, AnchorIdentity::Route(m.as_str())));
                 }
             }
         }
     }
 
     if original.contains("tatus") || original.contains("TATUS") {
-        for (span, _) in http_status_anchors(original, &FIELD_STATUS) {
+        for (span, class) in http_status_anchors(original, &FIELD_STATUS) {
             statuses.push(ProtectedStatus {
                 code: original[span.clone()].to_string(),
                 is_http: false,
             });
             spans.push((span.start, span.end, AnchorRender::StatusField));
+            identities.push((AnchorClass::StatusField, AnchorIdentity::Text(class)));
         }
     }
 
     for address in pci {
         spans.push((address.start(), address.end(), AnchorRender::PciAddress));
+        identities.push((
+            AnchorClass::PciAddress,
+            AnchorIdentity::Text(address.as_str()),
+        ));
     }
     for option in options {
         spans.push((option.start(), option.end(), AnchorRender::Exact));
+        identities.push((
+            AnchorClass::CliOption,
+            AnchorIdentity::Text(option.as_str()),
+        ));
     }
     for unit in systemd_units(original) {
         spans.push((unit.start(), unit.end(), AnchorRender::SystemdUnit));
+        identities.push((
+            AnchorClass::SystemdUnit,
+            AnchorIdentity::Unit(unit.as_str()),
+        ));
         // The template shows a kind, but the exact instance names still
         // belong in the facts when the skeleton hides part of them.
         if render_systemd_unit(unit.as_str()) != unit.as_str() {
@@ -1081,25 +1047,51 @@ fn protect_anchored_spans(
     if original.contains(".go:") {
         for field in exact_anchor_fields(original, &KLOG_CALL_SITE) {
             spans.push((field.start(), field.end(), AnchorRender::KlogCallSite));
+            identities.push((
+                AnchorClass::KlogCallSite,
+                AnchorIdentity::Text(field.as_str()),
+            ));
         }
     }
-    for pattern in [
-        original
-            .starts_with("type=SYSCALL ")
-            .then_some(&*AUDIT_SYSCALL_OUTCOME),
-        original.contains("caller").then_some(&*STRUCTURED_CALLER),
-        original.contains(".go:").then_some(&*MESSAGE_CALL_SITE),
-        original.contains("File \"").then_some(&*TRACEBACK_FRAME),
-        (original.contains("exe=")
-            || original.contains("comm=")
-            || original.contains("\"binary\""))
-        .then_some(&*PROGRAM_FIELD),
-    ]
-    .into_iter()
-    .flatten()
-    {
+    // An audit record's type is identity with nothing to protect: no
+    // detector erases it.
+    if original.starts_with("type=") {
+        for caps in AUDIT_RECORD_TYPE.captures_iter(original) {
+            let record = caps.get(1).map_or("", |m| m.as_str());
+            identities.push((AnchorClass::AuditType, AnchorIdentity::Text(record)));
+        }
+    }
+    for (class, pattern) in [
+        (
+            AnchorClass::AuditOutcome,
+            original
+                .starts_with("type=SYSCALL ")
+                .then_some(&*AUDIT_SYSCALL_OUTCOME),
+        ),
+        (
+            AnchorClass::Caller,
+            original.contains("caller").then_some(&*STRUCTURED_CALLER),
+        ),
+        (
+            AnchorClass::MessageCallSite,
+            original.contains(".go:").then_some(&*MESSAGE_CALL_SITE),
+        ),
+        (
+            AnchorClass::TracebackFrame,
+            original.contains("File \"").then_some(&*TRACEBACK_FRAME),
+        ),
+        (
+            AnchorClass::Program,
+            (original.contains("exe=")
+                || original.contains("comm=")
+                || original.contains("\"binary\""))
+            .then_some(&*PROGRAM_FIELD),
+        ),
+    ] {
+        let Some(pattern) = pattern else { continue };
         for field in exact_anchor_fields(original, pattern) {
             spans.push((field.start(), field.end(), AnchorRender::Exact));
+            identities.push((class, AnchorIdentity::Text(field.as_str())));
         }
     }
 
@@ -1108,6 +1100,13 @@ fn protect_anchored_spans(
             if let Some(m) = caps.get(0) {
                 spans.push((m.start(), m.end(), AnchorRender::PodPrefix));
             }
+            identities.push((
+                AnchorClass::PodPrefix,
+                AnchorIdentity::Pod(
+                    caps.get(1).map_or("", |m| m.as_str()),
+                    caps.get(2).map_or("", |m| m.as_str()),
+                ),
+            ));
         }
     }
 
@@ -1117,6 +1116,7 @@ fn protect_anchored_spans(
             renders: Vec::new(),
             statuses,
             unit_names,
+            identities,
         };
     }
 
@@ -1178,6 +1178,7 @@ fn protect_anchored_spans(
         renders,
         statuses,
         unit_names,
+        identities,
     }
 }
 
@@ -1196,8 +1197,8 @@ impl Normalizer {
         let pci: Vec<_> = pci_addresses(&original).collect();
         let options: Vec<_> = cli_option_names(&original).collect();
         let requests: Vec<_> = prose_requests(&original).collect();
-        let protected = protect_anchored_spans(&original, &pci, &options, &requests);
-        let mut normalized = protected.text;
+        let mut protected = protect_anchored_spans(&original, &pci, &options, &requests);
+        let mut normalized = std::mem::take(&mut protected.text);
         let mut tokens = Vec::with_capacity(8);
 
         // Walk the detector ordering table; each enabled detector replaces
@@ -1228,7 +1229,7 @@ impl Normalizer {
                 normalized = normalized.replace(sentinel.as_str(), rendered);
             }
         }
-        for status in protected.statuses {
+        for status in std::mem::take(&mut protected.statuses) {
             if status.is_http && self.config.normalize_http_status {
                 tokens.push(Token::HttpStatusClass(format!("{}xx", &status.code[..1])));
             } else if self.config.normalize_durations {
@@ -1238,7 +1239,11 @@ impl Normalizer {
                 tokens.push(Token::Number(status.code));
             }
         }
-        tokens.extend(protected.unit_names.into_iter().map(Token::Name));
+        tokens.extend(
+            std::mem::take(&mut protected.unit_names)
+                .into_iter()
+                .map(Token::Name),
+        );
 
         // Anchors come from the raw line: normalization has just erased the
         // very fields they identify.
@@ -1247,7 +1252,7 @@ impl Normalizer {
                 .iter()
                 .map(|request| Token::Path(original[request.target.clone()].to_string())),
         );
-        let anchor = anchor_hash(&original, &pci, &options, &requests);
+        let anchor = anchor_hash(&mut protected.identities);
 
         // Fold the anchor into the line hash so the folder's exact-hash group
         // index cannot attach this line to a group with a different anchor.

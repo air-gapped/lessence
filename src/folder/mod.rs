@@ -258,13 +258,30 @@ impl PatternGroup {
         rollup_computer: &RollupComputer,
         min_collapse: usize,
     ) {
+        // The line's units and the template's, each split once and shared
+        // by the template edit and the rollup below.
+        let line_units = unit_spans(&line.normalized);
+        let mut template_units = unit_spans(&self.template);
         if line.hash != self.first().hash {
-            let edits = varying_spans(&self.template, &line.normalized);
-            if let Some(state) = &mut self.retained {
-                rollup_computer.accumulate_new_varies(&self.template, &edits, state);
-            }
-            for (at, len) in edits.into_iter().rev() {
-                self.template.replace_range(at..at + len, VARIES_MARK);
+            let edits = varying_spans_in(
+                &self.template,
+                &template_units,
+                &line.normalized,
+                &line_units,
+            );
+            if !edits.is_empty() {
+                if let Some(state) = &mut self.retained {
+                    rollup_computer.accumulate_new_varies(
+                        &self.template,
+                        &template_units,
+                        &edits,
+                        state,
+                    );
+                }
+                for (at, len) in edits.into_iter().rev() {
+                    self.template.replace_range(at..at + len, VARIES_MARK);
+                }
+                template_units = unit_spans(&self.template);
             }
         }
         self.count += 1;
@@ -272,7 +289,8 @@ impl PatternGroup {
         self.last_source_id = location.source_id;
         if let Some(state) = &mut self.retained {
             rollup_computer.accumulate_tokens(std::slice::from_ref(&line), &mut state.per_type);
-            rollup_computer.accumulate_retained_varies(&line, &self.template, state);
+            let template = VariesSlots::new(&self.template, &template_units);
+            rollup_computer.accumulate_retained_varies(&line, &line_units, &template, state);
         }
         if self.lines.len() + 1 == self.count {
             // Every earlier member is still held.
@@ -341,8 +359,10 @@ impl PatternGroup {
             rollup_computer.merge_retained(state, from);
         } else {
             rollup_computer.accumulate_tokens(&other.lines, &mut state.per_type);
+            let template = VariesSlots::new(&self.template, &unit_spans(&self.template));
             for line in &other.lines {
-                rollup_computer.accumulate_retained_varies(line, &self.template, state);
+                let line_units = unit_spans(&line.normalized);
+                rollup_computer.accumulate_retained_varies(line, &line_units, &template, state);
             }
         }
         let first = self.lines[0].clone();
@@ -1197,20 +1217,56 @@ pub(crate) const VARIES_MARK: &str = "<VARIES>";
 const MAX_PLAIN_WORD_DIFFS: usize = 1;
 
 /// Word alignment is exact up to this many words a side; past it a member
-/// is aligned positionally when the counts agree and skipped otherwise.
+/// is aligned positionally when the counts agree and within
+/// [`ALIGN_BAND`] otherwise.
 const MAX_ALIGN_WORDS: usize = 256;
 
+/// How far an alignment of two lines past [`MAX_ALIGN_WORDS`] may stray
+/// from the straight path between them: their unit counts may differ by at
+/// most this much, and the alignment may wander this far past either side
+/// of that difference. A few fields gained or lost — a label one node
+/// carries and another lacks — is still one event; a line that gains a
+/// block of them is refused, since a shorter founder could not show what
+/// the longer member added. The plain-word allowance cannot set this: an
+/// added value is not a plain word. Measured on the distilled corpora, the
+/// long lines that are one event differ by one to five units and the next
+/// nearest pairs by 26 and more.
+const ALIGN_BAND: usize = 8;
+
+/// Whether `align_words` aligns sequences of these lengths by their
+/// content. Two lines past the cap whose counts differ by more than the
+/// band are not: a join between them is refused, because nothing could
+/// show which of their units correspond.
+fn alignable(left: usize, right: usize) -> bool {
+    left == right
+        || (left <= MAX_ALIGN_WORDS && right <= MAX_ALIGN_WORDS)
+        || left.abs_diff(right) <= ALIGN_BAND
+}
+
 /// For each word of `a`, the index of the word of `b` it pairs with, by
-/// longest common subsequence (positional when the counts agree, which is
-/// the common case and needs no DP). `None` when the lines are too long to
-/// align exactly and differ in word count.
-pub(super) fn align_words(left: &[&str], right: &[&str]) -> Option<Vec<Option<usize>>> {
-    if left.len() == right.len() {
-        return Some((0..left.len()).map(Some).collect());
+/// longest common subsequence: positional when the counts agree, which is
+/// the common case and needs no DP; exact up to [`MAX_ALIGN_WORDS`] a side;
+/// past it, the longest common subsequence among paths inside
+/// [`ALIGN_BAND`]. Every pair it reports is of two equal words, in order,
+/// so whatever it leaves unpaired can be shown as varying and the template
+/// stays true. Lengths `alignable` refuses get the positional pairing — a
+/// pairing all the same, so still true, only coarser; no join relies on it.
+pub(super) fn align_words(left: &[&str], right: &[&str]) -> Vec<Option<usize>> {
+    if left.len() == right.len() || !alignable(left.len(), right.len()) {
+        return (0..left.len())
+            .map(|i| (i < right.len()).then_some(i))
+            .collect();
     }
     if left.len() > MAX_ALIGN_WORDS || right.len() > MAX_ALIGN_WORDS {
-        return None;
+        return align_banded(left, right, ALIGN_BAND);
     }
+    align_exact(left, right)
+}
+
+/// The longest common subsequence of `left` and `right` by the full table,
+/// walked from the start: a match is taken, and on a mismatch the left word
+/// is dropped unless that loses more than dropping the right one.
+fn align_exact(left: &[&str], right: &[&str]) -> Vec<Option<usize>> {
     // lcs[i][j] = LCS length of left[i..] and right[j..]
     let (rows, cols) = (left.len(), right.len());
     let mut lcs = vec![0u16; (rows + 1) * (cols + 1)];
@@ -1237,7 +1293,84 @@ pub(super) fn align_words(left: &[&str], right: &[&str]) -> Option<Vec<Option<us
             j += 1;
         }
     }
-    Some(out)
+    out
+}
+
+/// The longest common subsequence of `left` and `right` among paths that
+/// keep `j - i` within `band` of the range between 0 and
+/// `right.len() - left.len()`, walked back with the same tie-break as the
+/// exact table. Whenever the exact alignment's path stays inside the band
+/// this returns it unchanged: every cell on that path holds its exact
+/// value, and a cell outside the band is lower than any inside it, so no
+/// comparison on the path can come out differently. Two rows of lengths
+/// and one bit per cell for the walk back: memory and time grow with the
+/// line times the band, never with the square of the line. The caller
+/// keeps the counts within `band` of each other, which is what lets the
+/// band hold the path from one corner to the other.
+fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>> {
+    let (rows, cols) = (left.len(), right.len());
+    // a band one cell wide has no room to step off a mismatch
+    debug_assert!(rows.abs_diff(cols) <= band && (rows != cols || band > 0));
+    // diagonal `k = j - i` of the cells inside the band, shifted to 0..width
+    let low = cols.min(rows) as isize - rows as isize - band as isize;
+    let width = rows.abs_diff(cols) + 2 * band + 1;
+    let at = |i: usize, j: usize| -> Option<usize> {
+        let k = j as isize - i as isize - low;
+        (0..width as isize).contains(&k).then_some(k as usize)
+    };
+    // LCS length of left[i..] and right[j..] for row i (`here`) and row
+    // i + 1 (`below`); -1 marks a cell outside the band or the table.
+    let mut below = vec![-1i32; width];
+    let mut here = vec![-1i32; width];
+    for (k, cell) in below.iter_mut().enumerate() {
+        let j = rows as isize + low + k as isize;
+        if (0..=cols as isize).contains(&j) {
+            *cell = 0;
+        }
+    }
+    // down[i * width + k]: on a mismatch at (i, k), drop the left word.
+    let mut down = vec![0u64; (rows * width).div_ceil(64)];
+    let value = |row: &[i32], i: usize, j: usize| at(i, j).map_or(-1, |k| row[k]);
+    for i in (0..rows).rev() {
+        here.fill(-1);
+        // the row's cells inside the band; never empty, since the band
+        // spans the diagonal through both corners
+        let first = (i as isize + low).max(0) as usize;
+        let last = (i as isize + low + width as isize - 1).min(cols as isize) as usize;
+        for j in (first..=last).rev() {
+            let k = (j as isize - i as isize - low) as usize;
+            here[k] = if j == cols {
+                0
+            } else if left[i] == right[j] {
+                value(&below, i + 1, j + 1) + 1
+            } else {
+                let (drop_left, drop_right) = (value(&below, i + 1, j), value(&here, i, j + 1));
+                if drop_left >= drop_right {
+                    let bit = i * width + k;
+                    down[bit / 64] |= 1 << (bit % 64);
+                }
+                drop_left.max(drop_right)
+            };
+        }
+        std::mem::swap(&mut below, &mut here);
+    }
+    let mut out = vec![None; rows];
+    let (mut i, mut j) = (0, 0);
+    while i < rows && j < cols {
+        if left[i] == right[j] {
+            out[i] = Some(j);
+            i += 1;
+            j += 1;
+        } else {
+            let bit = i * width + at(i, j).expect("the walk stays inside the band");
+            if (down[bit / 64] >> (bit % 64)) & 1 == 1 {
+                i += 1;
+            } else {
+                j += 1;
+            }
+        }
+    }
+    out
 }
 
 /// Where a template unit and the member's aligned unit share a field name
@@ -1268,18 +1401,25 @@ fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
 /// that differs (unless the template already varies there), minus a shared
 /// field prefix, plus every template word the member has no counterpart for.
 fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
-    let spans = unit_spans(template);
+    varying_spans_in(template, &unit_spans(template), member, &unit_spans(member))
+}
+
+/// `varying_spans` for a template and member already split into units.
+fn varying_spans_in(
+    template: &str,
+    spans: &[(usize, usize)],
+    member: &str,
+    member_spans: &[(usize, usize)],
+) -> Vec<(usize, usize)> {
     let tmpl: Vec<&str> = spans
         .iter()
         .map(|&(at, len)| &template[at..at + len])
         .collect();
-    let mem: Vec<&str> = unit_spans(member)
-        .into_iter()
-        .map(|(at, len)| &member[at..at + len])
+    let mem: Vec<&str> = member_spans
+        .iter()
+        .map(|&(at, len)| &member[at..at + len])
         .collect();
-    let Some(aligned) = align_words(&tmpl, &mem) else {
-        return Vec::new();
-    };
+    let aligned = align_words(&tmpl, &mem);
     let mut edits = Vec::new();
     let mut same_pci_identity = None;
     let mut same_option_identity = None;
@@ -1555,6 +1695,32 @@ pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
     split
 }
 
+/// A template as the rollup reads it: its units, and for each `<VARIES>`
+/// slot the unit it sits in and the lengths of the literal text kept
+/// before and after it (`msg=<VARIES>` keeps `msg=`).
+struct VariesSlots<'t> {
+    words: Vec<&'t str>,
+    slots: Vec<(usize, usize, usize)>,
+}
+
+impl<'t> VariesSlots<'t> {
+    fn new(template: &'t str, units: &[(usize, usize)]) -> Self {
+        let words: Vec<&str> = units
+            .iter()
+            .map(|&(at, len)| &template[at..at + len])
+            .collect();
+        let slots = words
+            .iter()
+            .enumerate()
+            .filter_map(|(i, w)| {
+                w.find(VARIES_MARK)
+                    .map(|k| (i, k, w.len() - k - VARIES_MARK.len()))
+            })
+            .collect();
+        Self { words, slots }
+    }
+}
+
 /// How many words two lines disagree in where the disagreement is one of
 /// sentence, not of value: the letters differ and at least one side is not
 /// data. `Fork CoW for RDB` against `Fork CoW for AOF rewrite` is three,
@@ -1575,12 +1741,13 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
         .into_iter()
         .map(|(at, len)| &b[at..at + len])
         .collect();
-    // Lines too long to align exactly cannot be shown to agree, and "no
-    // difference" would let any two of them join and the template claim a
-    // literal half its members lack. Refuse the join.
-    let Some(aligned) = align_words(&ua, &ub) else {
+    // Long lines whose counts differ by more than the band cannot be shown
+    // to agree, and "no difference" would let any two of them join and the
+    // template claim a literal half its members lack. Refuse the join.
+    if !alignable(ua.len(), ub.len()) {
         return MAX_PLAIN_WORD_DIFFS + 1;
-    };
+    }
+    let aligned = align_words(&ua, &ub);
     // Two units that differ: word by word, for single words and quoted
     // sentences alike; a unit shorter than its counterpart is at most one
     // further disagreement — a value that gained a word is still one value.
@@ -1922,54 +2089,65 @@ impl RollupComputer {
         varies: &mut HashMap<String, usize>,
         varies_capped: &mut bool,
     ) {
-        let tmpl_words: Vec<&str> = unit_spans(template)
-            .into_iter()
-            .map(|(at, len)| &template[at..at + len])
-            .collect();
-        let slots: Vec<(usize, usize, usize)> = tmpl_words
-            .iter()
-            .enumerate()
-            .filter_map(|(i, w)| {
-                w.find(VARIES_MARK)
-                    .map(|k| (i, k, w.len() - k - VARIES_MARK.len()))
-            })
-            .collect();
-        if slots.is_empty() {
+        let template = VariesSlots::new(template, &unit_spans(template));
+        if template.slots.is_empty() {
             return;
         }
         for (normalized, count) in lines {
-            let member: Vec<&str> = unit_spans(normalized)
-                .into_iter()
-                .map(|(at, len)| &normalized[at..at + len])
-                .collect();
-            let Some(aligned) = align_words(&tmpl_words, &member) else {
-                continue;
-            };
-            for &(i, k, q) in &slots {
-                let masked;
-                let value = match aligned[i] {
-                    Some(j) => {
-                        let w = if let Some(z) = &self.sanitizer {
-                            masked = z.mask_text(member[j]);
-                            masked.as_str()
-                        } else {
-                            member[j]
-                        };
-                        let prefix = &tmpl_words[i][..k];
-                        let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
-                        w.strip_prefix(prefix)
-                            .and_then(|v| v.strip_suffix(suffix))
-                            .unwrap_or(w)
-                    }
-                    None => "∅",
-                };
-                if let Some(n) = varies.get_mut(value) {
-                    *n += count;
-                } else if varies.len() < self.distinct_cap {
-                    varies.insert(value.to_string(), count);
-                } else {
-                    *varies_capped = true;
+            let units = unit_spans(normalized);
+            self.accumulate_member_varies(
+                &template,
+                normalized,
+                &units,
+                count,
+                varies,
+                varies_capped,
+            );
+        }
+    }
+
+    /// Count one member's word in each of the template's slots: the
+    /// per-member half of `accumulate_varies_counted`, for a member already
+    /// split into units.
+    fn accumulate_member_varies(
+        &self,
+        template: &VariesSlots<'_>,
+        normalized: &str,
+        units: &[(usize, usize)],
+        count: usize,
+        varies: &mut HashMap<String, usize>,
+        varies_capped: &mut bool,
+    ) {
+        let tmpl_words = &template.words;
+        let member: Vec<&str> = units
+            .iter()
+            .map(|&(at, len)| &normalized[at..at + len])
+            .collect();
+        let aligned = align_words(tmpl_words, &member);
+        for &(i, k, q) in &template.slots {
+            let masked;
+            let value = match aligned[i] {
+                Some(j) => {
+                    let w = if let Some(z) = &self.sanitizer {
+                        masked = z.mask_text(member[j]);
+                        masked.as_str()
+                    } else {
+                        member[j]
+                    };
+                    let prefix = &tmpl_words[i][..k];
+                    let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
+                    w.strip_prefix(prefix)
+                        .and_then(|v| v.strip_suffix(suffix))
+                        .unwrap_or(w)
                 }
+                None => "∅",
+            };
+            if let Some(n) = varies.get_mut(value) {
+                *n += count;
+            } else if varies.len() < self.distinct_cap {
+                varies.insert(value.to_string(), count);
+            } else {
+                *varies_capped = true;
             }
         }
     }
@@ -1977,17 +2155,22 @@ impl RollupComputer {
     fn accumulate_retained_varies(
         &self,
         line: &LogLine,
-        template: &str,
+        line_units: &[(usize, usize)],
+        template: &VariesSlots<'_>,
         state: &mut RetainedState,
     ) {
-        if unit_spans(&line.normalized).len() == unit_spans(template).len() {
+        if line_units.len() == template.words.len() {
             state.positional_members += 1;
-            self.accumulate_varies(
-                std::slice::from_ref(line),
-                template,
-                &mut state.varies,
-                &mut state.varies_capped,
-            );
+            if !template.slots.is_empty() {
+                self.accumulate_member_varies(
+                    template,
+                    &line.normalized,
+                    line_units,
+                    1,
+                    &mut state.varies,
+                    &mut state.varies_capped,
+                );
+            }
         } else {
             self.retain_realign_form(state, &line.normalized, 1);
         }
@@ -2010,13 +2193,10 @@ impl RollupComputer {
     fn accumulate_new_varies(
         &self,
         template: &str,
+        units: &[(usize, usize)],
         edits: &[(usize, usize)],
         state: &mut RetainedState,
     ) {
-        if edits.is_empty() {
-            return;
-        }
-        let units = unit_spans(template);
         for &(at, len) in edits {
             let &(start, width) = units
                 .iter()
@@ -2079,8 +2259,10 @@ impl RollupComputer {
     fn seed(&self, group: &PatternGroup) -> RetainedState {
         let mut state = RetainedState::default();
         self.accumulate_tokens(&group.lines, &mut state.per_type);
+        let template = VariesSlots::new(group.template(), &unit_spans(group.template()));
         for line in &group.lines {
-            self.accumulate_retained_varies(line, group.template(), &mut state);
+            let line_units = unit_spans(&line.normalized);
+            self.accumulate_retained_varies(line, &line_units, &template, &mut state);
         }
         state
     }
