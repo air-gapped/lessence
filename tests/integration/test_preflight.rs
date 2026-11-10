@@ -181,12 +181,8 @@ fn run_raw(args: &[&str], input: &str) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A usage error exits before reading stdin; the write may meet a closed pipe.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
     child.wait_with_output().expect("Failed to wait")
 }
 
