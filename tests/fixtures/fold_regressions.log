@@ -4565,3 +4565,11 @@ cache hit Aug 3 10:00:00 2026
 cache hit Aug 3 10:00:01 2026
 cache set Aug 4 10:00:00 2026
 cache set Aug 4 10:00:01 2026
+
+##CASE lessence-bmp groups=2
+##WHY an Event's reason and type are the event; only its ObjectMeta block is the instance. Any `&Event{…}` up to the first brace used to read `<EVENT_OBJECT>`, so a Normal pull and a Warning failure were one event
+##FROM invented flat Event records
+recorded &Event{Type:Normal,Reason:Pulled,Message:Pulled image "web:1.25".}
+recorded &Event{Type:Normal,Reason:Pulled,Message:Pulled image "web:1.25".}
+recorded &Event{Type:Warning,Reason:Failed,Message:Failed to pull image "web:1.25".}
+recorded &Event{Type:Warning,Reason:Failed,Message:Failed to pull image "web:1.25".}

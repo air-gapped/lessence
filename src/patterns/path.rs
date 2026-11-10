@@ -72,9 +72,14 @@ static JSON_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Failed to compile JSON structure regex")
 });
 
-// Event objects that span multiple lines
-static EVENT_OBJECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"&Event\{[^}]*\}").expect("Failed to compile event object regex"));
+// A Kubernetes Event's metadata block: `&Event{ObjectMeta:{<name>.<hash>
+// <namespace> … map[] []}`, the instance and nothing else. What follows it —
+// InvolvedObject, Reason, Message, Type — is the event and stays. Any
+// `&Event{…}` up to the first `}` used to fold, so a flat
+// `&Event{Type:Normal,Reason:Pulled,…}` and a Warning were one event.
+static EVENT_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"&Event\{ObjectMeta:\{[^}]*\}").expect("Failed to compile event object regex")
+});
 
 pub struct PathDetector;
 

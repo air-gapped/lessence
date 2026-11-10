@@ -2831,8 +2831,9 @@ mod tests {
         // structurally unreachable — an equivalent mutant.
         //
         // This test verifies JsonDetector itself works in isolation.
-        let (_, direct_tokens) =
-            crate::patterns::json::JsonDetector::detect_and_replace("&Event{Type: Warning}");
+        let (_, direct_tokens) = crate::patterns::json::JsonDetector::detect_and_replace(
+            "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
+        );
         assert!(
             direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
             "JsonDetector should detect Event objects: {direct_tokens:?}"

@@ -10,9 +10,10 @@ static JSON_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Failed to compile JSON structure regex")
 });
 
-// Event objects that span multiple lines
-static EVENT_OBJECT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"&Event\{[^}]*\}").expect("Failed to compile event object regex"));
+// A Kubernetes Event's metadata block only; see the copy in path.rs.
+static EVENT_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"&Event\{ObjectMeta:\{[^}]*\}").expect("Failed to compile event object regex")
+});
 
 pub struct JsonDetector;
 
@@ -92,17 +93,17 @@ mod tests {
 
     #[test]
     fn test_json_structure_detection() {
-        // EVENT_OBJECT regex matches &Event{...}
-        let matching_cases = vec![("&Event{Type: Warning}", "<EVENT_OBJECT>")];
+        // EVENT_OBJECT matches an Event's metadata block; the reason and
+        // everything else after it stay.
+        let (result, tokens) = JsonDetector::detect_and_replace(
+            "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
+        );
+        assert_eq!(result, "<EVENT_OBJECT>,Reason:Pulled}");
+        assert_eq!(tokens.len(), 1);
 
-        for (input, expected_replacement) in matching_cases {
-            let (result, tokens) = JsonDetector::detect_and_replace(input);
-            assert!(
-                result.contains(expected_replacement),
-                "Failed for input: {input} - expected: {expected_replacement} - got: {result}"
-            );
-            assert!(!tokens.is_empty(), "No tokens found for input: {input}");
-        }
+        // An Event without that block is not folded whole.
+        let (flat, _) = JsonDetector::detect_and_replace("&Event{Type: Warning}");
+        assert!(!flat.contains("<EVENT_OBJECT>"), "{flat}");
 
         // Plain JSON-like structures without backslash prefix are not detected
         let non_matching_cases = vec![
