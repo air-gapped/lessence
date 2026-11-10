@@ -404,14 +404,8 @@ lessence --fail-on-pattern "ERROR|FATAL" < app.log
   (`--sanitize`, `--sanitize-pii`, `--max-line-length`, `--max-lines`), pattern control
   (`--threshold`, `--min-collapse`, `--disable-patterns`), and CI integration
   (`--fail-on-pattern`). Consult when needing a flag beyond the core set above.
-- **`references/sources.md`** (repo only, not printed by `--skill`) — Per-claim
-  verification stamps against the repo's binary and docs. Consult when a claim
-  looks stale; re-verify after user-facing `feat:`/`fix:` commits.
-- **`references/trigger-evals.json`** (repo only) — Persistent trigger eval set
-  (10 should-fire, 8 should-not). Used by skill-improver trigger mode; extend
-  rather than replace.
-- **`references/choice-evals/`** (repo only) — Behavioral eval harness: does the
-  model pick lessence over tail/grep on a real large-log diagnosis? See its
-  README to re-run after skill or binary changes.
-- **`docs/format-json-schema.md`** (repo only) — the full JSON field reference;
-  the fields this skill names are the ones agents need.
+- **Repo only, not printed by `--skill`** — `references/sources.md` (what each
+  claim here was verified against; consult when one looks stale),
+  `references/trigger-evals.json` and `references/choice-evals/` (eval sets for
+  when this skill fires and whether it is chosen over tail/grep), and
+  `docs/format-json-schema.md` (every JSON field).
