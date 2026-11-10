@@ -1,4 +1,3 @@
-use std::process::Command;
 use std::str;
 
 #[test]
@@ -6,7 +5,7 @@ fn test_text_format_default() {
     // Test that text format is the default and produces expected output
 
     // Test with default format (no --format flag)
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -43,7 +42,7 @@ fn test_text_format_default() {
         .any(|line| line.contains('+') && line.contains("similar"));
 
     // Test explicit --format text flag produces same result
-    let explicit_output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let explicit_output = crate::common::lessence()
         .args(["--format", "text", "--no-stats", "--no-report"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -75,7 +74,7 @@ fn test_text_format_default() {
 fn test_markdown_format_flag() {
     // Test --format markdown produces valid markdown structure
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "markdown", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -155,7 +154,7 @@ fn test_format_selection_errors() {
     let invalid_formats = vec!["xml", "csv", "yaml", "invalid"];
 
     for invalid_format in invalid_formats {
-        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        let output = crate::common::lessence()
             .args(["--format", invalid_format, "--no-stats"])
             .stdin(
                 std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -196,7 +195,7 @@ fn test_format_selection_errors() {
 
 fn run_with_format(format: &str) -> String {
     use std::io::Write;
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--format", format, "--no-stats"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

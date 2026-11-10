@@ -1,9 +1,8 @@
 use std::io::Write;
-use std::process::Command;
 
 #[test]
 fn test_sanitize_pii_text_format() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .arg("--sanitize-pii")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -31,7 +30,7 @@ fn test_sanitize_pii_text_format() {
 
 #[test]
 fn test_sanitize_pii_markdown_format() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--sanitize-pii", "--format", "markdown"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -76,7 +75,7 @@ fn test_sanitize_pii_cross_format_consistency() {
 
 // Helper function
 fn run_lessence(args: &[&str], input: &[u8]) -> String {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_lessence"));
+    let mut cmd = crate::common::lessence();
     cmd.args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped());
@@ -90,7 +89,7 @@ fn run_lessence(args: &[&str], input: &[u8]) -> String {
 #[test]
 fn test_sanitize_pii_with_email_disabled() {
     // Conflicting flags: sanitize emails but email detection disabled
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--sanitize-pii", "--disable-patterns", "email"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

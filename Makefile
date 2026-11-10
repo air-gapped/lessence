@@ -59,7 +59,7 @@ distill:
 #---------------------------------------------------------------------------
 
 ## docs: Regenerate the binary-derived README sections (gen: regions)
-docs: build
+docs:
 	LESSENCE_UPDATE_DOCS=1 cargo test --release --test doc_contract
 
 ## coverage: Generate HTML coverage report (opens in browser)
@@ -111,11 +111,11 @@ MUTANTS_FILES := -f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**
 # the integration test binaries.
 # ──────────────────────────────────────────────────────────────────────
 
-## mutants: Mutation testing — fast, unit tests only (~5 min)
+## mutants: Mutation testing — fast, unit tests only (~12 min)
 mutants: check-mutants-prereqs
 	scripts/mutants.sh $(MUTANTS_FILES) -C --lib
 
-## mutants-full: Mutation testing — thorough, all tests (~15 min)
+## mutants-full: Mutation testing — thorough, all tests (~38 min)
 mutants-full: check-mutants-prereqs
 	scripts/mutants.sh $(MUTANTS_FILES)
 

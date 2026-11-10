@@ -9,7 +9,7 @@
 //! an in-crate harness cannot see those surfaces at all.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::LazyLock;
 
 const DEFAULT_CORPUS: &str = include_str!("../fixtures/fold_regressions.log");
@@ -187,7 +187,7 @@ fn run(case: &Case, threads: &str) -> Run {
         args.push("--no-report".into());
     }
 
-    let mut child = Command::new(&*BIN)
+    let mut child = crate::common::command(&*BIN)
         .args(&args)
         // A pseudonym key is drawn per run; the thread-count check compares
         // two processes, so both get the same one.

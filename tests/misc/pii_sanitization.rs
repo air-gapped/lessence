@@ -1,10 +1,9 @@
 use regex::Regex;
 use std::io::Write;
-use std::process::Command;
 
 #[test]
 fn test_no_email_leakage_in_output() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .arg("--sanitize-pii")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -37,7 +36,7 @@ fn test_no_email_leakage_in_output() {
 #[test]
 fn test_gdpr_compliance_basic_deidentification() {
     // GDPR Article 4(5): Pseudonymization = direct identifiers removed
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .arg("--sanitize-pii")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -64,7 +63,7 @@ fn test_gdpr_compliance_basic_deidentification() {
 #[test]
 fn test_hipaa_compliance_safe_harbor_method() {
     // HIPAA Safe Harbor: Remove 18 identifiers (email is one)
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .arg("--sanitize-pii")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

@@ -1,13 +1,9 @@
-use std::process::Command;
-
 #[test]
 fn test_lessence_binary_exists() {
     // T005: CLI contract test for binary name
     // Verifies that the lessence binary exists and executes properly
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
-        .arg("--version")
-        .output();
+    let output = crate::common::lessence().arg("--version").output();
 
     match output {
         Ok(result) => {
@@ -31,7 +27,7 @@ fn test_lessence_binary_exists() {
 #[test]
 fn test_lessence_binary_help() {
     // Verify lessence binary responds to help
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--help")
         .output()
         .expect("lessence binary should exist");

@@ -1,10 +1,10 @@
 //! Additive run metadata: raw input identity and explicit input omissions.
 use serde_json::Value;
 use std::io::Write;
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 fn run(args: &[&str], input: &[u8]) -> Output {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut c = crate::common::lessence()
         .args(args)
         .args(["--threads", "1", "-q"])
         .stdin(Stdio::piped())

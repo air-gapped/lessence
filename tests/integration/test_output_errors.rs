@@ -3,7 +3,7 @@ use std::fs::File;
 use std::fs::OpenOptions;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 #[test]
 fn closed_output_pipe_is_a_successful_early_stop() {
@@ -13,7 +13,7 @@ fn closed_output_pipe_is_a_successful_early_stop() {
         let (reader, writer) = UnixStream::pair().unwrap();
         drop(reader);
         let writer: OwnedFd = writer.into();
-        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        let output = crate::common::lessence()
             .args(&args)
             .stdin(File::open(input.path()).unwrap())
             .stdout(Stdio::from(writer))
@@ -31,7 +31,7 @@ fn full_output_device_is_an_error_not_a_closed_pipe() {
     let input = tempfile::NamedTempFile::new().unwrap();
     std::fs::write(input.path(), "worker finished\n").unwrap();
     for args in [vec!["-q"], vec!["-q", "--top", "1"]] {
-        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        let output = crate::common::lessence()
             .args(&args)
             .stdin(File::open(input.path()).unwrap())
             .stdout(OpenOptions::new().write(true).open("/dev/full").unwrap())

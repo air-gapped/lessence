@@ -8,7 +8,7 @@ and the commit hooks. Rationale is not here; the rules are in CLAUDE.md.
 | Target | Run when | Reads | Writes | Exit |
 |---|---|---|---|---|
 | `make ci` | every commit | tests, `tests/fixtures/` | — | non-zero on any failure |
-| `make gate` | before a commit touching `src/` or `Cargo.lock` | `examples/distilled/*.log`, `*.golden`, `tests/fixtures/fold_regressions.log` | `target/gate/gate.json` | 0 PASS · 1 FAIL · 2 cannot run |
+| `make gate` | before a commit touching the binary's inputs (below) | `examples/distilled/*.log`, `*.golden`, `tests/fixtures/fold_regressions.log` | `target/gate/gate.json` | 0 PASS · 1 FAIL · 2 cannot run |
 | `make distill` | after a corpus is added or re-harvested; `BLESS=1` after an intended fold change | `examples/originals/*.log` (originals, this step only) | `examples/distilled/<name>.log`, `<name>.golden` | non-zero names the corpus |
 | `make release-check` | before a release | distilled set, `<last-published-release>..HEAD`, the `slow` nextest profile, README compression table, skill `sources.md` | `target/gate/release.json` | as gate |
 
@@ -21,9 +21,14 @@ No target other than `make distill` reads an original corpus.
    instructions:u` must work unprivileged (`/proc/sys/kernel/perf_event_paranoid`
    ≤ 2), else exit 2.
 2. Baseline: `GATE_BASE` (default `HEAD`) checked out into a worktree under
-   `target/gate/`, built with the current toolchain, cached as
-   `target/gate/base-<commit>/lessence`. A binary path is never accepted.
-   If `git diff <base> -- src Cargo.lock` is empty → exit 2 "nothing to compare".
+   `target/gate/`, built with the current toolchain into the shared
+   `target/gate/base-target`, cached as `target/gate/base-<commit>/lessence`;
+   the worktree is removed once the binary is copied out. A cached binary is
+   reused without a checkout or a build. A binary path is never accepted.
+   If `git diff <base>` over the binary's inputs — `src/`, `Cargo.toml`,
+   `Cargo.lock`, `build.rs` and the two skill files `src/skill.rs` embeds
+   (`.claude/skills/lessence/SKILL.md`, `references/flags.md`) — is empty
+   → exit 2 "nothing to compare".
 3. New: `cargo build --release` of the working tree. sha256 of both binaries
    recorded.
 4. Cases: `##CASE` headers in the working-tree fixture absent from the
@@ -31,7 +36,12 @@ No target other than `make distill` reads an original corpus.
    baseline binary (`LESSENCE_BIN`, `LESSENCE_FIXTURE` overrides in
    `tests/integration/test_fold_regressions.rs`). A new block that passes on
    the baseline and lacks `holds-on-base` in its header is vacuous → FAIL,
-   headers listed. With `GATE_VACUOUS_INFORMATIONAL=1` (set by
+   headers listed. A run is judged only on a result the test reported
+   (`scripts/gate-vacuity.sh`): `known_fold_regressions ... ok` with exit 0
+   is a pass, `... FAILED` with the case check's "N of M fold regressions
+   came back" is a fail; anything else — a compile failure, a filter that
+   ran nothing, a panic before the case was checked — is exit 2 naming the
+   case, never "fails on the baseline". With `GATE_VACUOUS_INFORMATIONAL=1` (set by
    `release-check.sh`, whose baseline is the last tag) the count is printed
    and listed in `gate.json` but does not fail: against a tag, passing only
    means the tag never had that defect.
@@ -82,8 +92,9 @@ No target other than `make distill` reads an original corpus.
    ordinary run, and it refuses to write when the measurement had errors.
    `scripts/gate-selftest.sh` drives both checks with stubs (missing
    tokenizer, missing baseline, missing corpus, missing field, genuine growth,
-   over-16-KiB stdout, failed RSS run, RSS report with no number) and runs as
-   a precondition of every gate.
+   over-16-KiB stdout, failed RSS run, RSS report with no number, and the
+   vacuity classification of step 4) and runs as a precondition of every
+   gate.
 9. Stdout ≤ 15 lines. `gate.json`:
 
 ```json
@@ -141,9 +152,11 @@ lines. `RELEASE_CHECK_SKIP_MUTANTS=1` skips mutants (testing only).
 
 ## Test profiles (`.config/nextest.toml`)
 
-The default profile's `default-filter` excludes every `*scales_linearly*`
-test and `test_processing_speed_requirement` — the tests that assert a
-duration. The `slow` profile is exactly those, run by `make release-check`
+The default profile's `default-filter` excludes the tests that assert a
+duration (every `*scales_linearly*` test, `test_processing_speed_requirement`
+and the others `.config/nextest.toml` names), the mid-spool write-failure
+test and the 200,000-group `--overview all` streaming test. The `slow`
+profile is exactly those, run by `make release-check`
 and by hand with `cargo nextest run --release --profile slow`. A `-E`
 expression on the command line selects within the profile's default filter
 unless `--ignore-default-filter` is given, so `make ci` can never run a slow
@@ -151,7 +164,8 @@ test by accident and `make release-check` always runs all of them.
 
 ## Hooks (`.githooks/`, `core.hooksPath`)
 
-- `pre-commit`: if a staged path is under `src/` or is `Cargo.lock`, require
+- `pre-commit`: if a staged path (added, changed, deleted, or either side
+  of a rename) is one of the binary's inputs (`scripts/gate.sh`, step 2), require
   `target/gate/gate.json` with `verdict: PASS` and `staged_diff_sha256`
   equal to the current staged diff; otherwise print `run make gate` and
   exit 1.

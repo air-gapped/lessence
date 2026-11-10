@@ -6,7 +6,7 @@
 //! regression names the mode that leaked.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 const FIXTURE: &[u8] = b"auth user alice@example.com password=FIXVALUEA1 req 1\n\
 auth user alice@example.com password=FIXVALUEA2 req 2\n\
@@ -27,7 +27,7 @@ const SECRETS: &[&str] = &[
 /// Run the binary with --sanitize-pii plus `args`, feed the fixture on
 /// stdin, and return stdout and stderr concatenated.
 fn run_masked(args: &[&str]) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .arg("--sanitize-pii")
         .args(args)
         .stdin(Stdio::piped())

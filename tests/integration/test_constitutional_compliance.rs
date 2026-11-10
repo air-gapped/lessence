@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::str;
 use std::sync::LazyLock;
 
@@ -19,7 +19,7 @@ fn test_constitutional_compliance_generated() {
     let input = log_generator::generate_log(1000);
     let input_lines = input.lines().count();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--no-stats", "--threads", "1"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -83,7 +83,7 @@ fn test_constitutional_compliance_kubelet() {
     // of those is an under-fold with a cause. The gate is therefore: the
     // set of such near-miss shapes may only shrink, and every shape still
     // present must name the bead that owns it.
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--explain", "--threads", "1"])
         .stdin(file)
         .output()
@@ -266,7 +266,7 @@ fn test_processing_speed_requirement() {
     };
 
     let start = Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--no-stats"])
         .stdin(file)
         .output()
@@ -313,7 +313,7 @@ fn anchor_split_offenders(corpus: &std::path::Path) -> Vec<(String, usize)> {
 /// a status-class split; `anchor_split_offenders` above throws it away for
 /// callers that only want the count.
 fn offender_groups(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--explain", "--threads", "1"])
         .stdin(std::fs::File::open(corpus).expect("corpus just listed by caller"))
         .output()
@@ -508,7 +508,7 @@ fn audit_syscall_outcomes_stay_visible_and_separate() {
     assert!(expected.get("success=yes").is_some_and(|n| *n > 0));
     assert!(expected.get("success=no").is_some_and(|n| *n > 0));
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--explain",
             "--threads",
@@ -577,7 +577,7 @@ fn execution_commands_preserve_options_operations_and_counts() {
     assert!(expected.keys().any(|(field, _)| field == "args"));
     assert!(expected.keys().any(|(field, _)| field == "msg"));
 
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args([
             "--explain",
             "--threads",
@@ -674,7 +674,7 @@ fn cli_option_identities_stay_visible_in_every_corpus() {
             }
         }
         let mut actual_counts = BTreeMap::<Vec<String>, u64>::new();
-        let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+        let output = crate::common::lessence()
             .args(["--explain", "--threads", "1"])
             .arg(path)
             .output()
@@ -963,7 +963,7 @@ fn prose_http_requests_preserve_methods_routes_and_counts() {
     assert!(expected.keys().any(|(method, _)| method == "POST"));
     assert!(expected.keys().any(|(method, _)| method == "GET"));
     assert!(expected.len() >= 4, "request route coverage disappeared");
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--explain", "--threads", "1", path])
         .output()
         .expect("run corpus");
@@ -1021,7 +1021,7 @@ fn command_timings_remain_decimal_measurements() {
             .any(|c| c[1].split_once('.').unwrap().1.len() == 16),
         "missing long decimal regression shape"
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--explain", "--threads", "1", path])
         .output()
         .expect("run execution corpus");
@@ -1087,7 +1087,7 @@ fn cpu_resources_keep_quantity_values_in_configuration_diffs() {
         input_lines > 0 && expected_values.len() >= 2,
         "missing CPU resource shapes"
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--explain", "--threads", "1", path])
         .output()
         .expect("run operator corpus");

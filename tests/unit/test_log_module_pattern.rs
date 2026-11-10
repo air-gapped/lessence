@@ -15,7 +15,7 @@ mod tests {
         ];
 
         for log_line in apache_logs {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
+            let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             // Should detect log level + module pattern
             assert!(
@@ -64,7 +64,7 @@ mod tests {
         ];
 
         for log_line in nginx_logs {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
+            let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             let has_log_module = tokens.iter().any(|token| {
                 matches!(
@@ -104,7 +104,7 @@ mod tests {
         ];
 
         for log_line in systemd_logs {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
+            let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             // Note: systemd logs might have different formats
             // This test validates detection when the pattern exists
@@ -148,7 +148,7 @@ mod tests {
         ];
 
         for log_line in syslog_entries {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
+            let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             // Syslog format: facility.level module: message
             if !tokens.is_empty() {
@@ -188,7 +188,7 @@ mod tests {
         ];
 
         for log_line in framework_logs {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
+            let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             // Modern logging frameworks often use [module] format
             if !tokens.is_empty() {
@@ -235,33 +235,16 @@ mod tests {
         for test_case in non_module_cases {
             let (result, tokens) = LogWithModuleDetector::detect_and_replace(test_case);
 
-            // Should not detect log-with-module pattern in non-logging contexts
-            let has_log_module = tokens.iter().any(|token| {
-                matches!(
-                    token,
-                    Token::LogWithModule {
-                        level: _,
-                        module: _
-                    }
-                )
-            });
-
-            if has_log_module {
-                // If detected, it should be a valid logging pattern
-                if let Some(Token::LogWithModule { level, module }) = tokens
-                    .iter()
-                    .find(|t| matches!(t, Token::LogWithModule { .. }))
-                {
-                    // Strict validation for potential false positives
-                    assert!(
-                        [
-                            "ERROR", "INFO", "WARN", "DEBUG", "error", "info", "warn", "debug"
-                        ]
-                        .contains(&level.as_str()),
-                        "Detected level should be valid log level: {level}"
-                    );
-                }
-            }
+            // A non-logging line never reads as a level and a module, and
+            // nothing on it is rewritten.
+            let has_log_module = tokens
+                .iter()
+                .any(|token| matches!(token, Token::LogWithModule { .. }));
+            assert!(
+                !has_log_module,
+                "not a level+module line: {test_case:?} -> {result:?} {tokens:?}"
+            );
+            assert_eq!(result, test_case, "rewritten: {tokens:?}");
         }
     }
 
@@ -275,7 +258,7 @@ mod tests {
         ];
 
         for log_line in mixed_case_logs {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
+            let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
             // Should handle different case variations
             if !tokens.is_empty() {
@@ -290,7 +273,7 @@ mod tests {
                 });
 
                 if has_log_module {
-                    if let Some(Token::LogWithModule { level, module }) = tokens
+                    if let Some(Token::LogWithModule { level, .. }) = tokens
                         .iter()
                         .find(|t| matches!(t, Token::LogWithModule { .. }))
                     {

@@ -58,20 +58,28 @@ fi
 rm -f /tmp/gate-perf-check.$$
 
 # ── 2. Baseline: build GATE_BASE in a throwaway worktree, cached per commit ─
+# Every baseline builds into one shared target dir, so only the first build
+# is cold, and the worktree is removed once its binary is copied out: what
+# stays per commit is the binary alone.
 
 base_commit="$(git rev-parse "$GATE_BASE")"
 base_worktree="$GATE_DIR/base-${base_commit}-wt"
 base_dir="$GATE_DIR/base-${base_commit}"
 base_bin="$base_dir/lessence"
+base_target="$ROOT/$GATE_DIR/base-target"
 
 if [ ! -x "$base_bin" ]; then
     echo "Building baseline ($GATE_BASE = $base_commit)..." >&2
     if [ ! -d "$base_worktree" ]; then
         git worktree add --detach "$base_worktree" "$base_commit" >/dev/null
     fi
-    ( cd "$base_worktree" && cargo build --release >/dev/null )
+    ( cd "$base_worktree" && CARGO_TARGET_DIR="$base_target" cargo build --release >/dev/null )
     mkdir -p "$base_dir"
-    cp "$base_worktree/target/release/lessence" "$base_bin"
+    # Copy then rename: an interrupted copy must not leave an executable
+    # that the cache check above would trust.
+    cp "$base_target/release/lessence" "$base_bin.partial"
+    mv "$base_bin.partial" "$base_bin"
+    git worktree remove --force "$base_worktree"
 fi
 
 # ── 3. New: build the working tree (uncommitted changes included) ──────────
@@ -91,12 +99,15 @@ new_sha="$(sha256sum "$new_bin" | awk '{print $1}')"
 # (the baseline is built in a throwaway worktree at a different path — an
 # ELF build-id or similar differs even for identical source), so the sha256
 # equality the spec names is a bonus fast-path, not the real test. The real
-# test is git: does anything that could change the binary's behaviour — src/
-# or Cargo.lock, including uncommitted changes — actually differ from
-# GATE_BASE?
-src_diff="$(git diff "$base_commit" -- src Cargo.lock)"
+# test is git: does anything that could change the binary's behaviour —
+# including uncommitted changes — actually differ from GATE_BASE? That is
+# src/, the manifest and lockfile, build.rs, and the two skill files
+# src/skill.rs embeds; .githooks/pre-commit requires a gate for the same set.
+binary_inputs=(src Cargo.toml Cargo.lock build.rs
+    .claude/skills/lessence/SKILL.md .claude/skills/lessence/references/flags.md)
+src_diff="$(git diff "$base_commit" -- "${binary_inputs[@]}")"
 if [ "$base_sha" = "$new_sha" ] || [ -z "$src_diff" ]; then
-    die2 "nothing to compare — src/ and Cargo.lock are identical to the $GATE_BASE baseline"
+    die2 "nothing to compare — ${binary_inputs[*]} are identical to the $GATE_BASE baseline"
 fi
 
 # ── 4. Cases: new ##CASE headers vs the baseline commit's fixture ──────────
@@ -140,6 +151,8 @@ done < <(awk '
 
 n_new="${#new_case_lines[@]}"
 vacuous=()
+# shellcheck source=scripts/gate-vacuity.sh
+. "$ROOT/scripts/gate-vacuity.sh"
 
 if [ "$n_new" -gt 0 ]; then
     echo "Checking $n_new new ##CASE block(s) against the baseline binary..." >&2
@@ -162,19 +175,26 @@ if [ "$n_new" -gt 0 ]; then
             *" holds-on-base"*) holds_on_base=1 ;;
         esac
 
+        vacuity_out="$GATE_DIR/vacuity-check.out"
         set +e
         LESSENCE_BIN="$(pwd)/$base_bin" LESSENCE_FIXTURE="$tmp_fixture" \
             cargo test --release --test integration -- \
             --exact integration::test_fold_regressions::known_fold_regressions \
-            >/tmp/gate-vacuous.$$ 2>&1
+            >"$vacuity_out" 2>&1
         rc=$?
         set -e
         rm -f "$tmp_fixture"
 
-        if [ "$rc" -eq 0 ] && [ "$holds_on_base" -eq 0 ]; then
+        # Only a result the test itself reported counts: a non-zero exit from
+        # a compile failure is not "fails on the baseline" (scripts/gate-vacuity.sh).
+        if ! outcome="$(vacuity_outcome "$rc" "$vacuity_out")"; then
+            tail -n 20 "$vacuity_out" >&2
+            die2 "the new case '$header' was never judged on the baseline: cargo test exited $rc without a known_fold_regressions result (output kept in $vacuity_out)"
+        fi
+        if [ "$outcome" = passes ] && [ "$holds_on_base" -eq 0 ]; then
             vacuous+=("$header")
         fi
-        rm -f /tmp/gate-vacuous.$$
+        rm -f "$vacuity_out"
     done
     unset total_lines
 fi

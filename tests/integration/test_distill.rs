@@ -15,7 +15,7 @@ const MICRO: &str = "tests/fixtures/microservices.log";
 const DEFAULT_MEMBERS: usize = 3;
 
 fn lessence_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_lessence"))
+    crate::common::lessence()
 }
 
 fn run(args: &[&str]) -> Output {

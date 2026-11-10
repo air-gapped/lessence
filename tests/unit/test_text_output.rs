@@ -1,10 +1,9 @@
-use std::process::Command;
 use std::str;
 
 #[test]
 fn test_plain_text_output_format() {
     // Test that --format text produces plain text (current default behavior)
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "text", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -53,7 +52,7 @@ fn test_plain_text_output_format() {
 #[test]
 fn test_text_minimal_overhead() {
     // Test that text format has minimal overhead
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--format", "text", "--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")
@@ -70,7 +69,7 @@ fn test_text_minimal_overhead() {
     let line_count = text_output.lines().count();
 
     // Compare with default output (should be same or very similar)
-    let default_output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let default_output = crate::common::lessence()
         .args(["--no-stats"])
         .stdin(
             std::fs::File::open("tests/fixtures/nginx_sample.log")

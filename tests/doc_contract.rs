@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
+mod common;
+
 /// Serializes every gen-region read-modify-write. Three tests rewrite
 /// README.md under `LESSENCE_UPDATE_DOCS=1`, and libtest runs them on
 /// parallel threads — without this lock one test's full-file write clobbers
@@ -209,7 +211,7 @@ fn readme_headline_example() {
     let reports = repo_path("target/doc-contract-reports");
     let _ = std::fs::remove_dir_all(&reports);
     std::fs::create_dir_all(&reports).expect("scratch report dir");
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--report-dir")
         .arg(&reports)
         .arg(&fixture)

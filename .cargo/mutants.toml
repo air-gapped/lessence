@@ -9,49 +9,42 @@ cap_lints = true
 # Equivalent mutants: mutations that don't change observable behavior.
 # These are structurally impossible to kill — the mutation produces
 # identical results due to redundant guards or regex guarantees.
+#
+# Anchoring: an entry names the mutant by its description and function
+# (`... in <fn>$`) when that is unique in the function. Where the function
+# holds more than one mutant of the same shape, the entry also pins
+# `file:line:col` — such a pin fails safe (after a drift it matches nothing
+# and the mutant shows as missed) but must be re-derived with
+# `cargo mutants --list --no-config`. Closures in DETECTOR_ORDER have no
+# function name, so those entries can only be pinned.
 exclude_re = [
     # lessence-e8v: absorb adds two nonempty group counts before this guard.
     # The sum is at least two; checked overflow traps before either guard.
-    '^src/folder/mod\.rs:337:27: replace match guard self.count > 1 with true in PatternGroup::absorb$',
-    '^src/folder/mod\.rs:337:38: replace > with >= in PatternGroup::absorb$',
+    'replace match guard self\.count > 1 with true in PatternGroup::absorb$',
+    '^src/folder/mod\.rs:357:38: replace > with >= in PatternGroup::absorb$',
     # unit_spans emits each PCI match as a whole atom. Its cuts preserve PCI
     # word boundaries, so any isolated match has both start=0 and end=len.
-    '^src/folder/mod\.rs:1229:45: replace && with \|\| in varying_spans$',
+    '^src/folder/mod\.rs:1297:45: replace && with \|\| in varying_spans$',
     # RollupComputer uses positive k (production default 7). At len=k,
     # pop-last, truncate(k-1), push-last is the identity on the sorted vector.
-    '^src/folder/mod\.rs:2160:78: replace > with >= in RollupComputer::finalize$',
-    # FQDN_REGEX already guarantees no leading/trailing dots (\b anchor)
-    # so the contains('.')/starts_with/ends_with checks are redundant.
-    "network.rs:207",
-    # QuotedStringDetector has its own `if !text.contains('\"')` fast path,
-    # so the normalizer's `|| contains('\'')` branch never produces tokens.
-    "normalize.rs:182",
-    # PathDetector (step 3) already replaces &Event{} before JSON (step 4).
-    # The normalize_json guard is unreachable — path detector consumes all
-    # inputs that JsonDetector would match.
-    "normalize.rs:59",
+    'replace > with >= in RollupComputer::finalize$',
 
     # --- 0.4.5 similarity-cache equivalents ---
-    # tok_eq: && → || diverges only on an ahash collision between unequal
-    # tokens (equal bytes with unequal hashes is impossible).
-    'replace && with \|\| in Normalizer::tok_eq',
     # from_normalized: the s.len() > u32::MAX guard needs a > 4 GiB string
-    # to distinguish >, >=, == — unconstructible in a test.
-    'replace > with .* in SimTokens::from_normalized',
+    # to distinguish >, >=, == — unconstructible in a test. (`<` makes every
+    # line Unbounded and stays testable.)
+    'replace > with (==|>=) in SimTokens::from_normalized$',
     # flush_oldest_safe_group: the map entry equal to the removed index is
     # deleted on the line above, so > vs >= over the remaining values is
     # indistinguishable.
-    "folder/mod.rs:1075:23",
+    '^src/folder/mod\.rs:2790:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
     # token_lcs prefix/suffix trims and the early-exit bound are exact
     # optimizations: disabling a trim (< → == / >) or loosening the bound
     # (- → + / /) can never change the returned LCS or decision, only speed.
-    "normalize.rs:296:17: replace < with ==",
-    "normalize.rs:296:17: replace < with >",
-    "normalize.rs:307:17: replace < with ==",
-    "normalize.rs:307:17: replace < with >",
-    'normalize.rs:330:42: replace - with \+',
-    'normalize.rs:330:46: replace - with \+',
-    "normalize.rs:330:46: replace - with /",
+    '^src/normalize\.rs:1403:17: replace < with (==|>) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1414:17: replace < with (==|>) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1437:42: replace - with \+ in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1437:46: replace - with (\+|/) in Normalizer::token_lcs$',
     # are_similar multiset bound: these mutations push the bound above any
     # admissible threshold (<= 100) so the reject never fires — decisions
     # unchanged, only the DP shortcut is lost.
@@ -69,34 +62,28 @@ exclude_re = [
     # lessence-e8v: widened prefilters only add inert detector calls.
     # cpu_quantities and the bracket detector repeat their own guards;
     # PCI_ADDRESS itself requires both the colon and the dot-digit shape.
+    # (The first two are DETECTOR_ORDER closures: pinned, no function name.)
     '^src/normalize\.rs:49:51: replace && with \|\|$',
     '^src/normalize\.rs:149:29: replace && with \|\|$',
-    '^src/normalize\.rs:347:9: replace && with \|\| in pci_addresses$',
+    'replace && with \|\| in pci_addresses$',
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
-    '^src/folder/render\.rs:475:34: replace > with >= in PatternFolder::build_briefing$',
-
-    # --- lessence-e8v: merge_retained's Counted arm is unreachable ---
-    # A `Counted` accumulator only exists after `finalize` inserts the
-    # VARIES entry, and merge_retained runs before finalize, so the arm
-    # that merges two Counted maps never executes: deleting it or changing
-    # its `+=` cannot be observed.
-    'delete match arm \(Accumulator::Counted\(m\), Accumulator::Counted\(other\)\) in RollupComputer::merge_retained',
-    'folder/mod.rs:2096:50: replace \+= with',
+    '^src/folder/render\.rs:462:34: replace > with >= in PatternFolder::build_briefing$',
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.
-    '^src/folder/mod\.rs:1166:54: replace \+ with \* in align_words$',
+    '^src/folder/mod\.rs:1234:54: replace \+ with \* in align_words$',
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
-    '^src/folder/mod\.rs:1366:85: replace < with <= in cli_option_units$',
+    '^src/folder/mod\.rs:1434:85: replace < with <= in cli_option_units$',
 
     # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
     # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded
     # on the proof written above each entry. Still pending, not excluded:
-    # normalize.rs:49:73 (pipeline-order argument covers probes, not every
-    # detector path) and normalize.rs:1254:53 (weaker hash mixing is not
-    # equivalent behaviour). ---
+    # the `||` inside the cpu-quantity prefilter in DETECTOR_ORDER
+    # (pipeline-order argument covers probes, not every detector path) and
+    # the anchor fold into the line hash in Normalizer::normalize_line
+    # (weaker hash mixing is not equivalent behaviour). ---
     # RetainedIndex::candidates is a sound over-approximation: the similarity
     # check runs on every candidate it returns, so a mutant that only widens
     # the length window or scans more postings returns a superset and the
@@ -115,17 +102,17 @@ exclude_re = [
 
     # The quoted-string result cache is transparent: the cache-key length cap
     # and the admission bound only decide whether an outcome is memoised.
-    '^src/patterns/quoted\.rs:81:53: replace <= with > in QuotedStringDetector::detect_and_replace$',
-    '^src/patterns/quoted\.rs:95:44: replace < with .* in QuotedStringDetector::detect_and_replace$',
+    'replace <= with > in QuotedStringDetector::detect_and_replace$',
+    'replace < with .* in QuotedStringDetector::detect_and_replace$',
     # shape_folded and whole_replacement are set together in every
     # normalize_quoted outcome, so `||` and `&&` agree.
-    '^src/patterns/quoted\.rs:112:34: replace \|\| with && in QuotedStringDetector::detect_and_replace$',
+    'replace \|\| with && in QuotedStringDetector::detect_and_replace$',
 
     # is_prose runs only after is_likely_id, which requires a digit, while
     # is_prose requires an all-alphabetic id: it can never be true.
-    '^src/patterns/uuid\.rs:198:9: replace UuidDetector::is_prose -> bool with false$',
-    '^src/patterns/uuid\.rs:200:29: replace - with / in UuidDetector::is_prose$',
+    'replace UuidDetector::is_prose -> bool with false$',
+    'replace - with / in UuidDetector::is_prose$',
 
     # With last == 0 the `>=` branch assigns text[0..] back to text, byte for byte.
-    '^src/patterns/key_value\.rs:211:17: replace > with >= in KeyValueDetector::apply_general_pattern$',
+    'replace > with >= in KeyValueDetector::apply_general_pattern$',
 ]

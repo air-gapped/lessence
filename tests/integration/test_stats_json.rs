@@ -2,7 +2,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn lessence_bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_lessence"))
+    crate::common::lessence()
 }
 
 #[test]

@@ -113,8 +113,7 @@ fn test_pii_sanitization_functionality() {
 
 #[test]
 fn test_all_security_cli_flags_exist() {
-    use std::process::Command;
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .arg("--help")
         .output()
         .expect("Failed to run lessence");
@@ -134,9 +133,9 @@ fn test_all_security_cli_flags_exist() {
 #[test]
 fn test_pii_sanitization_flag_integration() {
     use std::io::Write;
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(["--sanitize-pii", "--no-stats"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

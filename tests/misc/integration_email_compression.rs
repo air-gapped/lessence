@@ -1,11 +1,11 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tempfile::NamedTempFile;
 
 /// Helper: run lessence with --no-stats on a temp file via stdin.
 fn run_lessence_file(temp_file: &NamedTempFile) -> String {
     let file = std::fs::File::open(temp_file.path()).expect("Failed to open temp file");
-    let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let output = crate::common::lessence()
         .args(["--no-stats", "--no-report"])
         .stdin(file)
         .output()
@@ -27,7 +27,7 @@ fn run_lessence_stdin(args: &[&str], input: &str) -> String {
     }) {
         args.push("--no-report".to_string());
     }
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

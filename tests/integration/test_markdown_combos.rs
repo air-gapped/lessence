@@ -2,10 +2,10 @@
 //! other mode must fail loudly instead of silently emitting plain text.
 
 use std::io::Write;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 fn run_with_flags(args: &[&str]) -> std::process::Output {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
+    let mut child = crate::common::lessence()
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

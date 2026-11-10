@@ -38,9 +38,12 @@ and hide behind CI where no one watches them.
 2. Skip expensive operations in debug builds via `cfg!(debug_assertions)`.
    Processing 70k lines through a debug binary takes 50s vs 2s in release.
    The compression ratio is identical — only speed differs.
-3. Use `env!("CARGO_BIN_EXE_lessence")` in integration tests, never
-   `./target/release/lessence`. The hardcoded path breaks under cargo-mutants
-   and ties tests to a specific build profile.
+3. Spawn the binary with `crate::common::lessence()` (it wraps
+   `env!("CARGO_BIN_EXE_lessence")`), never `./target/release/lessence` or a
+   bare `Command::new`. The hardcoded path breaks under cargo-mutants and
+   ties tests to a build profile; a bare `Command` lets every default run
+   save its report in the user's `$XDG_STATE_HOME` instead of
+   `target/test-reports/`.
 4. Timing-sensitive tests run in a nextest serial group (`.config/nextest.toml`)
    with `max-threads = 1` to eliminate CPU contention flakes.
 
@@ -54,10 +57,13 @@ Use the `make_line` / `make_group` helpers in `src/folder/tests.rs` to build syn
 
 ### Integration Tests (in tests/)
 
-Use `env!("CARGO_BIN_EXE_lessence")` to find the binary:
+Spawn the binary through `tests/common` (every barrel declares
+`mod common;`), which points its saved reports at `target/test-reports/`;
+`crate::common::command(program)` does the same for a wrapper whose child
+is lessence:
 
 ```rust
-let output = Command::new(env!("CARGO_BIN_EXE_lessence"))
+let output = crate::common::lessence()
     .args(["--no-stats", "--threads", "1"])
     .stdin(std::fs::File::open("tests/fixtures/nginx_sample.log").unwrap())
     .output()
@@ -121,8 +127,8 @@ These run outside CI. See `make help` for all targets.
 make fuzz                     # Fuzz normalizer (nightly, 5 min default)
 make fuzz FUZZ_WORKERS=8      # Parallel fuzzing on 8 cores
 make fuzz-fold                # Fuzz full folding pipeline
-make mutants                  # Mutation testing, unit tests via -C --lib (~40 min)
-make mutants-full             # Mutation testing, full suite including integration (~hours)
+make mutants                  # Mutation testing, unit tests via -C --lib (~12 min)
+make mutants-full             # Mutation testing, full suite including integration (~38 min)
 make coverage                 # HTML code coverage report
 ```
 
@@ -158,20 +164,18 @@ include it.
 
 **Structurally equivalent mutants** — mutations that can't change
 observable behavior because of an earlier guard or redundant check
-— live in `.cargo/mutants.toml` under `exclude_re`. Currently:
+— live in `.cargo/mutants.toml` under `exclude_re`, each with its proof
+in a comment. An entry names the mutant by description and function
+(`... in <fn>$`) when that is unique in the function; otherwise it also
+pins `file:line:col`, which fails safe (after a drift it matches nothing
+and the mutant reappears as missed). Re-derive pins from
+`cargo mutants --list --no-config` — never leave a bare `file.rs:NNN`
+prefix, which after a drift silently excludes whatever real mutant
+moved onto that line.
 
-- `network.rs` (`FQDN` check) — FQDN regex's `\b` anchors already guarantee
-  the `contains('.')` / `starts_with` / `ends_with` checks
-- `normalize.rs` (`normalize_json` guard) — PathDetector (step 3) replaces `&Event{}`
-  before JsonDetector (step 4) can see it, so the `normalize_json`
-  guard is structurally unreachable for that input shape
-- `normalize.rs` (quoted-string `prefilter` in `DETECTOR_ORDER`) — `QuotedStringDetector` has its own
-  `if !text.contains('"')` fast path, making the normalizer's
-  `|| contains('\'')` branch dead for token emission
-
-If cargo-mutants reports a "missed" mutant on one of those patterns (`.cargo/mutants.toml` holds the exact ids),
-don't try to kill it — add to the exclusion list if a new equivalent
-is found.
+If cargo-mutants reports a "missed" mutant that one of those proofs
+covers, re-pin the entry; don't try to kill it. Add an entry only for a
+new equivalent, with its proof.
 
 ### Code Coverage (cargo-llvm-cov)
 
