@@ -350,6 +350,28 @@ fn explain_shows_the_first_difference_masked() {
     }
 }
 
+/// A rollup sample that holds a longer value beside a shorter one of the
+/// same group (a path through `192.0.2.123` in a group that also names
+/// `192.0.2.1`) has the longer value replaced whole.
+#[test]
+fn a_rollup_sample_masks_each_value_whole() {
+    let dir = scratch();
+    let lines: Vec<String> = (1..=4)
+        .map(|i| format!("copy {i} from 192.0.2.1 to /data/192.0.2.123/out"))
+        .collect();
+    let input = write_input(dir.path(), &lines);
+    let values: &[&str] = &["192.0.2.1", "23/out"];
+    assert_absent_everywhere(
+        &input,
+        &[
+            (&["--sanitize", "ip"], values),
+            (&["--sanitize", "ip:pseudonym"], values),
+        ],
+    );
+    let out = run(&input, &["--sanitize", "ip"], &["--no-report"]);
+    assert!(out.contains("{/data/<IP>/out}"), "{out}");
+}
+
 #[test]
 fn an_address_with_any_port_is_replaced() {
     let dir = scratch();

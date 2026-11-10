@@ -579,6 +579,20 @@ impl Span {
     }
 }
 
+/// A rollup sample of an entity type as the token it was cut from, so the
+/// masker can look for it in other text. `None` for any other type.
+pub(crate) fn entity_token(type_name: &str, value: &str) -> Option<Token> {
+    let value = value.to_string();
+    Some(match type_name {
+        "EMAIL" => Token::Email(value),
+        "FQDN" => Token::Fqdn(value),
+        "HOST" => Token::Host(value),
+        "IPV4" => Token::IPv4(value),
+        "IPV6" => Token::IPv6(value),
+        _ => return None,
+    })
+}
+
 /// The entity, tag class and value of a token the masker acts on.
 fn entity_value(token: &Token) -> Option<(Entity, &'static str, &str)> {
     match token {

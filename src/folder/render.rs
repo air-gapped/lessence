@@ -756,20 +756,21 @@ impl PatternFolder {
 }
 
 /// Mask PII inside rollup samples. The EMAIL entry's own samples collapse
-/// to the mask token; occurrences of those email values embedded in other
-/// entries' samples (quoted strings, structured messages) are replaced as
-/// well, and every sample then passes through the same credential-class
-/// masking as full lines so no output field can leak what the line
-/// renderer would have masked.
+/// to the mask token; every other sample is masked the way a full line is,
+/// with those entity values among the values it looks for, so a sample
+/// that quotes one (a path holding an address, a message naming a host)
+/// masks it wherever it stands whole, and no output field can leak what
+/// the line renderer would have masked.
 fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
-    // Values of an enabled entity, so a sample of another type that quotes
-    // one (a path holding an email, a message naming a host) masks too.
-    let mut values: Vec<(String, String)> = Vec::new();
+    let mut values: Vec<Token> = Vec::new();
     for (name, entry) in rollup.iter() {
-        if let Some((_, class)) = z.rollup_entity(name) {
-            for sample in &entry.samples {
-                values.push((sample.clone(), z.mask_sample(class, sample)));
-            }
+        if z.rollup_entity(name).is_some() {
+            values.extend(
+                entry
+                    .samples
+                    .iter()
+                    .filter_map(|sample| crate::sanitize::entity_token(name, sample)),
+            );
         }
     }
     for (name, entry) in rollup.iter_mut() {
@@ -786,12 +787,7 @@ fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
             }
             None => {
                 for sample in &mut entry.samples {
-                    for (value, masked) in &values {
-                        if sample.contains(value.as_str()) {
-                            *sample = sample.replace(value.as_str(), masked);
-                        }
-                    }
-                    *sample = z.mask_text(sample);
+                    *sample = z.mask_line(sample, &values);
                 }
             }
         }
