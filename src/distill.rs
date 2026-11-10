@@ -610,17 +610,18 @@ fn check_vocabulary(anonymizer: &Anonymizer, out_lines: &[String]) -> bool {
         return true;
     }
     let mut survivors: BTreeSet<String> = BTreeSet::new();
+    // Each line lowercased once, not once per vocabulary word.
+    let lowered: Vec<String> = out_lines.iter().map(|line| line.to_lowercase()).collect();
     for word in vocab {
         let needle = word.to_lowercase();
         let long = needle.chars().count() >= 6;
-        let found = out_lines.iter().any(|line| {
-            let lower = line.to_lowercase();
+        let found = lowered.iter().any(|lower| {
             if long {
                 lower.contains(&needle)
             } else {
                 lower
                     .match_indices(needle.as_str())
-                    .any(|(start, m)| at_token_boundary(&lower, start, start + m.len()))
+                    .any(|(start, m)| at_token_boundary(lower, start, start + m.len()))
             }
         });
         if found {
