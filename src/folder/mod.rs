@@ -1481,6 +1481,96 @@ fn kept_affixes(prefix: &str, suffix: &str, w: &str) -> (usize, usize) {
     (p, q)
 }
 
+/// Whether `r[from..to]` holds a quote without its partner, counted both
+/// ways a line's quotes are read: every `"`, as a word opens a quoted
+/// unit, and every `"` not escaped by a `\`, as the word splitter tracks a
+/// quoted string.
+fn unpaired_quote(r: &str, from: usize, to: usize) -> bool {
+    let b = r.as_bytes();
+    let (mut every, mut unescaped) = (0usize, 0usize);
+    for (i, &c) in b.iter().enumerate().take(to).skip(from) {
+        if c == b'"' {
+            every += 1;
+            if i == 0 || b[i - 1] != b'\\' {
+                unescaped += 1;
+            }
+        }
+    }
+    every % 2 == 1 || unescaped % 2 == 1
+}
+
+/// The slot `r[p..r.len() - q]` adjusted so it never takes one quote of a
+/// pair and leaves the other (lessence-veg). A template whose quotes no
+/// longer pair splits into other units than its members do — the words
+/// after the slot run together as one quoted string — and every later
+/// member is then compared unit for unit against the wrong ones. The slot
+/// sits wholly inside the quotes, the quote kept beside it where `w` has
+/// it too (`"redis:<VARIES>"`, `msg="<VARIES>`), or else covers the whole
+/// quoted value; a unit whose own quotes do not pair is left as it was.
+fn balance_quotes(r: &str, w: &str, p: usize, q: usize) -> (usize, usize) {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
+    if !odd(p, q) {
+        return (p, q);
+    }
+    let (rb, wb) = (r.as_bytes(), w.as_bytes());
+    // inside, closing side: the slot's last quote and what follows join the
+    // suffix, a `\` escaping that quote with it
+    let mut inner = q;
+    while let Some(quote) = r[p..r.len() - inner].rfind('"').map(|at| p + at) {
+        let quote = if quote > p && rb[quote - 1] == b'\\' {
+            quote - 1
+        } else {
+            quote
+        };
+        let keep = r.len() - quote;
+        if quote == p || wb.len() <= p + keep || !w.ends_with(&r[quote..]) {
+            break;
+        }
+        inner = keep;
+        if !odd(p, inner) {
+            while p + inner + 1 < rb.len()
+                && p + inner + 1 < wb.len()
+                && rb[rb.len() - 1 - inner] == wb[wb.len() - 1 - inner]
+                && matches!(rb[rb.len() - 1 - inner], b']' | b')')
+            {
+                inner += 1;
+            }
+            return (p, inner);
+        }
+    }
+    // inside, opening side: the slot's first quote joins the prefix
+    let mut inner = p;
+    while let Some(quote) = r[inner..r.len() - q].find('"').map(|at| inner + at) {
+        let keep = quote + 1;
+        if keep >= r.len() - q || wb.len() <= keep + q || !w.starts_with(&r[..keep]) {
+            break;
+        }
+        inner = keep;
+        if !odd(inner, q) {
+            return (inner, q);
+        }
+    }
+    // the whole quoted value: the prefix gives back its last quote, cut at
+    // a field delimiter the way a new slot's prefix is
+    let mut outer = p;
+    while odd(outer, q) {
+        let Some(quote) = r[..outer].rfind('"') else {
+            break;
+        };
+        outer = r[..quote]
+            .bytes()
+            .rposition(|b| matches!(b, b'=' | b':' | b'[' | b'('))
+            .map_or(0, |i| i + 1);
+    }
+    if !odd(outer, q) {
+        (outer, q)
+    } else if !odd(outer, 0) {
+        (outer, 0)
+    } else {
+        (p, q)
+    }
+}
+
 /// The affix a template unit keeps around its `<VARIES>`, as
 /// `(prefix, suffix)`; `None` for a unit without a slot.
 fn slot_affix(r: &str) -> Option<(&str, &str)> {
@@ -1612,7 +1702,10 @@ fn varying_spans_in(
                 None => ranges.get_or_insert_with(|| unit_ranges(&tmpl, &mem, &aligned))[i],
             };
             let (p, q) = range.map_or((0, 0), |range| {
-                kept_affixes(prefix, suffix, range_text(member, member_spans, range))
+                let w = range_text(member, member_spans, range);
+                let (p, q) = kept_affixes(prefix, suffix, w);
+                let (p, q) = balance_quotes(r, w, p, q);
+                (p.min(prefix.len()), q.min(suffix.len()))
             });
             if p < prefix.len() || q < suffix.len() {
                 edits.push((at + p, len - p - q));
@@ -1648,6 +1741,7 @@ fn varying_spans_in(
         match aligned[i] {
             Some(j) => {
                 let (p, q) = shared_affixes(r, mem[j]);
+                let (p, q) = balance_quotes(r, mem[j], p, q);
                 edits.push((at + p, len - p - q));
             }
             None => edits.push((at, len)),

@@ -4809,3 +4809,10 @@ job ran on shard shmike ok after retry
 job ran on shard shmike ok after retry
 job ran on shard shmike ok after retry
 job ran on shard shdaaa ok after retry
+
+##CASE lessence-veg template_present=image="cache:<VARIES>" node=n1
+##WHY a slot keeps both quotes of a pair or neither; one that took the closing quote left the template quoted differently from its members, and the words after it were compared against the wrong units
+##FROM tetragon image shape, invented; `"…redis:<VARIES>}` had swallowed the closing quote
+pull done image="cache:8.2.1" node=n1 took 3s
+pull done image="cache:8.2.7" node=n1 took 3s
+pull done image="cache:8.4.0" node=n1 took 3s

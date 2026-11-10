@@ -5433,6 +5433,68 @@ fn a_slot_against_a_member_of_another_length_is_rechecked_in_its_gap() {
     assert!(varying_spans("a <VARIES> c", "a b b c").is_empty());
 }
 
+/// `template` with every span `member` turns into `<VARIES>` replaced.
+fn marked(template: &str, member: &str) -> String {
+    let mut t = template.to_string();
+    for (at, len) in varying_spans(template, member).into_iter().rev() {
+        t.replace_range(at..at + len, VARIES_MARK);
+    }
+    t
+}
+
+#[test]
+fn a_slot_keeps_both_quotes_of_a_pair_or_neither() {
+    // tetragon (lessence-veg): `"…redis:8.2.1"` against `"…redis:8.2.7"`
+    // kept `"…redis:` and took the closing quote into the slot, and the
+    // template's words after it ran together as one quoted string.
+    assert_eq!(
+        marked(
+            r#"pull image="cache:8.2.1" node=n1"#,
+            r#"pull image="cache:8.2.7" node=n1"#
+        ),
+        r#"pull image="cache:<VARIES>" node=n1"#
+    );
+    // a quoted sentence's opening quote stays beside the slot
+    assert_eq!(
+        marked(
+            r#"x msg="Failed to sync the pod now" y"#,
+            r#"x msg="Passed to sync the pod now" y"#
+        ),
+        r#"x msg="<VARIES> to sync the pod now" y"#
+    );
+    // and its closing quote, with the closers before it
+    assert_eq!(
+        marked(
+            r#"x msg="sync failed for [alpha]" y"#,
+            r#"x msg="sync failed for [beta]" y"#
+        ),
+        r#"x msg="sync failed for [<VARIES>]" y"#
+    );
+    // a `\` travels with the quote it escapes
+    assert_eq!(
+        marked(
+            r#"x err="failed for pod=a1(u)\"" pod="n/p""#,
+            r#"x err="failed for pod=b2(u)\"" pod="n/p""#
+        ),
+        r#"x err="failed for pod=<VARIES>)\"" pod="n/p""#
+    );
+    // a whole quoted value is covered whole
+    assert_eq!(
+        marked(r#"x key="v1" y"#, r#"x key="v2" y"#),
+        "x key=<VARIES> y"
+    );
+    // a slot that widens keeps its quotes paired too
+    assert_eq!(
+        marked(r#"x image="cache:<VARIES>" y"#, r#"x image="other" y"#),
+        r#"x image="<VARIES>" y"#
+    );
+    // a unit whose own quote has no partner, against a member without it,
+    // is left as it was: nothing else would be true
+    assert_eq!(balance_quotes("[a]\"", "[b]", 1, 0), (1, 0));
+    assert!(!unpaired_quote(r#"a\"b\""#, 0, 6));
+    assert!(unpaired_quote(r#"a\"b""#, 0, 5));
+}
+
 #[test]
 fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     let computer = RollupComputer::with_defaults();
