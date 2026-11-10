@@ -4613,3 +4613,9 @@ job msg="started at 2024-01-01T10:00:00Z ok"
 ##FROM invented panic lines
 panic at handler.ts:123 in worker
 panic at handler.ts:123 in worker
+
+##CASE lessence-enl template_present=<TIMESTAMP> [pool-1] INFO cache ready holds-on-base
+##WHY a log4j stamp is one timestamp and its thread bracket stays; the log4j, Java and Docker entries were removed as strict subsets of the ISO formats, and this guards that the ISO form still covers them
+##FROM invented log4j lines
+2024-01-01 10:00:00,123 [pool-1] INFO cache ready
+2024-01-01 10:00:01,456 [pool-1] INFO cache ready

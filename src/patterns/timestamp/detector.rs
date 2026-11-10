@@ -128,24 +128,14 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         // where `[ <DECIMAL>]` against `[<DECIMAL>]` split a group in two
         // the moment the counter grew a digit.
         p("kernel-uptime", r"\[ *\d{1,7}\.\d{6}\]", 0),
-        p(
-            "docker-log",
-            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z\b",
-            0,
-        ),
-        p(
-            "java-simple-date",
-            r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{1,9}\b",
-            30,
-        ),
+        // Docker's `…T…\.\d{9}Z`, Java's `yyyy-MM-dd HH:mm:ss,SSS` and
+        // log4j's form of it are not listed: iso8601-enhanced and
+        // iso8601-full match every one of them on the same digits and
+        // outscore them, so their own entries could never be chosen
+        // (`stronger_formats_cover_the_removed_ones`).
         p(
             "apache-common",
             r"\[\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\]",
-            30,
-        ),
-        p(
-            "log4j",
-            r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s+\[",
             30,
         ),
         p(
@@ -1326,6 +1316,28 @@ mod shapes_2026_08_29 {
             assert_eq!(t.len(), 1, "{line}");
         }
         assert!(!UnifiedTimestampDetector::has_klog_header("FILE0829 x"));
+    }
+
+    /// The Docker, Java and log4j stamps are covered by the ISO formats:
+    /// each folds as one timestamp and the text after it is untouched.
+    #[test]
+    fn stronger_formats_cover_the_removed_ones() {
+        for (line, want) in [
+            ("2024-01-01T10:00:00.123456789Z ready", "<TIMESTAMP> ready"),
+            (
+                "2024-01-01 10:00:00,123 INFO ready",
+                "<TIMESTAMP> INFO ready",
+            ),
+            ("2024-01-01 10:00:00,123456 ready", "<TIMESTAMP> ready"),
+            (
+                "2024-01-01 10:00:00,123 [main] INFO ready",
+                "<TIMESTAMP> [main] INFO ready",
+            ),
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, want, "{line}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
     }
 
     /// An hour-only zone offset is part of the stamp, like a full one.
