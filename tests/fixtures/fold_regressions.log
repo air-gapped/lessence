@@ -4587,3 +4587,11 @@ GET /logout?next=home
 ##FROM invented scanner lines
 scanned barcode 404 items
 scanned barcode 404 items
+
+##CASE lessence-enl groups=1
+##WHY an hour-only zone offset (`+05`) is part of the timestamp, so the same event stamped `+05` and `+0530` is one group; the offset used to stay outside as `<TIMESTAMP>+05`
+##FROM invented job lines
+2024-01-01T10:00:00+05 job ok
+2024-01-01T10:00:01+05 job ok
+2024-01-01T10:00:00+0530 job ok
+2024-01-01T10:00:01+0530 job ok

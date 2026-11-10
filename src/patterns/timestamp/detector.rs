@@ -51,9 +51,13 @@ fn p(name: &'static str, pattern: &str, score: i32) -> TimestampPattern {
 static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
     vec![
         // ---- structured ----
+        // A zone offset is `+HH`, `+HHMM` or `+HH:MM`: the minutes are an
+        // optional group. Written `\d{2}?` (a lazy two-digit run, which
+        // still demands both digits), `+05` was left outside the stamp and
+        // split from `+0530`.
         p(
             "iso8601-enhanced",
-            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)\b",
+            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)\b",
             -100,
         ),
         // A datetime with the weekday in front and the zone abbreviation
@@ -85,17 +89,17 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         ),
         p(
             "week-date",
-            r"\b\d{4}-W\d{2}-\d(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
+            r"\b\d{4}-W\d{2}-\d(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?\b",
             -90,
         ),
         p(
             "ordinal-date",
-            r"\b\d{4}-\d{3}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
+            r"\b\d{4}-\d{3}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?\b",
             -90,
         ),
         p(
             "iso8601-full",
-            r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:\s*(?:UTC|GMT|[+-]\d{2}:?\d{2}?))?\b",
+            r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:\s*(?:UTC|GMT|[+-]\d{2}(?::?\d{2})?))?\b",
             -90,
         ),
         p(
@@ -236,7 +240,7 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         ),
         p(
             "time-only",
-            r"\b\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?\b",
+            r"\b\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)?\b",
             360,
         ),
         // ---- unix epochs ----
@@ -1322,6 +1326,21 @@ mod shapes_2026_08_29 {
             assert_eq!(t.len(), 1, "{line}");
         }
         assert!(!UnifiedTimestampDetector::has_klog_header("FILE0829 x"));
+    }
+
+    /// An hour-only zone offset is part of the stamp, like a full one.
+    #[test]
+    fn an_hour_only_zone_offset_is_inside_the_stamp() {
+        for line in [
+            "2024-01-01T10:00:00+05 job ok",
+            "2024-01-01T10:00:00+0530 job ok",
+            "2024-01-01T10:00:00-05:30 job ok",
+            "2024-01-01 10:00:00 +05 job ok",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, "<TIMESTAMP> job ok", "{line}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
     }
 
     /// The asctime, git, RFC 822 and klog stamps start on a word boundary
