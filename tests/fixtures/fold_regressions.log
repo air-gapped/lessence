@@ -4581,3 +4581,9 @@ GET /login?next=home
 GET /login?next=home
 GET /logout?next=home
 GET /logout?next=home
+
+##CASE lessence-bmp template_absent=<HTTP_STATUS>
+##WHY an HTTP status in prose follows a whole context word; `barcode 404` is a number after a word that merely ends in `code`, and the template must not claim it is a status
+##FROM invented scanner lines
+scanned barcode 404 items
+scanned barcode 404 items
