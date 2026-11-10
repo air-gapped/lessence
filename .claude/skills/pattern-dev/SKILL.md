@@ -19,23 +19,25 @@ The order is declared in one place: the `DETECTOR_ORDER` table in
 `prefilter` cheap byte check, optional `defers_to_kubernetes` predicate, and
 the `run` hook). `normalize_line` just walks the table:
 
-1. **Timestamps** — 30+ formats via unified registry (`patterns/timestamp/`)
-2. **Email** — RFC 5322 (`patterns/email.rs`)
-3. **Paths** — before Network to preserve URLs (`patterns/path.rs`)
-4. **JSON** — structure detection (`patterns/json.rs`)
-5. **UUIDs** — standard format (`patterns/uuid.rs`)
-6. **Network** — IPs, ports, FQDNs (`patterns/network.rs`)
-7. **Hashes** — MD5, SHA1, SHA256, SHA512 (`patterns/hash.rs`)
-8. **Process IDs** — PIDs, thread IDs (`patterns/process.rs`)
-9. **Kubernetes** — namespaces, pods, volumes (`patterns/kubernetes.rs`)
-10. **HTTP Status** — status codes (`patterns/http_status.rs`)
-11. **Bracket Context** — `[error]`-style tags (`patterns/bracket_context.rs`)
-12. **Key-Value** — `key=value` pairs (`patterns/key_value.rs`)
-13. **Log Module** — level + module patterns (`patterns/log_module.rs`)
-14. **Structured Messages** — component + level token for stats only; the line text is preserved verbatim so distinct messages fold into distinct groups (`patterns/structured.rs`)
-15. **Durations** — time and size values (`patterns/duration.rs`)
-16. **Names** — variable names (`patterns/names.rs`) — always enabled
-17. **Quoted Strings** — last to avoid consuming other tokens (`patterns/quoted.rs`)
+1. **CPU quantities** — millicpu fields (`cpu: 250m`) before the JSON, key-value and minute-duration passes can take the value (`DurationDetector::cpu_quantities`, `patterns/duration.rs`)
+2. **Timestamps** — one scored table of about 40 formats (`patterns/timestamp/detector.rs`)
+3. **Email** — RFC 5322 (`patterns/email.rs`)
+4. **Paths** — before Network to preserve URLs; also carries the `&Event{ObjectMeta:{…}` and `{key:value}` structure passes, which therefore run before JSON's copies (`patterns/path.rs`)
+5. **JSON** — the same two passes (`patterns/json.rs`); shadowed by Paths, so `--disable-patterns json` does not reach them yet
+6. **UUIDs** — standard format (`patterns/uuid.rs`)
+7. **Network** — IPs, ports, FQDNs (`patterns/network.rs`)
+8. **Hashes** — MD5, SHA1, SHA256, SHA512 (`patterns/hash.rs`)
+9. **Process IDs** — PIDs, thread IDs (`patterns/process.rs`)
+10. **Syslog host** — the positional host field between a normalized timestamp and a program tag (`replace_syslog_host`, `normalize.rs`); gated by the FQDN flag
+11. **Kubernetes** — namespaces, pods, volumes (`patterns/kubernetes.rs`)
+12. **HTTP Status** — status codes (`patterns/http_status.rs`)
+13. **Bracket Context** — `[error]`-style tags (`patterns/bracket_context.rs`)
+14. **Key-Value** — `key=value` pairs (`patterns/key_value.rs`)
+15. **Log Module** — level + module token for the statistics; Apache, nginx and systemd lines keep their text, the Java-logger form still folds to `[<LOG_WITH_MODULE>]` (`patterns/log_module.rs`)
+16. **Structured Messages** — component + level token for stats only; the line text is preserved verbatim so distinct messages fold into distinct groups (`patterns/structured.rs`)
+17. **Durations** — time and size values (`patterns/duration.rs`)
+18. **Names** — variable names (`patterns/names.rs`) — gated by `--disable-patterns name` like the others
+19. **Quoted Strings** — last to avoid consuming other tokens; its nested cascade honours the same `--disable-patterns` gates (`patterns/quoted.rs`)
 
 ## Normalization Pipeline
 
@@ -52,19 +54,17 @@ Token variants are defined in `patterns/mod.rs` as the `Token` enum.
 
 ## Timestamp Architecture
 
-The timestamp system uses a unified registry (`patterns/timestamp/registry.rs`):
+The whole timestamp engine is one table, `PATTERNS` in `patterns/timestamp/detector.rs`:
 
-- **30+ patterns** covering ISO 8601, RFC 3339, syslog, K8s, Apache, PostgreSQL, etc.
-- **Longest-match-first** — overlap resolution by length, then priority
-- **Unix timestamps** demoted to lowest priority to avoid false positives on plain numbers
-- **LazyLock** for thread-safe static initialization
+- **About 40 formats**, each a name, a regex and a score: ISO 8601, RFC 2822/822, syslog, klog, Apache, asctime, PostgreSQL, epochs and more
+- **Lowest score wins an overlap**, whatever the lengths; equal scores fall back to position, then table order. A format that a stronger one always matches on the same text can never be chosen, so it does not belong in the table
+- **Unix epochs** score last, so a plain number never outranks a real date
+- A `RegexSet` of the same table (`ASCII_CANDIDATES`) skips formats that cannot match a line before their regexes run
+- Every format starts on a word boundary, and a weekday or month is spelled as the calendar name, not `\w{3}`
 
 Key files:
-- `patterns/timestamp/mod.rs` — public API re-exports (the `TimestampDetector` legacy shim was removed; call `UnifiedTimestampDetector` directly)
-- `patterns/timestamp/registry.rs` — pattern definitions and merging
-- `patterns/timestamp/detector.rs` — `UnifiedTimestampDetector` (the engine)
-- `patterns/timestamp/formats.rs` — format enum and metadata
-- `patterns/timestamp/priority.rs` — `PatternPriority` + `FormatFamily` (implements the overlap-resolution logic)
+- `patterns/timestamp/mod.rs` — public API re-exports and `DetectionResult` / `TimestampMatch`
+- `patterns/timestamp/detector.rs` — the `PATTERNS` table and `UnifiedTimestampDetector`, the engine
 
 ## Adding a New Pattern
 

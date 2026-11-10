@@ -64,7 +64,20 @@ impl ProcessDetector {
                     tokens.push(Token::Pid(pid));
                 }
             }
-            result = regex.replace_all(&result, form).to_string();
+            // The same gate as the token, as PID_PAREN has: `worker[0]:`
+            // is not a pid, and replacing it anyway left a `<PID>` with no
+            // value behind it.
+            result = regex
+                .replace_all(&result, |caps: &regex::Captures| {
+                    if Self::is_pid_text(&caps[group]) {
+                        let mut out = String::new();
+                        caps.expand(form, &mut out);
+                        out
+                    } else {
+                        caps[0].to_string()
+                    }
+                })
+                .to_string();
         }
 
         // PID with equals like pid=12345
@@ -80,7 +93,13 @@ impl ProcessDetector {
             }
         }
         result = PID_EQUALS_REGEX
-            .replace_all(&result, "pid=<PID>")
+            .replace_all(&result, |caps: &regex::Captures| {
+                if Self::is_pid_text(&caps[1]) {
+                    "pid=<PID>".to_string()
+                } else {
+                    caps[0].to_string()
+                }
+            })
             .to_string();
 
         // Thread-specific patterns
@@ -130,6 +149,11 @@ impl ProcessDetector {
             .to_string();
 
         (result, tokens)
+    }
+
+    /// A captured digit run that is a pid by the same test the token uses.
+    fn is_pid_text(digits: &str) -> bool {
+        digits.parse::<u32>().is_ok_and(Self::is_likely_pid)
     }
 
     fn is_likely_pid(pid: u32) -> bool {
@@ -301,6 +325,27 @@ mod tests {
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
         assert_eq!(result, text);
         assert!(tokens.is_empty(), "no PID tokens expected, got {tokens:?}");
+    }
+
+    /// Every pid shape shares the gate: a number that is not a pid stays,
+    /// and a `<PID>` always has a token behind it.
+    #[test]
+    fn every_pid_shape_leaves_a_non_pid_alone() {
+        for text in [
+            "worker[0]: queue drained",
+            "[0] boot",
+            "probe [pid=0] gone",
+            "job pid=0 exited",
+            "worker[9999999]: busy",
+        ] {
+            let (result, tokens) = ProcessDetector::detect_and_replace(text);
+            assert_eq!(result, text);
+            assert!(tokens.is_empty(), "{text}: {tokens:?}");
+        }
+        let (result, tokens) =
+            ProcessDetector::detect_and_replace("sshd[1234]: [77] [pid=88] pid=99 x");
+        assert_eq!(result, "sshd[<PID>]: [77] [pid=<PID>] pid=<PID> x");
+        assert_eq!(tokens.len(), 3);
     }
 }
 

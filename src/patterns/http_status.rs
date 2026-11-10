@@ -14,9 +14,13 @@ static ACCESS_LOG_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#""(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+[^"]*"\s+(\d{3})\s+\d+"#).unwrap()
 });
 
-// Pattern for proxy logs: upstream_status -> downstream_status
+// Pattern for proxy logs: upstream_status -> downstream_status. Each code
+// is a whole number, and whatever stands between the arrow and the second
+// code (`200 -> downstream 502`) is the line's own text and stays: matching
+// `.*?` there swallowed `cache miss` and `cache hit` alike, and a code
+// could start inside `12345`.
 static PROXY_STATUS_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(\d{3})\s*->\s*.*?(\d{3})").unwrap());
+    LazyLock::new(|| Regex::new(r"\b([1-5]\d{2})\b(\s*->\s*.*?)\b([1-5]\d{2})\b").unwrap());
 
 pub struct HttpStatusDetector;
 
@@ -77,7 +81,8 @@ impl HttpStatusDetector {
         *text = PROXY_STATUS_REGEX
             .replace_all(text, |caps: &regex::Captures| {
                 let upstream_status = caps.get(1).unwrap().as_str();
-                let downstream_status = caps.get(2).unwrap().as_str();
+                let between = caps.get(2).unwrap().as_str();
+                let downstream_status = caps.get(3).unwrap().as_str();
 
                 if let (Ok(upstream), Ok(downstream)) = (
                     upstream_status.parse::<u16>(),
@@ -90,7 +95,7 @@ impl HttpStatusDetector {
                     tokens.push(Token::HttpStatusClass(downstream_class.clone()));
 
                     format!(
-                        "<HTTP_STATUS_{}> -> <HTTP_STATUS_{}>",
+                        "<HTTP_STATUS_{}>{between}<HTTP_STATUS_{}>",
                         upstream_class.to_uppercase(),
                         downstream_class.to_uppercase()
                     )
@@ -316,9 +321,27 @@ mod tests {
             tokens.len() >= 2,
             "proxy pattern should detect 2 status codes: {tokens:?}"
         );
-        assert!(
-            result.contains("<HTTP_STATUS_2XX>") && result.contains("<HTTP_STATUS_5XX>"),
-            "should replace both status codes: {result}"
+        assert_eq!(
+            result, "GET /api upstream <HTTP_STATUS_2XX> -> downstream <HTTP_STATUS_5XX>",
+            "both codes fold and the words between them stay"
+        );
+    }
+
+    /// A code is a whole number: `12345 -> 67890` holds none. The words
+    /// between the arrow and the second code are the event's and stay.
+    #[test]
+    fn proxy_pattern_takes_whole_codes_and_keeps_the_words_between() {
+        let input = "GET /api id 12345 -> 67890 moved";
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert_eq!(result, input);
+        assert!(tokens.is_empty(), "{tokens:?}");
+
+        let (miss, _) = HttpStatusDetector::detect_and_replace(
+            "GET /api upstream 502 -> cache miss on node 7 then 200",
+        );
+        assert_eq!(
+            miss,
+            "GET /api upstream <HTTP_STATUS_5XX> -> cache miss on node 7 then <HTTP_STATUS_2XX>"
         );
     }
 }

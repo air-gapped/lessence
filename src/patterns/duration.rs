@@ -91,9 +91,11 @@ static PERCENTAGE_REGEX: LazyLock<Regex> =
 
 // HTTP status codes (200, 404, 500, 401, etc.)
 // Matches 3-digit codes that are valid HTTP status codes (100-599)
-// Must be surrounded by spaces or punctuation to avoid matching parts of IP addresses
+// Must be surrounded by spaces or punctuation to avoid matching parts of IP addresses.
+// The context word is a whole word: without the leading `\b`, `barcode 404`
+// read `barcode <HTTP_STATUS>` and `terror 500` an error status.
 static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:status|error|code|returned?)\s+([1-5][0-9][0-9])\b").unwrap()
+    Regex::new(r"(?i)\b(?:status|error|code|returned?)\s+([1-5][0-9][0-9])\b").unwrap()
 });
 
 pub struct DurationDetector;
@@ -603,6 +605,14 @@ mod tests {
                 assert!(!tokens.is_empty(), "No tokens detected for: {input}");
             }
         }
+
+        // The context word is a whole word: `barcode` is not `code`.
+        let (barcode, tokens) = DurationDetector::detect_and_replace("scanned barcode 404 items");
+        assert_eq!(barcode, "scanned barcode <NUMBER> items");
+        assert!(
+            !tokens.iter().any(|t| matches!(t, Token::HttpStatus(_))),
+            "{tokens:?}"
+        );
     }
 
     #[test]

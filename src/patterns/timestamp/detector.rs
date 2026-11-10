@@ -51,9 +51,13 @@ fn p(name: &'static str, pattern: &str, score: i32) -> TimestampPattern {
 static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
     vec![
         // ---- structured ----
+        // A zone offset is `+HH`, `+HHMM` or `+HH:MM`: the minutes are an
+        // optional group. Written `\d{2}?` (a lazy two-digit run, which
+        // still demands both digits), `+05` was left outside the stamp and
+        // split from `+0530`.
         p(
             "iso8601-enhanced",
-            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)\b",
+            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)\b",
             -100,
         ),
         // A datetime with the weekday in front and the zone abbreviation
@@ -85,17 +89,17 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         ),
         p(
             "week-date",
-            r"\b\d{4}-W\d{2}-\d(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
+            r"\b\d{4}-W\d{2}-\d(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?\b",
             -90,
         ),
         p(
             "ordinal-date",
-            r"\b\d{4}-\d{3}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?)?\b",
+            r"\b\d{4}-\d{3}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)?)?\b",
             -90,
         ),
         p(
             "iso8601-full",
-            r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:\s*(?:UTC|GMT|[+-]\d{2}:?\d{2}?))?\b",
+            r"\b\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,9})?(?:\s*(?:UTC|GMT|[+-]\d{2}(?::?\d{2})?))?\b",
             -90,
         ),
         p(
@@ -103,36 +107,35 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\b",
             -80,
         ),
+        // The weekday and month are calendar names, and every one of these
+        // stamps starts on a word boundary: a bare `\w{3}` took the last
+        // three letters of any word in front (`fooMon, 03 Aug …` read
+        // `foo<TIMESTAMP>`), and a klog letter inside `FILE0829 …` read
+        // `FIL<TIMESTAMP>`.
         p(
             "rfc822",
-            r"\w{3},\s+\d{2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT",
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT\b",
             -40,
         ),
         // ---- application ----
-        p("kubernetes-log", r"[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+", 0),
+        p(
+            "kubernetes-log",
+            r"\b[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+",
+            0,
+        ),
         // The kernel ring buffer's uptime stamp, brackets and padding
         // included: `[    0.028586]` and `[4324019.474441]` are one shape,
         // where `[ <DECIMAL>]` against `[<DECIMAL>]` split a group in two
         // the moment the counter grew a digit.
         p("kernel-uptime", r"\[ *\d{1,7}\.\d{6}\]", 0),
-        p(
-            "docker-log",
-            r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{9}Z\b",
-            0,
-        ),
-        p(
-            "java-simple-date",
-            r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{1,9}\b",
-            30,
-        ),
+        // Docker's `…T…\.\d{9}Z`, Java's `yyyy-MM-dd HH:mm:ss,SSS` and
+        // log4j's form of it are not listed: iso8601-enhanced and
+        // iso8601-full match every one of them on the same digits and
+        // outscore them, so their own entries could never be chosen
+        // (`stronger_formats_cover_the_removed_ones`).
         p(
             "apache-common",
             r"\[\d{2}/[A-Z][a-z]{2}/\d{4}:\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\]",
-            30,
-        ),
-        p(
-            "log4j",
-            r"\b\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}\s+\[",
             30,
         ),
         p(
@@ -197,15 +200,19 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         // 08:40:15.123456 2026]`, git's `Aug 29 08:40:15 2026` — must
         // outrank syslog-bsd, which matches its middle: left to the bsd form
         // the weekday and the year stayed literal and every event on the
-        // access points split three ways by day.
+        // access points split three ways by day. The weekday and month are
+        // calendar names on word boundaries: a bare `\w{3}` ate a word in
+        // front — `cache hit Aug 3 10:00:00 2026` and `cache set …` both
+        // read `cache <TIMESTAMP>`, `backup failed 12 10:00:00 2026` read
+        // `backup fai<TIMESTAMP>`.
         p(
             "ansic",
-            r"\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}\b",
             340,
         ),
         p(
             "git-commit",
-            r"\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}\b",
             340,
         ),
         // `20260801142207`: year, a month 01–12, then day and clock.
@@ -223,7 +230,7 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         ),
         p(
             "time-only",
-            r"\b\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:?\d{2}?)?\b",
+            r"\b\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}(?::?\d{2})?)?\b",
             360,
         ),
         // ---- unix epochs ----
@@ -1309,6 +1316,67 @@ mod shapes_2026_08_29 {
             assert_eq!(t.len(), 1, "{line}");
         }
         assert!(!UnifiedTimestampDetector::has_klog_header("FILE0829 x"));
+    }
+
+    /// The Docker, Java and log4j stamps are covered by the ISO formats:
+    /// each folds as one timestamp and the text after it is untouched.
+    #[test]
+    fn stronger_formats_cover_the_removed_ones() {
+        for (line, want) in [
+            ("2024-01-01T10:00:00.123456789Z ready", "<TIMESTAMP> ready"),
+            (
+                "2024-01-01 10:00:00,123 INFO ready",
+                "<TIMESTAMP> INFO ready",
+            ),
+            ("2024-01-01 10:00:00,123456 ready", "<TIMESTAMP> ready"),
+            (
+                "2024-01-01 10:00:00,123 [main] INFO ready",
+                "<TIMESTAMP> [main] INFO ready",
+            ),
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, want, "{line}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
+    }
+
+    /// An hour-only zone offset is part of the stamp, like a full one.
+    #[test]
+    fn an_hour_only_zone_offset_is_inside_the_stamp() {
+        for line in [
+            "2024-01-01T10:00:00+05 job ok",
+            "2024-01-01T10:00:00+0530 job ok",
+            "2024-01-01T10:00:00-05:30 job ok",
+            "2024-01-01 10:00:00 +05 job ok",
+        ] {
+            let (r, t) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert_eq!(r, "<TIMESTAMP> job ok", "{line}");
+            assert_eq!(t.len(), 1, "{line}");
+        }
+    }
+
+    /// The asctime, git, RFC 822 and klog stamps start on a word boundary
+    /// with calendar names: none of them takes the tail of a word in front.
+    #[test]
+    fn a_stamp_never_takes_the_tail_of_a_word() {
+        for (line, want) in [
+            ("cache hit Aug 3 10:00:00 2026", "cache hit <TIMESTAMP>"),
+            ("Sat Aug 29 08:40:15 2026 ok", "<TIMESTAMP> ok"),
+            ("Mon, 03 Aug 2026 10:00:00 GMT ok", "<TIMESTAMP> ok"),
+        ] {
+            assert_eq!(UnifiedTimestampDetector::detect_and_replace(line).0, want);
+        }
+        for (line, kept) in [
+            ("backup failed 12 10:00:00 2026", "backup failed 12 "),
+            ("fooMon, 03 Aug 2026 10:00:00 GMT x", "fooMon, 03 Aug 2026 "),
+            (
+                "I0829 01:00:00.100000 read FILE0829 01:12:10.311614",
+                "FILE0829 ",
+            ),
+        ] {
+            let (r, _) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(r.contains(kept), "{line} -> {r}");
+        }
     }
 
     #[test]

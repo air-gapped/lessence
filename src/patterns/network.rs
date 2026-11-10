@@ -297,7 +297,7 @@ impl NetworkDetector {
                 if Self::in_longer_colon_chain(&result, &cap.get(0).unwrap())
                     || !Self::port_stands_alone(&result, &cap.get(0).unwrap())
                     || full_match.ends_with(']')
-                    || Self::is_port_source_file(hostname)
+                    || Self::is_source_file(hostname)
                 {
                     continue;
                 }
@@ -321,7 +321,7 @@ impl NetworkDetector {
                     if Self::in_longer_colon_chain(&result, &caps.get(0).unwrap())
                         || !Self::port_stands_alone(&result, &caps.get(0).unwrap())
                         || full_match.ends_with(']')
-                        || Self::is_port_source_file(hostname)
+                        || Self::is_source_file(hostname)
                     {
                         return full_match.to_string();
                     }
@@ -420,19 +420,9 @@ impl NetworkDetector {
     }
 
     /// `checkpoint.go`, `main.rs`, `app.py`: a source file, whose `:123`
-    /// is a line number and never a port.
-    fn is_port_source_file(name: &str) -> bool {
-        [".go", ".rs", ".py", ".js", ".java", ".c", ".cpp", ".h"]
-            .iter()
-            .any(|ext| name.ends_with(ext))
-    }
-
+    /// is a line number and never a port, and which is never a host name.
     fn is_source_file(name: &str) -> bool {
-        const SOURCE_EXTS: &[&str] = &[
-            ".go", ".rs", ".py", ".js", ".ts", ".java", ".c", ".cc", ".cpp", ".h", ".rb", ".php",
-            ".kt", ".swift", ".cs", ".ex", ".erl", ".scala", ".lua", ".pl", ".sh",
-        ];
-        SOURCE_EXTS.iter().any(|ext| name.ends_with(ext))
+        super::is_source_file_name(name)
     }
 
     /// Every DNS-shaped name on a line, for the anonymizer (`--anonymize`)
@@ -1582,6 +1572,23 @@ mod tests {
 #[cfg(test)]
 mod shapes_2026_08_29 {
     use super::*;
+
+    /// Every source extension reads the same: `file.<ext>:123` is a line
+    /// number, never a port, and a `file.<ext>:123]` call site keeps its file.
+    #[test]
+    fn every_source_extension_is_a_file_and_a_line() {
+        for ext in crate::patterns::SOURCE_EXTENSIONS {
+            let line = format!("panic at handler.{ext}:123 in worker");
+            let (_, tokens) = NetworkDetector::detect_and_replace(&line, true, true, true);
+            assert!(
+                !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+                "{line}: {tokens:?}"
+            );
+            let site = format!("panic at handler.{ext}:123] in worker");
+            let (r, _) = crate::patterns::path::PathDetector::detect_and_replace(&site);
+            assert_eq!(r, format!("panic at handler.{ext}:<LINE>] in worker"));
+        }
+    }
 
     #[test]
     fn the_syslog_facility_level_is_not_a_domain() {

@@ -11,7 +11,7 @@ use crate::patterns::{
     email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector, is_small_int,
     json::JsonDetector, key_value::KeyValueDetector, kubernetes::KubernetesDetector,
     log_module::LogWithModuleDetector, names::K8S_RAND_ALPHABET, names::NameDetector,
-    network::NetworkDetector, path::PathDetector, process::ProcessDetector,
+    network::NetworkDetector, path::PathDetector, process::ProcessDetector, quoted::NestedGates,
     quoted::QuotedStringDetector, small_int_tail, structured::StructuredMessageDetector,
     timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
@@ -201,12 +201,15 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         run: |_, s| NameDetector::detect_and_replace(s),
     },
     // QUOTED STRINGS: last, so it cannot consume content the detectors
-    // above tokenize (paths in quotes in particular).
+    // above tokenize (paths in quotes in particular). Its nested cascade
+    // honours the same --disable-patterns gates as this table.
     DetectorEntry {
         enabled: |c| c.normalize_quoted,
         prefilter: Some(|_, _, s| s.contains('"') || s.contains('\'')),
         defers_to_kubernetes: None,
-        run: |_, s| QuotedStringDetector::detect_and_replace(s),
+        run: |n, s| {
+            QuotedStringDetector::detect_and_replace_with(s, NestedGates::from_config(&n.config))
+        },
     },
 ];
 
@@ -2836,8 +2839,9 @@ mod tests {
         // structurally unreachable — an equivalent mutant.
         //
         // This test verifies JsonDetector itself works in isolation.
-        let (_, direct_tokens) =
-            crate::patterns::json::JsonDetector::detect_and_replace("&Event{Type: Warning}");
+        let (_, direct_tokens) = crate::patterns::json::JsonDetector::detect_and_replace(
+            "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
+        );
         assert!(
             direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
             "JsonDetector should detect Event objects: {direct_tokens:?}"
