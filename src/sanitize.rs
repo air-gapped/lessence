@@ -11,11 +11,16 @@
 //! never widened: adding an entity to it would change output for every
 //! existing user. `host` and `ip` are opt-in only.
 
+use crate::anonymize::at_token_boundary;
+use crate::config::{Config, PATTERN_REGISTRY};
+use crate::normalize::Normalizer;
 use crate::patterns::Token;
+use crate::patterns::email::EmailPatternDetector;
 use crate::patterns::network::NetworkDetector;
 use hmac::{Hmac, KeyInit, Mac};
 use regex::Regex;
 use sha2::{Digest, Sha256};
+use std::ops::Range;
 use std::sync::LazyLock;
 
 /// What happens to a value the sanitizer recognises.
@@ -29,7 +34,7 @@ pub enum Action {
 }
 
 /// The kinds of value the sanitizer can act on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Entity {
     Email,
     Credential,
@@ -93,6 +98,72 @@ pub(crate) static PROVIDER_KEY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|xox[a-z]-[A-Za-z0-9-]{8,})")
         .expect("static regex")
 });
+
+/// The credentials of an HTTP `Authorization` / `Proxy-Authorization`
+/// header (`auth-scheme credentials`, RFC 9110 §11.6.2) and an RFC 6750
+/// `Bearer` token wherever it stands. The header name and the scheme stay;
+/// the capture is the credentials, in the `token68` alphabet.
+pub(crate) static AUTHORIZATION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(?:\b(?:proxy-)?authorization"?\s*[=:]\s*"?(?:[a-z][a-z0-9_-]*\s+)?|\bbearer\s+)([A-Za-z0-9._~+/-]+=*)"#,
+    )
+    .expect("static regex")
+});
+
+/// The password of URL userinfo, `scheme://user:password@host` (RFC 3986
+/// §3.2.1). The scheme, the user and the host stay; the capture runs to the
+/// last `@` of the authority, so an unencoded `@` in the password is inside
+/// it.
+pub(crate) static URL_USERINFO: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:"'<>]*:([^\s/?#"'<>\\]+)@"#)
+        .expect("static regex")
+});
+
+/// Byte ranges of the credentials in [`AUTHORIZATION`] matches.
+pub(crate) fn authorization_spans(text: &str) -> Vec<Range<usize>> {
+    capture_spans(&AUTHORIZATION, text)
+}
+
+/// Byte ranges of the passwords in [`URL_USERINFO`] matches.
+pub(crate) fn userinfo_spans(text: &str) -> Vec<Range<usize>> {
+    capture_spans(&URL_USERINFO, text)
+}
+
+fn capture_spans(re: &Regex, text: &str) -> Vec<Range<usize>> {
+    re.captures_iter(text)
+        .filter_map(|c| c.get(1).map(|m| m.range()))
+        .collect()
+}
+
+/// The email detector, run by the masker on the text it is given.
+static EMAILS: LazyLock<EmailPatternDetector> =
+    LazyLock::new(|| EmailPatternDetector::new().expect("static regex"));
+
+/// The detectors that place a positional syslog host — timestamp, process
+/// and network, in the run's own order — and nothing else. The masker runs
+/// them itself.
+static HOST_SLOT: LazyLock<Normalizer> = LazyLock::new(|| {
+    let mut config = Config::default();
+    for entry in PATTERN_REGISTRY {
+        let wanted = matches!(entry.name, "timestamp" | "process" | "network");
+        config.set_pattern_enabled(entry.name, wanted);
+    }
+    Normalizer::new(config)
+});
+
+/// Email, address and host values in `text`, found by the detectors
+/// themselves. `email`, `ip` and `host` choose the classes. The positional syslog host is not here:
+/// it needs the timestamp pass in front of it (see [`HOST_SLOT`]).
+pub(crate) fn scanned_entities(text: &str, email: bool, ip: bool, host: bool) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    if email && text.contains('@') {
+        tokens.extend(EMAILS.detect_and_replace(text).1);
+    }
+    if ip || host {
+        tokens.extend(NetworkDetector::detect_and_replace(text, ip, false, host).1);
+    }
+    tokens
+}
 
 /// The environment variable that fixes the pseudonym key across runs.
 pub const KEY_ENV: &str = "LESSENCE_SANITIZE_KEY";
@@ -226,92 +297,147 @@ impl Sanitizer {
         }
     }
 
+    /// `text` as an output shows it: masked when the run sanitizes,
+    /// unchanged when it does not.
+    pub fn masked(sanitizer: Option<&Self>, text: &str, tokens: &[Token]) -> String {
+        sanitizer.map_or_else(|| text.to_string(), |z| z.mask_line(text, tokens))
+    }
+
     /// Mask one original line, given the tokens its normalization found.
-    /// Token values are replaced wherever they occur on the line; hosts and
-    /// addresses are also found in the text itself, since a dotted name in
-    /// prose is not a token (lessence-c2f) and a sample can carry an address
-    /// no token named.
+    /// The tokens add values to look for; they are not what decides
+    /// masking, which is [`Self::mask_text`] on the same line.
     pub fn mask_line(&self, original: &str, tokens: &[Token]) -> String {
-        let mut edits: Vec<(usize, usize, String)> = Vec::new();
-        for token in tokens {
-            let (entity, class, value) = match token {
-                Token::Email(v) => (Entity::Email, "EMAIL", v.as_str()),
-                Token::Fqdn(v) | Token::Host(v) => (Entity::Host, "HOST", v.as_str()),
-                Token::IPv4(v) | Token::IPv6(v) => (Entity::Ip, "IP", v.as_str()),
-                _ => continue,
-            };
-            if value.is_empty() || self.action(entity).is_none() {
-                continue;
-            }
-            let mut from = 0;
-            while let Some(rel) = original[from..].find(value) {
-                let start = from + rel;
-                let end = start + value.len();
-                from = end;
-                edits.push((start, end, self.tag(entity, class, value)));
-            }
-        }
-        self.text_edits(original, &mut edits);
-        let mut result = apply(original, edits);
-        result = self.mask_credentials(&result);
-        result
+        self.mask(original, tokens)
     }
 
-    /// Mask text that is not a whole line — a rollup sample, a template,
-    /// an essence-mode line whose tokens are gone — by scanning it.
+    /// Mask any text — a whole line, a template, a rollup sample, an
+    /// essence-mode line. Every output path masks through here.
+    ///
+    /// Each value is replaced over exactly the span it occupies: a value a
+    /// detector names is replaced wherever it stands as a whole token
+    /// (`at_token_boundary`). The detectors for each enabled entity run on
+    /// the text itself. Spans that overlap are replaced as one region.
     pub fn mask_text(&self, text: &str) -> String {
-        let mut edits: Vec<(usize, usize, String)> = Vec::new();
-        self.text_edits(text, &mut edits);
-        let result = apply(text, edits);
-        self.mask_credentials(&result)
+        self.mask(text, &[])
     }
 
-    /// Hosts and addresses found in the text itself.
-    fn text_edits(&self, text: &str, edits: &mut Vec<(usize, usize, String)>) {
-        if self.action(Entity::Host).is_some() {
-            for (start, end) in NetworkDetector::dns_shaped_spans(text) {
-                if !overlaps(edits, start, end) {
-                    edits.push((
-                        start,
-                        end,
-                        self.tag(Entity::Host, "HOST", &text[start..end]),
-                    ));
-                }
-            }
-        }
-        if self.action(Entity::Ip).is_some() {
-            for (start, end) in NetworkDetector::ipv4_spans(text) {
-                if !overlaps(edits, start, end) {
-                    edits.push((start, end, self.tag(Entity::Ip, "IP", &text[start..end])));
-                }
-            }
-        }
-    }
-
-    fn mask_credentials(&self, text: &str) -> String {
-        let Some(action) = self.action(Entity::Credential) else {
+    fn mask(&self, text: &str, hints: &[Token]) -> String {
+        let mut spans: Vec<Span> = Vec::new();
+        self.credential_spans(text, &mut spans);
+        self.entity_spans(text, hints, &mut spans);
+        if spans.is_empty() {
             return text.to_string();
+        }
+        self.replace_spans(text, spans)
+    }
+
+    /// Where each credential shape puts its secret, ranked in the order the
+    /// shapes claim a value: an assignment's value is one secret even when
+    /// it is a JWT (`token: eyJ...` is one `<SECRET>`), and a JWT or a
+    /// provider key keeps its own class behind an `Authorization` header.
+    fn credential_spans(&self, text: &str, spans: &mut Vec<Span>) {
+        if self.action(Entity::Credential).is_none() {
+            return;
+        }
+        let mut push = |range: Range<usize>, class: &'static str, rank: u8| {
+            spans.push(Span {
+                start: range.start,
+                end: range.end,
+                entity: Entity::Credential,
+                class,
+                rank,
+            });
         };
-        match action {
-            Action::Redact => {
-                let masked = CREDENTIAL_ASSIGNMENT.replace_all(text, "${1}<SECRET>");
-                let masked = JWT.replace_all(&masked, "<JWT>");
-                let masked = PROVIDER_KEY.replace_all(&masked, "<KEY>");
-                masked.into_owned()
-            }
-            Action::Pseudonym => {
-                let masked = CREDENTIAL_ASSIGNMENT.replace_all(text, |c: &regex::Captures| {
-                    format!("{}{}", &c[1], self.tag(Entity::Credential, "SECRET", &c[2]))
-                });
-                let masked = JWT.replace_all(&masked, |m: &regex::Captures| {
-                    self.tag(Entity::Credential, "JWT", &m[0])
-                });
-                let masked = PROVIDER_KEY.replace_all(&masked, |m: &regex::Captures| {
-                    self.tag(Entity::Credential, "KEY", &m[0])
-                });
-                masked.into_owned()
+        for c in CREDENTIAL_ASSIGNMENT.captures_iter(text) {
+            if let Some(value) = c.get(2) {
+                push(value.range(), "SECRET", 0);
             }
         }
+        for m in JWT.find_iter(text) {
+            push(m.range(), "JWT", 1);
+        }
+        for m in PROVIDER_KEY.find_iter(text) {
+            push(m.range(), "KEY", 2);
+        }
+        for range in authorization_spans(text) {
+            push(range, "SECRET", 3);
+        }
+        for range in userinfo_spans(text) {
+            push(range, "SECRET", 4);
+        }
+    }
+
+    /// Every email, address and host value in `text`: the values the run's
+    /// tokens name, the values the masker's own detector pass names, and
+    /// the DNS- and IPv4-shaped spans of the text, each located at token
+    /// boundaries.
+    fn entity_spans(&self, text: &str, hints: &[Token], spans: &mut Vec<Span>) {
+        let email = self.action(Entity::Email).is_some();
+        let ip = self.action(Entity::Ip).is_some();
+        let host = self.action(Entity::Host).is_some();
+        if !(email || ip || host) {
+            return;
+        }
+        let mut scanned = scanned_entities(text, email, ip, host);
+        if host {
+            if let Ok(line) = HOST_SLOT.normalize_line(text.to_string()) {
+                scanned.extend(line.tokens);
+            }
+            for (start, end) in NetworkDetector::dns_shaped_spans(text) {
+                spans.push(Span::entity(start, end, Entity::Host, "HOST"));
+            }
+        }
+        if ip {
+            for (start, end) in NetworkDetector::ipv4_spans(text) {
+                spans.push(Span::entity(start, end, Entity::Ip, "IP"));
+            }
+        }
+        let mut values: Vec<(Entity, &'static str, &str)> = hints
+            .iter()
+            .chain(&scanned)
+            .filter_map(entity_value)
+            .filter(|(entity, _, value)| !value.is_empty() && self.action(*entity).is_some())
+            .collect();
+        values.sort_unstable();
+        values.dedup();
+        for (entity, class, value) in values {
+            for (start, _) in text.match_indices(value) {
+                let end = start + value.len();
+                if at_token_boundary(text, start, end) {
+                    spans.push(Span::entity(start, end, entity, class));
+                }
+            }
+        }
+    }
+
+    /// Replace every span. Overlapping spans are merged into one region,
+    /// and the region takes the tag of its highest-ranked span (a
+    /// credential first, then the longest value), computed over the whole
+    /// region, so a pseudonym is a function of the text it replaces.
+    fn replace_spans(&self, text: &str, mut spans: Vec<Span>) -> String {
+        spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
+        let mut out = String::with_capacity(text.len());
+        let mut copied = 0;
+        let mut i = 0;
+        while i < spans.len() {
+            let start = spans[i].start;
+            let mut end = spans[i].end;
+            let mut best = spans[i];
+            let mut j = i + 1;
+            while j < spans.len() && spans[j].start < end {
+                end = end.max(spans[j].end);
+                if spans[j].outranks(&best) {
+                    best = spans[j];
+                }
+                j += 1;
+            }
+            out.push_str(&text[copied..start]);
+            out.push_str(&self.tag(best.entity, best.class, &text[start..end]));
+            copied = end;
+            i = j;
+        }
+        out.push_str(&text[copied..]);
+        out
     }
 
     /// The rollup entries whose samples are values of an enabled entity,
@@ -346,23 +472,53 @@ impl Sanitizer {
     }
 }
 
-fn overlaps(edits: &[(usize, usize, String)], start: usize, end: usize) -> bool {
-    edits.iter().any(|(s, e, _)| start < *e && *s < end)
+/// One value to replace: its byte range in the text, the entity and tag
+/// class it is masked as, and its rank among credential shapes (entities
+/// rank after every credential shape).
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    start: usize,
+    end: usize,
+    entity: Entity,
+    class: &'static str,
+    rank: u8,
 }
 
-/// Apply non-overlapping edits, last first so earlier offsets stay valid.
-fn apply(text: &str, mut edits: Vec<(usize, usize, String)>) -> String {
-    edits.sort_by_key(|(s, _, _)| std::cmp::Reverse(*s));
-    let mut out = text.to_string();
-    let mut last_start = usize::MAX;
-    for (start, end, replacement) in edits {
-        if end > last_start || !out.is_char_boundary(start) || !out.is_char_boundary(end) {
-            continue;
+impl Span {
+    const ENTITY_RANK: u8 = u8::MAX;
+
+    fn entity(start: usize, end: usize, entity: Entity, class: &'static str) -> Self {
+        Self {
+            start,
+            end,
+            entity,
+            class,
+            rank: Self::ENTITY_RANK,
         }
-        out.replace_range(start..end, &replacement);
-        last_start = start;
     }
-    out
+
+    /// Lower rank first, then the longer span, then the earlier one.
+    fn outranks(&self, other: &Span) -> bool {
+        (
+            self.rank,
+            std::cmp::Reverse(self.end - self.start),
+            self.start,
+        ) < (
+            other.rank,
+            std::cmp::Reverse(other.end - other.start),
+            other.start,
+        )
+    }
+}
+
+/// The entity, tag class and value of a token the masker acts on.
+fn entity_value(token: &Token) -> Option<(Entity, &'static str, &str)> {
+    match token {
+        Token::Email(v) => Some((Entity::Email, "EMAIL", v.as_str())),
+        Token::Fqdn(v) | Token::Host(v) => Some((Entity::Host, "HOST", v.as_str())),
+        Token::IPv4(v) | Token::IPv6(v) => Some((Entity::Ip, "IP", v.as_str())),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -500,5 +656,144 @@ mod tests {
             z.mask_line(line, &[Token::Email("bob@example.com".into())]),
             "mail <EMAIL> from 10.0.0.7 password=x"
         );
+    }
+
+    #[test]
+    fn masking_replaces_whole_addresses() {
+        let line = "route from 192.0.2.1 to 192.0.2.15 ok";
+        let tokens = vec![
+            Token::IPv4("192.0.2.1".into()),
+            Token::IPv4("192.0.2.15".into()),
+        ];
+        let z = s(&["ip"], false).unwrap();
+        assert_eq!(z.mask_line(line, &tokens), "route from <IP> to <IP> ok");
+        let z = s(&["ip:pseudonym"], false).unwrap();
+        let a = z.mask_text("192.0.2.1");
+        let b = z.mask_text("192.0.2.15");
+        assert_ne!(a, b);
+        assert_eq!(
+            z.mask_line(line, &tokens),
+            format!("route from {a} to {b} ok")
+        );
+        assert_eq!(z.mask_text(line), format!("route from {a} to {b} ok"));
+    }
+
+    #[test]
+    fn a_named_value_is_replaced_only_where_it_stands_whole() {
+        let z = s(&["host", "email"], false).unwrap();
+        let tokens = vec![
+            Token::Host("db".into()),
+            Token::Email("ann@example.com".into()),
+        ];
+        assert_eq!(
+            z.mask_line(
+                "db dbus mydb db: joann@example.com ann@example.com",
+                &tokens
+            ),
+            "<HOST> dbus mydb <HOST>: <EMAIL> <EMAIL>"
+        );
+    }
+
+    #[test]
+    fn masking_finds_every_entity_without_tokens() {
+        let z = s(&["email", "ip", "host"], false).unwrap();
+        assert_eq!(
+            z.mask_line(
+                "Nov 10 10:00:00 gwlab sshd[12]: alice@example.com from 2001:db8::7 via 198.51.100.9",
+                &[]
+            ),
+            "Nov 10 10:00:00 <HOST> sshd[12]: <EMAIL> from <IP> via <IP>"
+        );
+        assert_eq!(
+            z.mask_text(r#""GET /reset?user=bob@example.com HTTP/1.1" 200"#),
+            r#""GET /reset?user=<EMAIL> HTTP/1.1" 200"#
+        );
+        assert_eq!(
+            z.mask_text("fetch http://[2001:db8::9]:8080/health"),
+            "fetch http://[<IP>]:8080/health"
+        );
+    }
+
+    #[test]
+    fn credential_forms_mask_only_the_secret() {
+        let z = s(&["credential"], false).unwrap();
+        for (line, masked) in [
+            (
+                "Authorization: Bearer Zm9vYmFyYmF6cXV4",
+                "Authorization: Bearer <SECRET>",
+            ),
+            (
+                "proxy-authorization=Basic YWxhZGRpbjpvcGVu==;",
+                "proxy-authorization=Basic <SECRET>;",
+            ),
+            (
+                r#"{"Authorization":"Bearer abc.def-123_x~y"}"#,
+                r#"{"Authorization":"Bearer <SECRET>"}"#,
+            ),
+            (
+                "headers map[Authorization:[Bearer Qx9Rt]]",
+                "headers map[Authorization:[Bearer <SECRET>]]",
+            ),
+            (
+                "dial postgres://app:Hunter2Secret@db.example.com:5432/x",
+                "dial postgres://app:<SECRET>@db.example.com:5432/x",
+            ),
+            ("redis://:pw@cache:6379", "redis://:<SECRET>@cache:6379"),
+            (
+                "amqp://u:p@ss@mq.example.com/vh",
+                "amqp://u:<SECRET>@mq.example.com/vh",
+            ),
+            (
+                "session Bearer eyJhbGciOi.eyJzdWIiOi.SflKxwRJ",
+                "session Bearer <JWT>",
+            ),
+        ] {
+            assert_eq!(z.mask_text(line), masked, "{line}");
+        }
+        for unchanged in [
+            "GET http://db.example.com:8080/path?q=1",
+            "mailto user@example.com",
+            "ssh://deploy@host.example.com/repo",
+        ] {
+            assert_eq!(z.mask_text(unchanged), unchanged);
+        }
+        let z = s(&["credential:pseudonym"], false).unwrap();
+        let out = z.mask_text("redis://:pw@cache:6379");
+        assert!(
+            out.starts_with("redis://:<SECRET:") && out.ends_with(">@cache:6379"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn overlapping_values_are_replaced_as_one() {
+        let z = s(&["email", "credential", "host", "ip"], false).unwrap();
+        assert_eq!(
+            z.mask_text("password=alice@example.com next"),
+            "password=<SECRET> next"
+        );
+        assert_eq!(z.mask_text("to alice@db.example.com"), "to <EMAIL>");
+        assert_eq!(z.mask_text("token: eyJa.eyJb.c1"), "token: <SECRET>");
+    }
+
+    #[test]
+    fn a_pseudonym_is_the_same_wherever_the_value_stands() {
+        let z = s(&["ip:pseudonym"], false).unwrap();
+        let tag = z.mask_text("198.51.100.4");
+        assert_eq!(
+            z.mask_line(
+                "peer 198.51.100.4 url http://198.51.100.4:80/x",
+                &[Token::IPv4("198.51.100.4".into())]
+            ),
+            format!("peer {tag} url http://{tag}:80/x")
+        );
+    }
+
+    #[test]
+    fn masked_is_the_text_itself_without_a_sanitizer() {
+        let line = "mail bob@example.com";
+        assert_eq!(Sanitizer::masked(None, line, &[]), line);
+        let z = s(&["email"], false).unwrap();
+        assert_eq!(Sanitizer::masked(Some(&z), line, &[]), "mail <EMAIL>");
     }
 }

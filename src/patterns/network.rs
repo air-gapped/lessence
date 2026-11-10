@@ -202,38 +202,47 @@ impl NetworkDetector {
         }
 
         if normalize_ips {
-            // Handle IPv4:Port combinations first
+            // Handle IPv4:Port combinations first. The address is a token
+            // whatever follows it; the number is folded as a port only when
+            // it is one.
             for cap in IPV4_PORT_REGEX.captures_iter(text) {
                 let full_match = cap.get(0).unwrap().as_str();
                 let port_str = cap.get(1).unwrap().as_str();
-
-                if let Ok(port) = port_str.parse::<u16>() {
-                    // Split the IP and port
-                    let ip = &full_match[..full_match.len() - port_str.len() - 1];
-                    tokens.push(Token::IPv4(ip.to_string()));
-                    if normalize_ports {
-                        tokens.push(Token::Port(port));
-                    }
+                let ip = &full_match[..full_match.len() - port_str.len() - 1];
+                tokens.push(Token::IPv4(ip.to_string()));
+                if normalize_ports && let Ok(port) = port_str.parse::<u16>() {
+                    tokens.push(Token::Port(port));
                 }
             }
             result = IPV4_PORT_REGEX
-                .replace_all(&result, "<IP>:<PORT>")
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let port = caps.get(1).unwrap().as_str();
+                    if port.parse::<u16>().is_ok() {
+                        "<IP>:<PORT>".to_string()
+                    } else {
+                        format!("<IP>:{port}")
+                    }
+                })
                 .to_string();
 
             // Handle IPv6:Port combinations: [2001:db8::1]:8080
             for cap in IPV6_PORT_REGEX.captures_iter(&result) {
                 let ipv6_str = cap.get(1).unwrap().as_str();
                 let port_str = cap.get(2).unwrap().as_str();
-
-                if let Ok(port) = port_str.parse::<u16>() {
-                    tokens.push(Token::IPv6(ipv6_str.to_string()));
-                    if normalize_ports {
-                        tokens.push(Token::Port(port));
-                    }
+                tokens.push(Token::IPv6(ipv6_str.to_string()));
+                if normalize_ports && let Ok(port) = port_str.parse::<u16>() {
+                    tokens.push(Token::Port(port));
                 }
             }
             result = IPV6_PORT_REGEX
-                .replace_all(&result, "[<IP>]:<PORT>")
+                .replace_all(&result, |caps: &regex::Captures| {
+                    let port = caps.get(2).unwrap().as_str();
+                    if port.parse::<u16>().is_ok() {
+                        "[<IP>]:<PORT>".to_string()
+                    } else {
+                        format!("[<IP>]:{port}")
+                    }
+                })
                 .to_string();
 
             for cap in IPV4_MAPPED_REGEX.find_iter(&result) {

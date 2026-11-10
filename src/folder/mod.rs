@@ -3241,7 +3241,11 @@ impl PatternFolder {
             } else {
                 let (first_epoch, last_epoch) = group_epoch_range(&group);
                 self.stats.template_counts.record(
-                    group.template(),
+                    &Sanitizer::masked(
+                        self.sanitizer.as_ref(),
+                        group.template(),
+                        &group.first().tokens,
+                    ),
                     group.count(),
                     first_epoch,
                     last_epoch,
