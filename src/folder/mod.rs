@@ -1623,6 +1623,16 @@ fn unit_ranges(
                 out[i] = Some((j, j + 1));
                 resolve(tmpl, mem, (t0, i), (m0, j), out);
                 resolve(tmpl, mem, (i + 1, t1), (j + 1, m1), out);
+            } else if tmpl[t0..t1].iter().all(|&r| r == VARIES_MARK) {
+                // a run of bare slots keeps nothing that could tell its
+                // units apart: read the member into it in order, the last
+                // slot taking what is left and slots past the member's
+                // units standing for nothing
+                for (n, i) in (t0..t1).enumerate() {
+                    let from = (m0 + n).min(m1);
+                    let to = if i + 1 == t1 { m1 } else { (from + 1).min(m1) };
+                    out[i] = Some((from, to));
+                }
             }
         }
     }
@@ -2393,15 +2403,25 @@ impl RollupComputer {
             .map(|&(at, len)| &normalized[at..at + len])
             .collect();
         let aligned = align_words(tmpl_words, &member);
+        // A slot equals no member unit, so where the counts differ the
+        // alignment leaves it unpaired; read it from its gap the way the
+        // join that made it did (`unit_ranges`), so a member with a value
+        // there is counted by that value and only a true absence is `∅`.
+        let mut ranges = None;
         for &(i, k, q) in &template.slots {
             let masked;
-            let value = match aligned[i] {
-                Some(j) => {
+            let range = match aligned[i] {
+                Some(j) => Some((j, j + 1)),
+                None => ranges.get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned))[i],
+            };
+            let value = match range.filter(|&(from, to)| from < to) {
+                Some(range) => {
+                    let w = range_text(normalized, units, range);
                     let w = if let Some(z) = &self.sanitizer {
-                        masked = z.mask_text(member[j]);
+                        masked = z.mask_text(w);
                         masked.as_str()
                     } else {
-                        member[j]
+                        w
                     };
                     let prefix = &tmpl_words[i][..k];
                     let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];

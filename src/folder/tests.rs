@@ -5496,6 +5496,57 @@ fn a_slot_keeps_both_quotes_of_a_pair_or_neither() {
 }
 
 #[test]
+fn a_member_of_another_length_is_counted_by_its_value_not_as_absent() {
+    // lessence-veg: a slot equals no member unit, so where the unit counts
+    // differ the alignment left it unpaired and the rollup said `∅` for a
+    // member that had `img.v3 img.v4` there.
+    let r = rollup_of(&[
+        "sync worker finished copying layer img.v1 into the local cache store ok",
+        "sync worker finished copying layer img.v2 into the local cache store ok",
+        "sync worker finished copying layer img.v3 img.v4 into the local cache store ok",
+    ]);
+    assert_eq!(r[VARIES].samples, vec!["img.v1", "img.v2", "img.v3 img.v4"]);
+    assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
+}
+
+#[test]
+fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
+    let rc = RollupComputer::with_defaults();
+    let counted = |template: &str, lines: &[&str]| {
+        let lines: Vec<LogLine> = lines.iter().map(|l| make_line(l, vec![])).collect();
+        let mut varies = VariesCounts::default();
+        rc.accumulate_varies(&lines, template, &mut varies);
+        let mut out: Vec<(String, usize)> = varies.counts.into_iter().collect();
+        out.sort();
+        out
+    };
+    let v = |pairs: &[(&str, usize)]| -> Vec<(String, usize)> {
+        pairs.iter().map(|&(s, n)| (s.to_string(), n)).collect()
+    };
+    // a run of bare slots reads the member in order, the last taking the rest
+    assert_eq!(
+        counted("a <VARIES> <VARIES> c", &["a x y z c"]),
+        v(&[("x", 1), ("y z", 1)])
+    );
+    assert_eq!(
+        counted("a <VARIES> <VARIES> c", &["a x c"]),
+        v(&[("x", 1), ("∅", 1)])
+    );
+    // only a true absence is `∅`
+    assert_eq!(counted("a <VARIES> <VARIES> c", &["a c"]), v(&[("∅", 2)]));
+    // a slot whose kept affix a member unit carries is anchored on it
+    assert_eq!(
+        counted("a k=<VARIES> j=<VARIES> c", &["a k=1 c"]),
+        v(&[("1", 1), ("∅", 1)])
+    );
+    // the affix is stripped from a value spanning several units
+    assert_eq!(
+        counted("a msg=<VARIES> c", &["a msg=y z c"]),
+        v(&[("y z", 1)])
+    );
+}
+
+#[test]
 fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     let computer = RollupComputer::with_defaults();
     let make = |s: &str| LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s));

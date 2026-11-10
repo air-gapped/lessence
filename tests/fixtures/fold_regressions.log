@@ -4816,3 +4816,10 @@ job ran on shard shdaaa ok after retry
 pull done image="cache:8.2.1" node=n1 took 3s
 pull done image="cache:8.2.7" node=n1 took 3s
 pull done image="cache:8.4.0" node=n1 took 3s
+
+##CASE lessence-veg out_present=img.v3 img.v4×1
+##WHY a member whose words align differently is counted under its own value; the rollup said ∅, an absence, for a member that had a value there
+##FROM invented copy lines; the rollup aligned a slot by equality, which a slot never has
+sync worker finished copying layer img.v1 into the local cache store ok
+sync worker finished copying layer img.v2 into the local cache store ok
+sync worker finished copying layer img.v3 img.v4 into the local cache store ok
