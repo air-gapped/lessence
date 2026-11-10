@@ -4651,3 +4651,10 @@ panic at handler.ts:123 in worker
 ##FROM invented log4j lines
 2024-01-01 10:00:00,123 [pool-1] INFO cache ready
 2024-01-01 10:00:01,456 [pool-1] INFO cache ready
+
+##CASE lessence-veg template_present=job <VARIES> cleaning
+##WHY text kept beside a slot is a claim about every member: a member that does not share the kept prefix widens the slot instead of hiding under it
+##FROM netbox worker shape, invented; `10:<VARIES>` stood over members that began 11:
+job 10:30:01 cleaning registries for queue high
+job 10:31:02 cleaning registries for queue high
+job 11:08:43 cleaning registries for queue high

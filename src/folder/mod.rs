@@ -144,6 +144,11 @@ struct RetainedState {
     /// Count their normalized forms, bounded by the same distinct cap.
     realign: BTreeMap<String, usize>,
     realign_capped: bool,
+    /// A slot widened after members were counted under its narrower form:
+    /// their values were stripped of an affix the slot no longer keeps, and
+    /// `varies` pools every slot, so they cannot be rewritten. Finalised
+    /// like `realign_capped`, as counts that are not known (lessence-veg).
+    varies_unknown: bool,
 }
 
 /// First whitespace token at which two normalized lines disagree. Tokenizes
@@ -1397,9 +1402,121 @@ fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
     (prefix, suffix)
 }
 
+/// How much of a slot's kept `prefix` and `suffix` the member's unit `w`
+/// still shares (lessence-veg). The whole affix stays when `w` carries it
+/// with at least one byte left for the slot; otherwise the prefix is cut
+/// back the way [`shared_affixes`] cuts it, to just after the last field
+/// delimiter the two share, and the suffix to the tail they share. Text
+/// kept beside a slot is a claim about every member, like any literal.
+fn kept_affixes(prefix: &str, suffix: &str, w: &str) -> (usize, usize) {
+    let (pb, sb, wb) = (prefix.as_bytes(), suffix.as_bytes(), w.as_bytes());
+    let common = pb.iter().zip(wb).take_while(|(x, y)| x == y).count();
+    let p = if common == pb.len() && wb.len() > pb.len() {
+        pb.len()
+    } else {
+        let common = common.min(wb.len().saturating_sub(1));
+        pb[..common]
+            .iter()
+            .rposition(|&b| matches!(b, b'=' | b':' | b'[' | b'('))
+            .map_or(0, |i| i + 1)
+    };
+    let mut q = 0;
+    while q < sb.len() && p + q + 1 < wb.len() && sb[sb.len() - 1 - q] == wb[wb.len() - 1 - q] {
+        q += 1;
+    }
+    (p, q)
+}
+
+/// The affix a template unit keeps around its `<VARIES>`, as
+/// `(prefix, suffix)`; `None` for a unit without a slot.
+fn slot_affix(r: &str) -> Option<(&str, &str)> {
+    let k = r.find(VARIES_MARK)?;
+    Some((&r[..k], &r[k + VARIES_MARK.len()..]))
+}
+
+/// The member units each template unit stands for, as a range of member
+/// unit indexes — empty where the member has none, `None` where nothing
+/// says which correspond. An aligned unit stands for its partner. A unit
+/// carrying `<VARIES>` equals no member unit, so a longest-common-
+/// subsequence alignment never pairs it, and its counterpart is read from
+/// the gap between its aligned neighbours: one template unit there stands
+/// for everything the member has there; as many units on both sides pair
+/// in order; otherwise a slot whose kept affix a member unit carries is
+/// anchored on the first such unit and the gap on either side of it is
+/// read the same way.
+fn unit_ranges(
+    tmpl: &[&str],
+    mem: &[&str],
+    aligned: &[Option<usize>],
+) -> Vec<Option<(usize, usize)>> {
+    fn resolve(
+        tmpl: &[&str],
+        mem: &[&str],
+        (t0, t1): (usize, usize),
+        (m0, m1): (usize, usize),
+        out: &mut [Option<(usize, usize)>],
+    ) {
+        if t0 == t1 {
+            return;
+        }
+        if m0 == m1 {
+            out[t0..t1].fill(Some((m0, m0)));
+        } else if t1 - t0 == 1 {
+            out[t0] = Some((m0, m1));
+        } else if t1 - t0 == m1 - m0 {
+            for (i, j) in (t0..t1).zip(m0..m1) {
+                out[i] = Some((j, j + 1));
+            }
+        } else {
+            let anchor = (t0..t1).find_map(|i| {
+                let (prefix, suffix) = slot_affix(tmpl[i])
+                    .filter(|(prefix, suffix)| !prefix.is_empty() || !suffix.is_empty())?;
+                (m0..m1)
+                    .find(|&j| kept_affixes(prefix, suffix, mem[j]) == (prefix.len(), suffix.len()))
+                    .map(|j| (i, j))
+            });
+            if let Some((i, j)) = anchor {
+                out[i] = Some((j, j + 1));
+                resolve(tmpl, mem, (t0, i), (m0, j), out);
+                resolve(tmpl, mem, (i + 1, t1), (j + 1, m1), out);
+            }
+        }
+    }
+    let mut out: Vec<Option<(usize, usize)>> =
+        aligned.iter().map(|a| a.map(|j| (j, j + 1))).collect();
+    let mut i = 0;
+    let mut from = 0;
+    while i < aligned.len() {
+        if let Some(j) = aligned[i] {
+            from = j + 1;
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < aligned.len() && aligned[i].is_none() {
+            i += 1;
+        }
+        let to = aligned.get(i).copied().flatten().unwrap_or(mem.len());
+        resolve(tmpl, mem, (start, i), (from, to.max(from)), &mut out);
+    }
+    out
+}
+
+/// The member text covered by a range of its units: from the first unit's
+/// start to the last one's end, separators between them included.
+fn range_text<'m>(member: &'m str, spans: &[(usize, usize)], (c, d): (usize, usize)) -> &'m str {
+    if c == d {
+        return "";
+    }
+    let (start, _) = spans[c];
+    let (at, len) = spans[d - 1];
+    &member[start..at + len]
+}
+
 /// The template spans a member turns into `<VARIES>`: every aligned pair
 /// that differs (unless the template already varies there), minus a shared
 /// field prefix, plus every template word the member has no counterpart for.
+/// A unit that already varies keeps only the affix the member shares.
 fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
     varying_spans_in(template, &unit_spans(template), member, &unit_spans(member))
 }
@@ -1420,12 +1537,32 @@ fn varying_spans_in(
         .map(|&(at, len)| &member[at..at + len])
         .collect();
     let aligned = align_words(&tmpl, &mem);
+    let mut ranges = None;
     let mut edits = Vec::new();
     let mut same_pci_identity = None;
     let mut same_option_identity = None;
     for (i, &(at, len)) in spans.iter().enumerate() {
         let r = tmpl[i];
-        if r.contains(VARIES_MARK) || aligned[i].is_some_and(|j| mem[j] == r) {
+        if aligned[i].is_some_and(|j| mem[j] == r) {
+            continue;
+        }
+        if let Some((prefix, suffix)) = slot_affix(r) {
+            // The text kept beside a slot (`msg=<VARIES>`, `10:<VARIES>`)
+            // was shared by the members that made the slot; one that does
+            // not share it widens the slot (lessence-veg).
+            if prefix.is_empty() && suffix.is_empty() {
+                continue;
+            }
+            let range = match aligned[i] {
+                Some(j) => Some((j, j + 1)),
+                None => ranges.get_or_insert_with(|| unit_ranges(&tmpl, &mem, &aligned))[i],
+            };
+            let (p, q) = range.map_or((0, 0), |range| {
+                kept_affixes(prefix, suffix, range_text(member, member_spans, range))
+            });
+            if p < prefix.len() || q < suffix.len() {
+                edits.push((at + p, len - p - q));
+            }
             continue;
         }
         // An alignment shift around a shared PCI identity must not
@@ -2188,8 +2325,8 @@ impl RollupComputer {
 
     /// A newly varying slot was a literal shared by all positional members.
     /// Account for those discarded members without inventing a sample or
-    /// retaining their raw lines. Existing varying slots are never edited
-    /// by `varying_spans`, so their accumulated counts remain untouched.
+    /// retaining their raw lines. An edit that widens an existing slot
+    /// leaves the counts already taken under its narrower affix unknown.
     fn accumulate_new_varies(
         &self,
         template: &str,
@@ -2198,6 +2335,10 @@ impl RollupComputer {
         state: &mut RetainedState,
     ) {
         for &(at, len) in edits {
+            if template[at..at + len].contains(VARIES_MARK) {
+                state.varies_unknown = true;
+                continue;
+            }
             let &(start, width) = units
                 .iter()
                 .find(|&&(start, width)| start <= at && at + len <= start + width)
@@ -2278,8 +2419,9 @@ impl RollupComputer {
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
-        if state.realign_capped {
-            // Unknown alignments can affect any VARIES value's count. Do
+        if state.realign_capped || state.varies_unknown {
+            // Unknown alignments can affect any VARIES value's count, and
+            // so can a slot that widened after its members were counted. Do
             // not label partial counts as exact: expose an empty, capped
             // variation entry. Token rollups and the group count survive.
             state.varies.clear();
@@ -2307,6 +2449,7 @@ impl RollupComputer {
     fn merge_retained(&self, into: &mut RetainedState, from: RetainedState) {
         into.positional_members += from.positional_members;
         into.realign_capped |= from.realign_capped;
+        into.varies_unknown |= from.varies_unknown;
         for (form, n) in from.realign {
             self.retain_realign_form(into, &form, n);
         }
