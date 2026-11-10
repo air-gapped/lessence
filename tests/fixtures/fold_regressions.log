@@ -4705,3 +4705,9 @@ pool ready timeout=45
 ##FROM invented pool lines
 pool ready level=error
 pool ready level=info
+
+##CASE lessence-enl template_present=Failed to update lock timeout=<KEY_VALUE>
+##WHY an SQL verb in prose is not a statement: `update ` anywhere on the line switched key-value folding off, so "Failed to update lock" kept its pairs literal while "Failed to release lock" folded them
+##FROM invented lock lines
+Failed to update lock timeout=30
+Failed to update lock timeout=45

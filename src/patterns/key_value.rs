@@ -61,6 +61,13 @@ const KEY_SUFFIXES: [&str; 6] = ["_timeout", "_limit", "_size", "_count", "_rate
 const KEY_PREFIXES: [&str; 2] = ["max_", "min_"];
 const VALUE_SUFFIXES: [&str; 5] = ["ms", "%", "MB", "KB", "GB"];
 
+// An SQL statement: `SELECT … FROM`, `INSERT INTO`, `UPDATE <t> SET`,
+// `DELETE FROM`, in any case. Its `col=value` pairs are a query, not fields.
+static SQL_STATEMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:select\b.*\bfrom|insert\s+into|update\s+\S+\s+set|delete\s+from)\b")
+        .unwrap()
+});
+
 // Built from the lists above, so it cannot drift from them: a line with
 // none of these substrings has no pair the general passes would accept.
 static ACCEPT_GATE: LazyLock<Regex> = LazyLock::new(|| {
@@ -325,19 +332,19 @@ impl KeyValueDetector {
         Self::line_allows_key_value(text) && Self::is_valid_key_value_pair(key, value)
     }
 
-    /// Line-level exclusions (math expressions, SQL) — computed once per
-    /// pass, not per match.
+    /// Line-level exclusion (an SQL statement) — computed once per pass,
+    /// not per match.
     fn line_allows_key_value(text: &str) -> bool {
-        // Exclude SQL queries. The arithmetic guard that used to live here
-        // (" - ", " + "...) vetoed every logback/log4j line, whose fixed
-        // `Logger - message` separator is a dash, so `attempt_count=1` never
-        // folded on any Java log (lessence-moq). A `k=v` next to a minus sign
-        // is still a `k=v`; the per-pair allowlist decides.
-        let upper = text.to_uppercase();
-        !(upper.contains("SELECT ")
-            || upper.contains("INSERT ")
-            || upper.contains("UPDATE ")
-            || upper.contains("DELETE "))
+        // Exclude SQL statements, recognised by their grammar: a verb with
+        // the word it needs after it. The words alone (`update `,
+        // `delete `) are English, and "Failed to update lock" used to switch
+        // key-value folding off for its whole line while "Failed to release
+        // lock" kept it (lessence-enl). The arithmetic guard that used to
+        // live here (" - ", " + "...) vetoed every logback/log4j line, whose
+        // fixed `Logger - message` separator is a dash, so `attempt_count=1`
+        // never folded on any Java log (lessence-moq). A `k=v` next to a
+        // minus sign is still a `k=v`; the per-pair allowlist decides.
+        !SQL_STATEMENT.is_match(text)
     }
 
     #[cfg_attr(test, mutants::skip)] // "if"/"for"/"while"/"switch" not in VALID_KEYS — exclusion is redundant with the positive check
@@ -1245,6 +1252,40 @@ mod e8v_gates_2026_09_18 {
         let (open, _) =
             KeyValueDetector::detect_and_replace("NumGC=10 HeapAlloc=5 Sys=7 trailing words");
         assert!(open.contains("NumGC=10"), "{open}");
+    }
+
+    /// The SQL verbs are English too: a prose `update`, `delete`, `select`
+    /// or `insert` does not switch the line's pairs off; a statement does.
+    #[test]
+    fn an_sql_word_in_prose_is_not_a_statement() {
+        for (line, folded) in [
+            (
+                "Failed to update lock timeout=30",
+                "Failed to update lock timeout=<KEY_VALUE>",
+            ),
+            (
+                "will delete cached entries port=8080",
+                "will delete cached entries port=<KEY_VALUE>",
+            ),
+            (
+                "please select a mirror retries=3",
+                "please select a mirror retries=<KEY_VALUE>",
+            ),
+            (
+                "insert disk now timeout=5",
+                "insert disk now timeout=<KEY_VALUE>",
+            ),
+        ] {
+            assert_eq!(KeyValueDetector::detect_and_replace(line).0, folded);
+        }
+        for statement in [
+            "select id from users where timeout=30",
+            "update jobs set retries=3",
+            "insert into t values (timeout=1)",
+            "delete from t where port=8080",
+        ] {
+            assert_eq!(KeyValueDetector::detect_and_replace(statement).0, statement);
+        }
     }
 
     #[test]
