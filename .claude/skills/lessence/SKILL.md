@@ -87,6 +87,7 @@ cargo test 2>&1 | lessence            # capture stderr too
 
 # Agent-friendly output (prefer these when piping into Claude)
 lessence --format json < app.log      # JSONL with rollup metadata — best for follow-up jq queries
+lessence --explain app.log            # the same JSONL plus `nearest`: why a line founded its own group (references/flags.md)
 lessence --preflight < app.log        # orientation briefing as JSON (no folded output; takes no --top/--summary/--fit/--explain/--stats-json)
 lessence --stats-json < app.log       # machine-readable stats on stderr (same input_lines and ratio with --summary)
 lessence --summary < app.log          # compact one-line-per-pattern overview (caps at 30, use --top N to adjust)
