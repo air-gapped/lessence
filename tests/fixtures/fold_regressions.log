@@ -161,13 +161,13 @@ Jan 26 00:02:19 d2-4-bhs5 sshd[3578390]: Invalid user oracle from 35.246.248.48 
 ##WHY the key-value detector fires by default; paired with the case below,
 ##WHY this proves --disable-patterns does something rather than nothing
 ##FROM the flag was a silent no-op for several detector names
-level=info msg="a" component=core
+level=info msg="a" timeout=30
 
-##CASE lessence-mxv template_present=level=info
+##CASE lessence-mxv template_present=timeout=30 holds-on-base
 ##WHY --disable-patterns key-value really disables it
 ##FROM lessence-9h5 was the same bug in LogWithModuleDetector
 ##FLAGS --disable-patterns key-value
-level=info msg="a" component=core
+level=info msg="a" timeout=30
 
 ##CASE lessence-arch-2026-08-r98.13 template_present=<EMAIL>
 ##WHY --sanitize-pii masks an email address
@@ -255,13 +255,13 @@ a 1
 ##WHY the bracket/log-module detectors fire by default; paired with the case
 ##WHY  below, this proves --disable-patterns reaches them too
 ##FROM LogWithModuleDetector consulted no config at all
-[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] mod_jk child workerEnv in error state 6
+[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] [mod_jk] child workerEnv in error state 6
 
-##CASE lessence-9h5 template_present=[error]
-##WHY --disable-patterns brackets really leaves the bracketed level alone
+##CASE lessence-9h5 template_present=[mod_jk] holds-on-base
+##WHY --disable-patterns brackets really leaves the bracketed module alone
 ##FROM the flag was accepted and then ignored by this detector
 ##FLAGS --disable-patterns brackets
-[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] mod_jk child workerEnv in error state 6
+[Wed Oct 11 14:32:52 2000] [error] [client 127.0.0.1] [mod_jk] child workerEnv in error state 6
 
 ##CASE lessence-arch-2026-08-r98.9 out_present="lines_saved":1
 ##WHY lines_saved, output_lines and compression_ratio agree with each other and
@@ -698,8 +698,8 @@ Sep 14 06:56:02 oryx systemd[1]: Unmounting var-lib-kubelet-pods-3f1c9a2e\x2d5b7
 ##CASE lessence-6cb template_present=<BRACKET_CONTEXT> OK (DoH)
 ##WHY the space after a bracket chain belongs to the sentence
 ##FROM the gateway dnscrypt-proxy log (scrubbed)
-[2026-02-15 03:08:42] [NOTICE] [cloudflare] OK (DoH) - rtt: 4ms
-[2026-02-15 03:08:55] [NOTICE] [cloudflare] OK (DoH) - rtt: 5ms
+[2026-02-15 03:08:42] [proxy] [upstream] OK (DoH) - rtt: 4ms
+[2026-02-15 03:08:55] [proxy] [upstream] OK (DoH) - rtt: 5ms
 
 ##CASE lessence-6cb template_present=(<PATH>)
 ##WHY the bracket that closes a parenthesised URL survives
@@ -4436,7 +4436,7 @@ operation finished elapsed=1789551111111.25
 operation finished elapsed=1789551111111111.25
 operation finished elapsed=1789551111111111111.25
 
-##CASE lessence-a8t.11 template_present=worker completed <DURATION_FIELD> scope=steady
+##CASE lessence-a8t.11 template_present=worker completed jobDuration=<DURATION_FIELD> scope=steady
 ##WHY A long decimal fraction in a duration field must not leave a timestamp suffix outside the duration token.
 ##FROM invented duration records
 worker completed jobDuration=3.1789551111111111 scope=steady
@@ -4651,3 +4651,80 @@ panic at handler.ts:123 in worker
 ##FROM invented log4j lines
 2024-01-01 10:00:00,123 [pool-1] INFO cache ready
 2024-01-01 10:00:01,456 [pool-1] INFO cache ready
+
+##CASE lessence-bmp groups=3
+##WHY a duration field keeps its key: podStartSLOduration, podStartE2EDuration and imagePullDuration are three measurements, and erasing the key showed them as one
+##FROM invented kubelet-shaped tracker lines
+pod_startup_latency_tracker pod="ns/web-0" podStartSLOduration=3.25 status=observed
+pod_startup_latency_tracker pod="ns/web-0" podStartE2EDuration=4.5 status=observed
+pod_startup_latency_tracker pod="ns/web-0" imagePullDuration=1.75 status=observed
+
+##CASE lessence-bmp template_present=imagePullDuration=<DURATION_FIELD>
+##WHY the key of a duration field stays on the shown line
+##FROM invented kubelet-shaped tracker lines
+pod_startup_latency_tracker pod="ns/web-0" imagePullDuration=1.75 status=observed
+pod_startup_latency_tracker pod="ns/web-1" imagePullDuration=2.5 status=observed
+
+##CASE lessence-bmp groups=3
+##WHY a bracketed level is the event's severity: an error, an info and a debug line that otherwise read alike are three events, and the level used to fold to one <BRACKET_CONTEXT>
+##FROM invented upstream lines
+2024-01-01 10:00:00 [error] upstream pool drained
+2024-01-01 10:00:01 [info] upstream pool drained
+2024-01-01 10:00:02 [debug] upstream pool drained
+
+##CASE lessence-bmp groups=2
+##WHY a level inside a bracket chain stays literal too: the chain path used to fold `[error] [proxy]` and `[info] [proxy]` into one <BRACKET_CONTEXT>
+##FROM invented proxy lines
+[error] [proxy] upstream gone
+[info] [proxy] upstream gone
+
+##CASE lessence-bmp template_present=[NOTICE] [cloudflare] OK (DoH)
+##WHY a chain whose only recognised word is its level folds nothing: the level stays and so does the resolver name beside it
+##FROM the gateway dnscrypt-proxy log (scrubbed), formerly the lessence-6cb spacing case
+[2026-02-15 03:08:42] [NOTICE] [cloudflare] OK (DoH) - rtt: 4ms
+[2026-02-15 03:08:55] [NOTICE] [cloudflare] OK (DoH) - rtt: 5ms
+
+##CASE lessence-bmp groups=3
+##WHY a key-value pair keeps its key and folds only its value: `timeout=30`, `retries=30` and `port=8080` are three settings, and all three used to read as one `<KEY_VALUE>`
+##FROM invented pool lines
+pool ready timeout=30
+pool ready timeout=45
+pool ready retries=30
+pool ready retries=12
+pool ready port=8080
+pool ready port=9090
+
+##CASE lessence-bmp template_present=pool ready timeout=<KEY_VALUE>
+##WHY the key of a folded pair stays on the shown line
+##FROM invented pool lines
+pool ready timeout=30
+pool ready timeout=45
+
+##CASE lessence-bmp groups=2
+##WHY a level is not a foldable value: `level=error` and `level=info` on otherwise identical lines are two events, and both used to be `<KEY_VALUE>`
+##FROM invented pool lines
+pool ready level=error
+pool ready level=info
+
+##CASE lessence-enl template_present=Failed to update lock timeout=<KEY_VALUE>
+##WHY an SQL verb in prose is not a statement: `update ` anywhere on the line switched key-value folding off, so "Failed to update lock" kept its pairs literal while "Failed to release lock" folded them
+##FROM invented lock lines
+Failed to update lock timeout=30
+Failed to update lock timeout=45
+
+##CASE lessence-enl template_present=<BRACKET_CONTEXT> request param=
+##WHY a bracket that is not a context is rejected on its own shape; a `param=` (or `array[`, `[2001:`) elsewhere on the line used to switch the bracket detector off for the whole line, so this `[proxy] [upstream]` stayed literal while the same chain folded on every other line
+##FROM invented proxy lines
+[proxy] [upstream] request param=a rejected
+[proxy] [upstream] request param=b rejected
+
+##CASE lessence-enl template_present=<BRACKET_CONTEXT> probe failed
+##WHY a kubernetes word elsewhere on the line (`pod/`, `kubelet`, `etcd`) no longer switches the bracket, log-module and structured detectors off: the chain folds as it does on a line without the word
+##FROM invented proxy lines
+[proxy] [upstream] probe failed for pod/web-0
+[proxy] [upstream] probe failed for pod/web-1
+
+##CASE lessence-bmp template_present={phase:Running}
+##WHY an escaped flat struct is the event's own words: `\"{phase:Running}\"` and `\"{phase:Failed}\"` both used to read `<JSON_DATA>`, so two outcomes were one template
+##FROM invented kubelet-shaped sync line
+E1101 10:00:00.000000    1234 worker.go:42] "Sync failed" err="state \"{phase:Running}\" rejected"

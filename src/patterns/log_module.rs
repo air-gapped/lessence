@@ -71,9 +71,6 @@ impl LogWithModuleDetector {
         );
     }
 
-    // Kubernetes deference is NOT checked here: the detector ordering table
-    // in `normalize.rs` skips this detector on kubernetes-shaped lines
-    // (`patterns::has_kubernetes_indicators`) before it is invoked.
     pub(crate) fn has_log_module_indicators(text: &str) -> bool {
         // Fast byte-level checks for log module indicators
         (text.contains("mod_") ||
@@ -450,8 +447,7 @@ mod tests {
 
     #[test]
     fn log_mod_ind_no_longer_checks_k8s() {
-        // The kubernetes deference moved to the detector ordering table in
-        // normalize.rs; the indicator check alone accepts k8s lines now.
+        // No word elsewhere on the line switches the detector off.
         assert!(LogWithModuleDetector::has_log_module_indicators(
             "[error] kubelet failed"
         ));
@@ -462,130 +458,6 @@ mod tests {
         assert!(!LogWithModuleDetector::has_log_module_indicators(
             "plain message"
         ));
-    }
-
-    // ---- has_kubernetes_indicators (log_module copy): per-condition tests ----
-
-    #[test]
-    fn log_k8s_ind_kubernetes_io() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kubernetes.io/name"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_namespace() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "namespace/default"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_pod() {
-        assert!(crate::patterns::has_kubernetes_indicators("pod/nginx"));
-    }
-
-    #[test]
-    fn log_k8s_ind_service() {
-        assert!(crate::patterns::has_kubernetes_indicators("service/web"));
-    }
-
-    #[test]
-    fn log_k8s_ind_configmap() {
-        assert!(crate::patterns::has_kubernetes_indicators("configmap/cfg"));
-    }
-
-    #[test]
-    fn log_k8s_ind_secret() {
-        assert!(crate::patterns::has_kubernetes_indicators("secret/tls"));
-    }
-
-    #[test]
-    fn log_k8s_ind_deployment() {
-        assert!(crate::patterns::has_kubernetes_indicators("deployment/app"));
-    }
-
-    #[test]
-    fn log_k8s_ind_volumes() {
-        assert!(crate::patterns::has_kubernetes_indicators("volumes/data"));
-    }
-
-    #[test]
-    fn log_k8s_ind_projected_dash() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "projected-token"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_volume_subpath() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "volume-subpath x"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_projected() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "using projected vol"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_apiserver() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "apiserver health"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_kube_prefix() {
-        assert!(crate::patterns::has_kubernetes_indicators("kube-dns ready"));
-    }
-
-    #[test]
-    fn log_k8s_ind_kubelet() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kubelet started"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_kube_proxy() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kube-proxy running"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_kube_scheduler() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kube-scheduler elected"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_kube_controller() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kube-controller ok"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_etcd() {
-        assert!(crate::patterns::has_kubernetes_indicators("etcd cluster"));
-    }
-
-    #[test]
-    fn log_k8s_ind_coredns() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "coredns serving"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_negative() {
-        assert!(!crate::patterns::has_kubernetes_indicators("plain message"));
     }
 
     // ---- is_framework_module: per-branch tests ----
@@ -730,23 +602,6 @@ mod tests {
             "systemd pattern should detect module: {tokens:?}"
         );
         assert_eq!(result, input, "the level and component stay on the line");
-    }
-
-    // ---- Mutant-killing: has_kubernetes_indicators kubelet/kube-proxy lines 101-103 ----
-
-    #[test]
-    fn log_k8s_ind_kubelet_only() {
-        // "kubelet" without "kube-" prefix to isolate the kubelet check
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "[error] kubelet failed to start"
-        ));
-    }
-
-    #[test]
-    fn log_k8s_ind_kube_proxy_only() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "[warn] kube-proxy iptables sync"
-        ));
     }
 
     // ---- Mutant-killing: is_nginx_module line 255 ----

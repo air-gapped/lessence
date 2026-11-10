@@ -466,7 +466,9 @@ fn word_at(rest: &[u8]) -> Option<Level> {
 }
 
 /// Exact, case-insensitive match of one level word against its bucket.
-fn word_to_level(word: &[u8]) -> Option<Level> {
+/// The one level vocabulary: the bracket detector asks it too, so what
+/// the briefing counts as a level is what stays literal on the line.
+pub(crate) fn word_to_level(word: &[u8]) -> Option<Level> {
     const FATAL: &[&[u8]] = &[
         b"FATAL",
         b"CRIT",

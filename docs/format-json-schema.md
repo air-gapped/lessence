@@ -98,7 +98,7 @@ Two record types, discriminated by the `type` field:
 | `id` | integer | Monotonic counter within a run. Stable: 0 for the first group flushed, 1 for the second, and so on. Resets per invocation. |
 | `count` | integer | Number of input lines that joined this group. For a group of 1, this is 1 (no folding). |
 | `token_types` | array of strings | Sorted list of token type discriminant names that appeared in the group's first or last line. UPPERCASE convention. Deterministic across runs. |
-| `normalized` | string | The first line's normalized form (variable parts replaced with `<TOKEN>` placeholders). This is the "template" that agents group lines by. PII-masked if `--sanitize-pii` is set. |
+| `normalized` | string | The first line's normalized form (variable parts replaced with `<TOKEN>` placeholders). This is the "template" that agents group lines by. A placeholder replaces a field's value and keeps its name (`timeout=<KEY_VALUE>`, `podStartSLOduration=<DURATION_FIELD>`); a log level (`[error]`, `level=info`) is never replaced. PII-masked if `--sanitize-pii` is set. |
 | `first.source` | string \| null | Explicit input filename exactly as supplied to lessence, or null for stdin. |
 | `first.line` | string | The first input line that created this group, as-is. PII-masked if `--sanitize-pii` is set. |
 | `first.line_no` | integer | Exact 1-indexed line number within `first.source`, or within stdin when `source` is null. |

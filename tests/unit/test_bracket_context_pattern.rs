@@ -5,63 +5,67 @@ use lessence::patterns::bracket_context::BracketContextDetector;
 mod tests {
     use super::*;
 
+    /// A bracketed level is the event's severity: it stays on the line, so
+    /// an error and an info line are two events (lessence-bmp).
     #[test]
-    fn test_single_bracket_context_detection() {
+    fn test_single_bracketed_level_stays_literal() {
         let test_cases = vec![
             "[error] Something went wrong",
             "[info] Process completed",
             "[debug] Entering function",
             "[warn] Low memory condition",
+            "[NOTICE] Low memory condition",
         ];
 
         for test_case in test_cases {
             let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
-
-            assert!(
-                result.contains("<BRACKET_CONTEXT>"),
-                "Failed to detect bracket context in: {test_case}"
-            );
-            assert_eq!(
-                tokens.len(),
-                1,
-                "Should detect exactly one bracket context token"
-            );
-
-            if let Token::BracketContext(contexts) = &tokens[0] {
-                assert_eq!(contexts.len(), 1, "Should detect one context");
-            } else {
-                panic!("Expected BracketContext token, got: {:?}", tokens[0]);
-            }
+            assert_eq!(result, test_case, "a level must stay literal");
+            assert!(tokens.is_empty(), "{test_case}: {tokens:?}");
         }
     }
 
     #[test]
+    fn test_single_bracket_context_detection() {
+        for test_case in [
+            "[proxy] Something went wrong",
+            "[upstream] Process completed",
+        ] {
+            let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
+            assert!(result.starts_with("<BRACKET_CONTEXT> "), "{result}");
+            assert_eq!(tokens.len(), 1, "{test_case}: {tokens:?}");
+        }
+    }
+
+    /// The level leads the chain and stays; what follows it folds as one
+    /// context run.
+    #[test]
     fn test_multiple_bracket_context_detection() {
         let test_cases = vec![
-            "[error] [mod_jk] Something went wrong",
-            "[info] [upstream] [cluster] Process completed",
-            "[debug] [ssl] [handshake] Entering function",
-            "[warn] [memory] [allocation] Low memory condition",
+            ("[error] [mod_jk] Something went wrong", "[error] ", 1),
+            (
+                "[info] [upstream] [cluster] Process completed",
+                "[info] ",
+                2,
+            ),
+            ("[debug] [ssl] [handshake] Entering function", "[debug] ", 2),
+            (
+                "[warn] [memory] [allocation] Low memory condition",
+                "[warn] ",
+                2,
+            ),
         ];
 
-        for test_case in test_cases {
+        for (test_case, level, n_contexts) in test_cases {
             let (result, tokens) = BracketContextDetector::detect_and_replace(test_case);
 
             assert!(
-                result.contains("<BRACKET_CONTEXT>"),
-                "Failed to detect bracket context in: {test_case}"
+                result.starts_with(&format!("{level}<BRACKET_CONTEXT> ")),
+                "{test_case} -> {result}"
             );
-            assert_eq!(
-                tokens.len(),
-                1,
-                "Should detect exactly one bracket context token for chained contexts"
-            );
+            assert_eq!(tokens.len(), 1, "{test_case}: {tokens:?}");
 
             if let Token::BracketContext(contexts) = &tokens[0] {
-                assert!(
-                    contexts.len() >= 2,
-                    "Should detect multiple contexts: {contexts:?}"
-                );
+                assert_eq!(contexts.len(), n_contexts, "{contexts:?}");
             } else {
                 panic!("Expected BracketContext token, got: {:?}", tokens[0]);
             }
@@ -117,52 +121,37 @@ mod tests {
         ];
 
         for line in apache_logs {
-            let (_, tokens) = BracketContextDetector::detect_and_replace(line);
+            let (result, tokens) = BracketContextDetector::detect_and_replace(line);
 
-            // Should detect [error], [warn] as bracket contexts
-            // Note: timestamps should be handled by timestamp pattern detector
-            assert!(
-                !tokens.is_empty(),
-                "Should detect bracket contexts in Apache logs: {line}"
-            );
-
-            // Check that we're detecting the log level bracket
-            let has_log_level = tokens.iter().any(|token| {
-                if let Token::BracketContext(contexts) = token {
-                    contexts.iter().any(|ctx| {
-                        ctx == "error" || ctx == "warn" || ctx == "info" || ctx == "debug"
-                    })
-                } else {
-                    false
-                }
-            });
-
-            assert!(
-                has_log_level,
-                "Should detect log level bracket context in: {line}"
-            );
+            // The level bracket is the event's severity and stays literal;
+            // the level statistics come from the log-module detector and
+            // the briefing's own scan, not from this placeholder.
+            assert_eq!(result, line, "the level stays on the line");
+            assert!(tokens.is_empty(), "{line}: {tokens:?}");
         }
     }
 
     #[test]
     fn test_systemd_journal_logs() {
         let systemd_logs = vec![
-            "systemd[1]: [info] [unit] Starting network service",
-            "systemd[1]: [error] [unit] Failed to start application",
-            "kernel[0]: [warn] [memory] Low memory condition detected",
+            (
+                "systemd[1]: [info] [kernel] Starting network service",
+                "systemd[1]: [info] <BRACKET_CONTEXT> Starting network service",
+            ),
+            (
+                "systemd[1]: [error] [kernel] Failed to start application",
+                "systemd[1]: [error] <BRACKET_CONTEXT> Failed to start application",
+            ),
+            (
+                "kernel[0]: [warn] [memory] Low memory condition detected",
+                "kernel[0]: [warn] <BRACKET_CONTEXT> Low memory condition detected",
+            ),
         ];
 
-        for line in systemd_logs {
+        for (line, expected) in systemd_logs {
             let (result, tokens) = BracketContextDetector::detect_and_replace(line);
-
-            assert!(
-                !tokens.is_empty(),
-                "Should detect bracket contexts in systemd logs: {line}"
-            );
-            assert!(
-                result.contains("<BRACKET_CONTEXT>"),
-                "Should normalize bracket contexts in: {line}"
-            );
+            assert_eq!(result, expected);
+            assert_eq!(tokens.len(), 1, "{line}: {tokens:?}");
         }
     }
 
@@ -195,7 +184,7 @@ mod tests {
     #[test]
     fn test_mixed_bracket_types() {
         let mixed_cases = vec![
-            "[error] Processing (failed) with {result: null}",
+            "[proxy] Processing (failed) with {result: null}",
             "[info] [upstream] Connection to {host: example.com} established",
             "[debug] [ssl] Certificate [CN=*.example.com] validated",
         ];
