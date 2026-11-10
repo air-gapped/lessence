@@ -31,11 +31,11 @@ the `run` hook). `normalize_line` just walks the table:
 10. **Syslog host** — the positional host field between a normalized timestamp and a program tag (`replace_syslog_host`, `normalize.rs`); gated by the FQDN flag
 11. **Kubernetes** — namespaces, pods, volumes (`patterns/kubernetes.rs`)
 12. **HTTP Status** — status codes (`patterns/http_status.rs`)
-13. **Bracket Context** — `[error]`-style tags (`patterns/bracket_context.rs`)
-14. **Key-Value** — `key=value` pairs (`patterns/key_value.rs`)
+13. **Bracket Context** — `[proxy]`-style context tags, a chain of them as one `<BRACKET_CONTEXT>` (`patterns/bracket_context.rs`). A level (`[error]`, `[NOTICE]`) is never a context: it stays literal and splits a chain. "Is this a level" is `briefing::word_to_level`, the crate's one level vocabulary — do not add a second list
+14. **Key-Value** — `key=value` pairs; the key and separator stay and only the value folds (`timeout=<KEY_VALUE>`). `level` is not a foldable key (`patterns/key_value.rs`)
 15. **Log Module** — level + module token for the statistics; Apache, nginx and systemd lines keep their text, the Java-logger form still folds to `[<LOG_WITH_MODULE>]` (`patterns/log_module.rs`)
 16. **Structured Messages** — component + level token for stats only; the line text is preserved verbatim so distinct messages fold into distinct groups (`patterns/structured.rs`)
-17. **Durations** — time and size values (`patterns/duration.rs`)
+17. **Durations** — time and size values; a `<name>Duration=` field keeps its key (`podStartSLOduration=<DURATION_FIELD>`) (`patterns/duration.rs`)
 18. **Names** — variable names (`patterns/names.rs`) — gated by `--disable-patterns name` like the others
 19. **Quoted Strings** — last to avoid consuming other tokens; its nested cascade honours the same `--disable-patterns` gates (`patterns/quoted.rs`)
 

@@ -32,7 +32,10 @@ static JSON_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 // What the general passes accept: a key on this list, a key with one of
 // these suffixes or prefixes, or a value with one of these suffixes.
-const VALID_KEYS: [&str; 21] = [
+// `level` is not on it: a severity is what happened, not a value that
+// varies within one event, and `level=error` beside `level=info` must
+// stay two events.
+const VALID_KEYS: [&str; 20] = [
     "timeout",
     "retries",
     "max_connections",
@@ -41,7 +44,6 @@ const VALID_KEYS: [&str; 21] = [
     "ssl",
     "debug",
     "verbose",
-    "level",
     "user_id",
     "session_id",
     "request_id",
@@ -133,7 +135,7 @@ impl KeyValueDetector {
             {
                 return None;
             }
-            let (token, _) = Self::pair(key, value);
+            let token = Self::pair(key, value);
             // Keep the source's own spacing after the colon — the template
             // must be a template OF the input, not a reformatting of it.
             let whole = caps.get(0).unwrap().as_str();
@@ -197,15 +199,20 @@ impl KeyValueDetector {
             let (key, value) = Self::split_pair(m.as_str());
             // A duration is the duration detector's whatever its unit:
             // `duration=272ms` and `duration=2.9s` must fold alike.
-            if !Self::is_valid_key_value_pair(key, value)
+            // A value an earlier pass already folded (`host=<KEY_VALUE>`
+            // from the `=` pass, `x_count=<KEY_VALUE>"` from a metrics run)
+            // is that pair again, not a new one.
+            if value.starts_with("<KEY_VALUE>")
+                || !Self::is_valid_key_value_pair(key, value)
                 || Self::classify_value_type(value) == "duration"
             {
                 continue;
             }
-            let (token, replacement) = Self::pair(key, value);
-            tokens.push(token);
-            out.push_str(&text[last..m.start()]);
-            out.push_str(&replacement);
+            tokens.push(Self::pair(key, value));
+            // The key and its separator stay; only the value folds.
+            // `value` is the tail of the match (`split_pair`).
+            out.push_str(&text[last..m.end() - value.len()]);
+            out.push_str("<KEY_VALUE>");
             last = m.end();
         }
         if last > 0 {
@@ -229,15 +236,14 @@ impl KeyValueDetector {
         (&m[..key_end], value)
     }
 
-    /// The token and placeholder every key-value pass folds to.
-    fn pair(key: &str, value: &str) -> (Token, String) {
-        (
-            Token::KeyValuePair {
-                key: key.to_lowercase(),
-                value_type: Self::classify_value_type(value),
-            },
-            "<KEY_VALUE>".to_string(),
-        )
+    /// The token every key-value pass records. Each pass keeps the key in
+    /// front of its `<KEY_VALUE>`: `timeout=30`, `retries=30` and
+    /// `port=8080` used to read as one `<KEY_VALUE>` and fold together.
+    fn pair(key: &str, value: &str) -> Token {
+        Token::KeyValuePair {
+            key: key.to_lowercase(),
+            value_type: Self::classify_value_type(value),
+        }
     }
 
     fn classify_value_type(value: &str) -> String {
@@ -388,7 +394,7 @@ mod tests {
         assert_eq!(tokens.len(), 3, "{result}");
         assert_eq!(
             result,
-            "Database config: <KEY_VALUE>, <KEY_VALUE>, <KEY_VALUE>"
+            "Database config: host=<KEY_VALUE>, port=<KEY_VALUE>, ssl=<KEY_VALUE>"
         );
 
         // And the same pairs fold identically on a line with no such word.
@@ -397,8 +403,53 @@ mod tests {
         assert_eq!(plain_tokens.len(), 3);
         assert_eq!(
             plain_result,
-            "Database ready: <KEY_VALUE>, <KEY_VALUE>, <KEY_VALUE>"
+            "Database ready: host=<KEY_VALUE>, port=<KEY_VALUE>, ssl=<KEY_VALUE>"
         );
+    }
+
+    /// The key names the setting: `timeout=30`, `retries=30` and
+    /// `port=8080` are three fields, and each keeps its name.
+    #[test]
+    fn a_pair_keeps_its_key() {
+        for (line, folded) in [
+            ("pool ready timeout=30", "pool ready timeout=<KEY_VALUE>"),
+            ("pool ready retries=30", "pool ready retries=<KEY_VALUE>"),
+            ("pool ready port=8080", "pool ready port=<KEY_VALUE>"),
+            ("pool ready port : 8080", "pool ready port : <KEY_VALUE>"),
+        ] {
+            let (r, t) = KeyValueDetector::detect_and_replace(line);
+            assert_eq!(r, folded);
+            assert_eq!(t.len(), 1, "{line}: {t:?}");
+        }
+    }
+
+    /// A level is not a foldable value: `level=error` and `level=info`
+    /// are two events, so the general passes leave it literal.
+    #[test]
+    fn a_level_field_is_not_folded() {
+        for line in ["pool ready level=error", "pool ready level=info"] {
+            let (r, t) = KeyValueDetector::detect_and_replace(line);
+            assert_eq!(r, line);
+            assert!(t.is_empty(), "{line}: {t:?}");
+        }
+        let (r, _) = KeyValueDetector::detect_and_replace("level=warn timeout=30");
+        assert_eq!(r, "level=warn timeout=<KEY_VALUE>");
+    }
+
+    /// A value an earlier pass already folded is not folded again: one
+    /// token per pair, and nothing after the placeholder is eaten.
+    #[test]
+    fn a_folded_value_is_not_folded_twice() {
+        let (r, t) = KeyValueDetector::detect_and_replace("cfg host=db1 x_count: 4");
+        assert_eq!(r, "cfg host=<KEY_VALUE> x_count: <KEY_VALUE>");
+        assert_eq!(t.len(), 2, "{t:?}");
+        let (r, t) =
+            KeyValueDetector::detect_and_replace(r#"stats "NumGC=10 HeapAlloc=5 job_count=7""#);
+        assert_eq!(
+            r,
+            r#"stats "NumGC=<KEY_VALUE> HeapAlloc=<KEY_VALUE> job_count=<KEY_VALUE>""#
+        );
+        assert_eq!(t.len(), 3, "{t:?}");
     }
 
     #[test]
@@ -444,6 +495,7 @@ mod tests {
                 .count(),
             7
         );
+        // The numeric pairs of a run inside a larger record stay literal.
         for line in [
             "type=CRED_ACQ pid=<PID> uid=1000 auid=1000 ses=3 subj=x",
             "level=info endpointID=1680 identity=1 datapathPolicyRevision=22 desiredPolicyRevision=22 subsys=endpoint",
@@ -451,7 +503,7 @@ mod tests {
             "took ms=12 count=3 items=4x",
         ] {
             let (r, _) = KeyValueDetector::detect_and_replace(line);
-            assert!(!r.contains("=<KEY_VALUE>"), "{line} -> {r}");
+            assert_eq!(r, line);
         }
         let (r, _) =
             KeyValueDetector::detect_and_replace("stats: Alloc=25451 TotalAlloc=99852 NumGC=10");
@@ -1136,7 +1188,7 @@ mod tests {
     #[test]
     fn a_duration_value_is_left_to_the_duration_detector() {
         let (r, _) = KeyValueDetector::detect_and_replace("latency=5ms timeout=30");
-        assert_eq!(r, "latency=5ms <KEY_VALUE>");
+        assert_eq!(r, "latency=5ms timeout=<KEY_VALUE>");
     }
 }
 
@@ -1174,7 +1226,7 @@ mod gate_2026_08_29 {
         );
         assert_eq!(KeyValueDetector::split_pair("a.b-c=x:y"), ("a.b-c", "x:y"));
         let (r, t) = KeyValueDetector::detect_and_replace("Waiting for caches port=8080 host: db");
-        assert_eq!(r, "Waiting for caches <KEY_VALUE> <KEY_VALUE>");
+        assert_eq!(r, "Waiting for caches port=<KEY_VALUE> host: <KEY_VALUE>");
         assert_eq!(t.len(), 2);
     }
 }
