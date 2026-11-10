@@ -4658,3 +4658,77 @@ panic at handler.ts:123 in worker
 job 10:30:01 cleaning registries for queue high
 job 10:31:02 cleaning registries for queue high
 job 11:08:43 cleaning registries for queue high
+
+##CASE lessence-veg out_present=shmike×5
+##WHY past the cap of distinct values the ones held are fixed by the values, not by arrival: the cap kept the first 64 and hid the most frequent variant because it came last, and the order a retained or merged group counts in differs by thread count
+##FROM invented shard lines; 64 distinct values, then the frequent one
+job ran on shard shdaaa ok after retry
+job ran on shard shkaaa ok after retry
+job ran on shard shraaa ok after retry
+job ran on shard shyaaa ok after retry
+job ran on shard shfbaa ok after retry
+job ran on shard shmbaa ok after retry
+job ran on shard shtbaa ok after retry
+job ran on shard shacaa ok after retry
+job ran on shard shhcaa ok after retry
+job ran on shard shocaa ok after retry
+job ran on shard shvcaa ok after retry
+job ran on shard shcdaa ok after retry
+job ran on shard shjdaa ok after retry
+job ran on shard shqdaa ok after retry
+job ran on shard shxdaa ok after retry
+job ran on shard sheeaa ok after retry
+job ran on shard shleaa ok after retry
+job ran on shard shseaa ok after retry
+job ran on shard shzeaa ok after retry
+job ran on shard shgfaa ok after retry
+job ran on shard shnfaa ok after retry
+job ran on shard shufaa ok after retry
+job ran on shard shbgaa ok after retry
+job ran on shard shigaa ok after retry
+job ran on shard shpgaa ok after retry
+job ran on shard shwgaa ok after retry
+job ran on shard shdhaa ok after retry
+job ran on shard shkhaa ok after retry
+job ran on shard shrhaa ok after retry
+job ran on shard shyhaa ok after retry
+job ran on shard shfiaa ok after retry
+job ran on shard shmiaa ok after retry
+job ran on shard shtiaa ok after retry
+job ran on shard shajaa ok after retry
+job ran on shard shhjaa ok after retry
+job ran on shard shojaa ok after retry
+job ran on shard shvjaa ok after retry
+job ran on shard shckaa ok after retry
+job ran on shard shjkaa ok after retry
+job ran on shard shqkaa ok after retry
+job ran on shard shxkaa ok after retry
+job ran on shard shelaa ok after retry
+job ran on shard shllaa ok after retry
+job ran on shard shslaa ok after retry
+job ran on shard shzlaa ok after retry
+job ran on shard shgmaa ok after retry
+job ran on shard shnmaa ok after retry
+job ran on shard shumaa ok after retry
+job ran on shard shbnaa ok after retry
+job ran on shard shinaa ok after retry
+job ran on shard shpnaa ok after retry
+job ran on shard shwnaa ok after retry
+job ran on shard shdoaa ok after retry
+job ran on shard shkoaa ok after retry
+job ran on shard shroaa ok after retry
+job ran on shard shyoaa ok after retry
+job ran on shard shfpaa ok after retry
+job ran on shard shmpaa ok after retry
+job ran on shard shtpaa ok after retry
+job ran on shard shaqaa ok after retry
+job ran on shard shhqaa ok after retry
+job ran on shard shoqaa ok after retry
+job ran on shard shvqaa ok after retry
+job ran on shard shcraa ok after retry
+job ran on shard shmike ok after retry
+job ran on shard shmike ok after retry
+job ran on shard shmike ok after retry
+job ran on shard shmike ok after retry
+job ran on shard shmike ok after retry
+job ran on shard shdaaa ok after retry

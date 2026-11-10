@@ -703,6 +703,87 @@ fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
 }
 
 #[test]
+fn a_capped_varies_set_holds_the_same_values_in_any_order() {
+    // lessence-veg: past the cap the values held were the first ones
+    // counted, so the order members were counted in decided the samples.
+    let values: Vec<String> = (0..40).map(|i| format!("v{i}")).collect();
+    let fill = |order: &[usize]| {
+        let mut varies = VariesCounts::default();
+        for &i in order {
+            for _ in 0..=(i % 3) {
+                varies.add(&values[i], 1, 8);
+            }
+        }
+        varies
+    };
+    let forward: Vec<usize> = (0..40).collect();
+    let backward: Vec<usize> = (0..40).rev().collect();
+    let interleaved: Vec<usize> = (0..40).map(|i| (i * 17) % 40).collect();
+    let a = fill(&forward);
+    assert!(a.capped);
+    assert_eq!(a.counts.len(), 8);
+    for order in [&backward, &interleaved] {
+        let b = fill(order);
+        assert_eq!(b.counts, a.counts);
+        assert!(b.capped);
+    }
+    // every value held carries its full count
+    for (value, &n) in &a.counts {
+        let i: usize = value[1..].parse().unwrap();
+        assert_eq!(n, i % 3 + 1, "{value}");
+    }
+    // the values held are the lowest-ranked
+    let mut ranked: Vec<&String> = values.iter().collect();
+    ranked.sort_by_key(|v| (VariesCounts::rank(v), v.as_str()));
+    let mut held: Vec<&String> = a.counts.keys().collect();
+    held.sort_by_key(|v| (VariesCounts::rank(v), v.as_str()));
+    assert_eq!(held, ranked[..8]);
+}
+
+#[test]
+fn a_capped_retained_rollup_holds_the_same_values_as_a_full_scan() {
+    // A retained group counts its unequal-length members last, so under a
+    // first-come cap it held other values than the same group scanned
+    // whole, as it is at another thread count.
+    let computer = RollupComputer::new(3, 4);
+    let make = |s: &str| LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s));
+    let texts = [
+        "worker a1 ready",
+        "worker b2 ready",
+        "worker c3 ready now",
+        "worker d4 ready",
+        "worker e5 ready",
+        "worker f6 ready",
+    ];
+    let mut full = PatternGroup::new(make(texts[0]), 0);
+    let mut retained = PatternGroup::new(make(texts[0]), 0);
+    full.add_line(make(texts[1]), 1);
+    retained.add_line(make(texts[1]), 1);
+    retained.retained = Some(computer.seed(&retained));
+    for (i, text) in texts.iter().enumerate().skip(2) {
+        full.add_line(make(text), i);
+        retained.retained_rejoin(
+            make(text),
+            LineLocation::new(SourceId::STDIN, i),
+            &computer,
+            3,
+        );
+    }
+    assert_eq!(retained.template, full.template);
+    let actual = computer.finalize_retained(
+        retained.retained.take().unwrap(),
+        &retained.template,
+        &retained.first().normalized,
+    );
+    let expected = computer.compute(&full);
+    assert!(expected[VARIES].capped);
+    assert_eq!(
+        serde_json::to_value(actual).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+}
+
+#[test]
 fn retained_alignment_cap_reports_unknown_counts_instead_of_partial_counts() {
     let computer = RollupComputer::new(2, 2);
     let mut group = PatternGroup::new(make_line("worker alpha ready now", vec![]), 0);
@@ -6616,31 +6697,33 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
         positional_members: 3,
         ..RetainedState::default()
     };
-    state.varies.insert("old".to_string(), 2);
+    // past the cap the lower-ranked value is held: `old` ranks below `new`,
+    // and `w` below `v` (`VariesCounts::rank`)
+    state.varies.counts.insert("old".to_string(), 2);
     rc.accumulate_new_varies("a old b", &unit_spans("a old b"), &[(2, 3)], &mut state);
-    assert_eq!(state.varies["old"], 5);
+    assert_eq!(state.varies.counts["old"], 5);
     rc.accumulate_new_varies("a new b", &unit_spans("a new b"), &[(2, 3)], &mut state);
-    assert!(state.varies_capped, "{:?}", state.varies);
-    assert_eq!(state.varies.len(), 1);
+    assert!(state.varies.capped, "{:?}", state.varies);
+    assert_eq!(state.varies.counts.len(), 1);
 
     let mut into = RetainedState {
         positional_members: 2,
         ..RetainedState::default()
     };
-    into.varies.insert("v".to_string(), 2);
+    into.varies.counts.insert("w".to_string(), 2);
     let mut from = RetainedState {
         positional_members: 3,
         realign_capped: true,
         ..RetainedState::default()
     };
-    from.varies.insert("v".to_string(), 3);
-    from.varies.insert("w".to_string(), 1);
+    from.varies.counts.insert("w".to_string(), 3);
+    from.varies.counts.insert("v".to_string(), 1);
     rc.merge_retained(&mut into, from);
     assert_eq!(into.positional_members, 5);
     assert!(into.realign_capped);
-    assert_eq!(into.varies["v"], 5);
-    assert!(into.varies_capped);
-    assert_eq!(into.varies.len(), 1);
+    assert_eq!(into.varies.counts["w"], 5);
+    assert!(into.varies.capped);
+    assert_eq!(into.varies.counts.len(), 1);
 }
 
 /// source_name 2358: a registered source answers by name, stdin has none.

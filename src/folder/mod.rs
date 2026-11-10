@@ -136,8 +136,7 @@ struct PatternGroup {
 #[derive(Debug, Default)]
 struct RetainedState {
     per_type: BTreeMap<&'static str, (Accumulator, bool)>,
-    varies: HashMap<String, usize>,
-    varies_capped: bool,
+    varies: VariesCounts,
     /// Equal-length members align positionally, even as literals widen.
     positional_members: usize,
     /// Unequal-length members need LCS alignment against the final template.
@@ -149,6 +148,61 @@ struct RetainedState {
     /// `varies` pools every slot, so they cannot be rewritten. Finalised
     /// like `realign_capped`, as counts that are not known (lessence-veg).
     varies_unknown: bool,
+}
+
+/// The `<VARIES>` values of a group, with how many members carried each,
+/// bounded at the distinct cap. Past the cap it holds the values that rank
+/// lowest by a fixed hash of their text, never the ones that came first:
+/// which values are held then depends only on which values the members
+/// carry, not on the order they were counted in — one scan, a retained
+/// group extended over eviction, or groups merged in any order hold the
+/// same values, at any thread count (lessence-veg). Every value held has
+/// been held since its first member, so its count is exact.
+#[derive(Debug, Default)]
+struct VariesCounts {
+    counts: HashMap<String, usize>,
+    /// A distinct value was left out.
+    capped: bool,
+    /// The highest-ranked value held, once known; reset when it leaves.
+    ceiling: Option<(u64, String)>,
+}
+
+impl VariesCounts {
+    fn rank(value: &str) -> u64 {
+        let mut h = FNV_OFFSET;
+        fnv1a_fold(&mut h, value.as_bytes());
+        h
+    }
+
+    /// Count `n` members carrying `value`, under a cap of `cap` values.
+    fn add(&mut self, value: &str, n: usize, cap: usize) {
+        if let Some(count) = self.counts.get_mut(value) {
+            *count += n;
+            return;
+        }
+        if self.counts.len() < cap {
+            self.counts.insert(value.to_string(), n);
+            return;
+        }
+        self.capped = true;
+        if self.ceiling.is_none() {
+            self.ceiling = self
+                .counts
+                .keys()
+                .map(|held| (Self::rank(held), held))
+                .max()
+                .map(|(rank, held)| (rank, held.clone()));
+        }
+        let Some((rank, held)) = &self.ceiling else {
+            return;
+        };
+        if (Self::rank(value), value) >= (*rank, held.as_str()) {
+            return;
+        }
+        let (_, out) = self.ceiling.take().expect("checked above");
+        self.counts.remove(&out);
+        self.counts.insert(value.to_string(), n);
+    }
 }
 
 /// First whitespace token at which two normalized lines disagree. Tokenizes
@@ -2204,18 +2258,11 @@ impl RollupComputer {
     /// Shared the same way `accumulate_tokens` is: a full-group scan seeds
     /// `varies`; retained positional members extend it one line at a time.
     /// Retained unequal-length forms are aligned against the final template.
-    fn accumulate_varies(
-        &self,
-        lines: &[LogLine],
-        template: &str,
-        varies: &mut HashMap<String, usize>,
-        varies_capped: &mut bool,
-    ) {
+    fn accumulate_varies(&self, lines: &[LogLine], template: &str, varies: &mut VariesCounts) {
         self.accumulate_varies_counted(
             lines.iter().map(|line| (line.normalized.as_str(), 1)),
             template,
             varies,
-            varies_capped,
         );
     }
 
@@ -2223,8 +2270,7 @@ impl RollupComputer {
         &self,
         lines: impl Iterator<Item = (&'a str, usize)>,
         template: &str,
-        varies: &mut HashMap<String, usize>,
-        varies_capped: &mut bool,
+        varies: &mut VariesCounts,
     ) {
         let template = VariesSlots::new(template, &unit_spans(template));
         if template.slots.is_empty() {
@@ -2232,14 +2278,7 @@ impl RollupComputer {
         }
         for (normalized, count) in lines {
             let units = unit_spans(normalized);
-            self.accumulate_member_varies(
-                &template,
-                normalized,
-                &units,
-                count,
-                varies,
-                varies_capped,
-            );
+            self.accumulate_member_varies(&template, normalized, &units, count, varies);
         }
     }
 
@@ -2252,8 +2291,7 @@ impl RollupComputer {
         normalized: &str,
         units: &[(usize, usize)],
         count: usize,
-        varies: &mut HashMap<String, usize>,
-        varies_capped: &mut bool,
+        varies: &mut VariesCounts,
     ) {
         let tmpl_words = &template.words;
         let member: Vec<&str> = units
@@ -2279,13 +2317,7 @@ impl RollupComputer {
                 }
                 None => "∅",
             };
-            if let Some(n) = varies.get_mut(value) {
-                *n += count;
-            } else if varies.len() < self.distinct_cap {
-                varies.insert(value.to_string(), count);
-            } else {
-                *varies_capped = true;
-            }
+            varies.add(value, count, self.distinct_cap);
         }
     }
 
@@ -2305,7 +2337,6 @@ impl RollupComputer {
                     line_units,
                     1,
                     &mut state.varies,
-                    &mut state.varies_capped,
                 );
             }
         } else {
@@ -2355,15 +2386,9 @@ impl RollupComputer {
                 .strip_prefix(&template[start..at])
                 .and_then(|v| v.strip_suffix(&template[at + len..start + width]))
                 .unwrap_or(value);
-            if let Some(n) = state.varies.get_mut(value) {
-                *n += state.positional_members;
-            } else if state.varies.len() < self.distinct_cap {
-                state
-                    .varies
-                    .insert(value.to_string(), state.positional_members);
-            } else {
-                state.varies_capped = true;
-            }
+            state
+                .varies
+                .add(value, state.positional_members, self.distinct_cap);
         }
     }
 
@@ -2376,18 +2401,11 @@ impl RollupComputer {
     fn compute(&self, group: &PatternGroup) -> GroupRollup {
         let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
-        let mut varies: HashMap<String, usize> = HashMap::new();
-        let mut varies_capped = false;
-        self.accumulate_varies(
-            &group.lines,
-            group.template(),
-            &mut varies,
-            &mut varies_capped,
-        );
+        let mut varies = VariesCounts::default();
+        self.accumulate_varies(&group.lines, group.template(), &mut varies);
         self.finalize(
             per_type,
             varies,
-            varies_capped,
             group.template(),
             &group.first().normalized,
         )
@@ -2424,23 +2442,18 @@ impl RollupComputer {
             // so can a slot that widened after its members were counted. Do
             // not label partial counts as exact: expose an empty, capped
             // variation entry. Token rollups and the group count survive.
-            state.varies.clear();
-            state.varies_capped = true;
+            state.varies = VariesCounts {
+                capped: true,
+                ..VariesCounts::default()
+            };
         } else {
             self.accumulate_varies_counted(
                 state.realign.iter().map(|(text, &n)| (text.as_str(), n)),
                 template,
                 &mut state.varies,
-                &mut state.varies_capped,
             );
         }
-        self.finalize(
-            state.per_type,
-            state.varies,
-            state.varies_capped,
-            template,
-            seed_key,
-        )
+        self.finalize(state.per_type, state.varies, template, seed_key)
     }
 
     /// Merge one retained accumulator into another (lessence-682): the
@@ -2499,16 +2512,12 @@ impl RollupComputer {
                 _ => {}
             }
         }
-        for (value, n) in from.varies {
-            if let Some(m) = into.varies.get_mut(&value) {
-                *m += n;
-            } else if into.varies.len() < self.distinct_cap {
-                into.varies.insert(value, n);
-            } else {
-                into.varies_capped = true;
-            }
+        // Any order: the values held past the cap are the lowest-ranked of
+        // the union, whatever order they are offered in.
+        for (value, n) in from.varies.counts {
+            into.varies.add(&value, n, self.distinct_cap);
         }
-        into.varies_capped |= from.varies_capped;
+        into.varies.capped |= from.varies.capped;
     }
 
     /// Draw samples deterministically from each Accumulator and produce one
@@ -2519,11 +2528,15 @@ impl RollupComputer {
     fn finalize(
         &self,
         per_type: BTreeMap<&'static str, (Accumulator, bool)>,
-        varies: HashMap<String, usize>,
-        varies_capped: bool,
+        varies: VariesCounts,
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
+        let VariesCounts {
+            counts: varies,
+            capped: varies_capped,
+            ..
+        } = varies;
         let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(seed_key));
         let mut out: GroupRollup = BTreeMap::new();
         for (name, (acc, capped)) in per_type {
