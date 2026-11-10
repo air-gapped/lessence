@@ -4595,3 +4595,9 @@ scanned barcode 404 items
 2024-01-01T10:00:01+05 job ok
 2024-01-01T10:00:00+0530 job ok
 2024-01-01T10:00:01+0530 job ok
+
+##CASE lessence-enl template_present=worker[0]: queue drained
+##WHY a bracketed 0 is not a pid; the token already said so, but the text read `worker[<PID>]:` with no pid behind it
+##FROM invented worker lines
+worker[0]: queue drained
+worker[0]: queue drained
