@@ -4573,3 +4573,11 @@ recorded &Event{Type:Normal,Reason:Pulled,Message:Pulled image "web:1.25".}
 recorded &Event{Type:Normal,Reason:Pulled,Message:Pulled image "web:1.25".}
 recorded &Event{Type:Warning,Reason:Failed,Message:Failed to pull image "web:1.25".}
 recorded &Event{Type:Warning,Reason:Failed,Message:Failed to pull image "web:1.25".}
+
+##CASE lessence-bmp groups=2
+##WHY a route word in a URL stays and only a segment carrying a digit folds; a list of known words decided it, so `/login` and `/logout` were one `/<PATH>` while `/health` was kept
+##FROM invented request lines
+GET /login?next=home
+GET /login?next=home
+GET /logout?next=home
+GET /logout?next=home

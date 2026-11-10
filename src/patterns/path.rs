@@ -294,21 +294,18 @@ impl PathDetector {
         // First replace numeric IDs and hex IDs in path segments
         let mut normalized = ROUTE_PARAMS.replace_all(path, "/<PATH>").to_string();
 
-        // Then replace variable text segments (like namespace names, service account names)
-        // Skip common fixed segments like 'api', 'v1', 'namespaces', 'serviceaccounts', 'token'
+        // Then a segment with a digit in it (`web-7d9f8`, `user42`) is a
+        // generated name and folds; a segment of letters and dashes is a
+        // route word and stays. A list of known words decided this before,
+        // so `/login` and `/logout` were one `/<PATH>` while `/health` was
+        // kept.
         normalized = PATH_SEGMENTS
             .replace_all(&normalized, |caps: &regex::Captures| {
                 let segment = caps.get(1).unwrap().as_str();
-
-                // Keep common fixed API segments unchanged
-                match segment {
-                    "api" | "v1" | "v2" | "v3" | "alpha" | "beta" | "namespaces" | "pods"
-                    | "services" | "deployments" | "configmaps" | "secrets" | "serviceaccounts"
-                    | "token" | "status" | "proxy" | "logs" | "exec" | "static" | "assets"
-                    | "public" | "health" | "metrics" => {
-                        format!("/{segment}")
-                    }
-                    _ => "/<PATH>".to_string(),
+                if segment.bytes().any(|b| b.is_ascii_digit()) {
+                    "/<PATH>".to_string()
+                } else {
+                    format!("/{segment}")
                 }
             })
             .to_string();
@@ -423,10 +420,10 @@ mod tests {
         let test_cases = vec![
             ("Error in /var/log/app.2025-01-20.log", "Error in <PATH>"),
             ("GET /api/users/123/posts", "GET <PATH>"),
-            // "search" is not in the fixed API segments list, so it becomes <PATH> too
+            // "search" is a route word and stays; the query values fold
             (
                 "Request to /search?q=test&page=5",
-                "Request to /<PATH>?q=<PATH>&page=<PATH>",
+                "Request to /search?q=<PATH>&page=<PATH>",
             ),
             (r"C:\Users\john\Documents\file.txt", "<PATH>"),
         ];
@@ -659,21 +656,17 @@ mod tests {
 
     #[test]
     fn normalize_url_path_preserves_api_segments() {
-        // PATH_SEGMENTS regex matches 4+ char segments, so "api"/"v1" are too short
-        // to match. Use 4+ char segments from the preserved list.
-        let result = PathDetector::normalize_url_path("/namespaces/my-ns/pods/nginx-abc");
-        assert!(
-            result.contains("/namespaces"),
-            "namespaces should be preserved, got: {result}"
+        // A word segment stays whatever the word; a segment carrying a
+        // digit is a generated name and folds.
+        let result = PathDetector::normalize_url_path("/namespaces/my-ns/pods/nginx-7d9f8");
+        assert_eq!(result, "/namespaces/my-ns/pods/<PATH>");
+        assert_eq!(
+            PathDetector::normalize_url_path("/login?next=home"),
+            "/login?next=<PATH>"
         );
-        assert!(
-            result.contains("/pods"),
-            "pods should be preserved, got: {result}"
-        );
-        // "my-ns" and "nginx-abc" are variable, should become <PATH>
-        assert!(
-            !result.contains("my-ns"),
-            "variable segment should be normalized, got: {result}"
+        assert_ne!(
+            PathDetector::normalize_url_path("/login"),
+            PathDetector::normalize_url_path("/logout")
         );
     }
 
