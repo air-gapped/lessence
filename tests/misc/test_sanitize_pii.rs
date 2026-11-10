@@ -89,7 +89,7 @@ fn run_lessence(args: &[&str], input: &[u8]) -> String {
 
 #[test]
 fn test_sanitize_pii_with_email_disabled() {
-    // Conflicting flags: sanitize emails but email detection disabled
+    // Masking does not depend on the email detector folding the line.
     let mut child = Command::new(env!("CARGO_BIN_EXE_lessence"))
         .args(["--sanitize-pii", "--disable-patterns", "email"])
         .stdin(std::process::Stdio::piped())
@@ -105,12 +105,8 @@ fn test_sanitize_pii_with_email_disabled() {
     let output = child.wait_with_output().unwrap();
     let stdout = String::from_utf8(output.stdout).unwrap();
 
-    // Email detection disabled → no tokens → no masking
-    // This is expected behavior (document in quickstart troubleshooting)
-    assert!(
-        stdout.contains("user@example.com"),
-        "Email not detected, so not masked"
-    );
+    assert!(stdout.contains("<EMAIL> logged in"), "{stdout}");
+    assert!(!stdout.contains("user@example.com"), "{stdout}");
 }
 
 // ---- Credential-class masking (lessence-q9y) ----

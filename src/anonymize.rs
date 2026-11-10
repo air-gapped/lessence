@@ -32,6 +32,10 @@ const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 // permutation would be the upgrade if short labels ever collide in practice.
 const REDRAW_ATTEMPTS: usize = 64;
 
+/// Shortest `Authorization` / `Bearer` credential that is invented rather
+/// than read as prose: the assignment locator's floor.
+const MIN_HEADER_CREDENTIAL: usize = 6;
+
 /// What a recognised value is, and therefore how it is invented.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
@@ -183,7 +187,11 @@ impl Anonymizer {
     /// normalizer erased them (lessence-c2f): the fold keeps a dotted name
     /// literal unless the line says it is a host, but the scrub cannot
     /// afford that doubt. Learned in text order after the line's tokens.
+    ///
+    /// Emails and addresses are also learned from the text by their own
+    /// detectors.
     pub fn learn_text(&mut self, text: &str) {
+        self.learn(&crate::sanitize::scanned_entities(text, true, true, false));
         for name in crate::patterns::network::NetworkDetector::dns_shaped_names(text) {
             if self.used.insert(name.to_string()) {
                 self.pending.push((name.to_string(), Class::Host));
@@ -232,6 +240,25 @@ impl Anonymizer {
         // same word appears on.
         for span in credential_spans(text) {
             if span.is_empty() || !text.is_char_boundary(span.start) {
+                continue;
+            }
+            let value = text[span.clone()].to_string();
+            let invention = match self.values.get(&value) {
+                Some(existing) => existing.clone(),
+                None => self.invent(Class::Credential, &value),
+            };
+            edits.push((span.start, span.end, invention));
+        }
+        // The header and URL credential forms `--sanitize credential` masks.
+        // A header credential shorter than an assignment's floor is prose
+        // (`Bearer token missing`); a URL password is a password at any
+        // length.
+        let forms = crate::sanitize::authorization_spans(text)
+            .into_iter()
+            .filter(|span| span.len() >= MIN_HEADER_CREDENTIAL)
+            .chain(crate::sanitize::userinfo_spans(text));
+        for span in forms {
+            if span.is_empty() || overlaps(&edits, span.start, span.end) {
                 continue;
             }
             let value = text[span.clone()].to_string();
@@ -1318,5 +1345,89 @@ mod boundary_tests {
             "x%2Frook-ceph.rbd.csi.ceph.com-reg.sock and /rook-ceph.rbd.csi.ceph.com^0001",
         );
         assert!(!out.contains("rook-ceph.rbd.csi.ceph.com"), "{out}");
+    }
+}
+
+#[cfg(test)]
+mod whole_value_tests {
+    use super::*;
+    use crate::patterns::network::NetworkDetector;
+
+    /// Learn a line the way `--anonymize` does: its tokens, then its text.
+    fn anonymize(lines: &[&str]) -> Vec<String> {
+        let mut a = Anonymizer::new(1, Vec::new());
+        for line in lines {
+            a.learn(&NetworkDetector::detect_and_replace(line, true, true, true).1);
+            a.learn_text(line);
+        }
+        a.seal();
+        lines.iter().map(|line| a.rewrite(line)).collect()
+    }
+
+    #[test]
+    fn an_address_with_any_port_is_tokenised() {
+        let (normalized, tokens) = NetworkDetector::detect_and_replace(
+            "peer 198.51.100.3:99999 dropped",
+            true,
+            true,
+            true,
+        );
+        assert_eq!(normalized, "peer <IP>:99999 dropped");
+        assert_eq!(tokens, vec![Token::IPv4("198.51.100.3".into())]);
+        let (normalized, tokens) =
+            NetworkDetector::detect_and_replace("peer [2001:db8::5]:70000 x", true, true, true);
+        assert_eq!(normalized, "peer [<IP>]:70000 x");
+        assert_eq!(tokens, vec![Token::IPv6("2001:db8::5".into())]);
+        let (normalized, tokens) =
+            NetworkDetector::detect_and_replace("peer 198.51.100.3:8443 ok", true, true, true);
+        assert_eq!(normalized, "peer <IP>:<PORT> ok");
+        assert_eq!(
+            tokens,
+            vec![Token::IPv4("198.51.100.3".into()), Token::Port(8443)]
+        );
+    }
+
+    #[test]
+    fn an_address_with_any_port_is_invented() {
+        let out = anonymize(&[
+            "peer 198.51.100.3:99999 dropped",
+            "peer [2001:db8::5]:70000 x",
+        ]);
+        assert!(
+            !out[0].contains("198.51.100.3") && out[0].ends_with(":99999 dropped"),
+            "{out:?}"
+        );
+        assert!(
+            !out[1].contains("2001:db8::5") && out[1].ends_with("]:70000 x"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn values_are_learned_from_the_text_as_well_as_the_tokens() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        let line = "GET http://203.0.113.44:8080/x for carol@example.com via [2001:db8::44]";
+        a.learn_text(line);
+        a.seal();
+        let out = a.rewrite(line);
+        for original in ["203.0.113.44", "carol@example.com", "2001:db8::44"] {
+            assert!(!out.contains(original), "{out}");
+        }
+    }
+
+    #[test]
+    fn header_and_url_credentials_are_invented() {
+        let mut a = Anonymizer::new(1, Vec::new());
+        let out = a.rewrite("Authorization: Bearer Zm9vYmFyYmF6cXV4");
+        let token = out.strip_prefix("Authorization: Bearer ").unwrap();
+        assert_ne!(token, "Zm9vYmFyYmF6cXV4");
+        assert_eq!(token.len(), "Zm9vYmFyYmF6cXV4".len());
+        let out = a.rewrite("dial postgres://app:Hunter2Secret@db:5432/x");
+        assert!(!out.contains("Hunter2Secret"), "{out}");
+        assert!(
+            out.starts_with("dial postgres://app:") && out.ends_with("@db:5432/x"),
+            "{out}"
+        );
+        assert_eq!(a.rewrite("Bearer token missing"), "Bearer token missing");
     }
 }

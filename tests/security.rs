@@ -6,6 +6,7 @@ mod security {
     mod email_redos;
     mod ipv6_redos;
     mod masking_regression;
+    mod masking_whole_values;
     mod security_compliance;
     mod test_ipv6_evil_patterns;
     mod timeout_protection;

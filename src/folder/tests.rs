@@ -4329,12 +4329,12 @@ fn format_group_collapsed_marker_exact_count_rollup() {
 }
 
 // ---------------------------------------------------------------
-// format_group: PII + essence interaction (line 1228 && with ||)
-// When both sanitize_pii=true AND essence_mode=true, should NOT mask
+// format_group: PII + essence interaction. Essence mode shows the
+// template, and the template is masked like every other output.
 // ---------------------------------------------------------------
 
 #[test]
-fn format_group_pii_plus_essence_does_not_mask() {
+fn format_group_pii_plus_essence_masks_the_template() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -4352,12 +4352,7 @@ fn format_group_pii_plus_essence_does_not_mask() {
     let group = PatternGroup::new(line, 1);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // In essence mode (even with pii=true), the condition is
-    // `sanitize_pii && !essence_mode` which is false, so no masking
-    assert!(
-        !output.contains("<EMAIL>"),
-        "essence mode should NOT mask emails even with sanitize_pii=true: {output}"
-    );
+    assert_eq!(output, "user <EMAIL> logged in");
 }
 
 // ---------------------------------------------------------------
@@ -4512,7 +4507,7 @@ fn format_group_pii_masks_last_line_in_non_essence() {
 }
 
 #[test]
-fn format_group_pii_does_not_mask_last_line_in_essence() {
+fn format_group_pii_masks_the_essence_line() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 2,
@@ -4520,8 +4515,7 @@ fn format_group_pii_does_not_mask_last_line_in_essence() {
         essence_mode: true,
         ..Config::default()
     });
-    // In essence mode, PII masking for last line should NOT apply
-    // because condition is `sanitize_pii && !essence_mode`
+    // Essence mode shows the group once, as its template, masked.
     let line1 = make_line(
         "user alice@test.com logged in",
         vec![Token::Email("alice@test.com".into())],
@@ -4535,13 +4529,7 @@ fn format_group_pii_does_not_mask_last_line_in_essence() {
     group.add_line(line2, 2);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // In essence mode, normalized text is used (not original), so
-    // the email in normalized won't be masked. The key point is
-    // the <EMAIL> token should NOT appear.
-    assert!(
-        !output.contains("<EMAIL>"),
-        "essence mode should not apply PII masking to last line: {output}"
-    );
+    assert_eq!(output, "user <EMAIL> logged in");
 }
 
 // ---------------------------------------------------------------
