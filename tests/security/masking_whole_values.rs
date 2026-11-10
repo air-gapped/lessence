@@ -286,6 +286,70 @@ fn ranked_output_masks_every_template() {
     }
 }
 
+/// `--explain` names the first word two lines differ in. That word is
+/// shown as the masked line shows it, and its offset points into the
+/// masked `normalized` text.
+#[test]
+fn explain_shows_the_first_difference_masked() {
+    let dir = scratch();
+    let mut lines: Vec<String> = (1..=3)
+        .map(|i| format!("login user=bob password=Wren{i}Fable9 ok"))
+        .collect();
+    lines.push("login user=bob token=Quill7Marsh ok then stop".to_string());
+    lines.push("login user=bob api_key: \"Heron5 Stoat8\" from 198.51.100.21".to_string());
+    lines.push("login user=bob api_key: \"Heron6 Stoat8\" from 198.51.100.22".to_string());
+    let input = write_input(dir.path(), &lines);
+    let secrets: &[&str] = &["Fable9", "Quill7Marsh", "Stoat8", "Heron", "198.51.100"];
+    for args in [
+        &["--sanitize", "credential,ip"][..],
+        &["--sanitize", "credential:pseudonym,ip:pseudonym"],
+        &["--sanitize-pii", "--sanitize", "ip"],
+        &[
+            "--sanitize",
+            "credential,ip",
+            "--disable-patterns",
+            "quoted-string",
+        ],
+    ] {
+        let run = bin()
+            .args(args)
+            .arg("--explain")
+            .arg(&input)
+            .output()
+            .expect("run lessence");
+        assert!(run.status.success(), "{args:?}");
+        let out = String::from_utf8_lossy(&run.stdout);
+        let err = String::from_utf8_lossy(&run.stderr);
+        for value in secrets {
+            assert!(
+                !out.contains(value) && !err.contains(value),
+                "{args:?}: {value:?} is in:\n{out}{err}"
+            );
+        }
+        let mut diffs = 0;
+        for record in out.lines() {
+            let record: serde_json::Value = serde_json::from_str(record).expect("JSONL");
+            let Some(diff) = record["nearest"]["first_diff"].as_object() else {
+                continue;
+            };
+            diffs += 1;
+            if record["count"] != 1 {
+                continue;
+            }
+            let normalized = record["normalized"].as_str().expect("normalized");
+            let at = diff["at"].as_u64().expect("at") as usize;
+            let ours = diff["ours"].as_str().expect("ours");
+            assert!(
+                normalized
+                    .get(at..)
+                    .is_some_and(|rest| rest.starts_with(ours)),
+                "{args:?}: {ours:?} is not at {at} of {normalized:?}"
+            );
+        }
+        assert!(diffs >= 3, "{args:?}: no first_diff records:\n{out}");
+    }
+}
+
 #[test]
 fn an_address_with_any_port_is_replaced() {
     let dir = scratch();

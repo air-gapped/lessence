@@ -322,13 +322,35 @@ impl Sanitizer {
     }
 
     fn mask(&self, text: &str, hints: &[Token]) -> String {
+        let regions = self.regions(text, hints);
+        if regions.is_empty() {
+            return text.to_string();
+        }
+        render(text, &regions)
+    }
+
+    /// The part of `text` at `range` as the masked `text` shows it, and the
+    /// byte offset where that part starts in the masked text. The values are
+    /// found in the whole of `text`, so a piece of one that `range` holds
+    /// (`password=hunter2` as a word of a line) is masked as the line masks
+    /// it, and a value `range` only partly covers is its whole tag.
+    pub fn mask_range(&self, text: &str, hints: &[Token], range: Range<usize>) -> (String, usize) {
+        let regions = self.regions(text, hints);
+        let start = masked_offset(&regions, range.start, false);
+        let end = if range.is_empty() {
+            start
+        } else {
+            masked_offset(&regions, range.end, true)
+        };
+        (render(text, &regions)[start..end].to_string(), start)
+    }
+
+    /// Every region of `text` the masker replaces, in text order.
+    fn regions(&self, text: &str, hints: &[Token]) -> Vec<Region> {
         let mut spans: Vec<Span> = Vec::new();
         self.credential_spans(text, &mut spans);
         self.entity_spans(text, hints, &mut spans);
-        if spans.is_empty() {
-            return text.to_string();
-        }
-        self.replace_spans(text, spans)
+        self.merge_spans(text, spans)
     }
 
     /// Where each credential shape puts its secret, ranked in the order the
@@ -410,14 +432,13 @@ impl Sanitizer {
         }
     }
 
-    /// Replace every span. Overlapping spans are merged into one region,
-    /// and the region takes the tag of its highest-ranked span (a
-    /// credential first, then the longest value), computed over the whole
-    /// region, so a pseudonym is a function of the text it replaces.
-    fn replace_spans(&self, text: &str, mut spans: Vec<Span>) -> String {
+    /// The regions every span is replaced over. Overlapping spans are merged
+    /// into one region, and the region takes the tag of its highest-ranked
+    /// span (a credential first, then the longest value), computed over the
+    /// whole region, so a pseudonym is a function of the text it replaces.
+    fn merge_spans(&self, text: &str, mut spans: Vec<Span>) -> Vec<Region> {
         spans.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
-        let mut out = String::with_capacity(text.len());
-        let mut copied = 0;
+        let mut regions = Vec::new();
         let mut i = 0;
         while i < spans.len() {
             let start = spans[i].start;
@@ -431,13 +452,14 @@ impl Sanitizer {
                 }
                 j += 1;
             }
-            out.push_str(&text[copied..start]);
-            out.push_str(&self.tag(best.entity, best.class, &text[start..end]));
-            copied = end;
+            regions.push(Region {
+                start,
+                end,
+                tag: self.tag(best.entity, best.class, &text[start..end]),
+            });
             i = j;
         }
-        out.push_str(&text[copied..]);
-        out
+        regions
     }
 
     /// The rollup entries whose samples are values of an enabled entity,
@@ -470,6 +492,52 @@ impl Sanitizer {
     pub fn masks_credentials(&self) -> bool {
         self.action(Entity::Credential).is_some()
     }
+}
+
+/// One replaced region of a text: its byte range and the tag it becomes.
+/// Regions are disjoint and in text order.
+struct Region {
+    start: usize,
+    end: usize,
+    tag: String,
+}
+
+/// `text` with every region replaced by its tag.
+fn render(text: &str, regions: &[Region]) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for r in regions {
+        out.push_str(&text[copied..r.start]);
+        out.push_str(&r.tag);
+        copied = r.end;
+    }
+    out.push_str(&text[copied..]);
+    out
+}
+
+/// Where byte `pos` of a text stands once its regions are replaced. A
+/// position inside a region stands at the start of its tag, or at the end
+/// when `past` is set, so a range cut inside a value takes the whole tag.
+fn masked_offset(regions: &[Region], pos: usize, past: bool) -> usize {
+    let mut removed = 0;
+    let mut added = 0;
+    for r in regions {
+        if r.end <= pos {
+            removed += r.end - r.start;
+            added += r.tag.len();
+        } else {
+            if r.start < pos {
+                let tag_start = r.start - removed + added;
+                return if past {
+                    tag_start + r.tag.len()
+                } else {
+                    tag_start
+                };
+            }
+            break;
+        }
+    }
+    pos - removed + added
 }
 
 /// One value to replace: its byte range in the text, the entity and tag
@@ -786,6 +854,39 @@ mod tests {
                 &[Token::IPv4("198.51.100.4".into())]
             ),
             format!("peer {tag} url http://{tag}:80/x")
+        );
+    }
+
+    #[test]
+    fn a_range_reads_as_the_masked_text_reads_it() {
+        let z = s(&["credential", "ip"], false).unwrap();
+        let text = r#"api_key: "Heron5 Stoat8" from 198.51.100.21 ok"#;
+        let masked = z.mask_text(text);
+        assert_eq!(masked, "api_key: <SECRET> from <IP> ok");
+        let range = |word: &str| {
+            let at = text.find(word).unwrap();
+            at..at + word.len()
+        };
+        // A word holding part of a value is that value's whole tag.
+        for word in [r#""Heron5"#, r#"Stoat8""#] {
+            let (shown, at) = z.mask_range(text, &[], range(word));
+            assert_eq!((shown.as_str(), at), ("<SECRET>", 9), "{word}");
+        }
+        // A word after a masked value keeps its offset in the masked text.
+        for word in ["from", "198.51.100.21", "ok"] {
+            let (shown, at) = z.mask_range(text, &[], range(word));
+            let expected = if word == "198.51.100.21" {
+                "<IP>"
+            } else {
+                word
+            };
+            assert_eq!(shown, expected);
+            assert_eq!(&masked[at..at + shown.len()], expected, "{word}");
+        }
+        assert_eq!(z.mask_range(text, &[], 0..8), ("api_key:".to_string(), 0));
+        assert_eq!(
+            z.mask_range(text, &[], text.len()..text.len()),
+            (String::new(), masked.len())
         );
     }
 

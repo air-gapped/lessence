@@ -207,37 +207,48 @@ impl VariesCounts {
 
 /// First whitespace token at which two normalized lines disagree. Tokenizes
 /// the way similarity does (`split_whitespace`), so the answer names the
-/// token the score actually tripped over.
-fn first_diff(line: &LogLine, rep: &LogLine) -> Option<FirstDiff> {
-    let ours = line.normalized.split_whitespace();
-    let theirs = rep.normalized.split_whitespace();
+/// token the score actually tripped over. Under `--sanitize` each token
+/// reads as its masked line reads, and `at` is its offset in that line.
+fn first_diff(line: &LogLine, rep: &LogLine, sanitizer: Option<&Sanitizer>) -> Option<FirstDiff> {
+    let (ours, theirs) = first_diff_ranges(&line.normalized, &rep.normalized)?;
+    Some(match sanitizer {
+        None => FirstDiff {
+            at: ours.start,
+            ours: line.normalized[ours].to_string(),
+            theirs: rep.normalized[theirs].to_string(),
+        },
+        Some(z) => {
+            let (ours, at) = z.mask_range(&line.normalized, &line.tokens, ours);
+            let (theirs, _) = z.mask_range(&rep.normalized, &rep.tokens, theirs);
+            FirstDiff { ours, theirs, at }
+        }
+    })
+}
+
+/// The byte ranges of the first differing token in `line` and in `rep`.
+/// When one is a prefix of the other, the shorter side's range is empty
+/// and stands at its end.
+fn first_diff_ranges(
+    line: &str,
+    rep: &str,
+) -> Option<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let span = |text: &str, word: &str| {
+        let at = word.as_ptr() as usize - text.as_ptr() as usize;
+        at..at + word.len()
+    };
+    let ours = line.split_whitespace();
+    let theirs = rep.split_whitespace();
     for (a, b) in ours.zip(theirs) {
         if a != b {
-            let at = a.as_ptr() as usize - line.normalized.as_ptr() as usize;
-            return Some(FirstDiff {
-                ours: a.to_string(),
-                theirs: b.to_string(),
-                at,
-            });
+            return Some((span(line, a), span(rep, b)));
         }
     }
     // One is a prefix of the other: the diff is the first surplus token.
-    let ours: Vec<&str> = line.normalized.split_whitespace().collect();
-    let theirs: Vec<&str> = rep.normalized.split_whitespace().collect();
+    let ours: Vec<&str> = line.split_whitespace().collect();
+    let theirs: Vec<&str> = rep.split_whitespace().collect();
     match ours.len().cmp(&theirs.len()) {
-        std::cmp::Ordering::Greater => {
-            let a = ours[theirs.len()];
-            Some(FirstDiff {
-                ours: a.to_string(),
-                theirs: String::new(),
-                at: a.as_ptr() as usize - line.normalized.as_ptr() as usize,
-            })
-        }
-        std::cmp::Ordering::Less => Some(FirstDiff {
-            ours: String::new(),
-            theirs: theirs[ours.len()].to_string(),
-            at: line.normalized.len(),
-        }),
+        std::cmp::Ordering::Greater => Some((span(line, ours[theirs.len()]), rep.len()..rep.len())),
+        std::cmp::Ordering::Less => Some((line.len()..line.len(), span(rep, theirs[ours.len()]))),
         std::cmp::Ordering::Equal => None,
     }
 }
@@ -2921,7 +2932,7 @@ impl PatternFolder {
             group_line_no: nearest.first_line_no,
             score: (score * 10.0).round() / 10.0,
             anchor_mismatch: line.anchor != nearest.first().anchor,
-            first_diff: first_diff(line, nearest.first()),
+            first_diff: first_diff(line, nearest.first(), self.sanitizer.as_ref()),
         })
     }
 
