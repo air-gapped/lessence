@@ -205,11 +205,11 @@ Full field reference (every field, every type, both JSON locations):
 ### Text mode (default)
 
 ```
-2026-09-09T13:07:09Z ERROR [handler-3] Failed to connect to 10.0.1.50:5432 - timeout
-[+847 similar | 2026-09-09T13:07:09Z → 2026-09-09T14:52:33Z | ipv4×4, port×2]
-2026-09-09T14:52:33Z ERROR [handler-3] Failed to connect to 10.0.1.99:6379 - timeout
+2026-09-09T13:00:09Z ERROR [handler-3] Failed to connect to 10.0.1.50:5432 - timeout
+[+58 similar | 2026-09-09T13:00:09Z → 2026-09-09T13:59:09Z | ipv4×4, port×2]
+2026-09-09T13:59:09Z ERROR [handler-3] Failed to connect to 10.0.1.53:6379 - timeout
 WARN [pool-1] slow query took 3ms user=u1
-[+312 similar | duration×40, varies×2 {u0×200, u1×114}]
+[+38 similar | varies×2 {u0×20, u1×20}]
 WARN [pool-1] slow query took 120ms user=u0
 INFO [auth] Login succeeded user="admin@corp.com"
 ```
@@ -220,8 +220,8 @@ A folded group prints its first member, the marker, then its last member.
 - **`… → …`** = the group's first and last timestamp, in the log's own stamp format.
 - **`ipv4×4`** = 4 distinct IP addresses in this group. Low count = narrow problem; high count = widespread.
 - **`ipv4×2 {10.0.1.50, 10.0.1.51}`** = up to 3 distinct values are listed inline, and the list is then complete; from 4 up only the count shows — the values are in the JSON `samples`.
-- **`port×2`, `duration×40`** = count-only classes never list values.
-- **`varies×2 {u0×200, u1×114}`** = an untokenised word that differs between members, each value with its member count.
+- **`port×2`** = count-only classes never list values.
+- **`varies×2 {u0×20, u1×20}`** = an untokenised word that differs between members, each value with its member count.
 - **`hash×64+`** = the distinct-value cap (64) was hit. The `+` means "at least 64 and possibly many more."
 - **Few groups** = one dominant problem (focused debugging)
 - **Many groups** = diverse issues (investigate each group)
