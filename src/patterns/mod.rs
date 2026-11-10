@@ -604,67 +604,6 @@ pub(crate) fn fold_matches(
     }
 }
 
-/// The kubernetes deference rule for plain-text detectors: lines carrying
-/// these indicators belong to KubernetesDetector, so the bracket and
-/// log-module detectors skip them. Declared per-entry in the detector
-/// ordering table in `normalize.rs` (`defers_to_kubernetes`).
-pub(crate) fn has_kubernetes_indicators(text: &str) -> bool {
-    has_k8s_resource_indicators(text) || has_k8s_component_names(text)
-}
-
-/// The kubernetes deference rule for the structured detector: same
-/// resource indicators, but component names only in their JSON / logfmt
-/// quoted forms — the plain names are matched by the bracket and
-/// log-module detectors instead.
-pub(crate) fn has_kubernetes_structured_indicators(text: &str) -> bool {
-    has_k8s_resource_indicators(text)
-        || text.contains(r#""component":"kubelet"#)
-        || text.contains(r#""component":"scheduler"#)
-        || text.contains(r#""component":"proxy"#)
-        || text.contains(r#""component":"controller"#)
-        || text.contains(r#""component":"etcd"#)
-        || text.contains(r#""component":"coredns"#)
-        || text.contains("component=kubelet")
-        || text.contains("component=scheduler")
-        || text.contains("component=proxy")
-        || text.contains("component=controller")
-        || text.contains("component=etcd")
-        || text.contains("component=coredns")
-}
-
-/// Shared Kubernetes-resource indicators (namespaces, volumes, API
-/// prefixes). Lines matching these belong to KubernetesDetector; the
-/// bracket, log-module and structured detectors all skip them.
-#[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match the earlier "kube-" check, making their || equivalent
-pub(crate) fn has_k8s_resource_indicators(text: &str) -> bool {
-    text.contains("kubernetes.io/")
-        || text.contains("namespace/")
-        || text.contains("pod/")
-        || text.contains("service/")
-        || text.contains("configmap/")
-        || text.contains("secret/")
-        || text.contains("deployment/")
-        || text.contains("volumes/")
-        || text.contains("projected-")
-        || text.contains("volume-subpath")
-        || text.contains("projected")
-        || text.contains("apiserver")
-        || text.contains("kube-")
-}
-
-/// Plain-text Kubernetes component names (kubelet, etcd, ...). Used by the
-/// bracket and log-module detectors; the structured detector matches the
-/// JSON/logfmt-quoted forms instead.
-#[cfg_attr(test, mutants::skip)] // kube-proxy/scheduler/controller always match has_k8s_resource_indicators' "kube-" check
-pub(crate) fn has_k8s_component_names(text: &str) -> bool {
-    text.contains("kubelet")
-        || text.contains("kube-proxy")
-        || text.contains("kube-scheduler")
-        || text.contains("kube-controller")
-        || text.contains("etcd")
-        || text.contains("coredns")
-}
-
 /// Token helpers of the similarity metric, at their boundaries
 /// (lessence-e8v): small integers and small-int tails, quoted word spans,
 /// and the overflow path of `SimTokens`.

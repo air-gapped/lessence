@@ -4711,3 +4711,15 @@ pool ready level=info
 ##FROM invented lock lines
 Failed to update lock timeout=30
 Failed to update lock timeout=45
+
+##CASE lessence-enl template_present=<BRACKET_CONTEXT> request param=
+##WHY a bracket that is not a context is rejected on its own shape; a `param=` (or `array[`, `[2001:`) elsewhere on the line used to switch the bracket detector off for the whole line, so this `[proxy] [upstream]` stayed literal while the same chain folded on every other line
+##FROM invented proxy lines
+[proxy] [upstream] request param=a rejected
+[proxy] [upstream] request param=b rejected
+
+##CASE lessence-enl template_present=<BRACKET_CONTEXT> probe failed
+##WHY a kubernetes word elsewhere on the line (`pod/`, `kubelet`, `etcd`) no longer switches the bracket, log-module and structured detectors off: the chain folds as it does on a line without the word
+##FROM invented proxy lines
+[proxy] [upstream] probe failed for pod/web-0
+[proxy] [upstream] probe failed for pod/web-1

@@ -52,10 +52,6 @@ impl StructuredMessageDetector {
         (text.to_string(), tokens)
     }
 
-    // Kubernetes deference is NOT checked here: the detector ordering table
-    // in `normalize.rs` skips this detector on kubernetes-shaped lines
-    // (`patterns::has_kubernetes_structured_indicators`) before it is
-    // invoked.
     pub(crate) fn has_structured_indicators(text: &str) -> bool {
         // Fast byte-level checks for structured logging indicators
         (text.contains(r#""level":"#) ||
@@ -279,9 +275,8 @@ mod tests {
 
     #[test]
     fn test_kubernetes_structured_detection() {
-        // Called directly, the detector now matches k8s lines — the
-        // kubernetes deference is enforced by the detector ordering table
-        // in normalize.rs (tested there), not inside the detector.
+        // A kubernetes component is a component like any other: no word on
+        // the line switches the detector off (lessence-enl).
         let k8s_line = r#"{"level":"info","ts":"2024-01-01T10:00:00.000Z","component":"kubelet","msg":"Starting container"}"#;
         let (_result, tokens) = StructuredMessageDetector::detect_and_replace(k8s_line);
 
@@ -396,25 +391,6 @@ mod tests {
     fn test_invalid_structured_log_all_digits() {
         assert!(!StructuredMessageDetector::is_valid_structured_log(
             "123", "info"
-        ));
-    }
-
-    // --- has_kubernetes_indicators ---
-
-    #[test]
-    fn test_k8s_indicators_present() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "kubernetes.io/foo"
-        ));
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "kube-system component"
-        ));
-    }
-
-    #[test]
-    fn test_k8s_indicators_absent() {
-        assert!(!crate::patterns::has_kubernetes_structured_indicators(
-            "just plain text"
         ));
     }
 
@@ -554,8 +530,7 @@ mod tests {
 
     #[test]
     fn struct_ind_no_longer_checks_k8s() {
-        // The kubernetes deference moved to the detector ordering table in
-        // normalize.rs; the indicator check alone accepts k8s lines now.
+        // No word elsewhere on the line switches the detector off.
         assert!(StructuredMessageDetector::has_structured_indicators(
             r#"{"level":"info","component":"kubelet"}"#
         ));
@@ -565,194 +540,6 @@ mod tests {
     fn struct_ind_negative() {
         assert!(!StructuredMessageDetector::has_structured_indicators(
             "plain log message"
-        ));
-    }
-
-    // ---- has_kubernetes_indicators (structured copy): per-condition tests ----
-
-    #[test]
-    fn struct_k8s_ind_kubernetes_io() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "kubernetes.io/x"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_namespace() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "namespace/default"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_pod() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "pod/nginx"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_service() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "service/web"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_configmap() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "configmap/cfg"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_secret() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "secret/tls"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_deployment() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "deployment/app"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_volumes() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "volumes/data"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_projected_dash() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "projected-token"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_volume_subpath() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "volume-subpath x"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_projected() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "using projected vol"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_apiserver() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "apiserver ready"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_kube_prefix() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "kube-dns ready"
-        ));
-    }
-
-    // Structured-specific: JSON component checks
-
-    #[test]
-    fn struct_k8s_ind_component_kubelet() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            r#""component":"kubelet""#
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_component_scheduler() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            r#""component":"scheduler""#
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_component_proxy() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            r#""component":"proxy""#
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_component_controller() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            r#""component":"controller""#
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_component_etcd() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            r#""component":"etcd""#
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_component_coredns() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            r#""component":"coredns""#
-        ));
-    }
-
-    // Structured-specific: logfmt component checks
-
-    #[test]
-    fn struct_k8s_ind_logfmt_kubelet() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "component=kubelet"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_logfmt_scheduler() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "component=scheduler"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_logfmt_proxy() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "component=proxy"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_logfmt_controller() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "component=controller"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_logfmt_etcd() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "component=etcd"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_logfmt_coredns() {
-        assert!(crate::patterns::has_kubernetes_structured_indicators(
-            "component=coredns"
-        ));
-    }
-
-    #[test]
-    fn struct_k8s_ind_negative() {
-        assert!(!crate::patterns::has_kubernetes_structured_indicators(
-            "plain message"
         ));
     }
 

@@ -29,19 +29,15 @@ impl BracketContextDetector {
         (result, tokens)
     }
 
-    // Kubernetes deference is NOT checked here: the detector ordering table
-    // in `normalize.rs` skips this detector on kubernetes-shaped lines
-    // (`patterns::has_kubernetes_indicators`) before it is invoked.
+    /// A square bracket pair somewhere on the line. Nothing else on the
+    /// line is consulted: `[2001:db8::1]`, `array[index]`, `[param=v]`,
+    /// `[1 + 2]` and `[0-9]` are each rejected bracket by bracket (a colon,
+    /// `=`, space or leading digit is outside the context shape, and
+    /// `index` is no context), so a line holding one of them still folds
+    /// its `[proxy]`. Those substrings used to switch the detector off for
+    /// the whole line (lessence-enl).
     pub(crate) fn has_bracket_indicators(text: &str) -> bool {
-        // Fast byte-level check for square brackets
-        text.contains('[') && text.contains(']') &&
-        // Exclude common non-logging bracket patterns
-        !text.contains("[2001:") &&  // IPv6
-        !text.contains("array[") &&  // Array access
-        !text.contains("index[") &&  // Index operations
-        !text.contains("param=") &&  // URL params
-        !text.contains("[1 +") &&    // Math expressions
-        !text.contains("[0-9") // Regex patterns in logs
+        text.contains('[') && text.contains(']')
     }
 
     fn apply_chained_bracket_pattern(text: &mut String, tokens: &mut Vec<Token>) {
@@ -363,179 +359,35 @@ mod tests {
         ));
     }
 
+    /// A non-context bracket is rejected on its own shape and stays
+    /// literal; it no longer switches the detector off for its line, so a
+    /// `[proxy]` beside it folds as it does anywhere else (lessence-enl).
     #[test]
-    fn bracket_ind_excludes_ipv6() {
-        assert!(!BracketContextDetector::has_bracket_indicators(
-            "[2001:db8::1]"
-        ));
-    }
-
-    #[test]
-    fn bracket_ind_excludes_array_access() {
-        assert!(!BracketContextDetector::has_bracket_indicators(
-            "data array[0] value"
-        ));
-    }
-
-    #[test]
-    fn bracket_ind_excludes_index() {
-        assert!(!BracketContextDetector::has_bracket_indicators(
-            "at index[5] pos"
-        ));
-    }
-
-    #[test]
-    fn bracket_ind_excludes_url_params() {
-        assert!(!BracketContextDetector::has_bracket_indicators(
-            "[x] param=value"
-        ));
-    }
-
-    #[test]
-    fn bracket_ind_excludes_math() {
-        assert!(!BracketContextDetector::has_bracket_indicators("[1 + 2]"));
-    }
-
-    #[test]
-    fn bracket_ind_excludes_regex() {
-        assert!(!BracketContextDetector::has_bracket_indicators(
-            "[0-9] pattern"
-        ));
-    }
-
-    #[test]
-    fn bracket_ind_no_longer_checks_k8s() {
-        // The kubernetes deference moved to the detector ordering table in
-        // normalize.rs; the indicator check alone accepts k8s lines now.
-        assert!(BracketContextDetector::has_bracket_indicators(
-            "[error] kubelet started"
-        ));
-    }
-
-    // ---- has_kubernetes_indicators: per-condition tests ----
-
-    #[test]
-    fn k8s_ind_kubernetes_io() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kubernetes.io/name"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_namespace() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "namespace/default"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_pod() {
-        assert!(crate::patterns::has_kubernetes_indicators("pod/nginx-abc"));
-    }
-
-    #[test]
-    fn k8s_ind_service() {
-        assert!(crate::patterns::has_kubernetes_indicators("service/web"));
-    }
-
-    #[test]
-    fn k8s_ind_configmap() {
-        assert!(crate::patterns::has_kubernetes_indicators("configmap/cfg"));
-    }
-
-    #[test]
-    fn k8s_ind_secret() {
-        assert!(crate::patterns::has_kubernetes_indicators("secret/tls"));
-    }
-
-    #[test]
-    fn k8s_ind_deployment() {
-        assert!(crate::patterns::has_kubernetes_indicators("deployment/app"));
-    }
-
-    #[test]
-    fn k8s_ind_volumes() {
-        assert!(crate::patterns::has_kubernetes_indicators("volumes/data"));
-    }
-
-    #[test]
-    fn k8s_ind_projected_dash() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "projected-token"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_volume_subpath() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "volume-subpath check"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_projected() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "using projected volume"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_apiserver() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "apiserver health"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_kube_prefix() {
-        assert!(crate::patterns::has_kubernetes_indicators("kube-dns ready"));
-    }
-
-    #[test]
-    fn k8s_ind_kubelet() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kubelet started"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_kube_proxy() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kube-proxy running"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_kube_scheduler() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kube-scheduler leader"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_kube_controller() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "kube-controller ready"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_etcd() {
-        assert!(crate::patterns::has_kubernetes_indicators("etcd cluster"));
-    }
-
-    #[test]
-    fn k8s_ind_coredns() {
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "coredns serving"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_negative() {
-        assert!(!crate::patterns::has_kubernetes_indicators(
-            "plain log message"
-        ));
+    fn a_non_context_bracket_does_not_veto_its_line() {
+        for (line, folded) in [
+            (
+                "[proxy] connect [2001:db8::1]:8080",
+                "<BRACKET_CONTEXT> connect [2001:db8::1]:8080",
+            ),
+            (
+                "[proxy] data array[0] value",
+                "<BRACKET_CONTEXT> data array[0] value",
+            ),
+            (
+                "[proxy] at index[5] pos",
+                "<BRACKET_CONTEXT> at index[5] pos",
+            ),
+            ("[proxy] param=value", "<BRACKET_CONTEXT> param=value"),
+            ("[proxy] sum [1 + 2]", "<BRACKET_CONTEXT> sum [1 + 2]"),
+            ("[proxy] regex [0-9] x", "<BRACKET_CONTEXT> regex [0-9] x"),
+            (
+                "[proxy] kubelet started",
+                "<BRACKET_CONTEXT> kubelet started",
+            ),
+        ] {
+            assert!(BracketContextDetector::has_bracket_indicators(line));
+            assert_eq!(BracketContextDetector::detect_and_replace(line).0, folded);
+        }
     }
 
     #[test]
@@ -651,27 +503,6 @@ mod tests {
         assert!(!BracketContextDetector::are_logging_contexts(&[
             "zzz".to_string()
         ]));
-    }
-
-    // ---- Mutant-killing: k8s indicators kube-scheduler/kube-controller (lines 66-67) ----
-
-    #[test]
-    fn k8s_ind_kube_scheduler_only() {
-        // Kills mutant: `|| with &&` on kube-scheduler (line 67)
-        // Input has kube-scheduler but NOT kubelet, kube-proxy, etcd, coredns, etc.
-        // "kube-scheduler" also contains "kube-" so it would match that branch too.
-        // But the specific `kube-scheduler` branch must independently work.
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "the kube-scheduler elected leader"
-        ));
-    }
-
-    #[test]
-    fn k8s_ind_kube_controller_only() {
-        // Kills mutant: `|| with &&` on kube-controller (line 68)
-        assert!(crate::patterns::has_kubernetes_indicators(
-            "the kube-controller is ready"
-        ));
     }
 
     // ---- Mutant-killing: apply_chained_bracket_pattern inner logic ----

@@ -24,15 +24,14 @@ struct DetectorEntry {
     enabled: fn(&Config) -> bool,
     /// Cheap byte-level gate on `(config, original line, partially-
     /// normalized line)`; the detector is skipped when it returns false.
-    /// Mirrors the detector's own fast pre-filter where one exists, so the
-    /// deference check below never runs on lines the detector would reject
-    /// anyway. The original is there for the gates that ask about a field
-    /// normalization has already erased.
+    /// Mirrors the detector's own fast pre-filter where one exists. The
+    /// original is there for the gates that ask about a field
+    /// normalization has already erased. A gate asks about the shape the
+    /// detector folds, never about a word elsewhere on the line: the
+    /// kubernetes deference that used to skip the bracket, log-module and
+    /// structured detectors on any line saying `pod/` or `etcd` is gone
+    /// (lessence-enl).
     prefilter: Option<fn(&Config, &str, &str) -> bool>,
-    /// The kubernetes deference rule, expressed once per entry: when set
-    /// and the predicate matches, the line's kubernetes-shaped content
-    /// belongs to KubernetesDetector and this detector is skipped.
-    defers_to_kubernetes: Option<fn(&str) -> bool>,
     /// The detection pass itself.
     run: fn(&Normalizer, &str) -> (String, Vec<Token>),
 }
@@ -47,49 +46,42 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         enabled: |c| c.normalize_durations,
         prefilter: Some(|_, _, s| s.contains('m') && (s.contains("cpu") || s.contains("CPU"))),
-        defers_to_kubernetes: None,
         run: |_, s| DurationDetector::cpu_quantities(s),
     },
     // TIMESTAMPS: most specific formats, highest priority.
     DetectorEntry {
         enabled: |c| c.normalize_timestamps,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| UnifiedTimestampDetector::detect_and_replace(s),
     },
     // EMAIL: before paths so emails inside URLs are handled correctly.
     DetectorEntry {
         enabled: |c| c.normalize_emails,
         prefilter: Some(|_, _, s| s.contains('@')),
-        defers_to_kubernetes: None,
         run: |n, s| n.email_detector.detect_and_replace(s),
     },
     // PATHS: before network patterns so URLs are consumed as whole units.
     DetectorEntry {
         enabled: |c| c.normalize_paths,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| PathDetector::detect_and_replace(s),
     },
     // JSON: structured data, Event objects, K8s objects.
     DetectorEntry {
         enabled: |c| c.normalize_json,
         prefilter: Some(|_, _, s| s.contains('{')),
-        defers_to_kubernetes: None,
         run: |_, s| JsonDetector::detect_and_replace(s),
     },
     // UUIDs: before hashes, whose hex pattern would fragment a UUID.
     DetectorEntry {
         enabled: |c| c.normalize_uuids,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| UuidDetector::detect_and_replace(s),
     },
     // NETWORK: IPs, ports, FQDNs; after paths to avoid breaking URLs.
     DetectorEntry {
         enabled: |c| c.normalize_ips || c.normalize_ports || c.normalize_fqdns,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |n, s| {
             NetworkDetector::detect_and_replace(
                 s,
@@ -103,14 +95,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         enabled: |c| c.normalize_hashes,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| HashDetector::detect_and_replace(s),
     },
     // PROCESS IDs: [pid=123], (12345).
     DetectorEntry {
         enabled: |c| c.normalize_pids,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| ProcessDetector::detect_and_replace(s),
     },
     // SYSLOG HOST: the positional field between a normalized timestamp and
@@ -123,23 +113,18 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             s.starts_with("<TIMESTAMP> ")
                 && !UnifiedTimestampDetector::opens_with_kernel_uptime(original)
         }),
-        defers_to_kubernetes: None,
         run: |_, s| replace_syslog_host(s),
     },
-    // KUBERNETES: before the generic bracket/module/structured detectors,
-    // which additionally defer to it on kubernetes-shaped lines (their
-    // `defers_to_kubernetes` predicates below).
+    // KUBERNETES: before the generic bracket/module/structured detectors.
     DetectorEntry {
         enabled: |c| c.normalize_kubernetes,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| KubernetesDetector::detect_and_replace(s),
     },
     // HTTP STATUS: groups status codes into classes (200-299 -> 2xx).
     DetectorEntry {
         enabled: |c| c.normalize_http_status,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| HttpStatusDetector::detect_and_replace(s),
     },
     // BRACKET CONTEXT: [error] [mod_jk] style tags.
@@ -148,7 +133,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| {
             s.contains('[') && BracketContextDetector::has_bracket_indicators(s)
         }),
-        defers_to_kubernetes: Some(crate::patterns::has_kubernetes_indicators),
         run: |_, s| BracketContextDetector::detect_and_replace(s),
     },
     // KEY-VALUE: config=value pairs.
@@ -158,7 +142,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         // whether a Tetragon JSON event folded depended on the base64
         // padding of a field twenty kilobytes into the record.
         prefilter: Some(|_, _, s| has_unquoted_eq(s)),
-        defers_to_kubernetes: None,
         run: |_, s| KeyValueDetector::detect_and_replace(s),
     },
     // LOG MODULE: [level] module patterns (Apache/nginx). Gated by the
@@ -169,7 +152,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| {
             s.contains('[') && LogWithModuleDetector::has_log_module_indicators(s)
         }),
-        defers_to_kubernetes: Some(crate::patterns::has_kubernetes_indicators),
         run: |_, s| LogWithModuleDetector::detect_and_replace(s),
     },
     // STRUCTURED MESSAGES: JSON/logfmt structured logging. The JSON half
@@ -181,7 +163,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             ((c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('=')))
                 && StructuredMessageDetector::has_structured_indicators(s)
         }),
-        defers_to_kubernetes: Some(crate::patterns::has_kubernetes_structured_indicators),
         run: |_, s| StructuredMessageDetector::detect_and_replace(s),
     },
     // DURATIONS & MEASUREMENTS: broad (decimals, sizes, percentages);
@@ -189,7 +170,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         enabled: |c| c.normalize_durations,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| DurationDetector::detect_and_replace(s),
     },
     // NAMES: generic hyphenated component names with variable suffixes;
@@ -197,7 +177,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         enabled: |c| c.normalize_names,
         prefilter: None,
-        defers_to_kubernetes: None,
         run: |_, s| NameDetector::detect_and_replace(s),
     },
     // QUOTED STRINGS: last, so it cannot consume content the detectors
@@ -206,7 +185,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         enabled: |c| c.normalize_quoted,
         prefilter: Some(|_, _, s| s.contains('"') || s.contains('\'')),
-        defers_to_kubernetes: None,
         run: |n, s| {
             QuotedStringDetector::detect_and_replace_with(s, NestedGates::from_config(&n.config))
         },
@@ -1215,11 +1193,6 @@ impl Normalizer {
             {
                 continue;
             }
-            if let Some(defers) = entry.defers_to_kubernetes
-                && defers(&normalized)
-            {
-                continue;
-            }
             let (new_normalized, mut new_tokens) = (entry.run)(self, &normalized);
             normalized = new_normalized;
             tokens.append(&mut new_tokens);
@@ -2135,60 +2108,37 @@ mod tests {
         assert_ne!(first, fourth, "same pod, different container");
     }
 
-    // ---- detector ordering table: kubernetes deference ----
-    // The table's `defers_to_kubernetes` predicates skip the bracket,
-    // log-module, and structured detectors on kubernetes-shaped lines so
-    // KubernetesDetector owns them. These used to be guards inside each
-    // detector; the behavior now only exists at this level.
+    // ---- detector ordering table: no word elsewhere switches a detector ----
+    // The bracket, log-module and structured detectors used to be skipped on
+    // any line carrying a kubernetes word (`pod/`, `kubelet`, `etcd`). A word
+    // elsewhere on the line must not change how a field tokenises
+    // (lessence-moq, lessence-enl): the same line folds the same with it.
 
     #[test]
-    fn table_brackets_defer_to_kubernetes() {
+    fn a_kubernetes_word_does_not_switch_detectors_off() {
         let normalizer = Normalizer::new(Config::default());
-        let line = normalizer
-            .normalize_line("[error] kubelet started".to_string())
-            .unwrap();
+        let norm = |s: &str| normalizer.normalize_line(s.to_string()).unwrap();
+        let plain = norm("[proxy] [upstream] probe failed");
+        let k8s = norm("[proxy] [upstream] probe failed for pod/web-0 on kubelet");
         assert!(
-            !line
-                .tokens
-                .iter()
-                .any(|t| matches!(t, Token::BracketContext(_))),
-            "bracket detector must skip k8s lines, got: {}",
-            line.normalized
+            plain
+                .normalized
+                .starts_with("<BRACKET_CONTEXT> probe failed")
         );
-    }
-
-    #[test]
-    fn table_log_module_defers_to_kubernetes() {
-        let normalizer = Normalizer::new(Config::default());
-        let line = normalizer
-            .normalize_line("[error] kubelet failed".to_string())
-            .unwrap();
         assert!(
-            !line
-                .tokens
-                .iter()
-                .any(|t| matches!(t, Token::LogWithModule { .. })),
-            "log-module detector must skip k8s lines, got: {}",
-            line.normalized
+            k8s.normalized.starts_with("<BRACKET_CONTEXT> probe failed"),
+            "{}",
+            k8s.normalized
         );
-    }
-
-    #[test]
-    fn table_structured_defers_to_kubernetes() {
-        let normalizer = Normalizer::new(Config::default());
-        let line = normalizer
-            .normalize_line(
-                r#"{"level":"info","ts":"2024-01-01T10:00:00.000Z","component":"kubelet","msg":"Starting container"}"#
-                    .to_string(),
-            )
-            .unwrap();
+        let json = norm(
+            r#"{"level":"info","ts":"2024-01-01T10:00:00.000Z","component":"kubelet","msg":"Starting container"}"#,
+        );
         assert!(
-            !line
-                .tokens
+            json.tokens
                 .iter()
                 .any(|t| matches!(t, Token::StructuredMessage { .. })),
-            "structured detector must skip k8s lines, got: {}",
-            line.normalized
+            "{:?}",
+            json.tokens
         );
     }
 
