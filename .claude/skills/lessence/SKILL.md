@@ -328,6 +328,21 @@ kubectl logs deploy/api --previous | lessence --summary -q
 kubectl logs deploy/api --previous | lessence -q | grep -i error
 ```
 
+### journalctl (a unit, a boot, a time window)
+```bash
+journalctl -u nginx --since "2 hours ago" | lessence --summary -q
+# The same event from several hosts is one group; the hosts are in the HOST facts:
+journalctl --since today | lessence --format json \
+  | jq -r 'select(.type=="group" and .variation.HOST) | "\(.count)\t\(.variation.HOST.samples|join(","))\t\(.normalized[:80])"'
+```
+
+### Test failures (a long test run, a few failing cases)
+```bash
+# Passing tests fold away; each failure and its stack trace stays as one event
+cargo test 2>&1 | lessence --no-report -q --frame-continuations
+```
+Unfolded lines are the failures: read those, not the counts.
+
 ### CI build failure buried in noise
 ```bash
 # DON'T use --top alone — frequent patterns are noise (warnings),
