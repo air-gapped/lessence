@@ -5,15 +5,35 @@ Phase 0/6 for how this file is consumed.
 
 ## Open
 
-- **journalctl / test-failure triggers have no matching workflow example**
-  (Dim 5) — `when_to_use` promises both, Triage Workflows covers neither.
-  Flagged by the final blind scorer (2026-06-09). (carried 2026-06-10)
+- **No `evals/evals.json`, so `fix` cannot run and Dim 10 stays at the
+  unmeasured cap of 8** (Dim 10) — absent: the owner's go-ahead for the spend
+  (`grow-evals.py` plus an `outcome` run, about $20). Both blind scorers named it.
+- **Output-reading detail (report, briefing, text and JSON fields, about 160
+  lines) is still in the body** (Dim 2/4/6, SKILL.md "Reading the Output") —
+  absent: a third `--skill` topic. The binary prints only SKILL.md and
+  flags.md, so a new reference file would not ship; needs a decision to add a
+  topic in `src/skill.rs` or to grow flags.md further.
+- **"No recon pass needed" is stated in `when_to_use` and in the intro**
+  (Dim 6) — not cut: the 2026-06-10 choice eval measured the skill with that
+  paragraph in place; absent: a choice-eval rerun to show the cut is free.
 - **Opus residual: grep-first on half-known-keyword security triage** —
-  choice eval 2026-06-10 (ssh-intrusion scenario): after the boundary fix the
-  skill now FIRES on opus (3/3, was 0/3) but opus still runs `grep Accepted`
-  before lessence in 2/3 runs. Defensible behavior (half the question IS a
-  known keyword); not fixable by frontmatter without over-claiming grep
-  territory. Revisit only if real-world sessions show it matters.
+  choice eval 2026-06-10 (ssh-intrusion scenario): opus still runs
+  `grep Accepted` before lessence in 2/3 runs. Defensible; revisit only if
+  real sessions show it matters. (carried 2026-11-10)
+
+## Resolved this pass (2026-11-10)
+
+Blind 72 → 73 (inside scorer noise); comparators 3/3 IMPROVED, medium
+confidence. Stopped early: 5 keeps, 0 discards, so no ceiling is mapped.
+- Freshen: every sources.md row and about 95 claims run against the build at
+  f3ef9e6; stamp `Freshened: 2026-11-10`. One hand-written example was caught
+  by `no_impossible_rollup_counts` and replaced with a real run.
+- Kept: per-shape template rules moved to flags.md "Reading a template".
+- Kept: journalctl and test-failure workflows (closes the 2026-06-09 item).
+- Kept: `--explain` in Core Commands.
+- Kept: second-person wording removed.
+- Kept: repo-only files in one Reference entry.
+- Kept after the comparators' regression note: a sections line at the top of flags.md.
 
 ## Resolved this pass — 2026-06-10 (tail-choice rewrite, branch skill-tail-choice)
 

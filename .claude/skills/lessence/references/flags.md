@@ -1,5 +1,7 @@
 # lessence — Complete Flag Reference
 
+Sections: Analysis Modes · Output Control · The saved report · Pattern Control · Security and Limits · Record framing · Diagnosing the fold · Reading a template · CI Integration (exit codes) · Performance · Other · Every flag, from the binary.
+
 ## Analysis Modes
 
 | Flag | Description |
