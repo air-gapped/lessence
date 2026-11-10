@@ -220,6 +220,7 @@ fn main() -> Result<()> {
         // clap's value_parser has already validated every name
         config.set_pattern_enabled(name, false);
     }
+    config.keep_sanitized_detectors();
     let config = config;
 
     // --fit: compute line budget from terminal height (None when piped)

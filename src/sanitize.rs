@@ -500,6 +500,11 @@ impl Sanitizer {
         self.tag(entity, class, value)
     }
 
+    /// Whether the run masks values of `entity`.
+    pub fn names(&self, entity: Entity) -> bool {
+        self.action(entity).is_some()
+    }
+
     /// Whether the run credential-masks at all — the essence-mode path
     /// only ever had credentials to mask.
     pub fn masks_credentials(&self) -> bool {

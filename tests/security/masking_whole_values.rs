@@ -406,6 +406,59 @@ fn a_folded_credential_is_masked_in_every_sample() {
     assert!(out.contains("{<SECRET>@db.example.com}"), "{out}");
 }
 
+/// An entity `--sanitize` names is still found and folded as one value
+/// when `--disable-patterns` names the detector that finds it, so the
+/// template and the rollup hold its tag, never a piece of it.
+#[test]
+fn a_named_entity_is_found_with_its_detector_disabled() {
+    let dir = scratch();
+    let lines: Vec<String> = (1..=4)
+        .map(|i| {
+            let host = if i % 2 == 0 { "gwlab-b" } else { "gwlab" };
+            format!(
+                "Nov 10 10:00:0{i} {host} sshd[12{i}]: accepted carol{i}@example.com \
+                 from 192.0.2.7{i} port 22 id{i}"
+            )
+        })
+        .collect();
+    let input = write_input(dir.path(), &lines);
+    let ips: &[&str] = &["0.2.7"];
+    let hosts: &[&str] = &["gwlab"];
+    let emails: &[&str] = &["carol"];
+    assert_absent_everywhere(
+        &input,
+        &[
+            (&["--sanitize", "ip", "--disable-patterns", "network"], ips),
+            (
+                &[
+                    "--sanitize",
+                    "ip:pseudonym",
+                    "--disable-patterns",
+                    "network",
+                ],
+                ips,
+            ),
+            (
+                &["--sanitize", "host", "--disable-patterns", "timestamp"],
+                hosts,
+            ),
+            (
+                &[
+                    "--sanitize",
+                    "host:pseudonym",
+                    "--disable-patterns",
+                    "timestamp,network",
+                ],
+                hosts,
+            ),
+            (
+                &["--sanitize", "email", "--disable-patterns", "email,network"],
+                emails,
+            ),
+        ],
+    );
+}
+
 #[test]
 fn an_address_with_any_port_is_replaced() {
     let dir = scratch();
