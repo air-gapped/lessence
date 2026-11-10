@@ -66,9 +66,12 @@ static ISO_DURATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\bP(?:(?:\d+Y(?:\d+M)?(?:\d+D)?|\d+M(?:\d+D)?|\d+D)(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?|T(?:\d+H(?:\d+M)?(?:\d+(?:\.\d+)?S)?|\d+M(?:\d+(?:\.\d+)?S)?|\d+(?:\.\d+)?S))\b").unwrap()
 });
 
-// Kubernetes duration fields (podStartSLOduration=, podStartE2EDuration=)
+// Kubernetes duration fields (podStartSLOduration=, podStartE2EDuration=).
+// The key is the event's name for what was measured, so it stays on the
+// line: only the value after `=` becomes `<DURATION_FIELD>`, and
+// `podStartSLOduration=` never folds with `imagePullDuration=`.
 static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\w*[Dd]uration=\d+(?:\.\d+)?(?:ms|µs|μs|ns|us|s|m|h)?\b").unwrap()
+    Regex::new(r"(\w*[Dd]uration=)(\d+(?:\.\d+)?(?:ms|µs|μs|ns|us|s|m|h)?)\b").unwrap()
 });
 
 // Memory/file size values (1234567 bytes, 1.2MB, 5.6GB, 128KB)
@@ -182,14 +185,27 @@ impl DurationDetector {
 
         // Process in order of specificity: each pass folds its own matches
         // away before the next, looser one runs, so `<SIZE>` can never be
-        // re-read as a bare number.
+        // re-read as a bare number. The duration field goes first and keeps
+        // its key; only the value is folded.
+        super::fold_matches(
+            &mut result,
+            &mut tokens,
+            &K8S_DURATION_FIELD_REGEX,
+            |caps| {
+                let key = caps.get(1).unwrap().as_str();
+                let value = caps.get(2).unwrap().as_str();
+                Some((
+                    Token::Duration(value.to_string()),
+                    format!("{key}<DURATION_FIELD>"),
+                ))
+            },
+        );
         for (regex, placeholder, token) in [
             (
-                &*K8S_DURATION_FIELD_REGEX,
-                "<DURATION_FIELD>",
+                &*DURATION_WITH_UNIT_REGEX,
+                "<DURATION>",
                 Token::Duration as fn(String) -> Token,
             ),
-            (&*DURATION_WITH_UNIT_REGEX, "<DURATION>", Token::Duration),
             (&*MEMORY_ADDR_REGEX, "<ADDR>", Token::Number),
             (&*SIZE_REGEX, "<SIZE>", Token::Size),
         ] {
@@ -671,7 +687,27 @@ mod tests {
     fn duration_field_takes_its_unit() {
         assert_eq!(
             fold("duration=272.602256ms and duration=2.9s and duration=15"),
-            "<DURATION_FIELD> and <DURATION_FIELD> and <DURATION_FIELD>"
+            "duration=<DURATION_FIELD> and duration=<DURATION_FIELD> and duration=<DURATION_FIELD>"
+        );
+    }
+
+    /// The key names what was measured: it stays on the line, and the
+    /// token carries the value alone.
+    #[test]
+    fn duration_field_keeps_its_key() {
+        let (result, tokens) = DurationDetector::detect_and_replace(
+            "podStartSLOduration=3.488 imagePullDuration=12ms",
+        );
+        assert_eq!(
+            result,
+            "podStartSLOduration=<DURATION_FIELD> imagePullDuration=<DURATION_FIELD>"
+        );
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Duration("3.488".to_string()),
+                Token::Duration("12ms".to_string())
+            ]
         );
     }
 

@@ -4436,7 +4436,7 @@ operation finished elapsed=1789551111111.25
 operation finished elapsed=1789551111111111.25
 operation finished elapsed=1789551111111111111.25
 
-##CASE lessence-a8t.11 template_present=worker completed <DURATION_FIELD> scope=steady
+##CASE lessence-a8t.11 template_present=worker completed jobDuration=<DURATION_FIELD> scope=steady
 ##WHY A long decimal fraction in a duration field must not leave a timestamp suffix outside the duration token.
 ##FROM invented duration records
 worker completed jobDuration=3.1789551111111111 scope=steady
@@ -4651,3 +4651,16 @@ panic at handler.ts:123 in worker
 ##FROM invented log4j lines
 2024-01-01 10:00:00,123 [pool-1] INFO cache ready
 2024-01-01 10:00:01,456 [pool-1] INFO cache ready
+
+##CASE lessence-bmp groups=3
+##WHY a duration field keeps its key: podStartSLOduration, podStartE2EDuration and imagePullDuration are three measurements, and erasing the key showed them as one
+##FROM invented kubelet-shaped tracker lines
+pod_startup_latency_tracker pod="ns/web-0" podStartSLOduration=3.25 status=observed
+pod_startup_latency_tracker pod="ns/web-0" podStartE2EDuration=4.5 status=observed
+pod_startup_latency_tracker pod="ns/web-0" imagePullDuration=1.75 status=observed
+
+##CASE lessence-bmp template_present=imagePullDuration=<DURATION_FIELD>
+##WHY the key of a duration field stays on the shown line
+##FROM invented kubelet-shaped tracker lines
+pod_startup_latency_tracker pod="ns/web-0" imagePullDuration=1.75 status=observed
+pod_startup_latency_tracker pod="ns/web-1" imagePullDuration=2.5 status=observed
