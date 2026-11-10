@@ -40,7 +40,7 @@ fn run_with_closed_stdout(args: &[&str], stdin: Stdio) -> std::process::Output {
     let (reader, writer) = UnixStream::pair().unwrap();
     drop(reader);
     let writer: OwnedFd = writer.into();
-    Command::new(env!("CARGO_BIN_EXE_lessence"))
+    crate::common::lessence()
         .args(args)
         .stdin(stdin)
         .stdout(Stdio::from(writer))
