@@ -2907,7 +2907,7 @@ impl PatternFolder {
         sorted.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
         let total_patterns = sorted.len();
-        const DEFAULT_SUMMARY_CAP: usize = 30;
+        use crate::config::DEFAULT_SUMMARY_CAP;
 
         // Explicit positive --top takes precedence over --fit. Otherwise
         // fit replaces the default cap; --top 0 disables only that cap.

@@ -172,3 +172,52 @@ fn year_inferred_absent_without_timestamps() {
     let pre = run_preflight("plain line one\nplain line two\nplain line three\n", &[]);
     assert!(pre["span"].get("year_inferred").is_none(), "{pre}");
 }
+
+fn run_raw(args: &[&str], input: &str) -> std::process::Output {
+    let mut child = lessence_bin()
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to start");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().expect("Failed to wait")
+}
+
+const PARCELS: &str = "courier 11 picked parcel north\n\
+                       courier 12 picked parcel north\n\
+                       courier 13 picked parcel north\n";
+
+#[test]
+fn preflight_with_a_flag_it_would_ignore_is_a_usage_error_naming_it() {
+    for flags in [
+        &["--top", "3"][..],
+        &["--summary"],
+        &["--fit"],
+        &["--explain"],
+        &["--stats-json"],
+    ] {
+        let args = [&["--preflight"][..], flags].concat();
+        let out = run_raw(&args, PARCELS);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{args:?}: {stderr}");
+        assert!(out.stdout.is_empty(), "{args:?}: nothing is folded");
+        assert!(stderr.starts_with("lessence: "), "{args:?}: {stderr}");
+        assert!(
+            stderr.contains(flags[0]) && stderr.contains("--preflight"),
+            "{args:?}: the error names both flags: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn preflight_accepts_quiet() {
+    let analysis = run_preflight(PARCELS, &["-q"]);
+    assert_eq!(analysis["lines"], 3, "{analysis}");
+}

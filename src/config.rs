@@ -10,6 +10,9 @@ pub const DEFAULT_MIN_COLLAPSE: usize = 3;
 pub const DEFAULT_MAX_LINE_LENGTH: usize = 1024 * 1024;
 /// Default output format (`--format`).
 pub const DEFAULT_OUTPUT_FORMAT: &str = "text";
+/// Patterns `--summary` shows when no `--top N` or `--fit` budget is given,
+/// in text and JSON alike.
+pub const DEFAULT_SUMMARY_CAP: usize = 30;
 
 #[derive(Debug, Clone)]
 pub struct Config {

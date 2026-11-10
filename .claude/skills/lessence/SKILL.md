@@ -87,8 +87,8 @@ cargo test 2>&1 | lessence            # capture stderr too
 
 # Agent-friendly output (prefer these when piping into Claude)
 lessence --format json < app.log      # JSONL with rollup metadata — best for follow-up jq queries
-lessence --preflight < app.log        # orientation briefing as JSON (no folded output)
-lessence --stats-json < app.log       # machine-readable stats on stderr
+lessence --preflight < app.log        # orientation briefing as JSON (no folded output; takes no --top/--summary/--fit/--explain/--stats-json)
+lessence --stats-json < app.log       # machine-readable stats on stderr (same input_lines and ratio with --summary/--top)
 lessence --summary < app.log          # compact one-line-per-pattern overview (caps at 30, use --top N to adjust)
 
 # The default run: complete report on disk, bounded overview on stdout
@@ -133,6 +133,8 @@ streams: peak memory is one record, whatever the group count).
 `--overview 0` prints the locators and recipes only. `--no-report` turns the
 whole thing off and streams the folded text as before — **use it for `tail -f`
 or any source that never reaches EOF**, since the report needs input EOF.
+It is harmless in every other mode (`--format json`, `--summary`, `--top`,
+`--preflight`, …): they save no report, so there it does nothing.
 The report directory is never pruned: it grows until you delete it.
 See references/flags.md for `--report-dir`, `--report-max-bytes` and the rest.
 
@@ -366,7 +368,8 @@ diff /tmp/a.txt /tmp/b.txt
 ### CI gating
 ```bash
 lessence --fail-on-pattern "ERROR|FATAL" < app.log
-# Exit code 1 if pattern found, 0 if clean
+# Exit code 1 if pattern found, 0 if clean — also behind `| head`: a closed
+# pipe never turns a failure into exit 0
 ```
 
 ## Common Mistakes

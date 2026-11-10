@@ -65,16 +65,17 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
 }
 
 /// Validate `--format` at the CLI boundary and return the canonical
-/// spelling the mode dispatch compares against: `text`, `markdown`,
-/// `json`, or `jsonl`. Accepted aliases (`plain`, `md`, any case)
-/// normalize here so `--format md` and `--format JSON` behave exactly
-/// like their canonical forms. Called from `main` (not a clap
-/// value_parser) so a bad value is a `lessence:` usage error with exit 2.
+/// spelling the mode dispatch compares against: `text`, `markdown` or
+/// `json`. Accepted aliases (`plain`, `md`, `jsonl`, any case) normalize
+/// here, once, so `--format md` and `--format JSONL` behave exactly like
+/// their canonical forms and no later check has to match an alias. Called
+/// from `main` (not a clap value_parser) so a bad value is a `lessence:`
+/// usage error with exit 2.
 pub fn validate_format(s: &str) -> anyhow::Result<String> {
     match s.to_lowercase().as_str() {
         "text" | "plain" => Ok("text".to_string()),
         "markdown" | "md" => Ok("markdown".to_string()),
-        canonical @ ("json" | "jsonl") => Ok(canonical.to_string()),
+        "json" | "jsonl" => Ok("json".to_string()),
         _ => Err(anyhow::anyhow!(
             "Invalid format '{s}'. Supported formats: text (plain), markdown (md), json, jsonl"
         )),
@@ -246,8 +247,8 @@ pub struct Cli {
 
     /// Do not save a report: stream today's folded text to stdout and the
     /// briefing to stderr. Use this for `tail -f` and any live source — a
-    /// source that never reaches EOF never gets a report (default text run
-    /// only)
+    /// source that never reaches EOF never gets a report. Every other mode
+    /// writes no report already; there it does nothing
     #[arg(long, help_heading = "Output")]
     pub no_report: bool,
 
@@ -346,9 +347,11 @@ pub struct ReportSettings {
 }
 
 impl Cli {
-    /// The report flags belong to the default text run and nothing else. No
-    /// flag is silently ignored: every combination outside the table in the
-    /// contract is a usage error naming the flags involved.
+    /// The flags that shape a report belong to the default text run and
+    /// nothing else. None is silently ignored: every combination outside the
+    /// table in the contract is a usage error naming the flags involved.
+    /// `--no-report` is the exception: outside the default text run no report
+    /// is written anyway, so the request is met and it does nothing.
     ///
     /// `text_default` is the caller's mode decision: no `--format` other
     /// than text, and none of the alternate output or dev modes.
@@ -373,14 +376,8 @@ impl Cli {
                      writes no report and streams every group to stdout"
                 ));
             }
-            if self.no_report {
-                return Err(
-                    "--no-report applies to the default text run, the only run that saves a \
-                     report; this output mode already writes none, so drop --no-report and the \
-                     command works as it stands"
-                        .to_string(),
-                );
-            }
+            // --no-report asks for no report, and this mode writes none: the
+            // request is already met, so it is accepted and does nothing.
             return Ok(ReportPlan::Off);
         }
 
@@ -476,6 +473,7 @@ impl Cli {
             (self.explain, "--explain"),
             (self.diff.is_some(), "--diff"),
             (self.preflight, "--preflight"),
+            (self.stats_json, "--stats-json"),
         ];
         let Some((_, flag)) = conflicts.into_iter().find(|(hit, _)| *hit) else {
             return Ok(());
@@ -488,6 +486,30 @@ impl Cli {
         Err(format!(
             "{mode} writes a log, not a report; {flag} cannot be combined with it"
         ))
+    }
+
+    /// `--preflight` prints the briefing as one JSON document and nothing
+    /// else, so every flag that shapes another output would be silently
+    /// ignored: asking for one is a usage error naming it. `-q` is accepted —
+    /// it drops a rendered briefing, and `--preflight` renders none.
+    pub fn validate_preflight(&self) -> Result<(), String> {
+        if !self.preflight {
+            return Ok(());
+        }
+        let ignored = [
+            (self.top.is_some(), "--top"),
+            (self.summary, "--summary"),
+            (self.fit, "--fit"),
+            (self.explain, "--explain"),
+            (self.stats_json, "--stats-json"),
+        ];
+        match ignored.into_iter().find(|(hit, _)| *hit) {
+            Some((_, flag)) => Err(format!(
+                "--preflight prints only the briefing as JSON; {flag} would be ignored, so drop \
+                 {flag}, or drop --preflight to get the output {flag} shapes"
+            )),
+            None => Ok(()),
+        }
     }
 }
 
@@ -548,7 +570,7 @@ mod tests {
     #[test]
     fn format_json_and_alias() {
         assert_eq!(validate_format("json").unwrap(), "json");
-        assert_eq!(validate_format("jsonl").unwrap(), "jsonl");
+        assert_eq!(validate_format("jsonl").unwrap(), "json");
     }
 
     #[test]

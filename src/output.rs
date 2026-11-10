@@ -1,12 +1,43 @@
 //! Shared output handling for CLI renderers.
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Write output, treating a reader closing its pipe as a successful early stop.
-/// Other output failures are returned to the caller.
+/// Has this run already found a failure — a source that could not be read,
+/// a `--fail-on-pattern` match? Set by the CLI as each becomes known.
+static FAILURE_FOUND: AtomicBool = AtomicBool::new(false);
+
+/// Record that this run has found a failure, so a reader closing stdout
+/// afterwards still ends it with exit 1. Never cleared.
+pub fn record_failure() {
+    FAILURE_FOUND.store(true, Ordering::Relaxed);
+}
+
+/// End the run because the reader closed stdout: an early stop, never a
+/// verdict. Exit 0, or 1 when a failure was already recorded — a consumer
+/// such as `| head -1` must not turn a failed run into a success.
+pub fn exit_on_closed_pipe() -> ! {
+    std::process::exit(i32::from(FAILURE_FOUND.load(Ordering::Relaxed)))
+}
+
+/// Write output; a reader closing its pipe ends the run through
+/// [`exit_on_closed_pipe`]. Other output failures are returned to the caller.
 pub fn write_output(writer: &mut impl Write, args: std::fmt::Arguments<'_>) -> anyhow::Result<()> {
+    if !write_unless_closed(writer, args)? {
+        exit_on_closed_pipe();
+    }
+    Ok(())
+}
+
+/// Write output and say whether the reader is still there: `false` when it
+/// closed its pipe, which is the caller's to act on. Other output failures
+/// are returned.
+pub fn write_unless_closed(
+    writer: &mut impl Write,
+    args: std::fmt::Arguments<'_>,
+) -> anyhow::Result<bool> {
     match writer.write_fmt(args) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => std::process::exit(0),
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(false),
         Err(e) => Err(e.into()),
     }
 }
@@ -89,6 +120,14 @@ mod tests {
             .expect("a closed pipe is not an error");
         w.flush().expect("nor is the flush");
         assert!(w.closed(), "but the caller can see it happened");
+    }
+
+    #[test]
+    fn a_closed_reader_is_reported_to_the_caller_not_acted_on() {
+        assert!(!write_unless_closed(&mut Closed, format_args!("x")).expect("not an error"));
+        let mut open = Vec::new();
+        assert!(write_unless_closed(&mut open, format_args!("x")).expect("written"));
+        assert_eq!(open, b"x");
     }
 
     #[test]

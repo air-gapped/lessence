@@ -6,9 +6,9 @@ fn lessence_bin() -> Command {
 }
 
 fn run_lessence(input: &str, args: &[&str]) -> (String, String) {
-    // The report flags belong to the default text run; a case that selects
-    // another mode must not be given --no-report. These tests assert the
-    // streamed text of a run that saves no report.
+    // Only the default text run saves a report, so only it needs
+    // --no-report. These tests assert the streamed text of a run that saves
+    // no report.
     let mut args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
     if !args.iter().any(|a| {
         matches!(

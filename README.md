@@ -54,7 +54,9 @@ a report; `rm -r ~/.local/state/lessence/reports` when you want the space.
 
 `lessence --no-report app.log` skips the file and streams the folded text
 instead. **Use `--no-report` for `tail -f` or any source that never ends**: the
-report is written at end of input.
+report is written at end of input. The other modes (`--format json`,
+`--summary`, `--top`, `--preflight`) save no report, so `--no-report` changes
+nothing there.
 
 ## For Coding Agents & LLMs
 
@@ -198,7 +200,7 @@ the release check refuses a table generated on older folding code.
 --preserve-color    Preserve ANSI color codes (stripped by default) [default: false]
 --report-dir <DIR>    Where the default run saves its report (default: $LESSENCE_REPORT_DIR, else $XDG_STATE_HOME/lessence/reports, else ~/.local/state/lessence/reports). A fresh run-YYYYmmdd-HHMMSS-8hex directory per run; the directory grows until you delete it (default text run only)
 --report-max-bytes <N>    Per-run cap on the report file (default 1G, supports K/M/G). Nothing bounds accumulated disk use across runs (default text run only)
---no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report (default text run only) [default: false]
+--no-report    Do not save a report: stream today's folded text to stdout and the briefing to stderr. Use this for `tail -f` and any live source — a source that never reaches EOF never gets a report. Every other mode writes no report already; there it does nothing [default: false]
 --overview <N|all>    Groups to show in the stdout overview: N (default 40, max 10000), 0 for none, or `all` for every group with no byte budget (default text run only)
 --overview-bytes <B>    Byte budget for the whole stdout overview (default 16384) (default text run only)
 --sanitize-pii    Enable PII sanitization (mask email addresses and sensitive data, default: disabled) [default: false]

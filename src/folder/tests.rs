@@ -3351,6 +3351,28 @@ fn prepare_summary_accumulates_counts() {
 }
 
 #[test]
+fn account_summary_counts_printed_lines_and_shared_savings() {
+    let display: Vec<(usize, String)> = [5, 3, 2, 1]
+        .into_iter()
+        .map(|c| (c, format!("entry {c}")))
+        .collect();
+    let mut f = make_folder();
+    f.account_summary(&display);
+    assert_eq!(f.stats.output_lines, 4, "one printed line per entry");
+    assert_eq!(f.stats.collapsed_groups, 2, "5 and 3 reach min_collapse 3");
+    assert_eq!(f.stats.lines_saved, 2, "(5-3) + (3-3)");
+
+    let mut essence = PatternFolder::new(Config {
+        thread_count: Some(1),
+        essence_mode: true,
+        ..Config::default()
+    });
+    essence.account_summary(&display);
+    assert_eq!(essence.stats.collapsed_groups, 0);
+    assert_eq!(essence.stats.lines_saved, 4 + 2 + 1, "every further member");
+}
+
+#[test]
 fn prepare_summary_sorts_descending() {
     let mut f = make_folder();
     // Group A: 1 line, Group B: 5 lines — B should come first

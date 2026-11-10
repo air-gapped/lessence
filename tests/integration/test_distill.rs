@@ -387,6 +387,22 @@ fn distill_with_an_output_mode_flag_is_a_usage_error_naming_both() {
     assert!(err.contains("--format"), "{err}");
 }
 
+#[test]
+fn distill_with_stats_json_is_a_usage_error_naming_both() {
+    // --distill writes a log and no statistics: --stats-json would be
+    // silently ignored.
+    for mode in ["--distill", "--anonymize"] {
+        let out = run(&[mode, "--stats-json", MICRO]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(2), "{mode}: {err}");
+        assert!(out.stdout.is_empty(), "{mode}: no log is written");
+        assert!(
+            err.contains(mode) && err.contains("--stats-json"),
+            "{mode}: {err}"
+        );
+    }
+}
+
 // ---- (f) --anonymize alone rewrites the whole log ----
 
 #[test]
