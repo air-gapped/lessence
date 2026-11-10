@@ -4607,3 +4607,9 @@ worker[0]: queue drained
 ##FROM invented job line
 ##FLAGS --disable-patterns timestamp
 job msg="started at 2024-01-01T10:00:00Z ok"
+
+##CASE lessence-enl template_absent=<PORT>
+##WHY a source file's `:123` is a line number for every source extension; three drifted lists made `handler.ts:123` a port while `handler.go:123` was a number
+##FROM invented panic lines
+panic at handler.ts:123 in worker
+panic at handler.ts:123 in worker

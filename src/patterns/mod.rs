@@ -551,6 +551,21 @@ impl LogLine {
     }
 }
 
+/// Source-file extensions, without the dot. `handler.go:123` is a file and a
+/// line wherever it stands: the port, the host-name and the call-site passes
+/// read this one list. Three copies had drifted, so `handler.ts:123` was a
+/// port and `handler.go:123` a line number.
+pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
+    "go", "rs", "py", "js", "ts", "tsx", "jsx", "java", "c", "cc", "cpp", "h", "hpp", "rb", "php",
+    "kt", "swift", "cs", "ex", "exs", "erl", "hrl", "scala", "clj", "lua", "pl", "sh", "m", "mm",
+];
+
+/// Does `name` end in `.<ext>` for a source extension?
+pub(crate) fn is_source_file_name(name: &str) -> bool {
+    name.rsplit_once('.')
+        .is_some_and(|(_, ext)| SOURCE_EXTENSIONS.contains(&ext))
+}
+
 /// Fold every match of `regex` that `recognise` accepts, pushing one token per
 /// fold and leaving unrecognised matches in the text verbatim.
 ///

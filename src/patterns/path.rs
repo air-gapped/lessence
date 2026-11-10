@@ -54,10 +54,14 @@ static PATH_SEGMENTS: LazyLock<Regex> = LazyLock::new(|| {
         .expect("Failed to compile path segments regex")
 });
 
-// Source file with line number pattern (like file.go:1234])
+// Source file with line number pattern (like file.go:1234]); the extensions
+// are the shared `SOURCE_EXTENSIONS`.
 static SOURCE_LINE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"([a-zA-Z_][a-zA-Z0-9_\-]*\.(go|rs|py|js|java|c|cpp|h|hpp|rb|php|ts|tsx|jsx|cs|swift|kt|m|mm|scala|clj|ex|exs|erl|hrl)):\d+\]")
-        .expect("Failed to compile source line regex")
+    Regex::new(&format!(
+        r"([a-zA-Z_][a-zA-Z0-9_\-]*\.({})):\d+\]",
+        super::SOURCE_EXTENSIONS.join("|")
+    ))
+    .expect("Failed to compile source line regex")
 });
 
 // A syslog program tag written as a path: `/usr/libexec/xdg-desktop-portal[997798]:`.
