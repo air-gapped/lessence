@@ -40,6 +40,59 @@ const QUOTED_CACHE_MAX_KEY_LEN: usize = 256;
 thread_local! {
     static QUOTED_CACHE: std::cell::RefCell<std::collections::HashMap<String, QuotedOutcome>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    // The gates the cached verdicts were computed under: a run has one
+    // config, but a thread can see several (the tests), and a verdict is
+    // only valid for the gates that made it.
+    static QUOTED_CACHE_GATES: std::cell::Cell<Option<NestedGates>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Which detectors the cascade runs inside a quoted string: the same
+/// `--disable-patterns` gates as the main pipeline. A disabled detector
+/// left its placeholders inside every quoted string all the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct NestedGates {
+    pub timestamps: bool,
+    pub paths: bool,
+    pub uuids: bool,
+    pub ips: bool,
+    pub ports: bool,
+    pub fqdns: bool,
+    pub hashes: bool,
+    pub pids: bool,
+    pub durations: bool,
+    pub names: bool,
+}
+
+impl NestedGates {
+    pub const ALL: Self = Self {
+        timestamps: true,
+        paths: true,
+        uuids: true,
+        ips: true,
+        ports: true,
+        fqdns: true,
+        hashes: true,
+        pids: true,
+        durations: true,
+        names: true,
+    };
+
+    pub fn from_config(c: &crate::config::Config) -> Self {
+        Self {
+            timestamps: c.normalize_timestamps,
+            paths: c.normalize_paths,
+            uuids: c.normalize_uuids,
+            ips: c.normalize_ips,
+            ports: c.normalize_ports,
+            fqdns: c.normalize_fqdns,
+            hashes: c.normalize_hashes,
+            pids: c.normalize_pids,
+            durations: c.normalize_durations,
+            names: c.normalize_names,
+        }
+    }
 }
 
 /// The verdict for one quoted string: the replacement text, whether a
@@ -63,11 +116,21 @@ fn followed_by_colon(bytes: &[u8], mut at: usize) -> bool {
 }
 
 impl QuotedStringDetector {
-    /// Detect and replace quoted strings that appear to be variables
+    /// Detect and replace quoted strings that appear to be variables, with
+    /// every nested detector enabled.
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
+        Self::detect_and_replace_with(text, NestedGates::ALL)
+    }
+
+    /// As `detect_and_replace`, running only the nested detectors `gates`
+    /// enables.
+    pub fn detect_and_replace_with(text: &str, gates: NestedGates) -> (String, Vec<Token>) {
         // FAST PATH: Skip if no quoted strings
         if !text.contains('"') {
             return (text.to_string(), Vec::new());
+        }
+        if QUOTED_CACHE_GATES.with(|g| g.replace(Some(gates))) != Some(gates) {
+            QUOTED_CACHE.with(|c| c.borrow_mut().clear());
         }
         let haystack = text.to_string();
         let mut tokens = Vec::new();
@@ -88,7 +151,7 @@ impl QuotedStringDetector {
                 let (replacement, had_token, shape_folded) = if let Some(outcome) = cached {
                     outcome
                 } else {
-                    let outcome = Self::normalize_quoted(quoted_string);
+                    let outcome = Self::normalize_quoted(quoted_string, gates);
                     if cacheable {
                         QUOTED_CACHE.with(|c| {
                             let mut cache = c.borrow_mut();
@@ -134,26 +197,43 @@ impl QuotedStringDetector {
     }
 
     /// The full normalization cascade for one quoted string (quotes included).
-    fn normalize_quoted(quoted_string: &str) -> QuotedOutcome {
+    fn normalize_quoted(quoted_string: &str, gates: NestedGates) -> QuotedOutcome {
         // Normalize patterns WITHIN the quoted content before deciding
         let quoted_content = &quoted_string[1..quoted_string.len() - 1]; // Remove quotes
         let mut normalized_content = quoted_content.to_string();
 
         // Preserve the nested cascade's ordering: paths before network,
         // UUIDs before hashes, and generic measurements/names last.
-        type Detector = fn(&str) -> (String, Vec<Token>);
-        let detectors: [Detector; 8] = [
-            UnifiedTimestampDetector::detect_and_replace,
-            PathDetector::detect_and_replace,
-            UuidDetector::detect_and_replace,
-            |s| NetworkDetector::detect_and_replace(s, true, true, true),
-            HashDetector::detect_and_replace,
-            ProcessDetector::detect_and_replace,
-            DurationDetector::detect_and_replace,
-            NameDetector::detect_and_replace,
-        ];
-        for detect in detectors {
-            normalized_content = detect(&normalized_content).0;
+        if gates.timestamps {
+            normalized_content =
+                UnifiedTimestampDetector::detect_and_replace(&normalized_content).0;
+        }
+        if gates.paths {
+            normalized_content = PathDetector::detect_and_replace(&normalized_content).0;
+        }
+        if gates.uuids {
+            normalized_content = UuidDetector::detect_and_replace(&normalized_content).0;
+        }
+        if gates.ips || gates.ports || gates.fqdns {
+            normalized_content = NetworkDetector::detect_and_replace(
+                &normalized_content,
+                gates.ips,
+                gates.ports,
+                gates.fqdns,
+            )
+            .0;
+        }
+        if gates.hashes {
+            normalized_content = HashDetector::detect_and_replace(&normalized_content).0;
+        }
+        if gates.pids {
+            normalized_content = ProcessDetector::detect_and_replace(&normalized_content).0;
+        }
+        if gates.durations {
+            normalized_content = DurationDetector::detect_and_replace(&normalized_content).0;
+        }
+        if gates.names {
+            normalized_content = NameDetector::detect_and_replace(&normalized_content).0;
         }
 
         // Escaped JSON FIRST (highest priority): a blob, not a sentence. A
@@ -199,6 +279,34 @@ impl QuotedStringDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A disabled detector does not run inside a quoted string either, and
+    /// a verdict cached under one set of gates is not reused under another.
+    #[test]
+    fn the_nested_cascade_honours_the_gates() {
+        let line = r#"job msg="started at 2024-01-01T10:00:00Z took 5ms ok""#;
+        let all = QuotedStringDetector::detect_and_replace(line).0;
+        assert_eq!(
+            all,
+            r#"job msg="started at <TIMESTAMP> took <DURATION> ok""#
+        );
+        let no_ts = NestedGates {
+            timestamps: false,
+            ..NestedGates::ALL
+        };
+        let off = QuotedStringDetector::detect_and_replace_with(line, no_ts).0;
+        assert_eq!(
+            off,
+            r#"job msg="started at 2024-01-01T10:00:00Z took <DURATION> ok""#
+        );
+        let no_duration = NestedGates {
+            durations: false,
+            ..NestedGates::ALL
+        };
+        let off = QuotedStringDetector::detect_and_replace_with(line, no_duration).0;
+        assert_eq!(off, r#"job msg="started at <TIMESTAMP> took 5ms ok""#);
+        assert_eq!(QuotedStringDetector::detect_and_replace(line).0, all);
+    }
 
     #[test]
     fn test_mount_operation_quoted_strings() {

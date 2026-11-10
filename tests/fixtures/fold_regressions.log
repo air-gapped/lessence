@@ -4601,3 +4601,9 @@ scanned barcode 404 items
 ##FROM invented worker lines
 worker[0]: queue drained
 worker[0]: queue drained
+
+##CASE lessence-enl template_present=msg="started at 2024-01-01T10:00:00Z ok"
+##WHY --disable-patterns timestamp reaches inside a quoted string too; the quoted-string cascade ran every nested detector whatever the flags said
+##FROM invented job line
+##FLAGS --disable-patterns timestamp
+job msg="started at 2024-01-01T10:00:00Z ok"
