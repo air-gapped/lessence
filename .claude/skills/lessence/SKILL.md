@@ -65,8 +65,8 @@ own group. Use the jq workflow below only to project specific fields.
 
 ## This skill and the binary
 
-If this skill is in your context you already have what `lessence --help`
-points to; do not run `lessence --skill` again.
+With this skill in context, everything `lessence --help` points to is already
+loaded; do not run `lessence --skill` again.
 
 The installed binary is the authority for syntax: `lessence --help` wins over
 anything this text remembers. The skill ships inside the binary and was
@@ -137,7 +137,7 @@ whole thing off and streams the folded text as before — **use it for `tail -f`
 or any source that never reaches EOF**, since the report needs input EOF.
 It is harmless in every other mode (`--format json`, `--summary`, `--top`,
 `--preflight`, …): they save no report, so there it does nothing.
-The report directory is never pruned: it grows until you delete it.
+The report directory is never pruned: it grows until it is deleted.
 If stdout is empty and the exit code is 1 with `report: not written (…)` on
 stderr, the report directory is on memory-backed storage (tmpfs) or the report
 passed `--report-max-bytes`: rerun with `--report-dir DIR` on disk, or
@@ -146,8 +146,8 @@ See references/flags.md for `--report-dir`, `--report-max-bytes` and the rest.
 
 ### The briefing (read this first, every time)
 
-Every run — text mode, `--explain`, `--preflight` — starts by orienting you
-before you decide what to run next. In a default run it is the first block of
+Every run — text mode, `--explain`, `--preflight` — starts with the facts that decide the
+next command. In a default run it is the first block of
 the stdout overview; under `--no-report` it is a stderr footer after the folded
 output; `--preflight` prints the same facts as its entire JSON document;
 `--explain`'s summary record carries it as `briefing`. `-q` drops that rendered
@@ -171,8 +171,8 @@ tokens:  quoted_strings 945/227, timestamps 913/733, uuids 683/74, kubernetes 65
 
 Read it top to bottom, and let it decide the next command:
 
-- **`format:`** decides `jq` vs `grep`/`awk` before you write the first
-  command. `format: json 100%` on argocd means every downstream query is a
+- **`format:`** decides `jq` vs `grep`/`awk` before the first command is
+  written. `format: json 100%` on argocd means every downstream query is a
   `jq` one-liner; a mixed or plain-dominant log means `grep`/`awk`.
 - **`levels:`** decides whether to read every error or fold within them.
   `error 31 (0.1%)` on argocd means read all 31 directly — no need to
