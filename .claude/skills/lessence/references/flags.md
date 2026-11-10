@@ -154,6 +154,23 @@ Both sides run with `--format json --threads 1 -q`; groups are matched on
 `first.line_no`, so the report is stable across builds even though JSON `id`
 is assigned in flush order.
 
+## Reading a template
+
+What each placeholder covers and what stays literal, by shape. Consult when a
+template shows a placeholder or a literal word whose scope is unclear.
+
+- **PCI devices** — exact PCI addresses such as `0000:21:00.0` stay visible because different addresses already keep hardware events apart. An address inside a normalized route is shown beside that route skeleton. An address embedded in a path stays visible when the surrounding path text varies.
+- **Systemd unit subjects** — the template shows the unit identity: `modprobe@loop.service` and `modprobe@fuse.service` remain distinct; numeric instances show `<N>` and opaque hex/UUID runs show `<ID>`. Exact instance names remain in the `NAME` facts. Different instances of the same unit kind can still fold together. This applies when the unit is the subject immediately after `systemd[PID]:`, not to messages about starting a unit or to mount/device units.
+- **CPU quantities** — a `cpu` field with a millicpu value such as `750m` becomes `<CPU_QUANTITY>`, with exact values in `CPU_QUANTITY` samples and a separate `cpu_quantities` count. Plain, JSON and escaped configuration fields are supported. A neighboring `timeout=20m` is not read as CPU (it shows as `timeout=<KEY_VALUE>`); unitless CPU IDs are not interpreted as millicpu.
+- **Decimal measurements** — long fractional digits stay part of the decimal, even when their length resembles an epoch timestamp. `<DECIMAL>` represents the whole measurement; valid epoch timestamps still normalize as timestamps.
+- **HTTP requests** — when methods vary within a group, the quoted request keeps its route visible: `"<VARIES> /route HTTP/<DECIMAL>"`. The `VARIES` facts count methods such as `GET` and `POST`, rather than hiding the whole request. Protocol-version variation has its own slot. Prose requests such as `making POST http request: http://host/promote` and `GET https://host/items/42` keep method and route separate: `http://<HOST>/promote` or `https://<HOST>/items/<N>`. Hosts, object IDs and queries may vary; complete targets remain in `PATH` facts.
+- **Field names and levels** — a placeholder replaces a field's value, never its name: `timeout=<KEY_VALUE>` and `port=<KEY_VALUE>` are different settings, `podStartSLOduration=<DURATION_FIELD>` and `imagePullDuration=<DURATION_FIELD>` different measurements, each in its own group. A log level is never a placeholder — `[error]`, `[NOTICE]` and `level=error` stay literal, so an error and an info line that otherwise read alike are two groups. A run of two or more context brackets beside a level still folds (`[error] [main] [proxy-7]` → `[error] <BRACKET_CONTEXT> upstream gone`); a single varying bracket shows as `[<VARIES>]`.
+- **Kubernetes Event objects** — only the event's `ObjectMeta:{…}` folds to `<EVENT_OBJECT>`; its `Reason:`, `Type:` and involved object stay on the line.
+- **Event identity** — anchored call sites, Python traceback frames (file, line, function), and program fields such as `exe=` or `"binary":` stay literal in the template. They already keep different events apart; showing them makes the reason visible. Other file paths still normalize to `<PATH>`.
+- **Audit syscall outcomes** — raw `type=SYSCALL msg=audit(...)` records keep `success=yes` and `success=no` in separate groups, with the outcome visible in the template. Repeated events with the same outcome can still fold across return values.
+- **CLI options** — recognized long and single-letter option names in logged commands stay visible and keep different options in separate groups. Their values may vary, including inside quoted commands. Option names no longer appear as `PATH` samples. Repeated commands can still fold across revision hashes and execution IDs; single-dash words such as `-sdown` remain prose.
+- **Status classes** — anchored JSON/logfmt status fields stay visible as `<STATUS_2XX>`, `<STATUS_4XX>`, and so on; their exact numeric codes remain in the numeric rollup. Quoted HTTP responses use `<HTTP_STATUS_2XX>`. Codes within one class (such as 200 and 204) can fold together; different classes stay separate. These class identities stay visible when token detection is disabled. A generic status field can also be a process exit code, so its marker does not label it as HTTP.
+
 ## CI Integration
 
 | Flag | Default | Description |
