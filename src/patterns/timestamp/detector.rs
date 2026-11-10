@@ -103,13 +103,22 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
             r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+[+-]\d{4}\b",
             -80,
         ),
+        // The weekday and month are calendar names, and every one of these
+        // stamps starts on a word boundary: a bare `\w{3}` took the last
+        // three letters of any word in front (`fooMon, 03 Aug …` read
+        // `foo<TIMESTAMP>`), and a klog letter inside `FILE0829 …` read
+        // `FIL<TIMESTAMP>`.
         p(
             "rfc822",
-            r"\w{3},\s+\d{2}\s+\w{3}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT",
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s+\d{2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{4}\s+\d{2}:\d{2}:\d{2}\s+GMT\b",
             -40,
         ),
         // ---- application ----
-        p("kubernetes-log", r"[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+", 0),
+        p(
+            "kubernetes-log",
+            r"\b[IWEF]\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+",
+            0,
+        ),
         // The kernel ring buffer's uptime stamp, brackets and padding
         // included: `[    0.028586]` and `[4324019.474441]` are one shape,
         // where `[ <DECIMAL>]` against `[<DECIMAL>]` split a group in two
@@ -197,15 +206,19 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         // 08:40:15.123456 2026]`, git's `Aug 29 08:40:15 2026` — must
         // outrank syslog-bsd, which matches its middle: left to the bsd form
         // the weekday and the year stayed literal and every event on the
-        // access points split three ways by day.
+        // access points split three ways by day. The weekday and month are
+        // calendar names on word boundaries: a bare `\w{3}` ate a word in
+        // front — `cache hit Aug 3 10:00:00 2026` and `cache set …` both
+        // read `cache <TIMESTAMP>`, `backup failed 12 10:00:00 2026` read
+        // `backup fai<TIMESTAMP>`.
         p(
             "ansic",
-            r"\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}\b",
             340,
         ),
         p(
             "git-commit",
-            r"\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}",
+            r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?\s+\d{4}\b",
             340,
         ),
         // `20260801142207`: year, a month 01–12, then day and clock.
@@ -1309,6 +1322,30 @@ mod shapes_2026_08_29 {
             assert_eq!(t.len(), 1, "{line}");
         }
         assert!(!UnifiedTimestampDetector::has_klog_header("FILE0829 x"));
+    }
+
+    /// The asctime, git, RFC 822 and klog stamps start on a word boundary
+    /// with calendar names: none of them takes the tail of a word in front.
+    #[test]
+    fn a_stamp_never_takes_the_tail_of_a_word() {
+        for (line, want) in [
+            ("cache hit Aug 3 10:00:00 2026", "cache hit <TIMESTAMP>"),
+            ("Sat Aug 29 08:40:15 2026 ok", "<TIMESTAMP> ok"),
+            ("Mon, 03 Aug 2026 10:00:00 GMT ok", "<TIMESTAMP> ok"),
+        ] {
+            assert_eq!(UnifiedTimestampDetector::detect_and_replace(line).0, want);
+        }
+        for (line, kept) in [
+            ("backup failed 12 10:00:00 2026", "backup failed 12 "),
+            ("fooMon, 03 Aug 2026 10:00:00 GMT x", "fooMon, 03 Aug 2026 "),
+            (
+                "I0829 01:00:00.100000 read FILE0829 01:12:10.311614",
+                "FILE0829 ",
+            ),
+        ] {
+            let (r, _) = UnifiedTimestampDetector::detect_and_replace(line);
+            assert!(r.contains(kept), "{line} -> {r}");
+        }
     }
 
     #[test]

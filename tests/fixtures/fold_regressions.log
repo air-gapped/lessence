@@ -4557,3 +4557,11 @@ user alice session=opened by uid
 user alice session=opened by uid
 user alice session=closed by uid
 user alice session=closed by uid
+
+##CASE lessence-bmp groups=2
+##WHY a git or asctime stamp starts at a calendar name on a word boundary; a bare three-letter class took the word in front, so `cache hit Aug 3 …` and `cache set Aug 4 …` both read `cache <TIMESTAMP>`
+##FROM invented cache lines
+cache hit Aug 3 10:00:00 2026
+cache hit Aug 3 10:00:01 2026
+cache set Aug 4 10:00:00 2026
+cache set Aug 4 10:00:01 2026
