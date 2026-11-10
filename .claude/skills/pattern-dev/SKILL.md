@@ -22,8 +22,8 @@ walks the table:
 1. **CPU quantities** — millicpu fields (`cpu: 250m`) before the JSON, key-value and minute-duration passes can take the value (`DurationDetector::cpu_quantities`, `patterns/duration.rs`)
 2. **Timestamps** — one scored table of about 40 formats (`patterns/timestamp/detector.rs`)
 3. **Email** — RFC 5322 (`patterns/email.rs`)
-4. **Paths** — before Network to preserve URLs; also carries the `&Event{ObjectMeta:{…}` and `{key:value}` structure passes, which therefore run before JSON's copies (`patterns/path.rs`)
-5. **JSON** — the same two passes (`patterns/json.rs`); shadowed by Paths, so `--disable-patterns json` does not reach them yet
+4. **Paths** — before Network to preserve URLs; also carries the `&Event{ObjectMeta:{…}` pass, which therefore runs before JSON's copy. An escaped flat struct (`\"{phase:Running}\"`) stays literal: its values are the event (`patterns/path.rs`)
+5. **JSON** — the same Event pass (`patterns/json.rs`); shadowed by Paths, so `--disable-patterns json` does not reach it yet
 6. **UUIDs** — standard format (`patterns/uuid.rs`)
 7. **Network** — IPs, ports, FQDNs (`patterns/network.rs`)
 8. **Hashes** — MD5, SHA1, SHA256, SHA512 (`patterns/hash.rs`)

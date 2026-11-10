@@ -4723,3 +4723,8 @@ Failed to update lock timeout=45
 ##FROM invented proxy lines
 [proxy] [upstream] probe failed for pod/web-0
 [proxy] [upstream] probe failed for pod/web-1
+
+##CASE lessence-bmp template_present={phase:Running}
+##WHY an escaped flat struct is the event's own words: `\"{phase:Running}\"` and `\"{phase:Failed}\"` both used to read `<JSON_DATA>`, so two outcomes were one template
+##FROM invented kubelet-shaped sync line
+E1101 10:00:00.000000    1234 worker.go:42] "Sync failed" err="state \"{phase:Running}\" rejected"

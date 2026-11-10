@@ -69,13 +69,6 @@ static SYSLOG_PATH_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(/[A-Za-z0-9_./~-]+)\[\d+\]:").expect("Failed to compile syslog path tag regex")
 });
 
-// JSON-like structures and embedded objects
-// Matches {key:value...} or escaped JSON \"{}\"
-static JSON_STRUCT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(\\"?\{[\\"\w\s:,\[\]$/_-]*\}\\"?)"#)
-        .expect("Failed to compile JSON structure regex")
-});
-
 // A Kubernetes Event's metadata block: `&Event{ObjectMeta:{<name>.<hash>
 // <namespace> … map[] []}`, the instance and nothing else. What follows it —
 // InvolvedObject, Reason, Message, Type — is the event and stays. Any
@@ -102,23 +95,10 @@ impl PathDetector {
             })
             .to_string();
 
-        // Replace JSON structures (like {volumeName:..., podName:...})
-        result = JSON_STRUCT
-            .replace_all(&result, |caps: &regex::Captures| {
-                let json = caps.get(0).unwrap().as_str();
-                tokens.push(Token::Path(json.to_string()));
-
-                // Try to identify what type of structure it is
-                if json.contains("volumeName:") {
-                    "<VOLUME_SPEC>"
-                } else if json.contains("ObjectMeta:") {
-                    "<K8S_OBJECT>"
-                } else {
-                    "<JSON_DATA>"
-                }
-                .to_string()
-            })
-            .to_string();
+        // An escaped flat struct (`\"{phase:Running}\"`) stays literal: its
+        // values are the event (`Running` vs `Failed`), and folding the whole
+        // struct to `<JSON_DATA>` made two outcomes one event. The detectors
+        // after this one fold what inside it they recognise (lessence-bmp).
 
         // CLI option names are keys, not variable paths. Leave their
         // spelling intact: erasing -t / --force can make distinct commands
