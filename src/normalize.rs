@@ -419,13 +419,37 @@ fn http_status_anchors<'a>(
     })
 }
 
-/// The request path of a structured HTTP record — only read when the record
-/// also names a method, so a file path in some other record is not mistaken
-/// for a route.
+/// The request path of a structured record: `"RequestPath":"/api/v1/x"`,
+/// `url=https://host/login`, `path="/a/b"`. A quoted value is a route when
+/// the record names an HTTP method; any value written as a route — a full URL
+/// or an absolute path — is one whatever else the record holds, so
+/// `url=…/login` and `url=…/logout` are two events exactly as
+/// `GET https://…/login` and `GET https://…/logout` are. An unquoted value
+/// follows `=` only: `MountPath:/x` in a struct dump is not a field written
+/// for a reader. Capture 1 is a quoted value, capture 2 an unquoted one.
 static FIELD_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)"?[a-z_.]*(?:path|uri|url|route)"?\s*[:=]\s*"([^"]*)""#)
+    Regex::new(r#"(?i)"?[a-z_.]*(?:path|uri|url|route)"?\s*(?:[:=]\s*"([^"]*)"|=([^\s"'\\,]+))"#)
         .expect("field path anchor pattern must compile")
 });
+
+/// A field value written as a route: a full URL (`scheme://…`) or an
+/// absolute path. The shape the value has, not the key it sits under.
+fn is_route_shaped(value: &str) -> bool {
+    value.starts_with('/')
+        || value.split_once("://").is_some_and(|(scheme, _)| {
+            !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphabetic())
+        })
+}
+
+/// Can the line hold a route-shaped field value at all? A byte gate before
+/// `FIELD_PATH` runs on a line that names no method.
+fn may_hold_route_field(original: &str) -> bool {
+    original.contains("://")
+        || original.contains("=/")
+        || original.contains("=\"/")
+        || original.contains(":\"/")
+        || original.contains(": \"/")
+}
 
 /// The program a record is about — auditd's `exe="/usr/bin/sudo"` and
 /// `comm="sshd"`, Tetragon's `"binary":"/usr/bin/runc"` — is its identity,
@@ -719,12 +743,27 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
         .split_once(':')
         .filter(|(algo, _)| !algo.is_empty() && algo.bytes().all(|b| b.is_ascii_alphanumeric()))
         .map_or(segment, |(_, rest)| rest);
-    if body.len() >= 8
-        && body
+    // A file named by such a run keeps its extension, which is a kind and
+    // not an instance: `000b-00bee12.snap` and `000b-00bf0c3.snap` are one
+    // `<ID>.snap`.
+    let (stem, ext) = match body.rsplit_once('.') {
+        Some((stem, ext))
+            if ext.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+                && ext.bytes().all(|b| b.is_ascii_alphanumeric()) =>
+        {
+            (stem, Some(ext))
+        }
+        _ => (body, None),
+    };
+    if stem.len() >= 8
+        && stem
             .bytes()
             .all(|b| b.is_ascii_hexdigit() || b == b'-' || b == b'_')
     {
-        return RouteSegment::Id;
+        return match ext {
+            None => RouteSegment::Id,
+            Some(ext) => RouteSegment::Skeleton(format!("<ID>.{ext}")),
+        };
     }
     // Otherwise keep the skeleton and collapse each digit run, so
     // `product_1` and `product_2` are one segment. `v1` and `v2` collapse
@@ -826,7 +865,8 @@ fn render_pod_prefix(matched: &str) -> String {
 /// Sentinel-protect every anchored span's exact bytes in `original` so no
 /// detector — `PathDetector` in particular — can swallow it before it can be
 /// rendered as its identity. Uses the same matches as `anchor_hash` for
-/// request targets, `FIELD_PATH` values on records that name a method,
+/// request targets, `FIELD_PATH` values on records that name a method or
+/// written as a route,
 /// `[pod/<pod>/<container>]` prefixes, status classes, PCI addresses, systemd units, and
 /// exact call-site/frame/program identities.
 /// A file path elsewhere is untouched.
@@ -864,6 +904,9 @@ struct ProtectedAnchors<'a> {
     renders: Vec<(String, String)>,
     statuses: Vec<ProtectedStatus>,
     unit_names: Vec<String>,
+    /// Route-shaped field values, whole, for the PATH facts: the rendered
+    /// skeleton hides their host and ids.
+    path_facts: Vec<String>,
     /// What `anchor_hash` hashes, in the order the line holds it.
     identities: Vec<(AnchorClass, AnchorIdentity<'a>)>,
 }
@@ -887,6 +930,7 @@ enum AnchorClass {
     TracebackFrame,
     Method,
     MethodPath,
+    FieldRoute,
     StatusField,
     Program,
     PodPrefix,
@@ -923,6 +967,7 @@ fn protect_anchored_spans<'a>(
     let mut statuses = Vec::new();
     let mut unit_names = Vec::new();
     let mut identities = Vec::new();
+    let mut path_facts = Vec::new();
 
     for request in requests {
         spans.push((
@@ -962,10 +1007,11 @@ fn protect_anchored_spans<'a>(
         }
     }
 
+    // Set when an HTTP method field made every quoted path field a route.
+    let mut has_method = false;
     if original.contains("ethod") || original.contains("ETHOD") {
         // Every method field is identity; only an HTTP one makes the
         // record's path a route.
-        let mut has_method = false;
         for caps in FIELD_METHOD.captures_iter(original) {
             let method = caps.get(1).map_or("", |m| m.as_str());
             identities.push((AnchorClass::Method, AnchorIdentity::Text(method)));
@@ -981,6 +1027,32 @@ fn protect_anchored_spans<'a>(
                     identities.push((AnchorClass::MethodPath, AnchorIdentity::Route(m.as_str())));
                 }
             }
+        }
+    }
+
+    // A route-shaped field value on any record is read like a prose request
+    // target: the same capture is hashed as scheme plus route skeleton and
+    // rendered as `scheme://<HOST>/route`, and the full value stays in the
+    // PATH facts. Values the method rule above already anchored are left
+    // to it.
+    if may_hold_route_field(original) {
+        for caps in FIELD_PATH.captures_iter(original) {
+            let m = match (caps.get(1), caps.get(2)) {
+                (Some(_), _) if has_method => continue,
+                (Some(m), _) | (None, Some(m)) => m,
+                (None, None) => continue,
+            };
+            let value = m.as_str().trim_end_matches([')', ']', '}', '.', ';']);
+            if value.is_empty() || !is_route_shaped(value) {
+                continue;
+            }
+            let end = m.start() + value.len();
+            spans.push((m.start(), end, AnchorRender::ProseTarget));
+            identities.push((
+                AnchorClass::FieldRoute,
+                AnchorIdentity::ProseTarget(&original[m.start()..end]),
+            ));
+            path_facts.push(original[m.start()..end].to_string());
         }
     }
 
@@ -1097,6 +1169,7 @@ fn protect_anchored_spans<'a>(
             renders: Vec::new(),
             statuses,
             unit_names,
+            path_facts,
             identities,
         };
     }
@@ -1159,6 +1232,7 @@ fn protect_anchored_spans<'a>(
         renders,
         statuses,
         unit_names,
+        path_facts,
         identities,
     }
 }
@@ -1219,6 +1293,11 @@ impl Normalizer {
             std::mem::take(&mut protected.unit_names)
                 .into_iter()
                 .map(Token::Name),
+        );
+        tokens.extend(
+            std::mem::take(&mut protected.path_facts)
+                .into_iter()
+                .map(Token::Path),
         );
 
         // Anchors come from the raw line: normalization has just erased the
@@ -1992,6 +2071,71 @@ mod tests {
             render_route("/objects/550e8400-e29b-41d4-a716-446655440000"),
             "/objects/<ID>"
         );
+    }
+
+    /// A file named by an opaque run is that id plus its kind.
+    #[test]
+    fn an_opaque_file_name_keeps_its_extension() {
+        assert_eq!(
+            render_route("/snap/000000000000000b-00000000000bee12.snap"),
+            render_route("/snap/000000000000000b-00000000000bf0c3.snap"),
+        );
+        assert_eq!(
+            render_route("/wal/0000000000000d4f-00000000c012fd.wal"),
+            "/wal/<ID>.wal"
+        );
+        assert_ne!(
+            render_route("/wal/0000000000000d4f-00000000c012fd.wal"),
+            render_route("/wal/0000000000000d4f-00000000c012fd.snap")
+        );
+        // A version is not an opaque run.
+        assert_eq!(render_route("/pkg/1.25.3"), "/pkg/<N>.<N>.<N>");
+    }
+
+    /// A URL or absolute path written as a field value is anchored like a
+    /// prose request target: the route is on the line and splits, an id
+    /// or a query value folds, the host is `<HOST>` and the whole value
+    /// stays in the PATH facts (lessence-oub).
+    #[test]
+    fn a_route_in_a_field_value_is_visible_and_anchored() {
+        let n = Normalizer::new(Config::default());
+        let line = |s: &str| n.normalize_line(s.to_string()).unwrap();
+
+        let login = line("GET ok url=https://shop.example/login?u=1 user=a1");
+        let logout = line("GET ok url=https://shop.example/logout?u=1 user=a1");
+        assert_eq!(login.normalized, "GET ok url=https://<HOST>/login user=a1");
+        assert_ne!(login.hash, logout.hash);
+        assert!(
+            login
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::Path(p) if p == "https://shop.example/login?u=1"))
+        );
+
+        let a = line(r#"x url="https://a.example/item/1001?ref=a" y"#);
+        let b = line(r#"x url="https://b.example/item/1002?ref=b" y"#);
+        assert_eq!(a.normalized, r#"x url="https://<HOST>/item/<N>" y"#);
+        assert_eq!(a.normalized, b.normalized);
+        assert_eq!(a.hash, b.hash);
+
+        let users = line("x path=/api/v1/users/42 y");
+        let users2 = line("x path=/api/v1/users/43 y");
+        let orders = line("x path=/api/v1/orders/42 y");
+        assert_eq!(users.normalized, "x path=/api/v<N>/users/<N> y");
+        assert_eq!(users.hash, users2.hash);
+        assert_ne!(users.hash, orders.hash);
+
+        // A trailing comma is the list's, not the URL's.
+        let listed = line("contact failed, url=http://10.0.0.7:8080/inform, rc=1");
+        assert_eq!(
+            listed.normalized.split(", ").nth(1),
+            Some("url=http://<HOST>/inform")
+        );
+
+        // A value that is not written as a route, or a struct dump's
+        // unquoted `Key:value`, is not anchored.
+        assert_eq!(line("x path=relative/dir/file y").anchor, 0);
+        assert_eq!(line("x MountPath:/var/run/x y").anchor, 0);
     }
 
     /// `k8s` is a word with an 8 in it. Collapsing that digit made every

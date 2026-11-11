@@ -8,8 +8,8 @@
       "selected": 27,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13096,
-      "stdout_tokens": 4630,
+      "stdout_bytes": 13105,
+      "stdout_tokens": 4629,
       "total": 27
     },
     "apache_sample": {
@@ -32,8 +32,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15453,
-      "stdout_tokens": 5205,
+      "stdout_bytes": 15470,
+      "stdout_tokens": 5214,
       "total": 108
     },
     "argocd_controller_production": {
@@ -62,15 +62,15 @@
     },
     "cilium_full": {
       "corpus_sha256": "fca4bf76b25cdc6622c709c5613345e325f7e2a06bdf8adbddf3c5deef885334",
-      "omitted": 538,
+      "omitted": 539,
       "previewed": 9,
       "printed": 29,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15790,
-      "stdout_tokens": 5825,
-      "total": 567
+      "stdout_bytes": 15788,
+      "stdout_tokens": 5823,
+      "total": 568
     },
     "enhanced_timestamps": {
       "corpus_sha256": "93007238648bc4605e48bf5a55cc092a600439b73244d896aa1a6ee121a68e03",
@@ -194,14 +194,14 @@
     },
     "k8s_argocd_aux": {
       "corpus_sha256": "b4420ad251f5b4344ee1897ca3cfb0ef9c4e75d45fb7c2bdad1462ba44c126d8",
-      "omitted": 22,
-      "previewed": 10,
-      "printed": 17,
+      "omitted": 23,
+      "previewed": 11,
+      "printed": 16,
       "selected": 39,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15810,
-      "stdout_tokens": 5379,
+      "stdout_bytes": 15148,
+      "stdout_tokens": 5157,
       "total": 39
     },
     "k8s_cert_manager": {
@@ -267,13 +267,13 @@
     "k8s_etcd": {
       "corpus_sha256": "7e23f8d8039f191b87e4cef05d9b4c29569781e09dd7e37e380365d4cc4bed78",
       "omitted": 27,
-      "previewed": 7,
+      "previewed": 6,
       "printed": 20,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15387,
-      "stdout_tokens": 5460,
+      "stdout_bytes": 15561,
+      "stdout_tokens": 5508,
       "total": 47
     },
     "k8s_events_all": {
@@ -290,15 +290,15 @@
     },
     "k8s_gitlab": {
       "corpus_sha256": "7c86ed6af979ebb9f8ed67a22b00249b675c8ed42de4fb7fe9cb1b5e670dc7d8",
-      "omitted": 127,
+      "omitted": 129,
       "previewed": 6,
-      "printed": 24,
+      "printed": 23,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15658,
-      "stdout_tokens": 5588,
-      "total": 151
+      "stdout_bytes": 15744,
+      "stdout_tokens": 5659,
+      "total": 152
     },
     "k8s_gpu_operator": {
       "corpus_sha256": "cd3370b0b0e25d095a8182acdf201bf76bacfbae04c17e59cbcb602e181f3a81",
@@ -308,8 +308,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15714,
-      "stdout_tokens": 5242,
+      "stdout_bytes": 15762,
+      "stdout_tokens": 5251,
       "total": 92
     },
     "k8s_grafana": {
@@ -350,15 +350,15 @@
     },
     "k8s_json_sample": {
       "corpus_sha256": "6be8120650538494be71e8c6c80135d954be0f1e2ee73280533dd470519c4112",
-      "omitted": 9,
+      "omitted": 10,
       "previewed": 8,
       "printed": 14,
-      "selected": 23,
+      "selected": 24,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13560,
-      "stdout_tokens": 4850,
-      "total": 23
+      "stdout_bytes": 13534,
+      "stdout_tokens": 4839,
+      "total": 24
     },
     "k8s_keda": {
       "corpus_sha256": "1a11de023134d56f0cf5824993db22232ea7a581857b6660a14382ed63b58d0c",
@@ -380,21 +380,21 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15687,
-      "stdout_tokens": 5242,
+      "stdout_bytes": 15705,
+      "stdout_tokens": 5248,
       "total": 41
     },
     "k8s_kube_state_metrics": {
       "corpus_sha256": "b38876099bb70934da9fcc3179513ba9a46c7e7d9494ec4246ad24875a2ddd1a",
-      "omitted": 4,
+      "omitted": 6,
       "previewed": 5,
       "printed": 26,
-      "selected": 30,
+      "selected": 32,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15370,
-      "stdout_tokens": 5140,
-      "total": 30
+      "stdout_bytes": 15402,
+      "stdout_tokens": 5150,
+      "total": 32
     },
     "k8s_litellm": {
       "corpus_sha256": "4fb9b2842e94e1993785e25ed44aefd44f931cc7a741668bd05f35cc26604641",
@@ -428,8 +428,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13956,
-      "stdout_tokens": 4789,
+      "stdout_bytes": 13974,
+      "stdout_tokens": 4794,
       "total": 71
     },
     "k8s_oauth2_proxy": {
@@ -512,8 +512,8 @@
       "selected": 31,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15427,
-      "stdout_tokens": 5747,
+      "stdout_bytes": 15443,
+      "stdout_tokens": 5751,
       "total": 31
     },
     "k8s_tetragon_cred_ns": {
@@ -524,8 +524,8 @@
       "selected": 35,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15507,
-      "stdout_tokens": 5915,
+      "stdout_bytes": 15597,
+      "stdout_tokens": 5935,
       "total": 35
     },
     "k8s_traefik": {
@@ -668,8 +668,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15675,
-      "stdout_tokens": 5626,
+      "stdout_bytes": 15687,
+      "stdout_tokens": 5632,
       "total": 62
     },
     "realistic_repetitive": {
@@ -740,8 +740,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15475,
-      "stdout_tokens": 5762,
+      "stdout_bytes": 15509,
+      "stdout_tokens": 5773,
       "total": 55
     },
     "usw_dmesg": {
@@ -752,8 +752,8 @@
       "selected": 38,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11636,
-      "stdout_tokens": 4188,
+      "stdout_bytes": 11638,
+      "stdout_tokens": 4191,
       "total": 38
     },
     "usw_messages": {
@@ -764,8 +764,8 @@
       "selected": 28,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13271,
-      "stdout_tokens": 4891,
+      "stdout_bytes": 13285,
+      "stdout_tokens": 4895,
       "total": 28
     },
     "usw_rc": {
@@ -788,8 +788,8 @@
       "selected": 14,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11147,
-      "stdout_tokens": 3892,
+      "stdout_bytes": 11163,
+      "stdout_tokens": 3895,
       "total": 14
     },
     "uxg_auth": {
@@ -860,8 +860,8 @@
       "selected": 21,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 10366,
-      "stdout_tokens": 3901,
+      "stdout_bytes": 10380,
+      "stdout_tokens": 3905,
       "total": 21
     },
     "uxg_journal_7d": {
@@ -968,8 +968,8 @@
       "selected": 27,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11162,
-      "stdout_tokens": 3665,
+      "stdout_bytes": 11189,
+      "stdout_tokens": 3675,
       "total": 27
     }
   },

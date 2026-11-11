@@ -261,6 +261,12 @@ rendered as `<HOST>`; routes use the existing numeric/opaque-ID skeleton and
 omit queries. Full targets remain in `PATH` facts. The corpus gate
 `prose_http_requests_preserve_methods_routes_and_counts` checks each method
 and route's input/output total, so a rare POST cannot hide among GET polling.
+A route-shaped field value (`url=https://…/login`, `path=/api/v1/users/42`,
+`"uri":"/x"`; key named `…path|uri|url|route`, value a full URL or absolute
+path, quoted or after `=`) is anchored and rendered by that same prose-target
+helper on any record, with or without a method field (`lessence-oub`). A
+segment that is an opaque run plus an extension (`<ID>.wal`) keeps the
+extension.
 
 Open classes as of 2026-08-30 — **237 templates / 411 redundant groups across 17
 corpora** (down from 370 / 653 / 24 before the kubectl-prefix class was closed):
