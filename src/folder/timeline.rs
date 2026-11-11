@@ -352,13 +352,15 @@ fn run_times(from: i64, to: i64, min: i64, max: i64, dated: bool) -> (String, St
     } else {
         "%m-%d "
     };
-    let show = |e: i64, secs: bool| {
+    let show = |e: i64, secs: bool, date: &str| {
         let fmt = format!("{date}{}", if secs { "%H:%M:%S" } else { "%H:%M" });
         chrono::DateTime::from_timestamp(e, 0)
             .map_or_else(|| e.to_string(), |dt| dt.format(&fmt).to_string())
     };
-    let secs = show(from, false) == show(to, false);
-    (show(from, secs), show(to, secs))
+    let secs = show(from, false, date) == show(to, false, date);
+    // A run inside one day names that day once: `09-09 16:00–16:05`.
+    let to_date = if day(from) == day(to) { "" } else { date };
+    (show(from, secs, date), show(to, secs, to_date))
 }
 
 #[cfg(test)]
@@ -555,6 +557,18 @@ mod tests {
         );
         let (from, _) = run_times(NINE + 7 * 3600, NINE + 86_400, NINE, NINE + 86_400, false);
         assert_eq!(from, "09-09 16:00");
+    }
+
+    #[test]
+    fn a_run_inside_one_day_of_a_longer_group_names_the_day_once() {
+        let (from, to) = run_times(
+            NINE + 7 * 3600,
+            NINE + 7 * 3600 + 300,
+            NINE,
+            NINE + 3 * 86_400,
+            true,
+        );
+        assert_eq!((from.as_str(), to.as_str()), ("2026-09-09 16:00", "16:05"));
     }
 
     #[test]

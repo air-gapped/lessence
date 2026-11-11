@@ -193,7 +193,8 @@ folded text and in the overview, names the run:
 
 The percentage is rounded down. The times are clock times when every member
 falls on one date, and carry the date otherwise (the year only when the log's
-stamps state one). The rule is fixed; no flag changes it.
+stamps state one). A run inside one day names that day once:
+`2026-08-26 07:53–12:39`. The rule is fixed; no flag changes it.
 
 ## CI Integration
 
