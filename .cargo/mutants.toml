@@ -113,6 +113,15 @@ exclude_re = [
     'replace UuidDetector::is_prose -> bool with false$',
     'replace - with / in UuidDetector::is_prose$',
 
+    # Counts::record's first two match arms are fast paths for in-order
+    # lines; the third arm (binary search) gives the same keys for every
+    # input. Turning a fast path off, or narrowing the second one (after the
+    # first arm fails, `<=` equals `<` and `==` never holds), changes speed
+    # only. Widening it (`true`, `>`) breaks the order and stays testable.
+    'replace match guard \*last == key with false in Counts::record$',
+    'replace match guard \*last < key with false in Counts::record$',
+    'replace < with (==|<=) in Counts::record$',
+
     # With last == 0 the `>=` branch assigns text[0..] back to text, byte for byte.
     'replace > with >= in KeyValueDetector::apply_general_pattern$',
 ]

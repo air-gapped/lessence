@@ -436,6 +436,130 @@ mod tests {
     }
 
     #[test]
+    fn of_two_shortest_runs_holding_the_same_the_earlier_wins() {
+        // 104 members, 90% is 93.6. Buckets 1-2 and 2-3 both hold 95.
+        let buckets = [1, 5, 90, 5, 0, 0, 0, 0, 0, 0, 0, 3];
+        assert_eq!(bunched_run(&buckets), Some((1, 2, 95)));
+    }
+
+    #[test]
+    fn of_two_shortest_runs_the_fuller_wins() {
+        // Buckets 1-2 hold 94, buckets 2-3 hold 96.
+        let buckets = [1, 4, 90, 6, 0, 0, 0, 0, 0, 0, 0, 3];
+        assert_eq!(bunched_run(&buckets), Some((2, 3, 96)));
+    }
+
+    fn counts(epochs: &[i64]) -> Counts {
+        let mut c = Counts::new(epochs[0]);
+        for &e in &epochs[1..] {
+            c.record(e);
+        }
+        c
+    }
+
+    #[test]
+    fn keys_stay_sorted_and_counted_when_lines_arrive_out_of_order() {
+        let c = counts(&[200, 100, 200]);
+        assert_eq!(c.keys, vec![(100, 1), (200, 2)]);
+        assert_eq!((c.min, c.max, c.total), (100, 200, 3));
+    }
+
+    #[test]
+    fn the_width_doubles_only_past_the_cap() {
+        let cap = HISTOGRAM_BUCKET_CAP as i64;
+        let mut c = counts(&(0..cap).collect::<Vec<_>>());
+        assert_eq!((c.width, c.keys.len()), (1, HISTOGRAM_BUCKET_CAP));
+        c.record(cap);
+        assert_eq!((c.width, c.keys.len()), (2, HISTOGRAM_BUCKET_CAP / 2 + 1));
+    }
+
+    #[test]
+    fn merging_adds_counts_on_a_shared_key_and_keeps_the_width() {
+        let mut a = counts(&[10, 10, 20]);
+        a.merge(counts(&[10, 10, 10, 30]));
+        assert_eq!(a.width, 1);
+        assert_eq!(a.keys, vec![(10, 5), (20, 1), (30, 1)]);
+        assert_eq!((a.min, a.max, a.total), (10, 30, 7));
+    }
+
+    #[test]
+    fn a_finer_group_is_placed_where_the_log_wide_builder_placed_the_line() {
+        // The builder holds second 127 under key 1 at width 64, which
+        // starts at second 64: display bucket 0, not the bucket 127 is in.
+        let c = counts(&[127, 127, 130]);
+        let g = Grid {
+            origin: 0,
+            bucket_seconds: 100,
+            len: 24,
+            collected_seconds: 64,
+        };
+        assert_eq!(c.on_grid(&g)[0], 2);
+        assert_eq!(c.on_grid(&g)[1], 1);
+    }
+
+    #[test]
+    fn a_group_coarser_than_the_grid_is_placed_by_its_keys_start() {
+        let mut c = counts(&[200, 201]);
+        c.halve();
+        c.halve();
+        assert_eq!((c.width, c.keys.clone()), (4, vec![(50, 2)]));
+        assert_eq!(c.on_grid(&grid(0, 100, 24))[2], 2);
+    }
+
+    #[test]
+    fn run_bounds_are_the_seconds_the_runs_keys_cover() {
+        let mut c = counts(&[100, 205, 207, 1000]);
+        c.halve();
+        c.halve();
+        assert_eq!(c.keys, vec![(25, 1), (51, 2), (250, 1)]);
+        let g = Grid {
+            origin: 0,
+            bucket_seconds: 100,
+            len: 24,
+            collected_seconds: 4,
+        };
+        // Key 51 at width 4 covers seconds 204..=207.
+        assert_eq!(c.run_bounds(&g, 2, 2), (204, 207));
+        // Tightened to the group's earliest and latest member.
+        assert_eq!(c.run_bounds(&g, 0, 23), (100, 1000));
+    }
+
+    #[test]
+    fn three_members_in_two_buckets_have_a_view() {
+        let mut t = Timeline::default();
+        t.record(10);
+        t.record(20);
+        t.record(130);
+        let v = t.view(&grid(0, 60, 24), true).unwrap();
+        assert_eq!((v.buckets[0], v.buckets[2]), (2, 1));
+    }
+
+    #[test]
+    fn a_run_spanning_exactly_a_quarter_of_the_groups_seconds_is_bunched() {
+        // Nine members over seconds 0..=25, one at 100: 25 × 4 = 100.
+        let mut t = Timeline::default();
+        for _ in 0..5 {
+            t.record(0);
+        }
+        for _ in 0..4 {
+            t.record(25);
+        }
+        t.record(100);
+        let b = t.view(&grid(0, 30, 24), true).unwrap().bunched.unwrap();
+        assert_eq!((b.first_bucket, b.last_bucket, b.members), (0, 0, 9));
+        // One second more and the run is over a quarter.
+        let mut t = Timeline::default();
+        for _ in 0..5 {
+            t.record(0);
+        }
+        for _ in 0..4 {
+            t.record(26);
+        }
+        t.record(100);
+        assert!(t.view(&grid(0, 30, 24), true).unwrap().bunched.is_none());
+    }
+
+    #[test]
     fn counters_are_allocated_at_the_second_member() {
         let mut t = Timeline::default();
         assert!(matches!(t, Timeline::Empty));
