@@ -815,7 +815,12 @@ fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
                 }
             }
             None => {
-                for sample in &mut entry.samples {
+                // a multi-slot VARIES entry carries each slot's own samples
+                let slots = entry.slots.iter_mut().flatten();
+                for sample in std::iter::once(&mut entry.samples)
+                    .chain(slots.map(|slot| &mut slot.samples))
+                    .flatten()
+                {
                     *sample = z.mask_line(sample, &values);
                 }
             }

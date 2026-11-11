@@ -41,5 +41,6 @@ mod integration {
     mod test_thread_safety;
     mod test_top_n;
     mod test_validation_errors;
+    mod test_varies_slots;
     mod test_version_display;
 }

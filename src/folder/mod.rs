@@ -144,7 +144,7 @@ struct PatternGroup {
 #[derive(Debug, Default)]
 struct RetainedState {
     per_type: BTreeMap<&'static str, (Accumulator, bool)>,
-    varies: VariesCounts,
+    varies: SlotCounts,
     /// Equal-length members align positionally, even as literals widen.
     positional_members: usize,
     /// Unequal-length members need LCS alignment against the final template.
@@ -152,8 +152,8 @@ struct RetainedState {
     realign: BTreeMap<String, usize>,
     realign_capped: bool,
     /// A slot widened after members were counted under its narrower form:
-    /// their values were stripped of an affix the slot no longer keeps, and
-    /// `varies` pools every slot, so they cannot be rewritten. Finalised
+    /// their values were stripped of an affix the slot no longer keeps, so
+    /// they cannot be rewritten. Finalised
     /// like `realign_capped`, as counts that are not known (lessence-veg).
     varies_unknown: bool,
 }
@@ -173,6 +173,22 @@ struct VariesCounts {
     capped: bool,
     /// The highest-ranked value held, once known; reset when it leaves.
     ceiling: Option<(u64, String)>,
+}
+
+/// The `<VARIES>` values of a group, one [`VariesCounts`] per slot in
+/// template order: the first `<VARIES>` of the template is `[0]`. Each slot
+/// keeps its own cap, so a slot with many values cannot crowd a slot with
+/// few out of the rollup, and a value is reported under the slot it filled
+/// (lessence-a9l). A slot past the end is empty until a member is counted
+/// in it.
+type SlotCounts = Vec<VariesCounts>;
+
+/// Slot `i` of `slots`, made (empty) when it does not exist yet.
+fn slot_mut(slots: &mut SlotCounts, i: usize) -> &mut VariesCounts {
+    if slots.len() <= i {
+        slots.resize_with(i + 1, VariesCounts::default);
+    }
+    &mut slots[i]
 }
 
 impl VariesCounts {
@@ -1170,6 +1186,10 @@ struct VariationEntry {
     pub capped: bool,
     /// VARIES only: how many members carried each sample, same order.
     pub counts: Option<Vec<usize>>,
+    /// VARIES only, and only for a template with two or more `<VARIES>`
+    /// slots: each slot's own entry, in template order. The entry itself
+    /// pools them.
+    pub slots: Option<Vec<VariationEntry>>,
 }
 
 #[derive(Serialize)]
@@ -1182,6 +1202,8 @@ struct JsonVariationEntry {
     capped: bool,
     samples_complete: bool,
     omitted_sample_values: Count,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slots: Option<Vec<JsonVariationEntry>>,
 }
 
 impl From<VariationEntry> for JsonVariationEntry {
@@ -1199,6 +1221,9 @@ impl From<VariationEntry> for JsonVariationEntry {
             samples: entry.samples,
             sample_counts: entry.counts,
             capped: entry.capped,
+            slots: entry
+                .slots
+                .map(|slots| slots.into_iter().map(Self::from).collect()),
         }
     }
 }
@@ -2361,19 +2386,13 @@ fn render_compact_marker_with(
             }
         }
 
-        out.push_str(" | ");
-        let mut first = true;
-        for (name, entry) in &worthy {
-            if !first {
-                out.push_str(", ");
-            }
-            first = false;
-            // Text-mode convention is lowercase token type names (matches
-            // the existing `summarize_variation_types` output in
-            // `normalize.rs` that integration tests assert against).
-            // JSON mode keeps UPPERCASE keys in the `variation` map
-            // — the two conventions are deliberately different.
-            out.push_str(&name.to_lowercase());
+        fn push_entry(
+            out: &mut String,
+            name: &str,
+            entry: &VariationEntry,
+            inline_threshold: usize,
+        ) {
+            out.push_str(name);
             out.push('×');
             out.push_str(&entry.distinct_count.to_string());
             if entry.capped {
@@ -2404,6 +2423,34 @@ fn render_compact_marker_with(
                     entry.samples.iter().map(|s| truncate_sample(s)).collect();
                 out.push_str(&truncated.join(", "));
                 out.push('}');
+            }
+        }
+
+        out.push_str(" | ");
+        let mut first = true;
+        for (name, entry) in &worthy {
+            if !first {
+                out.push_str(", ");
+            }
+            first = false;
+            // Text-mode convention is lowercase token type names (matches
+            // the existing `summarize_variation_types` output in
+            // `normalize.rs` that integration tests assert against).
+            // JSON mode keeps UPPERCASE keys in the `variation` map
+            // — the two conventions are deliberately different.
+            // A template with several `<VARIES>` slots lists each one apart,
+            // in template order: the n-th `varies×` is the n-th `<VARIES>`.
+            let name = name.to_lowercase();
+            match &entry.slots {
+                Some(slots) => {
+                    for (i, slot) in slots.iter().enumerate() {
+                        if i > 0 {
+                            out.push_str(", ");
+                        }
+                        push_entry(&mut out, &name, slot, inline_threshold);
+                    }
+                }
+                None => push_entry(&mut out, &name, entry, inline_threshold),
             }
         }
     }
@@ -2568,7 +2615,7 @@ impl RollupComputer {
     /// Shared the same way `accumulate_tokens` is: a full-group scan seeds
     /// `varies`; retained positional members extend it one line at a time.
     /// Retained unequal-length forms are aligned against the final template.
-    fn accumulate_varies(&self, lines: &[LogLine], template: &str, varies: &mut VariesCounts) {
+    fn accumulate_varies(&self, lines: &[LogLine], template: &str, varies: &mut SlotCounts) {
         self.accumulate_varies_counted(
             lines.iter().map(|line| (line.normalized.as_str(), 1)),
             template,
@@ -2580,7 +2627,7 @@ impl RollupComputer {
         &self,
         lines: impl Iterator<Item = (&'a str, usize)>,
         template: &str,
-        varies: &mut VariesCounts,
+        varies: &mut SlotCounts,
     ) {
         let template = VariesSlots::new(template, &unit_spans(template));
         if template.slots.is_empty() {
@@ -2601,7 +2648,7 @@ impl RollupComputer {
         normalized: &str,
         units: &[(usize, usize)],
         count: usize,
-        varies: &mut VariesCounts,
+        varies: &mut SlotCounts,
     ) {
         let tmpl_words = &template.words;
         let member: Vec<&str> = units
@@ -2614,7 +2661,7 @@ impl RollupComputer {
         // join that made it did (`unit_ranges`), so a member with a value
         // there is counted by that value and only a true absence is `∅`.
         let mut ranges = None;
-        for &(i, k, q) in &template.slots {
+        for (s, &(i, k, q)) in template.slots.iter().enumerate() {
             let masked;
             let range = match aligned[i] {
                 Some(j) => Some((j, j + 1)),
@@ -2637,7 +2684,7 @@ impl RollupComputer {
                 }
                 None => "∅",
             };
-            varies.add(value, count, self.distinct_cap);
+            slot_mut(varies, s).add(value, count, self.distinct_cap);
         }
     }
 
@@ -2685,6 +2732,12 @@ impl RollupComputer {
         edits: &[(usize, usize)],
         state: &mut RetainedState,
     ) {
+        // Each slot is counted under its place in template order, and a new
+        // slot shifts every later one by one: `made` is how many this edit
+        // run has opened in units before the current one. `edits` ascend,
+        // one unit at a time (`varying_spans_in`).
+        let mut made = 0;
+        let mut opened_in = None;
         for &(at, len) in edits {
             if template[at..at + len].contains(VARIES_MARK) {
                 state.varies_unknown = true;
@@ -2695,6 +2748,24 @@ impl RollupComputer {
                 .find(|&&(start, width)| start <= at && at + len <= start + width)
                 .expect("a varying edit is inside one template unit");
             let unit = &template[start..start + width];
+            let before = units
+                .iter()
+                .take_while(|&&(s, _)| s < start)
+                .filter(|&&(s, w)| template[s..s + w].contains(VARIES_MARK))
+                .count();
+            let index = if opened_in == Some(start) {
+                before + made - 1
+            } else if unit.contains(VARIES_MARK) {
+                before + made
+            } else {
+                let index = before + made;
+                if index < state.varies.len() {
+                    state.varies.insert(index, VariesCounts::default());
+                }
+                made += 1;
+                opened_in = Some(start);
+                index
+            };
             let masked;
             let value = if let Some(z) = &self.sanitizer {
                 masked = z.mask_text(unit);
@@ -2706,9 +2777,11 @@ impl RollupComputer {
                 .strip_prefix(&template[start..at])
                 .and_then(|v| v.strip_suffix(&template[at + len..start + width]))
                 .unwrap_or(value);
-            state
-                .varies
-                .add(value, state.positional_members, self.distinct_cap);
+            slot_mut(&mut state.varies, index).add(
+                value,
+                state.positional_members,
+                self.distinct_cap,
+            );
         }
     }
 
@@ -2721,7 +2794,7 @@ impl RollupComputer {
     fn compute(&self, group: &PatternGroup) -> GroupRollup {
         let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
-        let mut varies = VariesCounts::default();
+        let mut varies = SlotCounts::new();
         self.accumulate_varies(&group.lines, group.template(), &mut varies);
         self.finalize(
             per_type,
@@ -2762,10 +2835,12 @@ impl RollupComputer {
             // so can a slot that widened after its members were counted. Do
             // not label partial counts as exact: expose an empty, capped
             // variation entry. Token rollups and the group count survive.
-            state.varies = VariesCounts {
-                capped: true,
-                ..VariesCounts::default()
-            };
+            state.varies = (0..slot_count(template))
+                .map(|_| VariesCounts {
+                    capped: true,
+                    ..VariesCounts::default()
+                })
+                .collect();
         } else {
             self.accumulate_varies_counted(
                 state.realign.iter().map(|(text, &n)| (text.as_str(), n)),
@@ -2834,10 +2909,13 @@ impl RollupComputer {
         }
         // Any order: the values held past the cap are the lowest-ranked of
         // the union, whatever order they are offered in.
-        for (value, n) in from.varies.counts {
-            into.varies.add(&value, n, self.distinct_cap);
+        for (i, slot) in from.varies.into_iter().enumerate() {
+            let into = slot_mut(&mut into.varies, i);
+            for (value, n) in slot.counts {
+                into.add(&value, n, self.distinct_cap);
+            }
+            into.capped |= slot.capped;
         }
-        into.varies.capped |= from.varies.capped;
     }
 
     /// Draw samples deterministically from each Accumulator and produce one
@@ -2848,15 +2926,10 @@ impl RollupComputer {
     fn finalize(
         &self,
         per_type: BTreeMap<&'static str, (Accumulator, bool)>,
-        varies: VariesCounts,
+        varies: SlotCounts,
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
-        let VariesCounts {
-            counts: varies,
-            capped: varies_capped,
-            ..
-        } = varies;
         let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(seed_key));
         let mut out: GroupRollup = BTreeMap::new();
         for (name, (acc, capped)) in per_type {
@@ -2889,39 +2962,79 @@ impl RollupComputer {
                     samples,
                     capped,
                     counts: None,
+                    slots: None,
                 },
             );
         }
         // Words no detector claimed, with how many members carried each:
         // the samples are the most frequent plus the rarest, never a random
-        // draw, so this takes nothing from `rng`.
+        // draw, so this takes nothing from `rng`. The entry pools every
+        // slot, as it always has; a template with several slots carries
+        // each slot's own entry beside it, in template order.
         if template.contains(VARIES_MARK) {
-            let distinct_count = varies.len();
-            let mut by_count: Vec<(String, usize)> = varies.into_iter().collect();
-            by_count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-            let mut picked: Vec<(String, usize)> = if by_count.len() > self.k {
-                // the top k-1, and the rarest: rare is signal
-                let rarest = by_count.pop().unwrap();
-                by_count.truncate(self.k - 1);
-                by_count.push(rarest);
-                by_count
+            let mut slots = varies;
+            slots.resize_with(slot_count(template).max(1), VariesCounts::default);
+            let entry = if slots.len() == 1 {
+                let only = slots.pop().expect("one slot");
+                self.varies_entry(only.counts, only.capped)
             } else {
-                by_count
+                // Each value is held in every slot it fills while it ranks
+                // among the cap's lowest overall, so the union under one cap
+                // holds what one pooled count would have, with exact counts.
+                let mut pooled = VariesCounts::default();
+                let mut capped = false;
+                for slot in &slots {
+                    capped |= slot.capped;
+                    for (value, &n) in &slot.counts {
+                        pooled.add(value, n, self.distinct_cap);
+                    }
+                }
+                let mut entry = self.varies_entry(pooled.counts, capped || pooled.capped);
+                entry.slots = Some(
+                    slots
+                        .into_iter()
+                        .map(|slot| self.varies_entry(slot.counts, slot.capped))
+                        .collect(),
+                );
+                entry
             };
-            let counts: Vec<usize> = picked.iter().map(|(_, n)| *n).collect();
-            let samples: Vec<String> = picked.drain(..).map(|(w, _)| w).collect();
-            out.insert(
-                VARIES,
-                VariationEntry {
-                    distinct_count,
-                    samples,
-                    capped: varies_capped,
-                    counts: Some(counts),
-                },
-            );
+            out.insert(VARIES, entry);
         }
         out
     }
+}
+
+impl RollupComputer {
+    /// One `<VARIES>` entry from its counted values: the `k - 1` most
+    /// frequent and the rarest (rare is signal), most frequent first. The
+    /// same rule for the pooled entry and for each slot.
+    fn varies_entry(&self, counts: HashMap<String, usize>, capped: bool) -> VariationEntry {
+        let distinct_count = counts.len();
+        let mut by_count: Vec<(String, usize)> = counts.into_iter().collect();
+        by_count.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        if by_count.len() > self.k {
+            let rarest = by_count.pop().expect("more than k");
+            by_count.truncate(self.k - 1);
+            by_count.push(rarest);
+        }
+        let (samples, counts) = by_count.into_iter().unzip();
+        VariationEntry {
+            distinct_count,
+            samples,
+            capped,
+            counts: Some(counts),
+            slots: None,
+        }
+    }
+}
+
+/// How many `<VARIES>` slots `template` holds: one per unit that carries
+/// the mark, the way the rollup reads them (`VariesSlots`).
+fn slot_count(template: &str) -> usize {
+    unit_spans(template)
+        .iter()
+        .filter(|&&(at, len)| template[at..at + len].contains(VARIES_MARK))
+        .count()
 }
 
 impl PatternFolder {

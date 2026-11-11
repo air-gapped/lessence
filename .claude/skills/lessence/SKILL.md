@@ -239,6 +239,13 @@ A folded group prints its first member, the marker, then its last member.
 - **`ipv4×2 {10.0.1.50, 10.0.1.51}`** = up to 3 distinct values are listed inline, and the list is then complete; from 4 up only the count shows — the values are in the JSON `samples`.
 - **`port×2`** = count-only classes never list values.
 - **`varies×2 {u0×20, u1×20}`** = an untokenised word that differs between members, each value with its member count.
+- **A template with several `<VARIES>` slots lists one `varies×` per slot, in template order** — the first `varies×` is the first `<VARIES>`. Each slot keeps its own 64-value cap and its own most-frequent-plus-rarest samples, so a rare value in one slot is not crowded out by another:
+
+  ```
+  failed to start "db" on node "n1"
+  [+2 similar | varies×2 {"db"×3, "cache"×1}, varies×4 {"n1"×1, "n2"×1, "n3"×1, "n4"×1}]
+  failed to start "db" on node "n4"
+  ```
 - **`hash×64+`** = the distinct-value cap (64) was hit. The `+` means "at least 64 and possibly many more."
 - **Few groups** = one dominant problem (focused debugging)
 - **Many groups** = diverse issues (investigate each group)
@@ -284,7 +291,7 @@ is a `"summary"` with aggregate statistics. Key fields per group:
   ```
 - **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation. Hostnames appear under their own `FQDN` key since 0.4.4 (older versions mislabeled them `IPV4`). A syslog/journal line's positional host — `<TIMESTAMP> gw-core dnsmasq[<PID>]:` — folds to `<HOST>` and appears under its own `HOST` key, so the same event from several devices is one group.
 - **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION, PORT, PID, KEY_VALUE). `samples_complete` says whether the list is every distinct value, and `omitted_sample_values` how many are not listed.
-- **`VARIES`** — where a group's members disagree in something no detector tokenised (`Unreachable` vs `Timeout`, `Busy` vs `Reject`, a bare word vs a placeholder); the group's `normalized` shows `<VARIES>` there, keeping a shared field name in front (`msg=<VARIES>`) and treating a quoted value with spaces as one slot. Its `samples` are ordered by `sample_counts` (most frequent first, the rarest last), so a 1-in-7,000 outcome is visible without reading the raw lines; `∅` counts members that lack the word. Text mode shows the same as `varies×N {word×count, …}`. A line that differs from a group's founder in two or more sentence words (verb and outcome) founds its own group instead.
+- **`VARIES`** — where a group's members disagree in something no detector tokenised (`Unreachable` vs `Timeout`, `Busy` vs `Reject`, a bare word vs a placeholder); the group's `normalized` shows `<VARIES>` there, keeping a shared field name in front (`msg=<VARIES>`) and treating a quoted value with spaces as one slot. Its `samples` are ordered by `sample_counts` (most frequent first, the rarest last), so a 1-in-7,000 outcome is visible without reading the raw lines; `∅` counts members that lack the word. Text mode shows the same as `varies×N {word×count, …}`. The entry pools every slot of the template; when `normalized` holds two or more `<VARIES>`, `VARIES.slots` carries one entry per slot in template order (`slots[0]` is the first `<VARIES>`), with the same fields, its own cap and its own `samples_complete` — read `slots` to know which slot a value filled. A line that differs from a group's founder in two or more sentence words (verb and outcome) founds its own group instead.
 - **`capped: true`** — distinct_count is a lower bound (`distinct_count_kind: "lower_bound"`; otherwise `"exact"`). A retained group can also exceed the 64 distinct unequal-length shapes kept for final word alignment; its `VARIES` then has a zero lower bound and empty samples/counts rather than misleading partial counts. The group's occurrence count and other token rollups remain available.
 - **`normalized`** — the template with `<TOKEN>` placeholders; this is what lessence groups by.
 - **What stays literal** — a placeholder replaces a value, never a field's name or a log level, and fields that identify the event (call site, program, option name, status class, unit, route) stay on the line: two templates that differ in such a word are two different events. Per-shape rules: references/flags.md, "Reading a template".

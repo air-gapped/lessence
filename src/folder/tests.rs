@@ -660,6 +660,20 @@ fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
             "worker password=abcdef ready",
             "worker password=ghijkl ready",
         ],
+        // a slot opened after eviction ahead of one that already varied is
+        // counted as the first slot, not pooled with or behind it
+        &[
+            "worker alpha status=ready on n1",
+            "worker alpha status=waiting on n1",
+            "worker beta status=ready on n2",
+            "worker gamma status=ready on n1",
+        ],
+        &[
+            "worker alpha status=ready on n1",
+            "worker alpha status=waiting on n1",
+            "worker alpha status=ready on n2",
+            "worker beta status=ready on n2",
+        ],
     ];
     for &texts in sequences {
         for sanitize in [false, true] {
@@ -1460,6 +1474,7 @@ fn marker_inline_samples_below_threshold() {
             samples: vec!["/var/a".into(), "/var/b".into()],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
@@ -1482,6 +1497,7 @@ fn marker_count_only_above_threshold() {
             ],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
@@ -1499,6 +1515,7 @@ fn marker_capped_entry_has_plus_suffix() {
             samples: vec!["abc".into(), "def".into()],
             capped: true,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(100, &rollup, None, None, 3);
@@ -1531,6 +1548,7 @@ fn marker_sample_truncation_at_50_chars() {
             samples: vec![exact_value.clone(), long_value],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
@@ -1557,6 +1575,7 @@ fn marker_multiple_entries_comma_separated() {
             samples: vec!["10.0.0.1".into(), "10.0.0.2".into()],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     rollup.insert(
@@ -1566,6 +1585,7 @@ fn marker_multiple_entries_comma_separated() {
             samples: vec!["aaa".into(), "bbb".into()],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
@@ -1588,6 +1608,7 @@ fn marker_count_only_types_filtered_out() {
             samples: vec![],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     rollup.insert(
@@ -1597,6 +1618,7 @@ fn marker_count_only_types_filtered_out() {
             samples: vec!["a".into(), "b".into(), "c".into()],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
@@ -1626,6 +1648,7 @@ fn marker_zero_distinct_count_filtered_out() {
             samples: vec![],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
@@ -1648,6 +1671,7 @@ fn marker_truncation_exact_length() {
             samples: vec![long_value],
             capped: false,
             counts: None,
+            slots: None,
         },
     );
     let result = render_compact_marker(5, &rollup, None, None, 3);
@@ -5514,14 +5538,24 @@ fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
     let rc = RollupComputer::with_defaults();
     let counted = |template: &str, lines: &[&str]| {
         let lines: Vec<LogLine> = lines.iter().map(|l| make_line(l, vec![])).collect();
-        let mut varies = VariesCounts::default();
+        let mut varies = SlotCounts::new();
         rc.accumulate_varies(&lines, template, &mut varies);
-        let mut out: Vec<(String, usize)> = varies.counts.into_iter().collect();
-        out.sort();
+        // one list per slot, in template order
+        let out: Vec<Vec<(String, usize)>> = varies
+            .into_iter()
+            .map(|slot| {
+                let mut slot: Vec<(String, usize)> = slot.counts.into_iter().collect();
+                slot.sort();
+                slot
+            })
+            .collect();
         out
     };
-    let v = |pairs: &[(&str, usize)]| -> Vec<(String, usize)> {
-        pairs.iter().map(|&(s, n)| (s.to_string(), n)).collect()
+    let v = |pairs: &[(&str, usize)]| -> Vec<Vec<(String, usize)>> {
+        pairs
+            .iter()
+            .map(|&(s, n)| vec![(s.to_string(), n)])
+            .collect()
     };
     // a run of bare slots reads the member in order, the last taking the rest
     assert_eq!(
@@ -5533,7 +5567,10 @@ fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
         v(&[("x", 1), ("∅", 1)])
     );
     // only a true absence is `∅`
-    assert_eq!(counted("a <VARIES> <VARIES> c", &["a c"]), v(&[("∅", 2)]));
+    assert_eq!(
+        counted("a <VARIES> <VARIES> c", &["a c"]),
+        v(&[("∅", 1), ("∅", 1)])
+    );
     // a slot whose kept affix a member unit carries is anchored on it
     assert_eq!(
         counted("a k=<VARIES> j=<VARIES> c", &["a k=1 c"]),
@@ -6784,6 +6821,7 @@ fn the_compact_marker_ellipsis_means_more_values_than_shown() {
         samples: samples.iter().map(ToString::to_string).collect(),
         capped: false,
         counts: Some(vec![1; samples.len()]),
+        slots: None,
     };
     let mut more = BTreeMap::new();
     more.insert(VARIES, entry(3, &["a", "b"]));
@@ -6810,33 +6848,53 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
         positional_members: 3,
         ..RetainedState::default()
     };
+    // a slot opened before one already counted is counted ahead of it, in
+    // template order
+    slot_mut(&mut state.varies, 0).add("x", 3, 1);
+    let template = "a old <VARIES>";
+    rc.accumulate_new_varies(template, &unit_spans(template), &[(2, 3)], &mut state);
+    assert_eq!(state.varies.len(), 2, "{:?}", state.varies);
+    assert_eq!(state.varies[0].counts["old"], 3);
+    assert_eq!(state.varies[1].counts["x"], 3);
+    // a slot opened after it goes after it
+    let template = "a <VARIES> <VARIES> b";
+    rc.accumulate_new_varies(template, &unit_spans(template), &[(20, 1)], &mut state);
+    assert_eq!(state.varies.len(), 3, "{:?}", state.varies);
+    assert_eq!(state.varies[2].counts["b"], 3);
     // past the cap the lower-ranked value is held: `old` ranks below `new`,
     // and `w` below `v` (`VariesCounts::rank`)
-    state.varies.counts.insert("old".to_string(), 2);
-    rc.accumulate_new_varies("a old b", &unit_spans("a old b"), &[(2, 3)], &mut state);
-    assert_eq!(state.varies.counts["old"], 5);
-    rc.accumulate_new_varies("a new b", &unit_spans("a new b"), &[(2, 3)], &mut state);
-    assert!(state.varies.capped, "{:?}", state.varies);
-    assert_eq!(state.varies.counts.len(), 1);
+    let mut slot = VariesCounts::default();
+    slot.add("old", 5, 1);
+    slot.add("new", 3, 1);
+    assert!(slot.capped, "{slot:?}");
+    assert_eq!(slot.counts.len(), 1);
+    assert_eq!(slot.counts["old"], 5);
 
     let mut into = RetainedState {
         positional_members: 2,
         ..RetainedState::default()
     };
-    into.varies.counts.insert("w".to_string(), 2);
+    slot_mut(&mut into.varies, 0)
+        .counts
+        .insert("w".to_string(), 2);
     let mut from = RetainedState {
         positional_members: 3,
         realign_capped: true,
         ..RetainedState::default()
     };
-    from.varies.counts.insert("w".to_string(), 3);
-    from.varies.counts.insert("v".to_string(), 1);
+    slot_mut(&mut from.varies, 0)
+        .counts
+        .insert("w".to_string(), 3);
+    slot_mut(&mut from.varies, 0)
+        .counts
+        .insert("v".to_string(), 1);
     rc.merge_retained(&mut into, from);
     assert_eq!(into.positional_members, 5);
     assert!(into.realign_capped);
-    assert_eq!(into.varies.counts["w"], 5);
-    assert!(into.varies.capped);
-    assert_eq!(into.varies.counts.len(), 1);
+    assert_eq!(into.varies.len(), 1);
+    assert_eq!(into.varies[0].counts["w"], 5);
+    assert!(into.varies[0].capped);
+    assert_eq!(into.varies[0].counts.len(), 1);
 }
 
 /// source_name 2358: a registered source answers by name, stdin has none.
@@ -7172,6 +7230,7 @@ fn json_variation_samples_are_complete_only_when_exact_and_all_present() {
             samples: vec!["alpha".into()],
             capped,
             counts: None,
+            slots: None,
         });
         assert_eq!(json.samples_complete, complete);
     }

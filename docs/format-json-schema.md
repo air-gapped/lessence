@@ -135,6 +135,7 @@ Each value records both the bounded data and how to interpret its counts:
 | `sample_counts` | array of integers | `VARIES` only: how many of the group's lines carried each entry of `samples`, same order. Absent on every other type. |
 | `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
 | `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |
+| `slots` | array of objects | `VARIES` only, and only when `normalized` holds two or more `<VARIES>`: one entry per slot, in template order (`slots[0]` is the first `<VARIES>`), each with the fields above and its own `ROLLUP_DISTINCT_CAP`. The `VARIES` entry itself pools every slot. Absent for a one-slot template, where the entry already is that slot. |
 
 ### Sample-worthy vs count-only token types
 
@@ -155,6 +156,25 @@ counted as `∅`. A line that disagrees with a group's founder in two or more
 words of the sentence — the verb and the outcome, `Synchronization … succeeded`
 beside `Connection … lost.` — is not folded into it at all: one differing
 word is a name or a value, two are another event.
+
+A template with several slots reports each one apart. The `VARIES` entry
+pools them, as it always has (a value counted in two slots shows the sum),
+and `slots` holds each slot's own entry in template order, so a reader can
+tell which slot a value filled and a slot with many values cannot crowd a
+rare one of another slot out of the cap. Each slot's samples follow the same
+rule as the pooled entry: the most frequent, plus the rarest. From
+`failed to start <VARIES> on node <VARIES>`:
+
+```json
+"VARIES": {"distinct_count": 6, "samples": ["\"db\"", "\"cache\"", "\"n1\"", "\"n2\"", "\"n3\"", "\"n4\""], "sample_counts": [3, 1, 1, 1, 1, 1], ...,
+  "slots": [
+    {"distinct_count": 2, "distinct_count_kind": "exact", "samples": ["\"db\"", "\"cache\""], "sample_counts": [3, 1], "capped": false, "samples_complete": true, "omitted_sample_values": {"value": 0, "kind": "exact"}},
+    {"distinct_count": 4, "distinct_count_kind": "exact", "samples": ["\"n1\"", "\"n2\"", "\"n3\"", "\"n4\""], "sample_counts": [1, 1, 1, 1], "capped": false, "samples_complete": true, "omitted_sample_values": {"value": 0, "kind": "exact"}}
+  ]}
+```
+
+Text mode lists the slots the same way, one `varies×` per slot:
+`[+2 similar | varies×2 {"db"×3, "cache"×1}, varies×4 {"n1"×1, "n2"×1, "n3"×1, "n4"×1}]`.
 
 **Sample-worthy** (identity types — samples are useful): `UUID`,
 `IPV4`, `IPV6`, `MAC`, `HOST`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
@@ -359,7 +379,7 @@ lessence --format json prod.log \
   count differs need alignment against the final template; up to 64
   distinct normalized forms are kept with occurrence counts. Beyond that,
   `VARIES` reports `capped: true`, a zero lower bound, and empty `samples`
-  and `sample_counts`, because partial counts would be misleading. The
+  and `sample_counts` (each of its `slots` likewise), because partial counts would be misleading. The
   group's occurrence count and other token rollups remain available.
 - **`time_range` is not chronologically ordered.** It's based on
   first-line/last-line input positions, not parsed timestamp
