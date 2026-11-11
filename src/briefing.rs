@@ -83,7 +83,7 @@ pub struct HistogramBuilder {
     buckets: AHashMap<i64, u64>,
 }
 
-const HISTOGRAM_BUCKET_CAP: usize = 4096;
+pub(crate) const HISTOGRAM_BUCKET_CAP: usize = 4096;
 
 impl HistogramBuilder {
     /// Record one line's epoch second.
@@ -102,10 +102,12 @@ impl HistogramBuilder {
         }
     }
 
-    /// Aggregate the collected buckets into at most 24 display buckets
-    /// spanning `first_epoch..=last_epoch`. `None` when nothing was ever
-    /// recorded.
-    pub fn build(&self, first_epoch: i64, last_epoch: i64) -> Option<Histogram> {
+    /// The display grid `build` places buckets on, for the span
+    /// `first_epoch..=last_epoch`. `None` when nothing was ever recorded.
+    /// Per-group timelines (`folder::timeline`) are re-binned onto this same
+    /// grid, so a group's buckets and the log-wide ones compare index by
+    /// index.
+    pub(crate) fn grid(&self, first_epoch: i64, last_epoch: i64) -> Option<Grid> {
         if self.buckets.is_empty() {
             return None;
         }
@@ -113,13 +115,23 @@ impl HistogramBuilder {
         let span = (last_epoch - first_epoch).max(0);
         let display_bucket_seconds = (span / DISPLAY_BUCKETS + 1).max(self.bucket_seconds as i64);
         let num_buckets = (span / display_bucket_seconds + 1).clamp(1, DISPLAY_BUCKETS) as usize;
+        Some(Grid {
+            origin: first_epoch,
+            bucket_seconds: display_bucket_seconds,
+            len: num_buckets,
+            collected_seconds: self.bucket_seconds,
+        })
+    }
 
-        let mut buckets = vec![0u64; num_buckets];
+    /// Aggregate the collected buckets into at most 24 display buckets
+    /// spanning `first_epoch..=last_epoch`. `None` when nothing was ever
+    /// recorded.
+    pub fn build(&self, first_epoch: i64, last_epoch: i64) -> Option<Histogram> {
+        let grid = self.grid(first_epoch, last_epoch)?;
+        let display_bucket_seconds = grid.bucket_seconds;
+        let mut buckets = vec![0u64; grid.len];
         for (&key, &count) in &self.buckets {
-            let bucket_start = key * self.bucket_seconds as i64;
-            let offset = (bucket_start - first_epoch).max(0);
-            let idx = ((offset / display_bucket_seconds) as usize).min(num_buckets - 1);
-            buckets[idx] += count;
+            buckets[grid.index(key)] += count;
         }
 
         let (busiest_index, &busiest_count) = buckets
@@ -137,6 +149,39 @@ impl HistogramBuilder {
             busiest_pct: pct(busiest_count as usize, total as usize),
         })
     }
+}
+
+/// The log-wide histogram's display grid: `len` buckets of
+/// `bucket_seconds` from `origin`, filled from collected buckets of
+/// `collected_seconds` (the builder's final width). A collected bucket is
+/// placed by its start, and anything outside the grid is clamped to its
+/// first or last bucket, exactly as `HistogramBuilder::build` does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Grid {
+    pub origin: i64,
+    pub bucket_seconds: i64,
+    pub len: usize,
+    pub collected_seconds: u64,
+}
+
+impl Grid {
+    /// The display index of a collected bucket key (at `collected_seconds`).
+    pub(crate) fn index(&self, key: i64) -> usize {
+        self.index_at(key * self.collected_seconds as i64)
+    }
+
+    /// The display index of a bucket starting at epoch second `start`.
+    pub(crate) fn index_at(&self, start: i64) -> usize {
+        let offset = (start - self.origin).max(0);
+        ((offset / self.bucket_seconds) as usize).min(self.len - 1)
+    }
+}
+
+/// The text clause a bunched group carries between its time range and its
+/// rollup, in both the folded text marker and the overview: `98% in
+/// 16:55–16:58`. One function, so the two renderings cannot drift.
+pub(crate) fn bunched_clause(pct: u64, from: &str, to: &str) -> String {
+    format!("{pct}% in {from}\u{2013}{to}")
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -1170,7 +1215,7 @@ fn render_shape_line(hist: &Histogram, span_first_epoch: i64, dated: bool) -> St
 /// log never said. A 2025 kubelet dump read in 2026 rendered `busiest
 /// 2026-09-14`, which is simply a wrong date. Where the year is inferred we
 /// print `MM-DD HH:MM` and claim only what the file carries.
-fn carries_year(ts: &str) -> bool {
+pub(crate) fn carries_year(ts: &str) -> bool {
     // Maximal digit runs only. A sliding window finds "1812" inside klog's
     // ".181236" microseconds and would call a year-less stamp dated.
     let b = ts.as_bytes();

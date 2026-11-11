@@ -18,7 +18,7 @@ use super::{
     BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup, LineRef,
     LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, StatsJson,
     SummaryRecord, TimeRange, Token, VariationCompleteness, Write, first_timestamp_in,
-    group_epoch_range, io, render_compact_marker, token_type_name,
+    group_epoch_range, io, render_compact_marker_with, token_type_name,
 };
 use crate::run_metadata::RunMetadata;
 use crate::sanitize::Sanitizer;
@@ -170,15 +170,39 @@ impl PatternFolder {
                 line: self.maybe_mask_pii(&group.last().original, &group.last().tokens),
                 line_no: group.last_line_no,
             },
-            time_range: TimeRange {
-                first_seen: first_timestamp_in(&group.first().tokens),
-                last_seen: first_timestamp_in(&group.last().tokens),
+            time_range: {
+                let first_seen = first_timestamp_in(&group.first().tokens);
+                let view = self.timeline_view(group, first_seen.as_deref());
+                let (bucket_seconds, buckets, bunched) = match view {
+                    Some(v) => (Some(v.bucket_seconds), Some(v.buckets), v.bunched),
+                    None => (None, None, None),
+                };
+                TimeRange {
+                    first_seen,
+                    last_seen: first_timestamp_in(&group.last().tokens),
+                    bucket_seconds,
+                    buckets,
+                    bunched,
+                }
             },
             variation,
             nearest: group.nearest.clone(),
         };
 
         Ok(serde_json::to_string(&record)?)
+    }
+
+    /// The group's timeline on the log-wide grid, once that grid is fixed
+    /// at the end of input. `first_seen` is the group's first raw stamp:
+    /// a date in the bunched clause carries a year only when it does.
+    fn timeline_view(
+        &self,
+        group: &PatternGroup,
+        first_seen: Option<&str>,
+    ) -> Option<super::timeline::TimelineView> {
+        let grid = self.stats.timeline_grid.as_ref()?;
+        let dated = first_seen.is_none_or(crate::briefing::carries_year);
+        group.timeline.view(grid, dated)
     }
 
     /// What a group saves; see [`Self::account_count`].
@@ -221,11 +245,16 @@ impl PatternFolder {
             let collapsed_line = if !rollup.is_empty() {
                 let first_ts = first_timestamp_in(&group.first().tokens);
                 let last_ts = first_timestamp_in(&group.last().tokens);
-                render_compact_marker(
+                let clause = self
+                    .timeline_view(group, first_ts.as_deref())
+                    .and_then(|v| v.bunched)
+                    .map(|b| b.clause());
+                render_compact_marker_with(
                     group.count() - 2,
                     rollup,
                     first_ts.as_deref(),
                     last_ts.as_deref(),
+                    clause.as_deref(),
                     ROLLUP_TEXT_SAMPLE_THRESHOLD,
                 )
             } else {

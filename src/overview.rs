@@ -138,6 +138,17 @@ struct Meta {
 struct TimeRange {
     first_seen: Option<String>,
     last_seen: Option<String>,
+    /// Present only for a group whose lines bunch in time; rendered as the
+    /// same clause the folded text marker carries.
+    #[serde(default)]
+    bunched: Option<Bunched>,
+}
+
+#[derive(Deserialize)]
+struct Bunched {
+    pct: u64,
+    from: String,
+    to: String,
 }
 
 #[derive(Deserialize)]
@@ -481,8 +492,19 @@ fn cut(s: &str, max: usize) -> (&str, bool) {
 
 fn render_entry(record: &Record, bounded: bool) -> String {
     let stamp = |t: &Option<String>| t.clone().unwrap_or_else(|| "-".to_string());
+    let bunched = record
+        .time_range
+        .bunched
+        .as_ref()
+        .map(|b| {
+            format!(
+                " | {}",
+                crate::briefing::bunched_clause(b.pct, &b.from, &b.to)
+            )
+        })
+        .unwrap_or_default();
     let mut out = format!(
-        "[{}x] id={} {} → {}{}\n",
+        "[{}x] id={} {} → {}{bunched}{}\n",
         record.count,
         record.id,
         stamp(&record.time_range.first_seen),
@@ -1344,6 +1366,7 @@ mod tests {
             time_range: TimeRange {
                 first_seen: Some("12:00".into()),
                 last_seen: None,
+                bunched: None,
             },
             variation: BTreeMap::new(),
         };

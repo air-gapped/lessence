@@ -128,6 +128,9 @@ struct PatternGroup {
     /// (`joins_through_slots`), and only a slotted group can be joined that
     /// way, so the scan skips every other group at no cost.
     slot_units: Option<Vec<(usize, usize)>>,
+    /// How the group's timestamped members are spread over time
+    /// (lessence-sfu). Nothing is allocated until a second one arrives.
+    timeline: timeline::Timeline,
 }
 
 /// Rollup accumulator for a group that has been evicted from the live
@@ -304,6 +307,7 @@ impl PatternGroup {
             count: 1,
             retained: None,
             slot_units: None,
+            timeline: timeline::Timeline::default(),
         }
     }
 
@@ -392,12 +396,13 @@ impl PatternGroup {
     /// a rescan.
     fn absorb(
         &mut self,
-        other: PatternGroup,
+        mut other: PatternGroup,
         rollup_computer: &RollupComputer,
         min_collapse: usize,
     ) {
         debug_assert_eq!(self.template, other.template);
         self.count += other.count;
+        self.timeline.absorb(std::mem::take(&mut other.timeline));
         let other_is_later = other.last_line_no > self.last_line_no
             || (other.last_line_no == self.last_line_no && other.position > self.position);
         if other_is_later {
@@ -693,6 +698,11 @@ pub struct FoldingStats {
     pub span_last: Option<String>,
     pub template_counts: crate::briefing::TemplateCounts,
     pub histogram: crate::briefing::HistogramBuilder,
+    /// The log-wide histogram's final grid, fixed once the input has been
+    /// read (`PatternFolder::fix_timeline_grid`). `None` before then, so a
+    /// group emitted mid-stream (past `RETAINED_TEMPLATE_CAP`) carries no
+    /// timeline rather than one on a grid that is still moving.
+    pub(crate) timeline_grid: Option<crate::briefing::Grid>,
     /// Distinct-value cardinality per token class (lessence-nn3), keyed by
     /// the same `StatsBucket` as `bump`. One estimator per class that has
     /// ever seen a token; classes that never occur are simply absent.
@@ -737,17 +747,20 @@ impl FoldingStats {
 
     /// Extend the run's timestamp span with one line's tokens. Called on
     /// every sequential-clustering path (single-thread and post-batch),
-    /// each of which sees lines in file order.
-    fn record_span(&mut self, tokens: &[Token]) {
-        if let Some(ts) = first_timestamp_in(tokens) {
-            if self.span_first.is_none() {
-                self.span_first = Some(ts.clone());
-            }
-            if let Some(epoch) = crate::briefing::epoch_seconds(&ts) {
-                self.histogram.record(epoch);
-            }
-            self.span_last = Some(ts);
+    /// each of which sees lines in file order. Returns the line's epoch
+    /// second, when it has one, so its group's timeline records the same
+    /// value without parsing the stamp again.
+    fn record_span(&mut self, tokens: &[Token]) -> Option<i64> {
+        let ts = first_timestamp_in(tokens)?;
+        if self.span_first.is_none() {
+            self.span_first = Some(ts.clone());
         }
+        let epoch = crate::briefing::epoch_seconds(&ts);
+        if let Some(epoch) = epoch {
+            self.histogram.record(epoch);
+        }
+        self.span_last = Some(ts);
+        epoch
     }
 
     /// Every token class as (briefing field name, count), for the
@@ -926,6 +939,20 @@ struct LineRef {
 struct TimeRange {
     first_seen: Option<String>,
     last_seen: Option<String>,
+    /// How the group's timestamped members spread over time (lessence-sfu):
+    /// counts per bucket on the briefing histogram's grid, so
+    /// `buckets[i]` here and `briefing.histogram.buckets[i]` cover the same
+    /// seconds. Absent below 3 timestamped members, or when they all fall
+    /// in one bucket.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bucket_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    buckets: Option<Vec<u64>>,
+    /// Present only when the group is bunched (`timeline::bunched_run`):
+    /// the run of buckets that holds most of its lines, as the text clause
+    /// states it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bunched: Option<timeline::Bunched>,
 }
 
 /// One folded-group record in the JSONL stream.
@@ -2270,11 +2297,26 @@ fn seed_for_group(normalized: &str) -> u64 {
 ///   compute, or because none of its token types varied), falls back to
 ///   the minimal `[+N similar]` form. This keeps text output coherent
 ///   when the Phase 3 min_collapse guard skips rollup computation.
+#[cfg(test)]
 fn render_compact_marker(
     count: usize,
     rollup: &GroupRollup,
     first_ts: Option<&str>,
     last_ts: Option<&str>,
+    inline_threshold: usize,
+) -> String {
+    render_compact_marker_with(count, rollup, first_ts, last_ts, None, inline_threshold)
+}
+
+/// `render_compact_marker` with the bunched clause (`98% in 16:55–16:58`)
+/// after the time range, for a group whose lines bunch in time. A steady
+/// group passes `None` and its marker is what it always was.
+fn render_compact_marker_with(
+    count: usize,
+    rollup: &GroupRollup,
+    first_ts: Option<&str>,
+    last_ts: Option<&str>,
+    bunched: Option<&str>,
     inline_threshold: usize,
 ) -> String {
     let mut out = format!("[+{count} similar");
@@ -2286,6 +2328,10 @@ fn render_compact_marker(
         out.push_str(a);
         out.push_str(" → ");
         out.push_str(b);
+        if let Some(clause) = bunched {
+            out.push_str(" | ");
+            out.push_str(clause);
+        }
     }
 
     // Variation segment. Skip count-only types from the inline render —
@@ -3053,10 +3099,10 @@ impl PatternFolder {
         // free answered the level — see `record_briefing_line`.
         self.stats
             .record_briefing_line(&normalized_line.tokens, line);
-        self.stats.record_span(&normalized_line.tokens);
+        let epoch = self.stats.record_span(&normalized_line.tokens);
 
         // Try to find a matching group in the buffer
-        self.cluster_line_at(normalized_line, location);
+        self.cluster_line_timed(normalized_line, location, epoch);
 
         // Smart flushing: flush groups that are old enough to be safe
         if self.should_flush_buffer() {
@@ -3089,7 +3135,19 @@ impl PatternFolder {
     /// `group_index` first, then the linear similarity scan, then a new
     /// group. The hash shortcut picks the same group the scan would (see
     /// the `group_index` field docs).
+    #[cfg(test)]
     fn cluster_line_at(&mut self, normalized_line: LogLine, location: Option<LineLocation>) {
+        self.cluster_line_timed(normalized_line, location, None);
+    }
+
+    /// Place one line in its group; `epoch` is the line's epoch second
+    /// from `record_span`, recorded on whichever group it lands in.
+    fn cluster_line_timed(
+        &mut self,
+        normalized_line: LogLine,
+        location: Option<LineLocation>,
+        epoch: Option<i64>,
+    ) {
         // A line whose hash matches a group that has already been evicted
         // from the live buffer rejoins it directly (lessence-940) instead
         // of founding a fresh group under the same template. `group_index`
@@ -3099,6 +3157,9 @@ impl PatternFolder {
         if let Some(group) = self.retained.get_mut(&normalized_line.hash) {
             let loc = location
                 .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
+            if let Some(epoch) = epoch {
+                group.timeline.record(epoch);
+            }
             group.retained_rejoin(
                 normalized_line,
                 loc,
@@ -3162,15 +3223,16 @@ impl PatternFolder {
             {
                 let loc = location
                     .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
-                self.retained
-                    .get_mut(&key)
-                    .expect("indexed retained group")
-                    .retained_rejoin(
-                        normalized_line,
-                        loc,
-                        &self.rollup_computer,
-                        self.config.min_collapse,
-                    );
+                let group = self.retained.get_mut(&key).expect("indexed retained group");
+                if let Some(epoch) = epoch {
+                    group.timeline.record(epoch);
+                }
+                group.retained_rejoin(
+                    normalized_line,
+                    loc,
+                    &self.rollup_computer,
+                    self.config.min_collapse,
+                );
                 return;
             }
             live_match
@@ -3185,6 +3247,9 @@ impl PatternFolder {
             .then(|| location.map_or(self.position_counter, |l| l.line_no));
 
         if let Some(index) = match_index {
+            if let Some(epoch) = epoch {
+                self.buffer[index].timeline.record(epoch);
+            }
             if let Some(location) = location {
                 self.buffer[index].add_line_at(normalized_line, location);
             } else {
@@ -3212,6 +3277,9 @@ impl PatternFolder {
                 PatternGroup::new(normalized_line, self.position_counter)
             };
             group.nearest = nearest;
+            if let Some(epoch) = epoch {
+                group.timeline.record(epoch);
+            }
             if let Some(line_no) = distill_line_no {
                 group.member_line_nos.push(line_no);
             }
@@ -3549,6 +3617,16 @@ impl PatternFolder {
         Ok((display, total_patterns, was_capped, fit_truncated))
     }
 
+    /// Fix the log-wide histogram's grid now that every line has been read,
+    /// so each group's timeline is placed on the grid the briefing shows.
+    fn fix_timeline_grid(&mut self) {
+        let span = match (&self.stats.span_first, &self.stats.span_last) {
+            (Some(first), Some(last)) => crate::briefing::span_epochs(first, last),
+            _ => None,
+        };
+        self.stats.timeline_grid = span.and_then(|(f, l)| self.stats.histogram.grid(f, l));
+    }
+
     pub fn finish(&mut self) -> Result<Vec<String>> {
         // Constitutional compliance: Process any remaining batch
         if !self.batch_buffer.is_empty() {
@@ -3556,6 +3634,7 @@ impl PatternFolder {
         }
 
         let mut output = Vec::new();
+        self.fix_timeline_grid();
 
         // Every group still in the live buffer, plus every group retained
         // past its eviction (lessence-940) — each rendered exactly once,
@@ -3640,6 +3719,7 @@ impl PatternFolder {
         }
         // `--top 0` means every pattern, as it does for `--summary`.
         let n = if n == 0 { usize::MAX } else { n };
+        self.fix_timeline_grid();
 
         // Groups already streamed out as JSON records before this ranking
         // pass count toward the total the summary record reports.
@@ -3840,13 +3920,13 @@ impl PatternFolder {
         }
         self.stats
             .record_briefing_line(&normalized_line.tokens, &normalized_line.original);
-        self.stats.record_span(&normalized_line.tokens);
+        let epoch = self.stats.record_span(&normalized_line.tokens);
 
         // Fast similarity matching using pre-computed normalized text. The
         // grouping position remains batch-granular to preserve clustering and
         // flush behavior; `location` independently carries the exact source
         // position used by JSON output.
-        self.cluster_line_at(normalized_line, location);
+        self.cluster_line_timed(normalized_line, location, epoch);
 
         Ok(())
     }
@@ -3865,6 +3945,7 @@ impl PatternFolder {
 
 mod render;
 mod retained_index;
+mod timeline;
 
 #[cfg(test)]
 mod tests;

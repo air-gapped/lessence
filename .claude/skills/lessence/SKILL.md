@@ -130,6 +130,15 @@ report itself does not hold. `ip=9` is an exact distinct count, `ip>=64` a
 lower bound, and `variation: not recorded` means no rollup was computed for
 that group, or it had nothing to vary.
 
+An entry's first line is its count, id and time range; a group whose lines
+bunch in time adds where most of them fell, exactly as the text marker does
+(see Text mode):
+
+```
+[100x] id=0 2026-09-09T09:00:00Z → 2026-09-09T16:58:14Z | 98% in 16:55–16:58
+[480x] id=1 2026-09-09T09:00:02Z → 2026-09-09T16:59:02Z
+```
+
 `--overview all` prints every group with no budget and no preview cuts (it
 streams: peak memory is one record, whatever the group count).
 `--overview 0` prints the locators and recipes only. `--no-report` turns the
@@ -219,6 +228,13 @@ A folded group prints its first member, the marker, then its last member.
 
 - **`[+N similar]`** = N more members between the two shown lines. High N = repeating problem.
 - **`… → …`** = the group's first and last timestamp, in the log's own stamp format.
+- **`98% in 16:55–16:58`** = the group is bunched: almost all its lines fell in a short part of that range. Shown only when at least 90% of 10 or more timestamped members fall within a quarter of the group's own span (in buckets of the briefing's `shape:` grid, and in seconds); otherwise the marker carries no clause and the lines are spread over the range. Clock time when the group stays on one date, otherwise the date too. A group whose `first → last` reads like all day may be one burst:
+
+  ```
+  2026-09-09T09:00:00Z ERROR upstream refused connection from 10.1.2.1
+  [+98 similar | 2026-09-09T09:00:00Z → 2026-09-09T16:58:14Z | 98% in 16:55–16:58 | ipv4×4]
+  2026-09-09T16:58:14Z ERROR upstream refused connection from 10.1.2.2
+  ```
 - **`ipv4×4`** = 4 distinct IP addresses in this group. Low count = narrow problem; high count = widespread.
 - **`ipv4×2 {10.0.1.50, 10.0.1.51}`** = up to 3 distinct values are listed inline, and the list is then complete; from 4 up only the count shows — the values are in the JSON `samples`.
 - **`port×2`** = count-only classes never list values.
@@ -261,6 +277,11 @@ is a `"summary"` with aggregate statistics. Key fields per group:
 }
 ```
 
+- **`time_range.buckets`** — the group's timestamped members per time bucket, on the same grid as the briefing's `histogram` (`bucket_seconds` is the same, `buckets[i]` covers the same seconds as `briefing.histogram.buckets[i]`, from `span.first`), so a group's share of any stretch of the log is one division. Present when at least 3 members carry a timestamp and they fall in more than one bucket. `bunched` (only on a bunched group) is the text clause as data: `first_bucket`/`last_bucket`, `members` in that run, `pct`, and `from`/`to` as the clause writes them:
+
+  ```json
+  "time_range": {"first_seen":"2026-09-09T09:00:00Z","last_seen":"2026-09-09T16:58:14Z","bucket_seconds":1198,"buckets":[1,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0,98],"bunched":{"first_bucket":23,"last_bucket":23,"members":98,"pct":98,"from":"16:55","to":"16:58"}}
+  ```
 - **`variation`** — per-token-type distinct counts and sample values. This is the key field for triage: agents can answer "which IPs?", "how many distinct UUIDs?", "which namespaces?" from a single invocation. Hostnames appear under their own `FQDN` key since 0.4.4 (older versions mislabeled them `IPV4`). A syslog/journal line's positional host — `<TIMESTAMP> gw-core dnsmasq[<PID>]:` — folds to `<HOST>` and appears under its own `HOST` key, so the same event from several devices is one group.
 - **`samples`** — up to 7 values, deterministic (same input = same samples across runs). Empty for count-only types (TIMESTAMP, NUMBER, DURATION, PORT, PID, KEY_VALUE). `samples_complete` says whether the list is every distinct value, and `omitted_sample_values` how many are not listed.
 - **`VARIES`** — where a group's members disagree in something no detector tokenised (`Unreachable` vs `Timeout`, `Busy` vs `Reject`, a bare word vs a placeholder); the group's `normalized` shows `<VARIES>` there, keeping a shared field name in front (`msg=<VARIES>`) and treating a quoted value with spaces as one slot. Its `samples` are ordered by `sample_counts` (most frequent first, the rarest last), so a 1-in-7,000 outcome is visible without reading the raw lines; `∅` counts members that lack the word. Text mode shows the same as `varies×N {word×count, …}`. A line that differs from a group's founder in two or more sentence words (verb and outcome) founds its own group instead.

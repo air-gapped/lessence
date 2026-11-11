@@ -173,6 +173,28 @@ template shows a placeholder or a literal word whose scope is unclear.
 - **CLI options** — recognized long and single-letter option names in logged commands stay visible and keep different options in separate groups. Their values may vary, including inside quoted commands. Option names no longer appear as `PATH` samples. Repeated commands can still fold across revision hashes and execution IDs; single-dash words such as `-sdown` remain prose.
 - **Status classes** — anchored JSON/logfmt status fields stay visible as `<STATUS_2XX>`, `<STATUS_4XX>`, and so on; their exact numeric codes remain in the numeric rollup. Quoted HTTP responses use `<HTTP_STATUS_2XX>`. Codes within one class (such as 200 and 204) can fold together; different classes stay separate. These class identities stay visible when token detection is disabled. A generic status field can also be a process exit code, so its marker does not label it as HTTP.
 
+## Reading a group's time range
+
+A group's first and last timestamp are shown as the log wrote them. Its
+spread between them is in the JSON `time_range.buckets`: member counts per
+bucket on the briefing histogram's grid (same `bucket_seconds`, same
+indices), present when 3 or more members carry a timestamp in more than one
+bucket. Lines without a parseable timestamp are not counted. A group is
+**bunched** when it has at least 10 timestamped members over at least 4
+buckets of its own span, and the shortest run of buckets holding 90% of them
+covers at most a quarter of that span, both in buckets and in the seconds
+between the run's first and last member. A bunched group's marker, in the
+folded text and in the overview, names the run:
+
+```
+[+98 similar | 2026-09-09T09:00:00Z → 2026-09-09T16:58:14Z | 98% in 16:55–16:58 | ipv4×4]
+[100x] id=0 2026-09-09T09:00:00Z → 2026-09-09T16:58:14Z | 98% in 16:55–16:58
+```
+
+The percentage is rounded down. The times are clock times when every member
+falls on one date, and carry the date otherwise (the year only when the log's
+stamps state one). The rule is fixed; no flag changes it.
+
 ## CI Integration
 
 | Flag | Default | Description |

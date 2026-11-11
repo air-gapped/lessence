@@ -23,6 +23,7 @@ mod integration {
     mod test_format_json;
     mod test_format_json_rollups;
     mod test_group_integrity;
+    mod test_group_timeline;
     mod test_help_text;
     mod test_markdown_combos;
     mod test_microservices_compression;
