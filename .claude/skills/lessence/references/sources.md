@@ -7,7 +7,7 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
-verified-at: f3ef9e664b70ae2a507d4cfe370ad4b221379943
+verified-at: ad8416db92cb641bc3ea35bdcd2ee961f073f159
 
 `verified-at` is the main commit this skill was last verified against. The
 release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
@@ -41,3 +41,4 @@ touching `src/` postdates it.
 | Variation entries carry `distinct_count_kind`, `samples_complete`, `omitted_sample_values`; `nearest` is `{group_line_no, score, anchor_mismatch, first_diff:{ours,theirs,at}}` | live `--format json` / `--explain` runs + `src/folder/mod.rs` (`anchor_mismatch`) | 2026-11-10 |
 | `compression_ratio` equal for the default run and `--summary`, different under `--top N` below the group count | live `--stats-json` runs on `examples/distilled/kubelet.log` (18.83 / 18.83 / 9.61 at `--top 2`) | 2026-11-10 |
 | `--disable-patterns` reaches inside quoted strings; `<EVENT_OBJECT>` covers only `ObjectMeta:{…}` | live run on an invented input; `examples/distilled/kubelet.golden` | 2026-11-10 |
+| Group timeline (`time_range.buckets`, `bunched`, the `98% in …` clause, one date for a run inside a day), one `varies×` per `<VARIES>` slot in template order, a generated name keeping its component, a route after `url=` staying literal | `tests/integration/test_group_timeline.rs`, `test_varies_slots.rs`, the `##CASE` blocks for these in `tests/fixtures/fold_regressions.log` + live run of the build at verified-at | 2026-11-12 |
