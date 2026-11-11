@@ -25,7 +25,9 @@ static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| {
 // hashes from (k8s.io/apimachinery rand.String): no vowels, no y, no 0/1/3.
 pub(crate) const K8S_RAND_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
 
-// Common prefixes that should be preserved (not treated as variable)
+// Families whose names are always generated: after one of them, a 5-char
+// rand chunk is a suffix even with no digit in it (`kube-api-access-jwjsk`).
+// Every generated name keeps its prefix (`base_name`), on this list or not.
 static COMMON_PREFIXES: &[&str] = &[
     "kube-api-access",
     "kube-proxy",
@@ -79,15 +81,11 @@ impl NameDetector {
                             .iter()
                             .any(|p| Self::ends_with_segment(prefix, p)));
                 if generated {
-                    // Check if the prefix is a known common pattern
-                    if Self::is_common_prefix(prefix) {
-                        tokens.push(Token::Name(full_name.to_string()));
-                        format!("{prefix}-<SUFFIX>")
-                    } else {
-                        // Generic component name
-                        tokens.push(Token::Name(full_name.to_string()));
-                        "<COMPONENT>-<SUFFIX>".to_string()
-                    }
+                    // The component is the name; only the generated tail
+                    // folds. `<COMPONENT>-<SUFFIX>` made `nginx-a1b2c3` and
+                    // `redis-d4e5f6` one event.
+                    tokens.push(Token::Name(full_name.to_string()));
+                    format!("{}-<SUFFIX>", Self::base_name(prefix))
                 } else {
                     // Keep original if suffix doesn't look variable
                     full_name.to_string()
@@ -164,8 +162,22 @@ impl NameDetector {
             .is_some_and(|head| head.is_empty() || head.ends_with('-'))
     }
 
-    fn is_common_prefix(prefix: &str) -> bool {
-        COMMON_PREFIXES.contains(&prefix)
+    /// The stable part of a generated name: the prefix without the
+    /// generated segments at its end — a placeholder an earlier detector
+    /// left (`<HASH>`, `<NUMBER>`) or a pod-template hash drawn from the
+    /// Kubernetes rand alphabet. `web-v2-<HASH>` is `web-v2`,
+    /// `portal-5b8dfd9ck` is `portal`. The first segment always stays.
+    fn base_name(prefix: &str) -> &str {
+        let mut base = prefix;
+        while let Some((head, last)) = base.rsplit_once('-') {
+            let generated = last.starts_with('<')
+                || ((8..=10).contains(&last.len()) && Self::is_k8s_rand(last));
+            if !generated {
+                break;
+            }
+            base = head;
+        }
+        base
     }
 }
 
@@ -178,13 +190,13 @@ mod tests {
         let test_cases = vec![
             (
                 "pod pushprox-kube-proxy-client-9djm4",
-                "pod <COMPONENT>-<SUFFIX>",
+                "pod pushprox-kube-proxy-client-<SUFFIX>",
             ),
             (
                 "volume kube-api-access-52r58",
                 "volume kube-api-access-<SUFFIX>",
             ),
-            ("container cilium-kh8lj", "container <COMPONENT>-<SUFFIX>"),
+            ("container cilium-kh8lj", "container cilium-<SUFFIX>"),
             ("service nginx-stable", "service nginx-stable"), // Short suffix, unchanged
             ("app my-service", "app my-service"),             // Too short, unchanged
         ];
@@ -202,23 +214,20 @@ mod tests {
     fn generated_pod_name_after_placeholder_is_one_name() {
         let cases = [
             // Deployment pod, hex template hash already <HASH>, suffix has no digit
-            (
-                "pod web-v2-<HASH>-hcwqj ready",
-                "pod <COMPONENT>-<SUFFIX> ready",
-            ),
+            ("pod web-v2-<HASH>-hcwqj ready", "pod web-v2-<SUFFIX> ready"),
             // digit-led segment inside the base name (`all-in-1-v2`)
             (
                 "Pod/ledger-all-in-1-v2-<HASH>-x4q7c",
-                "Pod/<COMPONENT>-<SUFFIX>",
+                "Pod/ledger-all-in-1-v2-<SUFFIX>",
             ),
             // CronJob pod: minute number already <NUMBER>
-            ("pod backup-db-<NUMBER>-tvszq", "pod <COMPONENT>-<SUFFIX>"),
+            ("pod backup-db-<NUMBER>-tvszq", "pod backup-db-<SUFFIX>"),
             // non-hex template hash survived the hash detector
-            ("pod portal-5b8dfd9ck-bdwdp", "pod <COMPONENT>-<SUFFIX>"),
+            ("pod portal-5b8dfd9ck-bdwdp", "pod portal-<SUFFIX>"),
             // the whole name is tokenised, not just its tail
             (
                 "Pulled Pod/web-<HASH>-hcwqj image",
-                "Pulled Pod/<COMPONENT>-<SUFFIX> image",
+                "Pulled Pod/web-<SUFFIX> image",
             ),
         ];
         for (input, expected) in cases {
@@ -229,6 +238,22 @@ mod tests {
                 "no Name token for {input}"
             );
         }
+    }
+
+    /// The component is the event's subject: `nginx-a1b2c3` and
+    /// `redis-d4e5f6` are two names, and only the generated tail folds.
+    #[test]
+    fn a_generated_name_keeps_its_component() {
+        let (a, _) =
+            NameDetector::detect_and_replace("restarted container nginx-a1b2c3 after probe");
+        let (b, _) =
+            NameDetector::detect_and_replace("restarted container redis-d4e5f6 after probe");
+        assert_eq!(a, "restarted container nginx-<SUFFIX> after probe");
+        assert_eq!(b, "restarted container redis-<SUFFIX> after probe");
+        assert_eq!(NameDetector::base_name("web-v2-<HASH>"), "web-v2");
+        assert_eq!(NameDetector::base_name("portal-5b8dfd9ck"), "portal");
+        assert_eq!(NameDetector::base_name("<HASH>"), "<HASH>");
+        assert_eq!(NameDetector::base_name("backup-db-<NUMBER>"), "backup-db");
     }
 
     #[test]

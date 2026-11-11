@@ -123,6 +123,11 @@ struct PatternGroup {
     /// accumulator that survives in place of the full member list. `None`
     /// for a group still fully materialized in `lines`.
     retained: Option<RetainedState>,
+    /// The template's units once it holds a `<VARIES>` slot; `None` while
+    /// it is still the founder's own text. A line may join through a slot
+    /// (`joins_through_slots`), and only a slotted group can be joined that
+    /// way, so the scan skips every other group at no cost.
+    slot_units: Option<Vec<(usize, usize)>>,
 }
 
 /// Rollup accumulator for a group that has been evicted from the live
@@ -298,6 +303,7 @@ impl PatternGroup {
             member_line_nos: Vec::new(),
             count: 1,
             retained: None,
+            slot_units: None,
         }
     }
 
@@ -352,6 +358,7 @@ impl PatternGroup {
                     self.template.replace_range(at..at + len, VARIES_MARK);
                 }
                 template_units = unit_spans(&self.template);
+                self.slot_units = Some(template_units.clone());
             }
         }
         self.count += 1;
@@ -460,9 +467,35 @@ impl PatternGroup {
     /// too, since the template cannot show an absence any other way.
     fn mark_varying_words(&mut self, member: &str) {
         let edits = varying_spans(&self.template, member);
+        if edits.is_empty() {
+            return;
+        }
         for (at, len) in edits.into_iter().rev() {
             self.template.replace_range(at..at + len, VARIES_MARK);
         }
+        self.slot_units = Some(unit_spans(&self.template));
+    }
+
+    /// Whether `line` joins this group through the slots its template
+    /// already holds (`joins_through_slots`). A group still showing its
+    /// founder's own text has no slot to join through.
+    fn joins_through_slots(
+        &self,
+        line: &LogLine,
+        line_units: &mut Option<Vec<(usize, usize)>>,
+        threshold: u8,
+    ) -> bool {
+        self.slot_units.as_ref().is_some_and(|units| {
+            line.anchor == self.first().anchor
+                && first_difference_may_vary(&self.template, &line.normalized)
+                && joins_through_slots(
+                    &self.template,
+                    units,
+                    &line.normalized,
+                    line_units.get_or_insert_with(|| unit_spans(&line.normalized)),
+                    threshold,
+                )
+        })
     }
 
     /// The shown form of the group: the first line's template with
@@ -2027,6 +2060,111 @@ impl<'t> VariesSlots<'t> {
     }
 }
 
+/// A whole quoted value, plain or escaped inside a quoted message —
+/// `"csi-log"`, `\"csi-log\"` — with the brackets and separators around
+/// it set aside (`\"0f3c\")`, `"web-0",`). Returns that surrounding text
+/// as `(before, after)`; `None` when the unit is not one quoted string.
+/// A quote inside the value makes it something else: `"reason":"denied"`
+/// is a field, its key part of the sentence.
+fn quoted_value(w: &str) -> Option<(&str, &str)> {
+    let opened = w.trim_start_matches(['(', '[', '{']);
+    let core = opened.trim_end_matches([')', ']', '}', ',', ';']);
+    let inner = if core.len() >= 4 && core.starts_with("\\\"") && core.ends_with("\\\"") {
+        &core[2..core.len() - 2]
+    } else if core.len() >= 2 && core.starts_with('"') && core.ends_with('"') {
+        &core[1..core.len() - 1]
+    } else {
+        return None;
+    };
+    if inner.contains('"') {
+        return None;
+    }
+    let at = w.len() - opened.len();
+    Some((&w[..at], &w[at + core.len()..]))
+}
+
+/// Whether a line the founder test refused still reads as a member of a
+/// group whose template already varies. The founder test scores the line
+/// against the first member's own text, so a position the group has
+/// already turned into `<VARIES>` still counts against the line there: a
+/// line that shares the slots' variation and differs in one more quoted
+/// value (`volume <VARIES> (UniqueName: <VARIES>) pod \"cilium-<SUFFIX>\"`
+/// against a group built from one pod's volumes) scores as three
+/// differences and founds a group of its own, one per pod. Here the
+/// template is the reference instead, unit for unit, and every unit the
+/// line differs in must be a quoted value:
+///
+/// - a unit equal to the template's agrees;
+/// - a quoted value under a slot agrees, when it sits in what the slot
+///   keeps around it (`<VARIES>)` needs the `)`) — the slot already claims
+///   nothing more there;
+/// - a quoted value where the template has another quoted value, in the
+///   same brackets, is a difference and counts against the threshold.
+///
+/// Anything else refuses the join and leaves the line to the founder test:
+/// a bare word — an unquoted component name, a verb, an outcome, a
+/// `key=value` — is the sentence, not a value. So `restarted container
+/// nginx-<SUFFIX>` never joins `redis-<SUFFIX>` this way, whatever slots
+/// the group holds. The line must have exactly the template's units, and
+/// the units that agree must clear the threshold the founder test uses.
+/// The cheap half of [`joins_through_slots`], read before any unit is
+/// split: a line can only join through slots if the word where it first
+/// parts from the template is one that may differ — a slot, a quoted
+/// value, or a word inside an open quote. Most lines the founder test
+/// refused part at a plain word of another sentence and stop here. It
+/// only ever refuses what the full test would refuse too.
+fn first_difference_may_vary(template: &str, line: &str) -> bool {
+    let mut quotes = 0usize;
+    let mut words = template.split_ascii_whitespace();
+    for m in line.split_ascii_whitespace() {
+        let Some(t) = words.next() else {
+            return true;
+        };
+        if t != m {
+            return t.contains('"') || t.contains(VARIES_MARK) || quotes % 2 == 1;
+        }
+        quotes += t.bytes().filter(|&b| b == b'"').count();
+    }
+    true
+}
+
+fn joins_through_slots(
+    template: &str,
+    template_units: &[(usize, usize)],
+    line: &str,
+    line_units: &[(usize, usize)],
+    threshold: u8,
+) -> bool {
+    if template_units.len() != line_units.len() || template_units.is_empty() {
+        return false;
+    }
+    let mut diffs = 0usize;
+    for (&(ta, tl), &(la, ll)) in template_units.iter().zip(line_units) {
+        let t = &template[ta..ta + tl];
+        let m = &line[la..la + ll];
+        if t == m {
+            continue;
+        }
+        let Some(around) = quoted_value(m) else {
+            return false;
+        };
+        if let Some((prefix, suffix)) = slot_affix(t) {
+            if around == (prefix, suffix) {
+                continue;
+            }
+            return false;
+        }
+        if quoted_value(t) != Some(around) {
+            return false;
+        }
+        diffs += 1;
+    }
+    let n = template_units.len();
+    #[allow(clippy::cast_precision_loss)] // unit counts are small
+    let agree = (n - diffs) as f64 / n as f64 * 100.0;
+    agree >= f64::from(threshold)
+}
+
 /// How many words two lines disagree in where the disagreement is one of
 /// sentence, not of value: the letters differ and at least one side is not
 /// data. `Fork CoW for RDB` against `Fork CoW for AOF rewrite` is three,
@@ -2998,13 +3136,24 @@ impl PatternFolder {
             let before = retained_match.map_or(usize::MAX, |(position, _)| position);
             // The live buffer remains in founder order after removals.
             // A matching retained founder rules out every newer live one.
+            // The line's units, split once and only if a slotted group
+            // needs them (`joins_through_slots`).
+            let mut line_units: Option<Vec<(usize, usize)>> = None;
+            let threshold = self.config.threshold;
             let live_match = self
                 .buffer
                 .iter()
                 .take_while(|g| g.position < before)
                 .position(|group| {
                     let first = group.first();
-                    self.normalizer.are_similar(&normalized_line, first)
+                    let similar = self.normalizer.are_similar(&normalized_line, first)
+                        || (group.slot_units.is_some()
+                            && group.joins_through_slots(
+                                &normalized_line,
+                                &mut line_units,
+                                threshold,
+                            ));
+                    similar
                         && plain_word_diffs(&normalized_line.normalized, &first.normalized)
                             <= MAX_PLAIN_WORD_DIFFS
                 });

@@ -4864,3 +4864,34 @@ GET ok url=https://shop.example/item/1001?ref=a user=a1
 GET ok url=https://shop.example/item/1002?ref=b user=a2
 GET ok url=https://shop.example/item/1003?ref=c user=a3
 GET ok url=https://shop.example/item/1004?ref=d user=a4
+
+##CASE lessence-bmp groups=2
+##WHY a generated name keeps its component and folds only the generated tail: `nginx-a1b2c3` and `redis-d4e5f6` were both `<COMPONENT>-<SUFFIX>`, one event
+##FROM invented container lines
+restarted container nginx-a1b2c3 after probe
+restarted container nginx-a1b2c4 after probe
+restarted container redis-d4e5f6 after probe
+restarted container redis-d4e5f7 after probe
+
+##CASE lessence-bmp groups=2
+##WHY a slot a group already holds lets a line join only where the line differs in a quoted value; an unquoted component name is the sentence, so `redis-<SUFFIX>` founds its own group beside `nginx-<SUFFIX> after probe <VARIES>`
+##FROM invented container lines
+restarted container nginx-a1b2c3 after probe alpha failed
+restarted container nginx-a1b2c4 after probe bravo failed
+restarted container redis-d4e5f6 after probe delta failed
+
+##CASE lessence-bmp template_present=pod <VARIES> (UID: <VARIES>)
+##WHY a line that shares a group's slots and differs in one more quoted value joins the group, and the names become a counted slot; scored against the founder alone, each pod's first line differed in three quoted values and founded a group of its own
+##FROM invented kubelet-shaped attach lines
+I1102 08:00:01.100000    2201 attacher.go:77] "Attach started for volume \"cfg-dir\" (Source: \"host/opt/cfg-dir\") pod \"relay-q7wz4\" (UID: \"0f3c\") " node="n1"
+I1102 08:00:01.200000    2201 attacher.go:77] "Attach started for volume \"run-dir\" (Source: \"host/opt/run-dir\") pod \"relay-q7wz4\" (UID: \"0f3c\") " node="n1"
+I1102 08:00:01.300000    2201 attacher.go:77] "Attach started for volume \"log-dir\" (Source: \"host/opt/log-dir\") pod \"beacon-m8kx2\" (UID: \"7a21\") " node="n1"
+I1102 08:00:01.400000    2201 attacher.go:77] "Attach started for volume \"tls-dir\" (Source: \"host/opt/tls-dir\") pod \"ledger-x5tp9\" (UID: \"9be4\") " node="n1"
+
+##CASE lessence-bmp groups=1
+##WHY the same join by shape for names no detector folds: a quoted pod name beside two slots the group already holds is one more value, not another event
+##FROM invented kubelet-shaped mount lines
+I1102 09:10:00.000001    3310 mounter.go:51] "Mount done for volume \"data\" (Source: \"blk/sda1\") pod \"vault-0\" " node="n2"
+I1102 09:10:00.000002    3310 mounter.go:51] "Mount done for volume \"wal\" (Source: \"blk/sdb1\") pod \"vault-0\" " node="n2"
+I1102 09:10:00.000003    3310 mounter.go:51] "Mount done for volume \"cache\" (Source: \"blk/sdc1\") pod \"queue-1\" " node="n2"
+I1102 09:10:00.000004    3310 mounter.go:51] "Mount done for volume \"spool\" (Source: \"blk/sdd1\") pod \"mailer-2\" " node="n2"

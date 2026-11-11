@@ -7568,3 +7568,108 @@ mod alignment_properties {
         }
     }
 }
+
+/// `joins_through_slots`, unit by unit: a slot covers what its kept
+/// affixes allow, a differing quoted value counts against the threshold,
+/// and any other differing unit refuses the join.
+#[test]
+fn a_line_joins_through_slots_only_in_quoted_values() {
+    let joins = |template: &str, line: &str, threshold: u8| {
+        joins_through_slots(
+            template,
+            &unit_spans(template),
+            line,
+            &unit_spans(line),
+            threshold,
+        )
+    };
+    let template =
+        r#"attach volume <VARIES> src <VARIES> pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n1"#;
+    // differs from the template only under slots
+    assert!(joins(
+        template,
+        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n1"#,
+        83
+    ));
+    // one quoted value more: 10 of 11 units agree
+    assert!(joins(
+        template,
+        r#"attach volume \"a\" src \"b\" pod \"cilium-<SUFFIX>\" uid (\"0f3c\") node n1"#,
+        83
+    ));
+    // a quoted value inside the same brackets still counts as a value
+    assert!(joins(
+        template,
+        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"7a21\") node n1"#,
+        83
+    ));
+    // two quoted values more: 9 of 11 is under 84%, over 80%
+    let two = r#"attach volume \"a\" src \"b\" pod \"cilium-<SUFFIX>\" uid (\"7a21\") node n1"#;
+    assert!(!joins(template, two, 84));
+    assert!(joins(template, two, 80));
+    // a bare word is the sentence, never a value
+    assert!(!joins(
+        template,
+        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n2"#,
+        50
+    ));
+    // the brackets around a quoted value are part of the shape
+    assert!(!joins(
+        template,
+        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid \"0f3c\" node n1"#,
+        50
+    ));
+    // under a slot only a quoted value agrees, in what the slot keeps
+    // around it
+    assert!(joins("uid <VARIES>) ok", r#"uid \"x\") ok"#, 83));
+    assert!(!joins("uid <VARIES>) ok", r#"uid \"x\" ok"#, 10));
+    assert!(!joins("uid <VARIES> ok", "uid late ok", 10));
+    assert!(!joins("msg=<VARIES> ok", "msg=late ok", 10));
+    // a JSON field is not a quoted value: its key is the sentence
+    assert!(!joins(
+        r#"{"file":<VARIES>,"reason":"bad_ext"} x y z"#,
+        r#"{"file":"a.jpg","reason":"bad_body"} x y z"#,
+        10
+    ));
+    // a different unit count is never joined this way
+    assert!(!joins(template, r#"attach volume \"a\" pod"#, 10));
+}
+
+#[test]
+fn quoted_value_sets_aside_brackets_and_separators() {
+    assert_eq!(quoted_value(r#""web-0""#), Some(("", "")));
+    assert_eq!(quoted_value(r#"\"0f3c\")"#), Some(("", ")")));
+    assert_eq!(quoted_value(r#"("web-0"),"#), Some(("(", "),")));
+    assert_eq!(quoted_value(r#""""#), Some(("", "")));
+    assert_eq!(quoted_value("\""), None);
+    assert_eq!(quoted_value(r#"\""#), None);
+    assert_eq!(quoted_value("web-0"), None);
+    assert_eq!(quoted_value(r#""open"#), None);
+    assert_eq!(quoted_value(r#""reason":"denied","#), None);
+    assert_eq!(quoted_value(r#"\"a\"b\""#), None);
+}
+
+/// The prefilter refuses only what `joins_through_slots` refuses: the
+/// first word where a line parts from the template must be one that may
+/// differ. Spacing between words is not a difference.
+#[test]
+fn first_difference_may_vary_reads_the_first_differing_word() {
+    assert!(first_difference_may_vary(
+        r#"T    P attach <VARIES> pod \"a\" ok"#,
+        r#"T P attach \"x\" pod \"b\" ok"#
+    ));
+    assert!(first_difference_may_vary(
+        r#"T attach "a b" ok"#,
+        r#"T attach "a c" ok"#
+    ));
+    assert!(first_difference_may_vary(
+        r#"msg "x y z" ok"#,
+        r#"msg "x q z" ok"#
+    ));
+    assert!(!first_difference_may_vary(
+        "T attach <VARIES> ok",
+        "T detach <VARIES> ok"
+    ));
+    assert!(!first_difference_may_vary(r#"a "b" c"#, r#"a "b" d"#));
+    assert!(first_difference_may_vary("a b", "a b c"));
+}

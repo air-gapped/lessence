@@ -62,15 +62,15 @@
     },
     "cilium_full": {
       "corpus_sha256": "fca4bf76b25cdc6622c709c5613345e325f7e2a06bdf8adbddf3c5deef885334",
-      "omitted": 539,
+      "omitted": 540,
       "previewed": 9,
       "printed": 29,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15788,
-      "stdout_tokens": 5823,
-      "total": 568
+      "stdout_bytes": 15789,
+      "stdout_tokens": 5827,
+      "total": 569
     },
     "enhanced_timestamps": {
       "corpus_sha256": "93007238648bc4605e48bf5a55cc092a600439b73244d896aa1a6ee121a68e03",
@@ -284,8 +284,8 @@
       "selected": 12,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 5816,
-      "stdout_tokens": 1696,
+      "stdout_bytes": 5900,
+      "stdout_tokens": 1701,
       "total": 12
     },
     "k8s_gitlab": {
@@ -309,7 +309,7 @@
       "stderr_bytes": 0,
       "stderr_tokens": 0,
       "stdout_bytes": 15762,
-      "stdout_tokens": 5251,
+      "stdout_tokens": 5250,
       "total": 92
     },
     "k8s_grafana": {
@@ -356,7 +356,7 @@
       "selected": 24,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13534,
+      "stdout_bytes": 13549,
       "stdout_tokens": 4839,
       "total": 24
     },
@@ -512,8 +512,8 @@
       "selected": 31,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15443,
-      "stdout_tokens": 5751,
+      "stdout_bytes": 15416,
+      "stdout_tokens": 5736,
       "total": 31
     },
     "k8s_tetragon_cred_ns": {
@@ -524,8 +524,8 @@
       "selected": 35,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15597,
-      "stdout_tokens": 5935,
+      "stdout_bytes": 15798,
+      "stdout_tokens": 6091,
       "total": 35
     },
     "k8s_traefik": {
@@ -548,8 +548,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15224,
-      "stdout_tokens": 5613,
+      "stdout_bytes": 15210,
+      "stdout_tokens": 5627,
       "total": 49
     },
     "kubectl_events": {
@@ -560,21 +560,21 @@
       "selected": 9,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 4920,
-      "stdout_tokens": 1543,
+      "stdout_bytes": 4995,
+      "stdout_tokens": 1582,
       "total": 9
     },
     "kubelet": {
       "corpus_sha256": "59cd6abddfe382a8aeca63efeef13ca7e1265b9668d5fbf42b6457932c234771",
-      "omitted": 212,
-      "previewed": 6,
-      "printed": 12,
+      "omitted": 213,
+      "previewed": 7,
+      "printed": 7,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 14496,
-      "stdout_tokens": 5152,
-      "total": 224
+      "stdout_bytes": 14291,
+      "stdout_tokens": 5155,
+      "total": 220
     },
     "linux_auditd": {
       "corpus_sha256": "ed295ff375fbfe3c790b6b3f93caea73e610d36dd2ab91c8b700c15c2e346573",
@@ -628,13 +628,13 @@
       "corpus_sha256": "b2d89434e13d4f2387eb83d70c31c3069fe48669e2138f7295206a22c402bbb7",
       "omitted": 0,
       "previewed": 3,
-      "printed": 5,
-      "selected": 5,
+      "printed": 4,
+      "selected": 4,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 4844,
-      "stdout_tokens": 1890,
-      "total": 5
+      "stdout_bytes": 4481,
+      "stdout_tokens": 1746,
+      "total": 4
     },
     "openssh_brute_force": {
       "corpus_sha256": "bd3ac56000d77c9dcae21f4758a8ab4283f5205fd7d11eea2c17e79cd5dbd425",
@@ -668,7 +668,7 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15687,
+      "stdout_bytes": 15679,
       "stdout_tokens": 5632,
       "total": 62
     },
@@ -680,8 +680,8 @@
       "selected": 13,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7645,
-      "stdout_tokens": 2685,
+      "stdout_bytes": 7637,
+      "stdout_tokens": 2684,
       "total": 13
     },
     "security_attacks": {

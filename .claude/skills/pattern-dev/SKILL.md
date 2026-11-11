@@ -36,7 +36,7 @@ walks the table:
 15. **Log Module** — level + module token for the statistics; Apache, nginx and systemd lines keep their text, the Java-logger form still folds to `[<LOG_WITH_MODULE>]` (`patterns/log_module.rs`)
 16. **Structured Messages** — component + level token for stats only; the line text is preserved verbatim so distinct messages fold into distinct groups (`patterns/structured.rs`)
 17. **Durations** — time and size values; a `<name>Duration=` field keeps its key (`podStartSLOduration=<DURATION_FIELD>`) (`patterns/duration.rs`)
-18. **Names** — variable names (`patterns/names.rs`) — gated by `--disable-patterns name` like the others
+18. **Names** — generated names; the component stays and only the generated tail folds (`nginx-<SUFFIX>`, `web-v2-<HASH>-hcwqj` → `web-v2-<SUFFIX>`) (`patterns/names.rs`) — gated by `--disable-patterns name` like the others
 19. **Quoted Strings** — last to avoid consuming other tokens; its nested cascade honours the same `--disable-patterns` gates (`patterns/quoted.rs`)
 
 ## Normalization Pipeline
