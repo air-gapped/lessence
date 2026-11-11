@@ -118,12 +118,9 @@ fn test_fit_with_preflight() {
         .spawn()
         .expect("Failed to start");
 
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // A usage error exits before stdin is read, so this write can meet a
+    // closed pipe. Either outcome is fine: the assertions below are the test.
+    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
 
     let output = child.wait_with_output().expect("Failed to wait");
     let stderr = String::from_utf8_lossy(&output.stderr);
