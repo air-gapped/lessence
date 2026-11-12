@@ -63,8 +63,8 @@ exclude_re = [
     # cpu_quantities and the bracket detector repeat their own guards;
     # PCI_ADDRESS itself requires both the colon and the dot-digit shape.
     # (The first two are DETECTOR_ORDER closures: pinned, no function name.)
-    '^src/normalize\.rs:49:51: replace && with \|\|$',
-    '^src/normalize\.rs:149:29: replace && with \|\|$',
+    '^src/normalize\.rs:48:51: replace && with \|\|$',
+    '^src/normalize\.rs:134:29: replace && with \|\|$',
     'replace && with \|\| in pci_addresses$',
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
@@ -124,4 +124,28 @@ exclude_re = [
 
     # With last == 0 the `>=` branch assigns text[0..] back to text, byte for byte.
     'replace > with >= in KeyValueDetector::apply_general_pattern$',
+
+    # --- code changed since v0.8.1 ---
+    # At lines.len() == 2, pop-last, truncate(1), push-last restores the
+    # same two lines, so `> 2` and `>= 2` keep identical member lists.
+    '^src/folder/mod\.rs:395:63: replace > with >= in PatternGroup::retained_rejoin$',
+    # At len == k, pop-rarest, truncate(k-1), push-rarest is the identity on
+    # the sorted vector (the same argument as RollupComputer::finalize).
+    'replace > with >= in RollupComputer::varies_entry$',
+    # align_banded reads a row only through `value`, at cells inside both
+    # the band and the table, and the row's j loop writes every such cell
+    # before it is read: the value `here` is filled with is never read.
+    '^src/folder/mod\.rs:1490:19: delete - in align_banded$',
+    # accumulate_new_varies: at index == len, inserting a default slot and
+    # slot_mut's resize to index + 1 leave the same vector.
+    '^src/folder/mod\.rs:2762:26: replace < with <= in RollupComputer::accumulate_new_varies$',
+    # Its edits come only from varying_spans_in, which emits at most one
+    # edit per template unit, and for a unit holding <VARIES> one that
+    # covers the mark (p <= prefix, q <= suffix) and takes the
+    # varies_unknown arm; so the `opened_in` and `unit.contains` arms never
+    # run. In the arm that runs the current unit holds no <VARIES>, so
+    # counting it with `<=` adds nothing.
+    '^src/folder/mod\.rs:2753:42: replace < with <= in RollupComputer::accumulate_new_varies$',
+    '^src/folder/mod\.rs:2757:(24|31): replace [-+] with [-+*/] in RollupComputer::accumulate_new_varies$',
+    '^src/folder/mod\.rs:2759:24: replace \+ with [-*] in RollupComputer::accumulate_new_varies$',
 ]

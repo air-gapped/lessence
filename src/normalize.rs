@@ -4387,6 +4387,63 @@ mod e8v_normalize_2026_09_17 {
         assert!(line.normalized.contains("/api/"), "{}", line.normalized);
     }
 
+    #[test]
+    fn a_field_value_is_a_route_only_when_written_as_one() {
+        assert!(is_route_shaped("/srv/data"));
+        assert!(is_route_shaped("https://a.example/x"));
+        assert!(!is_route_shaped("relative/dir"));
+        // a scheme is there, and it is letters
+        assert!(!is_route_shaped("://a.example/x"));
+        assert!(!is_route_shaped("h2c-1://a.example/x"));
+        // on a line the byte gate lets through, a path key over a relative
+        // value anchors nothing
+        assert_eq!(normalize("x path=relative/dir/file to=/srv y").anchor, 0);
+    }
+
+    #[test]
+    fn each_written_form_of_a_route_field_passes_the_byte_gate() {
+        for s in [
+            "x url=https://a.example/b y",
+            "x path=/api/a y",
+            r#"x path="/api/a" y"#,
+            r#"x "path":"/api/a" y"#,
+            r#"x "path": "/api/a" y"#,
+        ] {
+            assert!(may_hold_route_field(s), "{s}");
+            assert_ne!(normalize(s).anchor, 0, "{s}");
+        }
+    }
+
+    #[test]
+    fn a_file_named_by_an_id_keeps_only_an_extension_written_as_one() {
+        assert_eq!(render_route("/files/0011aabb.snap"), "/files/<ID>.snap");
+        // `7z` does not start with a letter, `tar-gz` is not alphanumeric:
+        // neither is an extension, so the segment is not an id
+        assert_eq!(render_route("/files/0011aabb.7z"), "/files/<N>aabb.<N>z");
+        assert_eq!(
+            render_route("/files/0011aabb.tar-gz"),
+            "/files/<N>aabb.tar-gz"
+        );
+    }
+
+    #[test]
+    fn an_http_method_field_makes_any_quoted_path_field_a_route() {
+        // `items/42` is not written as a route; the method makes it one
+        let items = normalize(r#"method=GET path="items/42" y"#);
+        let orders = normalize(r#"method=GET path="orders/42" y"#);
+        assert_ne!(items.anchor, orders.anchor);
+    }
+
+    #[test]
+    fn a_path_the_method_rule_anchored_is_not_also_a_field_route() {
+        let line = normalize(r#"method=GET path="/api/v1/items" status=200"#);
+        assert!(
+            !line.tokens.iter().any(|t| matches!(t, Token::Path(_))),
+            "{:?}",
+            line.tokens
+        );
+    }
+
     /// 1341:68: two tokens with the same small-int tail shape are one
     /// token to the similarity metric, so lines differing only there fold.
     #[test]

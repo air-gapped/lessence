@@ -280,6 +280,34 @@ impl QuotedStringDetector {
 mod tests {
     use super::*;
 
+    #[test]
+    fn an_ip_inside_a_quoted_string_is_found_with_ports_and_names_off() {
+        let gates = NestedGates {
+            ports: false,
+            fqdns: false,
+            ..NestedGates::ALL
+        };
+        let line = r#"job msg="peer 10.1.2.3 refused" ok"#;
+        assert_eq!(
+            QuotedStringDetector::detect_and_replace_with(line, gates).0,
+            r#"job msg="peer <IP> refused" ok"#
+        );
+    }
+
+    #[test]
+    fn a_port_inside_a_quoted_string_is_found_with_ips_and_names_off() {
+        let gates = NestedGates {
+            ips: false,
+            fqdns: false,
+            ..NestedGates::ALL
+        };
+        let line = r#"job msg="peer 10.1.2.3:8443 refused" ok"#;
+        assert_eq!(
+            QuotedStringDetector::detect_and_replace_with(line, gates).0,
+            r#"job msg="peer 10.1.2.3:<PORT> refused" ok"#
+        );
+    }
+
     /// A disabled detector does not run inside a quoted string either, and
     /// a verdict cached under one set of gates is not reused under another.
     #[test]

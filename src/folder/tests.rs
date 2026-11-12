@@ -7732,3 +7732,325 @@ fn first_difference_may_vary_reads_the_first_differing_word() {
     assert!(!first_difference_may_vary(r#"a "b" c"#, r#"a "b" d"#));
     assert!(first_difference_may_vary("a b", "a b c"));
 }
+
+// ---- mutation gaps in code changed since v0.8.1 (outside the timeline) ----
+
+#[test]
+fn a_kept_prefix_the_member_carries_whole_stays_whole_without_a_delimiter() {
+    // the whole prefix is kept when the member has it and a byte more,
+    // even where it ends in no field delimiter to cut back to
+    assert_eq!(kept_affixes("ab", "", "abc"), (2, 0));
+}
+
+#[test]
+fn a_kept_suffix_leaves_the_slot_at_least_one_byte_of_the_member() {
+    // `a=` and `bc` would cover all of `a=bc`: the suffix gives back `b`
+    assert_eq!(kept_affixes("a=", "bc", "a=bc"), (2, 1));
+    assert_eq!(kept_affixes("a=", "x", "a=x"), (2, 0));
+    // with room to spare, the whole suffix is compared from its end
+    assert_eq!(kept_affixes("f(", "x)", "f(ax)"), (2, 2));
+}
+
+#[test]
+fn an_escaped_quote_after_an_opening_quote_leaves_that_quote_unpaired() {
+    // `"` at 0 is unescaped, `\"` at 3 is not: one of each, so the
+    // unescaped count is odd
+    assert!(unpaired_quote(r#""a\""#, 0, 4));
+}
+
+#[test]
+fn a_slot_starting_at_an_escaped_quote_does_not_take_the_backslash_before_it() {
+    // the `\` belongs to the kept prefix; the quote joins the prefix too
+    assert_eq!(balance_quotes(r#"a\"b"#, r#"a\"xx\"b"#, 2, 0), (3, 0));
+}
+
+#[test]
+fn a_slot_whose_only_quote_opens_it_keeps_that_quote_in_the_prefix() {
+    // the member ends with the slot's own `"ab` too, but the quote opens
+    // the slot: it is read from the opening side, not taken as a closer
+    assert_eq!(balance_quotes(r#"x"ab"#, r#"x"zz"ab"#, 1, 0), (2, 0));
+}
+
+#[test]
+fn closers_after_a_closing_quote_stop_one_byte_short_of_the_template() {
+    // `k="))"` with the slot from byte 3: the quote and one `)` join the
+    // suffix; the other `)` stays in the slot, which may not be empty
+    assert_eq!(balance_quotes(r#"k="))""#, r#"k="a)))""#, 3, 0), (3, 2));
+}
+
+#[test]
+fn closers_after_a_closing_quote_stop_one_byte_short_of_the_member() {
+    assert_eq!(balance_quotes(r#"k="a)))""#, r#"k="))""#, 3, 0), (3, 2));
+}
+
+#[test]
+fn an_opening_quote_at_the_slot_end_is_not_kept_beside_it() {
+    // keeping the quote would leave the slot empty: the slot stays as it was
+    assert_eq!(balance_quotes(r#"k=v"]"#, r#"k=v"zz]"#, 2, 1), (2, 1));
+}
+
+#[test]
+fn an_opening_quote_is_kept_only_where_the_member_has_a_byte_after_it() {
+    // `k="` kept with `]` leaves the four-byte member nothing for the slot
+    assert_eq!(balance_quotes(r#"k="ab]"#, r#"k="]"#, 2, 1), (2, 1));
+    // and a member that does not open the same way keeps nothing either
+    assert_eq!(balance_quotes(r#"k="ab]"#, r#"j="xyz]"#, 2, 1), (2, 1));
+}
+
+#[test]
+fn a_whole_quoted_value_is_cut_after_its_field_delimiter() {
+    // neither side's quote can stay beside the slot: the slot covers the
+    // whole quoted value and the suffix keeps its `)`
+    assert_eq!(balance_quotes(r#"k="v1")"#, "k=v2)", 4, 1), (2, 1));
+}
+
+#[test]
+fn a_suffix_holding_the_partner_quote_is_given_up_to_the_slot() {
+    // `a"b` + `"`: the quotes pair only once the slot takes the suffix
+    assert_eq!(balance_quotes(r#"a"b""#, "x", 0, 1), (0, 0));
+}
+
+#[test]
+fn units_in_a_gap_pair_in_order_when_both_sides_have_as_many() {
+    let tmpl = ["a", "x", "y", "c"];
+    let mem = ["a", "p", "q", "c"];
+    let aligned = [Some(0), None, None, Some(3)];
+    assert_eq!(
+        unit_ranges(&tmpl, &mem, &aligned),
+        vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))]
+    );
+}
+
+#[test]
+fn a_gap_at_the_end_of_the_template_reads_the_rest_of_the_member() {
+    let tmpl = ["a", "x"];
+    let mem = ["a", "p", "q"];
+    assert_eq!(
+        unit_ranges(&tmpl, &mem, &[Some(0), None]),
+        vec![Some((0, 1)), Some((1, 3))]
+    );
+}
+
+#[test]
+fn a_slot_that_loses_only_its_suffix_still_widens() {
+    assert_eq!(
+        marked("a slot[<VARIES>] c", "a slot[2 c"),
+        "a slot[<VARIES> c"
+    );
+}
+
+/// Two sequences of distinct words whose only common subsequence sits
+/// `shift` words off the diagonal: `shift` new words lead `right` when
+/// positive, `left` when negative, and that side is cut to its length.
+fn shifted_lines(left_len: usize, right_len: usize, shift: isize) -> (Vec<String>, Vec<String>) {
+    let lead = |n: usize| (0..n).map(|i| format!("new{i}"));
+    let word = |i: usize| format!("w{i}");
+    let k = shift.unsigned_abs();
+    if shift >= 0 {
+        let left = (0..left_len).map(word).collect();
+        let right = lead(k).chain((0..right_len - k).map(word)).collect();
+        (left, right)
+    } else {
+        let left = lead(k).chain((0..left_len - k).map(word)).collect();
+        let right = (0..right_len).map(word).collect();
+        (left, right)
+    }
+}
+
+#[test]
+fn either_side_past_the_cap_makes_the_band_decide() {
+    for (left_len, right_len, shift) in [
+        (MAX_ALIGN_WORDS, MAX_ALIGN_WORDS + 4, 20),
+        (MAX_ALIGN_WORDS + 4, MAX_ALIGN_WORDS, -20),
+    ] {
+        let (left, right) = shifted_lines(left_len, right_len, shift);
+        let left: Vec<&str> = left.iter().map(String::as_str).collect();
+        let right: Vec<&str> = right.iter().map(String::as_str).collect();
+        let banded = align_banded(&left, &right, ALIGN_BAND);
+        // the exact path lies outside the band, so the two disagree
+        assert_ne!(banded, align_exact(&left, &right));
+        assert_eq!(align_words(&left, &right), banded, "{left_len} {right_len}");
+    }
+}
+
+#[test]
+fn a_side_exactly_at_the_cap_is_still_aligned_exactly() {
+    let (left, right) = shifted_lines(MAX_ALIGN_WORDS - 6, MAX_ALIGN_WORDS, 20);
+    let left: Vec<&str> = left.iter().map(String::as_str).collect();
+    let right: Vec<&str> = right.iter().map(String::as_str).collect();
+    let exact = align_exact(&left, &right);
+    assert_eq!(exact[0], Some(20));
+    assert_ne!(exact, align_banded(&left, &right, ALIGN_BAND));
+    assert_eq!(align_words(&left, &right), exact);
+}
+
+#[test]
+fn a_path_on_the_edge_of_the_band_is_inside_it() {
+    let (left, right) = shifted_lines(30, 30, ALIGN_BAND as isize);
+    let left: Vec<&str> = left.iter().map(String::as_str).collect();
+    let right: Vec<&str> = right.iter().map(String::as_str).collect();
+    let exact = align_exact(&left, &right);
+    assert_eq!(exact[0], Some(ALIGN_BAND));
+    assert_eq!(align_banded(&left, &right, ALIGN_BAND), exact);
+}
+
+#[test]
+fn each_slot_of_a_multi_slot_marker_is_listed_once_and_comma_separated() {
+    let entry = |s: &str| VariationEntry {
+        distinct_count: 1,
+        samples: vec![s.to_string()],
+        capped: false,
+        counts: Some(vec![2]),
+        slots: None,
+    };
+    let mut rollup = BTreeMap::new();
+    rollup.insert(
+        VARIES,
+        VariationEntry {
+            distinct_count: 2,
+            samples: vec!["a".into(), "b".into()],
+            capped: false,
+            counts: Some(vec![2, 2]),
+            slots: Some(vec![entry("a"), entry("b")]),
+        },
+    );
+    assert_eq!(
+        render_compact_marker(10, &rollup, None, None, 3),
+        "[+10 similar | varies×1 {a×2}, varies×1 {b×2}]"
+    );
+}
+
+#[test]
+fn a_count_only_type_at_its_cap_is_capped_only_by_a_new_value() {
+    let rc = RollupComputer::with_defaults();
+    let stamps = |n: usize| -> Vec<Vec<Token>> {
+        (0..n)
+            .map(|i| vec![Token::Timestamp(format!("ts-{i:04}"))])
+            .collect()
+    };
+    // a repeat at the cap needs no room
+    let mut lines = stamps(64);
+    lines.push(vec![Token::Timestamp("ts-0000".into())]);
+    let entry = rc.compute(&make_group("<TIMESTAMP> beat", lines))["TIMESTAMP"].clone();
+    assert_eq!(entry.distinct_count, 64);
+    assert!(!entry.capped);
+    // a new value past it does
+    let entry = rc.compute(&make_group("<TIMESTAMP> beat", stamps(65)))["TIMESTAMP"].clone();
+    assert_eq!(entry.distinct_count, 64);
+    assert!(entry.capped);
+}
+
+fn plain_line(s: &str) -> LogLine {
+    LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s))
+}
+
+#[test]
+fn a_rejoined_group_below_min_collapse_keeps_every_member() {
+    let rc = RollupComputer::with_defaults();
+    let text = "cache warm pass done";
+    let mut group = PatternGroup::new(plain_line(text), 0);
+    group.add_line(plain_line(text), 1);
+    group.add_line(plain_line(text), 2);
+    group.retained = Some(rc.seed(&group));
+    group.retained_rejoin(
+        plain_line(text),
+        LineLocation::new(SourceId::STDIN, 3),
+        &rc,
+        5,
+    );
+    assert_eq!(group.count, 4);
+    assert_eq!(group.lines.len(), 4);
+    // at min_collapse it is cut to the first and the last
+    group.retained_rejoin(
+        plain_line(text),
+        LineLocation::new(SourceId::STDIN, 4),
+        &rc,
+        5,
+    );
+    assert_eq!(group.count, 5);
+    assert_eq!(group.lines.len(), 2);
+}
+
+#[test]
+fn absorbing_into_a_retained_group_at_min_collapse_keeps_its_accumulator() {
+    let rc = RollupComputer::with_defaults();
+    let text = "cache warm pass done";
+    let mut group = PatternGroup::new(plain_line(text), 0);
+    group.add_line(plain_line(text), 1);
+    group.retained = Some(rc.seed(&group));
+    let other = PatternGroup::new_at(plain_line(text), 1, LineLocation::new(SourceId::STDIN, 5));
+    group.absorb(other, &rc, 3);
+    assert_eq!(group.count, 3);
+    assert!(group.retained.is_some());
+    assert_eq!(group.lines.len(), 2);
+}
+
+#[test]
+fn absorbing_two_full_groups_past_min_collapse_keeps_every_member() {
+    let rc = RollupComputer::with_defaults();
+    let text = "cache warm pass done";
+    let mut group = PatternGroup::new(plain_line(text), 0);
+    group.add_line(plain_line(text), 1);
+    let mut other =
+        PatternGroup::new_at(plain_line(text), 1, LineLocation::new(SourceId::STDIN, 5));
+    other.add_line(plain_line(text), 6);
+    group.absorb(other, &rc, 3);
+    assert_eq!(group.count, 4);
+    assert!(group.retained.is_none());
+    assert_eq!(group.lines.len(), 4);
+}
+
+#[test]
+fn a_line_joins_a_group_through_its_slots_only_under_the_same_anchor() {
+    let mut group = PatternGroup::new(make_line("mount <VARIES> done", vec![]), 0);
+    group.slot_units = Some(unit_spans(&group.template));
+    let line = make_line(r#"mount "vol-a" done"#, vec![]);
+    assert!(group.joins_through_slots(&line, &mut None, 83));
+    let mut elsewhere = line.clone();
+    elsewhere.anchor = 7;
+    assert!(!group.joins_through_slots(&elsewhere, &mut None, 83));
+}
+
+#[test]
+fn a_line_with_more_units_than_the_template_never_joins_through_slots() {
+    assert!(!joins_through_slots(
+        "a b",
+        &unit_spans("a b"),
+        "a b c",
+        &unit_spans("a b c"),
+        0
+    ));
+}
+
+#[test]
+fn a_retained_group_at_min_collapse_keeps_only_its_first_and_last_line() {
+    let mut f = make_folder_json();
+    let group = make_group("svc ready", vec![vec![], vec![], vec![]]);
+    let key = group.first().hash;
+    assert!(matches!(f.retain_evicted_group(group), Retention::Kept));
+    assert_eq!(f.retained[&key].lines.len(), 2);
+}
+
+#[test]
+fn a_json_group_carries_its_timeline_on_the_log_wide_grid() {
+    let mut f = make_folder_json();
+    for minute in 0..40 {
+        f.process_line(&format!(
+            "2026-03-04T10:{minute:02}:00Z INFO poller heartbeat ok from node-3"
+        ))
+        .unwrap();
+    }
+    let out = f.finish().unwrap();
+    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
+    let range = &record["time_range"];
+    assert!(
+        range["bucket_seconds"].as_i64().is_some_and(|s| s > 0),
+        "{range}"
+    );
+    let buckets = range["buckets"].as_array().expect("buckets");
+    assert_eq!(
+        buckets.iter().map(|b| b.as_u64().unwrap()).sum::<u64>(),
+        40,
+        "{range}"
+    );
+}
