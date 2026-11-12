@@ -4895,3 +4895,20 @@ I1102 09:10:00.000001    3310 mounter.go:51] "Mount done for volume \"data\" (So
 I1102 09:10:00.000002    3310 mounter.go:51] "Mount done for volume \"wal\" (Source: \"blk/sdb1\") pod \"vault-0\" " node="n2"
 I1102 09:10:00.000003    3310 mounter.go:51] "Mount done for volume \"cache\" (Source: \"blk/sdc1\") pod \"queue-1\" " node="n2"
 I1102 09:10:00.000004    3310 mounter.go:51] "Mount done for volume \"spool\" (Source: \"blk/sdd1\") pod \"mailer-2\" " node="n2"
+
+##CASE lessence-f8a7 groups=2
+##WHY a quoted route keeps its route with spaces around the separator too:
+##WHY  `path = "<PATH>"` made two endpoints one event
+##FROM invented request records
+x path = "/api/v1/users" done
+x path = "/api/v1/orders" done
+x path = "/api/v1/users" done
+x path = "/api/v1/orders" done
+
+##CASE lessence-f8a7 groups=2
+##WHY the same in a JSON record written with a space after the colon
+##FROM invented request records
+{"level":"info", "uri":  "/api/v1/users"}
+{"level":"info", "uri":  "/api/v1/orders"}
+{"level":"info", "uri":  "/api/v1/users"}
+{"level":"info", "uri":  "/api/v1/orders"}

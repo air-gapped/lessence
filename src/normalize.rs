@@ -444,11 +444,21 @@ fn is_route_shaped(value: &str) -> bool {
 /// Can the line hold a route-shaped field value at all? A byte gate before
 /// `FIELD_PATH` runs on a line that names no method.
 fn may_hold_route_field(original: &str) -> bool {
-    original.contains("://")
-        || original.contains("=/")
-        || original.contains("=\"/")
-        || original.contains(":\"/")
-        || original.contains(": \"/")
+    original.contains("://") || original.contains("=/") || quoted_route_after_separator(original)
+}
+
+/// Is there a `"/` whose quote follows `=` or `:`, with any whitespace
+/// between them? That is every place `FIELD_PATH` can match a quoted route:
+/// `path="/a"`, `path = "/a"`, `"uri":  "/a"`.
+fn quoted_route_after_separator(original: &str) -> bool {
+    let bytes = original.as_bytes();
+    original.match_indices("\"/").any(|(at, _)| {
+        bytes[..at]
+            .iter()
+            .rev()
+            .find(|b| !b.is_ascii_whitespace())
+            .is_some_and(|&b| b == b'=' || b == b':')
+    })
 }
 
 /// The program a record is about — auditd's `exe="/usr/bin/sudo"` and
@@ -4401,6 +4411,23 @@ mod e8v_normalize_2026_09_17 {
     }
 
     #[test]
+    fn a_line_with_no_route_field_shape_stops_at_the_byte_gate() {
+        // a quoted path that follows neither `=` nor `:`
+        assert!(!may_hold_route_field(r#"opened "/srv/data" for path"#));
+        assert!(!may_hold_route_field(r#"path, "/srv/data""#));
+        assert!(!may_hold_route_field("path = relative"));
+    }
+
+    #[test]
+    fn a_quoted_route_keeps_its_anchor_with_spaces_around_the_separator() {
+        let a = normalize(r#"x path = "/api/a" y"#).anchor;
+        let b = normalize(r#"x path = "/api/b" y"#).anchor;
+        assert_ne!(a, 0);
+        assert_ne!(a, b);
+        assert_eq!(a, normalize(r#"x path="/api/a" y"#).anchor);
+    }
+
+    #[test]
     fn each_written_form_of_a_route_field_passes_the_byte_gate() {
         for s in [
             "x url=https://a.example/b y",
@@ -4408,6 +4435,9 @@ mod e8v_normalize_2026_09_17 {
             r#"x path="/api/a" y"#,
             r#"x "path":"/api/a" y"#,
             r#"x "path": "/api/a" y"#,
+            r#"x path = "/api/a" y"#,
+            r#"x path= "/api/a" y"#,
+            "x \"path\":\t \"/api/a\" y",
         ] {
             assert!(may_hold_route_field(s), "{s}");
             assert_ne!(normalize(s).anchor, 0, "{s}");
