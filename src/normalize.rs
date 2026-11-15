@@ -16,10 +16,32 @@ use crate::patterns::{
     timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
 
+/// How much a detector's shape takes. An earlier entry consumes text first,
+/// so the table runs from the most specific shape to the catch-alls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Tier {
+    /// A format with its own syntax: a timestamp, a UUID, a path.
+    Specific,
+    /// Decimals, sizes, percentages: matches inside most specific shapes.
+    Broad,
+    /// What is left once every shape above has been read.
+    Generic,
+    /// Quoted strings: would swallow anything a detector above tokenizes.
+    Last,
+}
+
 /// One entry in the detector ordering table. The table is the single place
 /// that says which detectors run, in which order, under which gates —
 /// `normalize_line` just walks it.
 struct DetectorEntry {
+    /// What the entry is called in `after` lists and in a failed check.
+    name: &'static str,
+    /// How broad the detector's shape is. Tiers never decrease down the
+    /// table, so a broad detector cannot be moved above a specific one.
+    tier: Tier,
+    /// The entries this one must come after, each with its reason: the
+    /// earlier detector reads text this one would otherwise take or break.
+    after: &'static [&'static str],
     /// Config gate: is this detector enabled for the run?
     enabled: fn(&Config) -> bool,
     /// A rule about where the detector may run, on `(config, original
@@ -43,34 +65,48 @@ struct DetectorEntry {
 }
 
 /// Detection order — earlier entries consume text first, so order encodes
-/// priority: most specific formats first (timestamps, emails, paths),
-/// generic catch-alls last (names, quoted strings). Comments carry the
-/// pairwise ordering constraints that must survive any reordering.
+/// priority. Each entry's `tier` and `after` say what its place depends on,
+/// and `detector_order_keeps_what_each_entry_declares` fails on a reorder
+/// that breaks one of them.
 static DETECTOR_ORDER: &[DetectorEntry] = &[
-    // CPU quantities: field + millicpu unit before JSON/key-value and
-    // minute-duration passes can consume the value or its field context.
+    // CPU quantities: a cpu field with a millicpu unit.
     DetectorEntry {
+        name: "cpu-quantity",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_durations,
         only_when: None,
         prefilter: Some(|_, _, s| s.contains('m') && (s.contains("cpu") || s.contains("CPU"))),
         run: |_, s| DurationDetector::cpu_quantities(s),
     },
-    // TIMESTAMPS: most specific formats, highest priority.
+    // TIMESTAMPS.
     DetectorEntry {
+        name: "timestamp",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_timestamps,
         only_when: None,
         prefilter: None,
         run: |_, s| UnifiedTimestampDetector::detect_and_replace(s),
     },
-    // EMAIL: before paths so emails inside URLs are handled correctly.
+    // EMAIL.
     DetectorEntry {
+        name: "email",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_emails,
         only_when: None,
         prefilter: Some(|_, _, s| s.contains('@')),
         run: |n, s| n.email_detector.detect_and_replace(s),
     },
-    // PATHS: before network patterns so URLs are consumed as whole units.
+    // PATHS and URLs.
     DetectorEntry {
+        name: "path",
+        tier: Tier::Specific,
+        after: &[
+            // an email inside a URL is read as an email first
+            "email",
+        ],
         enabled: |c| c.normalize_paths,
         only_when: None,
         prefilter: None,
@@ -78,20 +114,35 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // JSON: structured data, Event objects, K8s objects.
     DetectorEntry {
+        name: "json",
+        tier: Tier::Specific,
+        after: &[
+            // the cpu field and its unit are read before the object that holds them
+            "cpu-quantity",
+        ],
         enabled: |c| c.normalize_json,
         only_when: None,
         prefilter: Some(|_, _, s| s.contains('{')),
         run: |_, s| JsonDetector::detect_and_replace(s),
     },
-    // UUIDs: before hashes, whose hex pattern would fragment a UUID.
+    // UUIDs.
     DetectorEntry {
+        name: "uuid",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_uuids,
         only_when: None,
         prefilter: None,
         run: |_, s| UuidDetector::detect_and_replace(s),
     },
-    // NETWORK: IPs, ports, FQDNs; after paths to avoid breaking URLs.
+    // NETWORK: IPs, ports, FQDNs.
     DetectorEntry {
+        name: "network",
+        tier: Tier::Specific,
+        after: &[
+            // a URL is consumed whole before its host or port is
+            "path",
+        ],
         enabled: |c| c.normalize_ips || c.normalize_ports || c.normalize_fqdns,
         only_when: None,
         prefilter: None,
@@ -104,8 +155,14 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             )
         },
     },
-    // HASHES: after UUIDs (see above).
+    // HASHES.
     DetectorEntry {
+        name: "hash",
+        tier: Tier::Specific,
+        after: &[
+            // the hex pattern would cut a UUID into pieces
+            "uuid",
+        ],
         enabled: |c| c.normalize_hashes,
         only_when: None,
         prefilter: None,
@@ -113,16 +170,27 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // PROCESS IDs: [pid=123], (12345).
     DetectorEntry {
+        name: "process",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_pids,
         only_when: None,
         prefilter: None,
         run: |_, s| ProcessDetector::detect_and_replace(s),
     },
     // SYSLOG HOST: the positional field between a normalized timestamp and
-    // a program tag. After NETWORK (an already-tokenised <FQDN>/<IP> there
-    // is left alone) and PROCESS (so `prog[123]:` already reads
-    // `prog[<PID>]:`, which the tag alternative matches).
+    // a program tag.
     DetectorEntry {
+        name: "syslog-host",
+        tier: Tier::Specific,
+        after: &[
+            // the host is the field after a normalized stamp
+            "timestamp",
+            // an <FQDN> or <IP> already there is left alone
+            "network",
+            // `prog[123]:` already reads `prog[<PID>]:`, which the tag alternative matches
+            "process",
+        ],
         enabled: |c| c.normalize_fqdns,
         // A kernel line under an uptime stamp has no host field: the word
         // after the stamp is the subsystem.
@@ -132,8 +200,11 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| s.starts_with("<TIMESTAMP> ")),
         run: |_, s| replace_syslog_host(s),
     },
-    // KUBERNETES: before the generic bracket/module/structured detectors.
+    // KUBERNETES.
     DetectorEntry {
+        name: "kubernetes",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_kubernetes,
         only_when: None,
         prefilter: None,
@@ -141,6 +212,9 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // HTTP STATUS: groups status codes into classes (200-299 -> 2xx).
     DetectorEntry {
+        name: "http-status",
+        tier: Tier::Specific,
+        after: &[],
         enabled: |c| c.normalize_http_status,
         only_when: None,
         prefilter: None,
@@ -148,6 +222,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // BRACKET CONTEXT: [error] [mod_jk] style tags.
     DetectorEntry {
+        name: "bracket",
+        tier: Tier::Specific,
+        after: &[
+            // a kubernetes shape is read before a generic bracket tag
+            "kubernetes",
+        ],
         enabled: |c| c.normalize_brackets,
         only_when: None,
         prefilter: Some(|_, _, s| {
@@ -157,6 +237,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
     // KEY-VALUE: config=value pairs.
     DetectorEntry {
+        name: "key-value",
+        tier: Tier::Specific,
+        after: &[
+            // the cpu field keeps its value and its field context
+            "cpu-quantity",
+        ],
         enabled: |c| c.normalize_key_value,
         // An `=` inside a quoted value is not a pair: gated on any `=`,
         // whether a Tetragon JSON event folded depended on the base64
@@ -171,6 +257,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // same flag as BracketContext: --disable-patterns brackets must
     // disable every bracket-shaped detector.
     DetectorEntry {
+        name: "log-module",
+        tier: Tier::Specific,
+        after: &[
+            // a kubernetes shape is read before a generic module tag
+            "kubernetes",
+        ],
         enabled: |c| c.normalize_brackets,
         only_when: None,
         prefilter: Some(|_, _, s| {
@@ -182,6 +274,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // is gated by --disable-patterns json, the logfmt half by
     // --disable-patterns key-value.
     DetectorEntry {
+        name: "structured",
+        tier: Tier::Specific,
+        after: &[
+            // a kubernetes shape is read before a generic structured record
+            "kubernetes",
+        ],
         enabled: |c| c.normalize_json || c.normalize_key_value,
         // The detector cannot tell which half it is asked for: a half that
         // is switched off must not run on its own shape.
@@ -191,26 +289,32 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| StructuredMessageDetector::has_structured_indicators(s)),
         run: |_, s| StructuredMessageDetector::detect_and_replace(s),
     },
-    // DURATIONS & MEASUREMENTS: broad (decimals, sizes, percentages);
-    // late, after every more specific pattern above.
+    // DURATIONS & MEASUREMENTS: decimals, sizes, percentages.
     DetectorEntry {
+        name: "duration",
+        tier: Tier::Broad,
+        after: &[],
         enabled: |c| c.normalize_durations,
         only_when: None,
         prefilter: None,
         run: |_, s| DurationDetector::detect_and_replace(s),
     },
-    // NAMES: generic hyphenated component names with variable suffixes;
-    // after the specific patterns to catch what remains.
+    // NAMES: generic hyphenated component names with variable suffixes.
     DetectorEntry {
+        name: "name",
+        tier: Tier::Generic,
+        after: &[],
         enabled: |c| c.normalize_names,
         only_when: None,
         prefilter: None,
         run: |_, s| NameDetector::detect_and_replace(s),
     },
-    // QUOTED STRINGS: last, so it cannot consume content the detectors
-    // above tokenize (paths in quotes in particular). Its nested cascade
-    // honours the same --disable-patterns gates as this table.
+    // QUOTED STRINGS. Its nested cascade honours the same
+    // --disable-patterns gates as this table.
     DetectorEntry {
+        name: "quoted",
+        tier: Tier::Last,
+        after: &[],
         enabled: |c| c.normalize_quoted,
         only_when: None,
         prefilter: Some(|_, _, s| s.contains('"') || s.contains('\'')),
@@ -222,6 +326,32 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
 
 /// Does the line carry an `=` outside quoted strings — a `key=value`
 /// pair rather than a `=` inside a JSON value?
+/// The places `order` breaks what its entries declare: a name used twice, a
+/// tier that drops, an entry ahead of one it must come after.
+fn order_complaints(order: &[&DetectorEntry]) -> Vec<String> {
+    let mut complaints = Vec::new();
+    for (at, entry) in order.iter().enumerate() {
+        if order[..at].iter().any(|e| e.name == entry.name) {
+            complaints.push(format!("`{}` is in the table twice", entry.name));
+        }
+        if at > 0 && order[at - 1].tier > entry.tier {
+            complaints.push(format!(
+                "`{}` ({:?}) comes after `{}` ({:?})",
+                entry.name,
+                entry.tier,
+                order[at - 1].name,
+                order[at - 1].tier
+            ));
+        }
+        for earlier in entry.after {
+            if !order[..at].iter().any(|e| e.name == *earlier) {
+                complaints.push(format!("`{}` must come after `{earlier}`", entry.name));
+            }
+        }
+    }
+    complaints
+}
+
 fn has_unquoted_eq(s: &str) -> bool {
     let mut quoted = false;
     let mut prev = 0u8;
@@ -1344,6 +1474,13 @@ fn protect_anchored_spans<'a>(
 
 impl Normalizer {
     pub fn new(config: Config) -> Self {
+        // Test builds refuse a detector table that breaks what its entries
+        // declare, whichever test builds the first normalizer.
+        debug_assert_eq!(
+            order_complaints(&DETECTOR_ORDER.iter().collect::<Vec<_>>()),
+            Vec::<String>::new(),
+            "DETECTOR_ORDER breaks an entry's `tier` or `after`"
+        );
         Self {
             config,
             email_detector: EmailPatternDetector::new().unwrap(),
@@ -1381,10 +1518,10 @@ impl Normalizer {
                 #[cfg(debug_assertions)]
                 {
                     let (skipped_text, skipped_tokens) = (entry.run)(self, &normalized);
-                    let at = DETECTOR_ORDER.iter().position(|e| std::ptr::eq(e, entry));
                     debug_assert!(
                         skipped_text == normalized && skipped_tokens.is_empty(),
-                        "the prefilter of DETECTOR_ORDER[{at:?}] turned away a line its detector changes:\n  line:   {normalized}\n  result: {skipped_text}"
+                        "the prefilter of the `{}` detector turned away a line its detector changes:\n  line:   {normalized}\n  result: {skipped_text}",
+                        entry.name
                     );
                 }
                 continue;
@@ -4520,6 +4657,45 @@ mod e8v_normalize_2026_09_17 {
         // on a line the byte gate lets through, a path key over a relative
         // value anchors nothing
         assert_eq!(normalize("x path=relative/dir/file to=/srv y").anchor, 0);
+    }
+
+    #[test]
+    fn detector_order_keeps_what_each_entry_declares() {
+        let order: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
+        assert_eq!(order_complaints(&order), Vec::<String>::new());
+        assert_eq!(order.len(), 19);
+    }
+
+    #[test]
+    fn a_reorder_that_breaks_a_declared_constraint_is_named() {
+        let at = |name: &str| DETECTOR_ORDER.iter().position(|e| e.name == name).unwrap();
+        let swapped = |a: &str, b: &str| {
+            let mut order: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
+            order.swap(at(a), at(b));
+            order_complaints(&order)
+        };
+        // hashes moved above UUIDs
+        assert_eq!(
+            swapped("uuid", "hash"),
+            vec!["`hash` must come after `uuid`"]
+        );
+        // quoted strings moved above names
+        assert_eq!(
+            swapped("name", "quoted"),
+            vec!["`name` (Generic) comes after `quoted` (Last)"]
+        );
+        let mut twice: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
+        twice.push(&DETECTOR_ORDER[at("quoted")]);
+        assert_eq!(
+            order_complaints(&twice),
+            vec!["`quoted` is in the table twice"]
+        );
+        // an entry naming one that is not in the table at all
+        let lone = [&DETECTOR_ORDER[at("hash")]];
+        assert_eq!(
+            order_complaints(&lone),
+            vec!["`hash` must come after `uuid`"]
+        );
     }
 
     #[test]

@@ -15,8 +15,11 @@ Order matters — earlier patterns consume text first, preventing later patterns
 from matching the same content. Timestamps before Network preserves URLs.
 Quoted strings last to avoid consuming tokens detected by earlier patterns.
 The order is declared in one place: the `DETECTOR_ORDER` table in
-`normalize.rs` (one `DetectorEntry` per detector with `enabled` config gate,
-`only_when` rule, `prefilter` cheap byte check, and the `run` hook). `normalize_line` just
+`normalize.rs` (one `DetectorEntry` per detector with its `name`, its `tier`
+and the entries it must come `after`, the `enabled` config gate, `only_when`
+rule, `prefilter` cheap byte check, and the `run` hook). A reorder that
+breaks a `tier` or an `after` fails
+`detector_order_keeps_what_each_entry_declares`. `normalize_line` just
 walks the table:
 
 1. **CPU quantities** — millicpu fields (`cpu: 250m`) before the JSON, key-value and minute-duration passes can take the value (`DurationDetector::cpu_quantities`, `patterns/duration.rs`)
@@ -72,7 +75,7 @@ Key files:
 2. Implement `pub fn detect_and_replace(line: &str) -> (String, Vec<Token>)`
 3. Add the token variant to `Token` enum in `patterns/mod.rs`, plus its `KindFacts` row in `Token::facts()` and its arm in `Token::value_string()` — the taxonomy owns machine name, display label, stats bucket, sample-worthiness, and value stringification; the folder/renderer consumers are projections of it
 4. Add `pub mod your_pattern;` to `patterns/mod.rs`
-5. Add a `DetectorEntry` to `DETECTOR_ORDER` in `normalize.rs` at the correct position (set `enabled`; a `prefilter` if a cheap byte check exists — it may only save time, and test builds panic when the detector changes a line its prefilter turned away; `only_when` for a rule that must keep the detector off a line it would change). An anchor pattern in `protect_anchored_spans` is gated through `gate(...)`, checked the same way
+5. Add a `DetectorEntry` to `DETECTOR_ORDER` in `normalize.rs` at the correct position (set `name`, `tier`, and in `after` every entry that must read the text first, each with its reason as a comment; set `enabled`; a `prefilter` if a cheap byte check exists — it may only save time, and test builds panic when the detector changes a line its prefilter turned away; `only_when` for a rule that must keep the detector off a line it would change). An anchor pattern in `protect_anchored_spans` is gated through `gate(...)`, checked the same way
 6. Add to `--disable-patterns` handling in `main.rs` (the `disable_patterns` → `config.normalize_*` mapping)
 7. Add stats counter to `FoldingStats` in `folder/mod.rs`
 8. Write unit tests with realistic log samples

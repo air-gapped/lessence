@@ -9,10 +9,11 @@
 # commit that moves the code.
 #
 #   scripts/check-mutants-pins.sh           exit 1 and one line per dead entry
-#   scripts/check-mutants-pins.sh --repin   first move every dead pin whose
-#                                           mutant is found on exactly one
-#                                           other line (same file, column,
-#                                           text and function)
+#   scripts/check-mutants-pins.sh --repin   first move the dead pins of one
+#                                           shape (same file, column, text
+#                                           and function) when mutants of
+#                                           that shape sit on exactly as
+#                                           many lines as there are pins
 #
 # What --repin leaves: `cargo mutants --list --no-config | grep '<function>'`,
 # pick the mutant the entry's comment describes, and write its location.
@@ -59,14 +60,21 @@ dead = [e for e in entries if not any(re.search(e, m) for m in mutants)]
 if dead and "--repin" in sys.argv[2:]:
     text = open(".cargo/mutants.toml", encoding="utf-8").read()
     moved = 0
+    # Dead pins that differ only in their line number, by that shared shape.
+    groups = {}
     for e in dead:
         pin = re.match(r"^(\^src/[^:]+:)(\d+)(:.*)$", e)
-        if not pin:
+        if pin and text.count(e) == 1:
+            groups.setdefault((pin.group(1), pin.group(3)), []).append((int(pin.group(2)), e))
+    for (head, tail), pins in groups.items():
+        loose = head + r"(\d+)" + tail
+        lines = sorted({int(m.group(1)) for m in (re.search(loose, x) for x in mutants) if m})
+        # As many places as pins: code moved, order kept, so the first pin
+        # goes to the first place. Any other count is for a reader.
+        if len(lines) != len(pins):
             continue
-        loose = pin.group(1) + r"(\d+)" + pin.group(3)
-        lines = {m.group(1) for m in (re.search(loose, x) for x in mutants) if m}
-        if len(lines) == 1 and text.count(e) == 1:
-            new = pin.group(1) + lines.pop() + pin.group(3)
+        for (_, e), line in zip(sorted(pins), lines):
+            new = f"{head}{line}{tail}"
             text = text.replace(e, new)
             print(f"re-pinned: {e}\n        to: {new}")
             moved += 1
