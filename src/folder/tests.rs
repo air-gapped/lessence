@@ -1,21 +1,10 @@
-// Unit tests for the folding engine. Extracted from folder.rs (where
-// they were 70% of the file) as a child module — same visibility,
-// `use super::*` still reaches private items.
-
 use super::*;
 use crate::patterns::HashType;
 
-// ---------------------------------------------------------------
-// Helpers for building synthetic test data
-// ---------------------------------------------------------------
-
-/// Build a LogLine with the given tokens and a normalized template.
 fn make_line(normalized: &str, tokens: Vec<Token>) -> LogLine {
     LogLine::new(normalized.to_string(), normalized.to_string(), tokens, 0)
 }
 
-/// Build a PatternGroup with N lines, each having the given tokens.
-/// All lines share the same normalized template.
 fn make_group(normalized: &str, lines: Vec<Vec<Token>>) -> PatternGroup {
     assert!(!lines.is_empty(), "group must have at least one line");
     let mut group = PatternGroup::new(make_line(normalized, lines[0].clone()), 1);
@@ -24,10 +13,6 @@ fn make_group(normalized: &str, lines: Vec<Vec<Token>>) -> PatternGroup {
     }
     group
 }
-
-// ---------------------------------------------------------------
-// apply_pii_masking
-// ---------------------------------------------------------------
 
 #[test]
 fn pii_masking_no_emails() {
@@ -43,9 +28,7 @@ fn pii_masking_single_email() {
 }
 
 #[test]
-fn pii_masking_duplicate_email_in_line() {
-    // Kills mutant: `start + pos` → `start * pos` (line 39).
-    // Second occurrence requires non-zero `start` for correct indexing.
+fn pii_masking_masks_the_second_occurrence_of_a_repeated_email() {
     let tokens = vec![Token::Email("bob@x.com".into())];
     let result = apply_pii_masking("from bob@x.com to bob@x.com", &tokens);
     assert_eq!(result, "from <EMAIL> to <EMAIL>");
@@ -71,11 +54,6 @@ fn pii_masking_non_email_tokens_ignored() {
     assert_eq!(result, "10.0.0.1 <EMAIL>");
 }
 
-// ---------------------------------------------------------------
-// mask_credentials (credential-class rules on the same pass)
-// All secrets below are synthetic fixtures.
-// ---------------------------------------------------------------
-
 #[test]
 fn credentials_password_equals() {
     assert_eq!(
@@ -90,9 +68,7 @@ fn credentials_token_colon_space() {
 }
 
 #[test]
-fn credentials_compound_key_suffix() {
-    // Keys ENDING in a credential word must match too (client_secret,
-    // access_token); kills removal of the leading [A-Za-z0-9_.-]* class.
+fn credentials_mask_keys_that_end_in_a_credential_word() {
     assert_eq!(
         mask_credentials("oauth client_secret=s3cr3t, retrying"),
         "oauth client_secret=<SECRET>, retrying"
@@ -109,16 +85,13 @@ fn credentials_quoted_value_masked_whole() {
 
 #[test]
 fn credential_spans_leave_prose_after_a_credential_word_alone() {
-    // `--anonymize` rewrites what these spans cover, so a sentence that
-    // merely contains `token:` must yield none: the value is too short to
-    // be a secret, and the second key is a URL path segment.
     let line = concat!(
         "failed to fetch token: Post \"https://10.0.0.7:6443/api/v1/",
         "serviceaccounts/blorb/token\": read tcp 10.0.0.7:51706: reset"
     );
     assert!(
         credential_spans(line).is_empty(),
-        "prose spans: {:?}",
+        "the value after token: is too short for a secret and the second key is a URL segment: {:?}",
         credential_spans(line)
             .into_iter()
             .map(|r| &line[r])
@@ -179,9 +152,12 @@ fn credentials_bearer_jwt_masked() {
 
 #[test]
 fn credentials_two_segment_jwt_untouched() {
-    // A real JWT has three segments; two-segment lookalikes stay.
     let line = "config eyJhbGciOiJIUzI1NiJ9.partial loaded";
-    assert_eq!(mask_credentials(line), line);
+    assert_eq!(
+        mask_credentials(line),
+        line,
+        "a real JWT has three segments"
+    );
 }
 
 #[test]
@@ -210,31 +186,37 @@ fn credentials_provider_key_xoxb() {
 
 #[test]
 fn credentials_short_sk_prefix_untouched() {
-    // Length floor keeps hyphenated prose like sk-learn unmasked.
     let line = "sk-learn pipeline step";
-    assert_eq!(mask_credentials(line), line);
+    assert_eq!(
+        mask_credentials(line),
+        line,
+        "the length floor keeps hyphenated prose like sk-learn"
+    );
 }
 
 #[test]
 fn credentials_assignment_wins_over_jwt() {
-    // Rule order: token: <jwt> collapses to one <SECRET>, not <JWT>.
+    let jwt = concat!(
+        "eyJhbGciOiJIUzI1NiJ9",
+        ".",
+        "eyJzdWIiOiIxIn0",
+        ".",
+        "sig12345"
+    );
     assert_eq!(
-        mask_credentials("token: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig12345"), // synthetic fixture, gitleaks:allow
-        "token: <SECRET>"
+        mask_credentials(&format!("token: {jwt}")),
+        "token: <SECRET>",
+        "the assignment rule runs before the JWT rule and claims the whole value"
     );
 }
 
 #[test]
 fn pii_masking_applies_credential_rules() {
-    // apply_pii_masking must run the credential pass after emails.
     let tokens = vec![Token::Email("a@b.com".into())];
     let result = apply_pii_masking("a@b.com password=hunter2", &tokens);
     assert_eq!(result, "<EMAIL> password=<SECRET>");
 }
 
-/// Ranked modes hold every group: past 1,000 groups, patterns once vanished
-/// from both the ranking and the coverage denominator ("1000 of 1000
-/// patterns" on 1,100-pattern input).
 #[test]
 fn summary_ranks_every_group_of_a_wide_log() {
     let mut folder = PatternFolder::new(Config {
@@ -273,9 +255,6 @@ fn top_n_counts_every_group_of_a_wide_log() {
     assert_eq!(output.len(), 5);
 }
 
-/// On a log of over 2,000 distinct lines, the sum of every group record's
-/// `count` equals the input line count exactly, and no normalized template is
-/// the `normalized` field of two different group records (lessence-940).
 #[test]
 fn a_wide_log_conserves_total_count_and_never_duplicates_a_template() {
     let mut f = PatternFolder::new(Config {
@@ -285,8 +264,6 @@ fn a_wide_log_conserves_total_count_and_never_duplicates_a_template() {
         ..Config::default()
     });
     let mut total_lines = 0usize;
-    // A repeating signal, interleaved with over 2,000 mutually dissimilar
-    // filler lines, so the signal recurs after more than 1,000 other groups.
     for round in 0..3 {
         f.process_line("gateway heartbeat ok node=edge-01").unwrap();
         total_lines += 1;
@@ -314,8 +291,6 @@ fn a_wide_log_conserves_total_count_and_never_duplicates_a_template() {
         counted_total, total_lines,
         "sum of group counts must equal total input lines"
     );
-    // The signal specifically must have folded to one record with the true
-    // total, not fragmented across its three occurrences.
     let signal_count = output
         .iter()
         .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
@@ -328,9 +303,6 @@ fn a_wide_log_conserves_total_count_and_never_duplicates_a_template() {
     );
 }
 
-/// A line that recurs after more than 1,000 other groups folds to one record,
-/// with and without `--explain`: the same event is never two records with
-/// split counts (lessence-940).
 #[test]
 fn a_recurring_line_folds_to_one_record_past_a_thousand_groups() {
     let mut f = PatternFolder::new(Config {
@@ -407,8 +379,6 @@ fn the_thread_count_does_not_change_the_records_of_a_wide_log() {
     );
 }
 
-/// Deterministic 6-letter words: single-token lines that never group with
-/// each other (zero shared tokens → similarity score 0).
 fn distinct_word(i: usize) -> String {
     let mut s = String::new();
     let mut x = i;
@@ -439,8 +409,6 @@ fn a_wide_log_preserves_founder_order_and_nontransitive_membership() {
                 .process_line(&format!("filler event {}", distinct_word(i)))
                 .unwrap();
         }
-        // B matches A and C, but A and C differ in two plain words. B must
-        // join A even after 1,005 other groups; it cannot found a group with C.
         for line in [c, c, c, b, b, b] {
             folder.process_line(line).unwrap();
         }
@@ -461,15 +429,19 @@ fn a_wide_log_preserves_founder_order_and_nontransitive_membership() {
     };
     let expected = run(true);
     assert_eq!(expected.len(), 2);
-    assert_eq!(expected[0].1, 6);
-    assert_eq!(expected[1].1, 3);
+    assert_eq!(
+        expected[0].1, 6,
+        "beta started joins the earlier alpha group across 1,005 other groups"
+    );
+    assert_eq!(
+        expected[1].1, 3,
+        "beta started never joins beta stopped, two words from alpha"
+    );
     assert_eq!(run(false), expected);
 }
 
 #[test]
 fn a_capped_varies_set_holds_the_same_values_in_any_order() {
-    // lessence-veg: past the cap the values held were the first ones
-    // counted, so the order members were counted in decided the samples.
     let values: Vec<String> = (0..40).map(|i| format!("v{i}")).collect();
     let fill = |order: &[usize]| {
         let mut varies = VariesCounts::default();
@@ -491,30 +463,27 @@ fn a_capped_varies_set_holds_the_same_values_in_any_order() {
         assert_eq!(b.counts, a.counts);
         assert!(b.capped);
     }
-    // every value held carries its full count
     for (value, &n) in &a.counts {
         let i: usize = value[1..].parse().unwrap();
-        assert_eq!(n, i % 3 + 1, "{value}");
+        assert_eq!(
+            n,
+            i % 3 + 1,
+            "every held value carries its full count: {value}"
+        );
     }
-    // the values held are the lowest-ranked
     let mut ranked: Vec<&String> = values.iter().collect();
     ranked.sort_by_key(|v| (VariesCounts::rank(v), v.as_str()));
     let mut held: Vec<&String> = a.counts.keys().collect();
     held.sort_by_key(|v| (VariesCounts::rank(v), v.as_str()));
-    assert_eq!(held, ranked[..8]);
+    assert_eq!(held, ranked[..8], "the values held are the lowest-ranked");
 }
 
 #[test]
 fn pii_masking_empty_email_does_not_loop() {
-    // Defensive: empty email string would cause infinite loop without guard
     let tokens = vec![Token::Email(String::new())];
     let result = apply_pii_masking("no emails here", &tokens);
     assert_eq!(result, "no emails here");
 }
-
-// ---------------------------------------------------------------
-// first_timestamp_in
-// ---------------------------------------------------------------
 
 #[test]
 fn first_timestamp_no_tokens() {
@@ -542,10 +511,6 @@ fn first_timestamp_multiple_returns_first() {
     ];
     assert_eq!(first_timestamp_in(&tokens), Some("10:00:00".into()));
 }
-
-// ---------------------------------------------------------------
-// Existing folding tests
-// ---------------------------------------------------------------
 
 #[test]
 fn test_folding_with_finish() -> Result<()> {
@@ -600,21 +565,27 @@ fn test_no_folding_for_different_lines() -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------
-// seed_for_group — FNV-1a determinism
-// ---------------------------------------------------------------
-
 #[test]
 fn seed_for_group_pinned_values() {
-    // Pin FNV-1a outputs so any implementation drift is caught.
-    assert_eq!(seed_for_group("hello"), 0xa430_d846_80aa_bd0b);
-    assert_eq!(seed_for_group("world"), 0x4f59_ff5e_730c_8af3);
+    assert_eq!(
+        seed_for_group("hello"),
+        0xa430_d846_80aa_bd0b,
+        "pinned FNV-1a output"
+    );
+    assert_eq!(
+        seed_for_group("world"),
+        0x4f59_ff5e_730c_8af3,
+        "pinned FNV-1a output"
+    );
 }
 
 #[test]
 fn seed_for_group_empty_string_is_offset_basis() {
-    // Empty string → no XOR/multiply iterations → returns FNV offset basis.
-    assert_eq!(seed_for_group(""), 0xcbf2_9ce4_8422_2325);
+    assert_eq!(
+        seed_for_group(""),
+        0xcbf2_9ce4_8422_2325,
+        "no bytes leave the FNV-1a offset basis unchanged"
+    );
 }
 
 #[test]
@@ -624,16 +595,14 @@ fn seed_for_group_different_inputs_different_seeds() {
     assert_ne!(a, b);
 }
 
-// ---------------------------------------------------------------
-// hash_token_value — FNV-1a on token canonical strings
-// ---------------------------------------------------------------
-
 #[test]
 fn hash_token_value_matches_seed_for_same_string() {
-    // hash_token_value(Name("hello")) should equal seed_for_group("hello")
-    // because both use the same FNV-1a over the same bytes.
     let token = Token::Name("hello".to_string());
-    assert_eq!(hash_token_value(&token), seed_for_group("hello"));
+    assert_eq!(
+        hash_token_value(&token),
+        seed_for_group("hello"),
+        "both run FNV-1a over the same bytes"
+    );
 }
 
 #[test]
@@ -643,13 +612,8 @@ fn hash_token_value_different_tokens_different_hashes() {
     assert_ne!(a, b);
 }
 
-/// Byte-identical to hashing `token.value_string()` the old (allocating)
-/// way, for every `Token` variant — proves the streamed FNV-1a refactor
-/// (`hash_token_value` folding each variant's fields directly) didn't
-/// change a single hash, which matters because `distinct_count` on a
-/// cardinality estimator must not shift across a refactor.
 #[test]
-fn hash_token_value_matches_value_string_for_all_variants() {
+fn streamed_token_hash_equals_hashing_the_value_string_for_every_variant() {
     fn hash_str(s: &str) -> u64 {
         const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
         const FNV_PRIME: u64 = 0x0100_0000_01b3;
@@ -711,16 +675,9 @@ fn hash_token_value_matches_value_string_for_all_variants() {
     }
 }
 
-// ---------------------------------------------------------------
-// is_sample_worthy — exhaustiveness
-// ---------------------------------------------------------------
-
 #[test]
 fn is_sample_worthy_covers_all_token_variants() {
-    // Build one instance of every Token variant. If a new variant is
-    // added to the enum without updating this test, it won't compile.
     let all_tokens: Vec<(Token, bool)> = vec![
-        // Sample-worthy types (true)
         (Token::Uuid("u".into()), true),
         (Token::IPv4("1.2.3.4".into()), true),
         (Token::IPv6("::1".into()), true),
@@ -738,7 +695,6 @@ fn is_sample_worthy_covers_all_token_variants() {
         (Token::BracketContext(vec!["err".into()]), true),
         (Token::Json("{}".into()), true),
         (Token::CpuQuantity("750m".into()), true),
-        // Count-only types (false)
         (Token::Timestamp("ts".into()), false),
         (Token::Port(80), false),
         (Token::Pid(1), false),
@@ -778,8 +734,6 @@ fn is_sample_worthy_covers_all_token_variants() {
         );
     }
 
-    // Verify we covered all 26 variants (24 original + any new ones).
-    // Update this count if Token gains new variants.
     assert_eq!(
         all_tokens.len(),
         27,
@@ -787,13 +741,8 @@ fn is_sample_worthy_covers_all_token_variants() {
     );
 }
 
-// ---------------------------------------------------------------
-// token_type_name — exhaustiveness
-// ---------------------------------------------------------------
-
 #[test]
 fn token_type_name_covers_all_variants() {
-    // Every Token variant must return a non-empty UPPERCASE name.
     let tokens: Vec<Token> = vec![
         Token::Timestamp("ts".into()),
         Token::IPv4("1.2.3.4".into()),
@@ -847,10 +796,6 @@ fn token_type_name_covers_all_variants() {
     }
 }
 
-// ---------------------------------------------------------------
-// token_value_string — no panics on any variant
-// ---------------------------------------------------------------
-
 #[test]
 fn token_value_string_handles_all_variants() {
     let tokens: Vec<Token> = vec![
@@ -900,7 +845,6 @@ fn token_value_string_handles_all_variants() {
         );
     }
 
-    // Spot-check specific formats
     assert_eq!(
         token_value_string(&Token::BracketContext(vec![
             "error".into(),
@@ -919,10 +863,6 @@ fn token_value_string_handles_all_variants() {
         "k=v"
     );
 }
-
-// ---------------------------------------------------------------
-// RollupComputer::compute — hand-crafted groups
-// ---------------------------------------------------------------
 
 #[test]
 fn rollup_empty_group_no_tokens() {
@@ -974,8 +914,8 @@ fn rollup_mixed_tokens_across_lines() {
     let lines: Vec<Vec<Token>> = (0..5)
         .map(|i| {
             vec![
-                Token::Uuid(format!("uuid-{}", i % 3)), // 3 distinct
-                Token::Timestamp(format!("ts-{i}")),    // 5 distinct
+                Token::Uuid(format!("uuid-{}", i % 3)),
+                Token::Timestamp(format!("ts-{i}")),
             ]
         })
         .collect();
@@ -984,7 +924,11 @@ fn rollup_mixed_tokens_across_lines() {
 
     let uuid_entry = rollup.get("UUID").unwrap();
     assert_eq!(uuid_entry.distinct_count, 3);
-    assert_eq!(uuid_entry.samples.len(), 3); // 3 <= K, so all shown
+    assert_eq!(
+        uuid_entry.samples.len(),
+        3,
+        "3 distinct values fit within ROLLUP_K, so all are shown"
+    );
     assert!(!uuid_entry.capped);
 
     let ts_entry = rollup.get("TIMESTAMP").unwrap();
@@ -996,45 +940,45 @@ fn rollup_mixed_tokens_across_lines() {
 #[test]
 fn rollup_exactly_at_cap_is_not_capped() {
     let rc = RollupComputer::with_defaults();
-    // ROLLUP_DISTINCT_CAP = 64. Generate exactly 64 distinct UUIDs.
-    let lines: Vec<Vec<Token>> = (0..64)
+    let lines: Vec<Vec<Token>> = (0..ROLLUP_DISTINCT_CAP)
         .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
         .collect();
     let group = make_group("request <UUID>", lines);
     let rollup = rc.compute(&group);
 
     let entry = rollup.get("UUID").unwrap();
-    assert_eq!(entry.distinct_count, 64);
+    assert_eq!(entry.distinct_count, ROLLUP_DISTINCT_CAP);
     assert!(!entry.capped, "exactly at cap should NOT be capped");
 }
 
 #[test]
 fn rollup_one_over_cap_is_capped() {
     let rc = RollupComputer::with_defaults();
-    // 65 distinct UUIDs: first 64 are inserted, 65th triggers the cap.
-    let lines: Vec<Vec<Token>> = (0..65)
+    let lines: Vec<Vec<Token>> = (0..=ROLLUP_DISTINCT_CAP)
         .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
         .collect();
     let group = make_group("request <UUID>", lines);
     let rollup = rc.compute(&group);
 
     let entry = rollup.get("UUID").unwrap();
-    assert_eq!(entry.distinct_count, 64, "capped at ROLLUP_DISTINCT_CAP");
+    assert_eq!(
+        entry.distinct_count, ROLLUP_DISTINCT_CAP,
+        "capped at ROLLUP_DISTINCT_CAP"
+    );
     assert!(entry.capped, "65th value should trigger capped flag");
 }
 
 #[test]
 fn rollup_samples_capped_at_k() {
     let rc = RollupComputer::with_defaults();
-    // ROLLUP_K = 7. Create 8 distinct UUIDs — samples should have 7.
-    let lines: Vec<Vec<Token>> = (0..8)
+    let lines: Vec<Vec<Token>> = (0..=ROLLUP_K)
         .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
         .collect();
     let group = make_group("request <UUID>", lines);
     let rollup = rc.compute(&group);
 
     let entry = rollup.get("UUID").unwrap();
-    assert_eq!(entry.distinct_count, 8);
+    assert_eq!(entry.distinct_count, ROLLUP_K + 1);
     assert_eq!(
         entry.samples.len(),
         ROLLUP_K,
@@ -1058,7 +1002,6 @@ fn rollup_deterministic_across_calls() {
 #[test]
 fn rollup_different_templates_different_samples() {
     let rc = RollupComputer::with_defaults();
-    // Same 20 values, but different normalized templates → different seeds.
     let tokens: Vec<Vec<Token>> = (0..20)
         .map(|i| vec![Token::Uuid(format!("uuid-{i:04}"))])
         .collect();
@@ -1071,13 +1014,9 @@ fn rollup_different_templates_different_samples() {
     let samples_a = &rollup_a.get("UUID").unwrap().samples;
     let samples_b = &rollup_b.get("UUID").unwrap().samples;
 
-    // Both have 7 samples drawn from the same 20 values but with
-    // different seeds, so the draws should (almost certainly) differ.
-    // This is probabilistic but with 20-choose-7 there are 77520
-    // possible draws — collision chance is negligible.
     assert_ne!(
         samples_a, samples_b,
-        "different templates should (almost certainly) produce different sample draws"
+        "different templates seed different draws; 20 choose 7 gives 77,520 possible draws"
     );
 }
 
@@ -1119,10 +1058,6 @@ fn rollup_variation_keys_are_sorted() {
         "variation keys must be alphabetically sorted (BTreeMap)"
     );
 }
-
-// ---------------------------------------------------------------
-// render_compact_marker
-// ---------------------------------------------------------------
 
 #[test]
 fn marker_empty_rollup() {
@@ -1167,8 +1102,10 @@ fn marker_count_only_above_threshold() {
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
-    // distinct > threshold → count-only, no inline samples
-    assert_eq!(result, "[+10 similar | path×5]");
+    assert_eq!(
+        result, "[+10 similar | path×5]",
+        "5 distinct values exceed the inline threshold of 3: count only, no samples"
+    );
 }
 
 #[test]
@@ -1189,7 +1126,6 @@ fn marker_capped_entry_has_plus_suffix() {
         result.contains("hash×64+"),
         "capped entry needs '+': {result}"
     );
-    // Capped entries should NOT show inline samples regardless of threshold
     assert!(
         !result.contains('{'),
         "capped entry should not inline samples: {result}"
@@ -1205,8 +1141,8 @@ fn marker_time_range_present() {
 #[test]
 fn marker_sample_truncation_at_50_chars() {
     let mut rollup: GroupRollup = BTreeMap::new();
-    let long_value = "a".repeat(51); // 51 chars → should be truncated
-    let exact_value = "b".repeat(50); // 50 chars → should NOT be truncated
+    let long_value = "a".repeat(51);
+    let exact_value = "b".repeat(50);
     rollup.insert(
         "PATH",
         VariationEntry {
@@ -1218,12 +1154,10 @@ fn marker_sample_truncation_at_50_chars() {
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
-    // 50-char value: not truncated
     assert!(
         result.contains(&exact_value),
         "50-char value should not be truncated"
     );
-    // 51-char value: truncated to 49 chars + '…'
     let truncated = format!("{}…", "a".repeat(49));
     assert!(
         result.contains(&truncated),
@@ -1255,17 +1189,14 @@ fn marker_multiple_entries_comma_separated() {
         },
     );
     let result = render_compact_marker(10, &rollup, None, None, 3);
-    // BTreeMap order: IPV4 before UUID
     assert!(
         result.contains("ipv4×4, uuid×7"),
-        "entries should be comma-separated, lowercase: {result}"
+        "entries are comma-separated, lowercase, in BTreeMap order (IPV4 before UUID): {result}"
     );
 }
 
 #[test]
 fn marker_count_only_types_filtered_out() {
-    // Count-only types (empty samples, distinct > 0) should not appear
-    // in the marker unless distinct_count <= inline_threshold.
     let mut rollup: GroupRollup = BTreeMap::new();
     rollup.insert(
         "TIMESTAMP",
@@ -1298,14 +1229,8 @@ fn marker_count_only_types_filtered_out() {
     );
 }
 
-// ---------------------------------------------------------------
-// Mutant-killing tests (targeted at cargo-mutants survivors)
-// ---------------------------------------------------------------
-
 #[test]
 fn marker_zero_distinct_count_filtered_out() {
-    // Kills mutant: `distinct_count > 0` → `distinct_count >= 0`
-    // An entry with distinct_count=0 should never appear in the marker.
     let mut rollup: GroupRollup = BTreeMap::new();
     rollup.insert(
         "UUID",
@@ -1326,8 +1251,6 @@ fn marker_zero_distinct_count_filtered_out() {
 
 #[test]
 fn marker_truncation_exact_length() {
-    // Kills mutants: `SAMPLE_MAX_LEN - 1` → `+ 1` or `/ 1`
-    // The truncated output must be exactly 50 chars (49 content + '…').
     let mut rollup: GroupRollup = BTreeMap::new();
     let long_value = "x".repeat(100);
     rollup.insert(
@@ -1341,15 +1264,13 @@ fn marker_truncation_exact_length() {
         },
     );
     let result = render_compact_marker(5, &rollup, None, None, 3);
-    // Extract the truncated sample from the marker: between { and }
     let start = result.find('{').expect("should have inline samples") + 1;
     let end = result.find('}').expect("should have closing brace");
     let rendered_sample = &result[start..end];
-    // 49 'x' chars + '…' = 50 chars total
     assert_eq!(
         rendered_sample.chars().count(),
         50,
-        "truncated sample should be exactly 50 chars: got '{rendered_sample}'"
+        "49 content chars plus the ellipsis fill the 50-char sample limit: got '{rendered_sample}'"
     );
     assert!(
         rendered_sample.ends_with('…'),
@@ -1362,16 +1283,11 @@ fn marker_truncation_exact_length() {
     );
 }
 
-// ---------------------------------------------------------------
-// Property-based tests for rollup invariants
-// ---------------------------------------------------------------
-
 mod rollup_properties {
     use super::*;
     use proptest::collection::vec as pvec;
     use proptest::prelude::*;
 
-    /// Generate a random sample-worthy token with a random string value.
     fn arb_sample_worthy_token() -> impl Strategy<Value = Token> {
         ("[a-z0-9]{1,20}", 0..6u8).prop_map(|(val, variant)| match variant {
             0 => Token::Uuid(val),
@@ -1383,7 +1299,6 @@ mod rollup_properties {
         })
     }
 
-    /// Generate a random count-only token.
     fn arb_count_only_token() -> impl Strategy<Value = Token> {
         ("[a-z0-9]{1,20}", 0..4u8).prop_map(|(val, variant)| match variant {
             0 => Token::Timestamp(val),
@@ -1393,17 +1308,12 @@ mod rollup_properties {
         })
     }
 
-    /// Generate a random token (either sample-worthy or count-only).
     fn arb_token() -> impl Strategy<Value = Token> {
         prop_oneof![arb_sample_worthy_token(), arb_count_only_token(),]
     }
 
-    /// Generate a random PatternGroup for property testing.
     fn arb_group() -> impl Strategy<Value = PatternGroup> {
-        (
-            "[a-z ]{5,30}",                       // normalized template
-            pvec(pvec(arb_token(), 0..8), 1..50), // 1-49 lines, 0-7 tokens each
-        )
+        ("[a-z ]{5,30}", pvec(pvec(arb_token(), 0..8), 1..50))
             .prop_map(|(normalized, token_lines)| make_group(&normalized, token_lines))
     }
 
@@ -1518,11 +1428,6 @@ mod rollup_properties {
     }
 }
 
-// ---------------------------------------------------------------
-// Pipeline: process_line
-// ---------------------------------------------------------------
-
-/// Build a single-threaded PatternFolder with sensible test defaults.
 fn make_folder() -> PatternFolder {
     PatternFolder::new(Config {
         thread_count: Some(1),
@@ -1530,8 +1435,6 @@ fn make_folder() -> PatternFolder {
         ..Config::default()
     })
 }
-
-// ---- VARIES: untokenised words that differ inside a merged group (w1p) ----
 
 fn rollup_of(lines: &[&str]) -> GroupRollup {
     let mut f = make_folder();
@@ -1544,27 +1447,22 @@ fn rollup_of(lines: &[&str]) -> GroupRollup {
 
 #[test]
 fn varies_reports_words_no_detector_tokenised() {
-    // lessence-w1p: ten subsystems folded into one group whose rollup said
-    // distinct_count 1. The words must surface like any token type.
-    // Enough fixed words around the one that varies for the lines to
-    // clear the similarity threshold, as the real Patroni lines do.
     let r = rollup_of(&[
         "2025-09-14 09:09:14,580 - bootstrapping - INFO - Configuring patroni",
         "2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring crontab",
         "2025-09-14 09:09:14,609 - bootstrapping - INFO - Configuring bootstrap",
     ]);
     let v = &r[VARIES];
-    assert_eq!(v.distinct_count, 3);
+    assert_eq!(
+        v.distinct_count, 3,
+        "untokenised words that differ count like any token type"
+    );
     assert_eq!(v.samples, vec!["bootstrap", "crontab", "patroni"]);
     assert!(!v.capped);
 }
 
 #[test]
 fn the_template_says_varies_where_members_disagree() {
-    // lessence-098: 16,846 `Unreachable`, 3,002 `Timeout` and 42
-    // `Unknown[13]` folded under a line that said `Unreachable`. The shown
-    // template must hold for every member, so the word becomes <VARIES>
-    // and the rollup carries each word with its count, rarest included.
     let mut f = make_folder();
     for l in [
         "2025-06-26T00:45:25+00:00 UXG Max mcad[1886]: ace_reporter.reporter_fail(): Unreachable (http://unifi:8080/inform)",
@@ -1577,11 +1475,16 @@ fn the_template_says_varies_where_members_disagree() {
     assert_eq!(f.buffer.len(), 1, "the score still folds them");
     assert_eq!(
         f.buffer[0].template(),
-        "<TIMESTAMP> UXG Max mcad[<PID>]: ace_reporter.reporter_fail(): <VARIES> (<PATH>)"
+        "<TIMESTAMP> UXG Max mcad[<PID>]: ace_reporter.reporter_fail(): <VARIES> (<PATH>)",
+        "the shown template must hold for every member, so the word that differs is <VARIES>"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].samples, vec!["Unreachable", "Timeout"]);
-    assert_eq!(r[VARIES].counts, Some(vec![3, 1]));
+    assert_eq!(
+        r[VARIES].counts,
+        Some(vec![3, 1]),
+        "each word carries its count, the rare one included"
+    );
     assert!(
         r.iter().all(|(k, e)| (*k == VARIES) == e.counts.is_some()),
         "counts are for words only: {r:?}"
@@ -1590,8 +1493,6 @@ fn the_template_says_varies_where_members_disagree() {
 
 #[test]
 fn varies_samples_are_the_most_frequent_and_the_rarest() {
-    // Nine distinct words, K is 7: the six most frequent, then the one
-    // that appeared once — the rare value is the one an agent must see.
     let mut lines: Vec<String> = Vec::new();
     for (word, n) in [
         ("alpha", 9),
@@ -1620,26 +1521,34 @@ fn varies_samples_are_the_most_frequent_and_the_rarest() {
             "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "india"
         ]
     );
-    assert_eq!(v.counts, Some(vec![9, 8, 7, 6, 5, 4, 1]));
+    assert_eq!(
+        v.counts,
+        Some(vec![9, 8, 7, 6, 5, 4, 1]),
+        "ROLLUP_K samples: the six most frequent, then the singleton"
+    );
 }
 
 #[test]
 fn varies_includes_the_representative_value() {
-    // The first line's word is part of the variation too; a reader must
-    // see {6, 7}, not just {7}.
     let r = rollup_of(&[
         "mod_jk child in error state 6",
         "mod_jk child in error state 7",
         "mod_jk child in error state 6",
     ]);
-    assert_eq!(r[VARIES].samples, vec!["6", "7"]);
+    assert_eq!(
+        r[VARIES].samples,
+        vec!["6", "7"],
+        "the first line's word is part of the variation"
+    );
 }
 
 #[test]
 fn varies_is_absent_when_only_tokens_differ() {
-    // <NUMBER> already reports these; VARIES must not duplicate it.
     let r = rollup_of(&["req took 111 ms", "req took 222 ms", "req took 333 ms"]);
-    assert!(!r.contains_key(VARIES), "{r:?}");
+    assert!(
+        !r.contains_key(VARIES),
+        "NUMBER already reports these; VARIES must not repeat them: {r:?}"
+    );
     assert!(r.contains_key("NUMBER"));
 }
 
@@ -1651,15 +1560,16 @@ fn varies_is_absent_for_identical_lines() {
 
 #[test]
 fn an_inserted_word_varies_against_the_members_that_lack_it() {
-    // An inserted word shifts every later position; pairing them would
-    // report the whole tail as variation. The word is a slot of its own
-    // (lessence-1tee), absent from the members that do not have it.
     let r = rollup_of(&[
         "worker started handling batch alpha beta gamma delta",
         "worker started now handling batch alpha beta gamma delta",
         "worker started handling batch alpha beta gamma delta",
     ]);
-    assert_eq!(r[VARIES].samples, vec![ABSENT, "now"], "{r:?}");
+    assert_eq!(
+        r[VARIES].samples,
+        vec![ABSENT, "now"],
+        "the inserted word is a slot of its own, absent from the members without it: {r:?}"
+    );
     assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
 }
 
@@ -1683,8 +1593,6 @@ fn varies_is_capped_like_every_other_type() {
     assert_eq!(v.distinct_count, ROLLUP_DISTINCT_CAP);
 }
 
-// ---- --explain: why a line founded a group instead of joining one ----
-
 fn explaining_folder() -> PatternFolder {
     PatternFolder::new(Config {
         thread_count: Some(1),
@@ -1699,7 +1607,6 @@ fn explain_records_the_nearest_group_and_the_first_differing_token() {
     let mut f = explaining_folder();
     f.process_line("req took 111 ms").unwrap();
     f.process_line("req took 222 ms").unwrap();
-    // Same shape up to the unit: scores high, still refused, differs at "ms".
     f.process_line("req took 333 sec").unwrap();
     let founded = f.buffer.last().unwrap();
     let nearest = founded
@@ -1713,7 +1620,10 @@ fn explain_records_the_nearest_group_and_the_first_differing_token() {
         nearest.score
     );
     let diff = nearest.first_diff.as_ref().expect("the lines differ");
-    assert_eq!(diff.ours, "sec");
+    assert_eq!(
+        diff.ours, "sec",
+        "the same shape up to the unit: the lines differ first at the unit"
+    );
     assert_eq!(diff.theirs, "ms");
     assert_eq!(&founded.first().normalized[diff.at..diff.at + 3], "sec");
 }
@@ -1736,15 +1646,16 @@ fn explain_leaves_the_first_group_and_hash_hits_unexplained() {
 
 #[test]
 fn explain_score_is_the_highest_across_the_whole_buffer() {
-    // Three unrelated groups, then a line close to the MIDDLE one: the scan
-    // must not stop at the first candidate.
     let mut f = explaining_folder();
     f.process_line("zzz zzz zzz zzz").unwrap();
     f.process_line("req took 111 ms").unwrap();
     f.process_line("yyy yyy yyy yyy").unwrap();
     f.process_line("req took 333 sec").unwrap();
     let nearest = f.buffer.last().unwrap().nearest.as_ref().unwrap();
-    assert_eq!(nearest.group_line_no, 2);
+    assert_eq!(
+        nearest.group_line_no, 2,
+        "the scan goes past the first candidate to the closest group"
+    );
 }
 
 #[test]
@@ -1778,8 +1689,6 @@ fn explain_off_emits_no_nearest_field() {
     let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
     assert!(!json.contains("nearest"), "{json}");
 }
-
-// ---- bead lessence-8jb: field values fold on shape, not on length ----
 
 #[test]
 fn compact_json_lines_differing_in_one_field_value_fold_into_one_group() {
@@ -1849,7 +1758,6 @@ fn process_line_increments_total_lines() {
 #[test]
 fn process_line_with_tokens_increments_patterns_detected() {
     let mut f = make_folder();
-    // This line contains an IP which will be detected as a token
     f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1")
         .unwrap();
     assert!(
@@ -1862,7 +1770,6 @@ fn process_line_with_tokens_increments_patterns_detected() {
 #[test]
 fn process_line_without_tokens_does_not_increment_patterns() {
     let mut f = make_folder();
-    // Plain text with no detectable patterns
     f.process_line("hello world").unwrap();
     assert_eq!(f.stats.patterns_detected, 0);
 }
@@ -1873,7 +1780,6 @@ fn process_line_counts_patterns_for_each_line() {
     f.process_line("request from 10.0.0.1").unwrap();
     f.process_line("request from 10.0.0.2").unwrap();
     assert_eq!(f.stats.total_lines, 2);
-    // Both lines have IP tokens
     assert!(
         f.stats.patterns_detected >= 2,
         "expected >= 2 patterns_detected, got {}",
@@ -1888,7 +1794,6 @@ fn process_line_identical_lines_cluster_into_one_group() {
         f.process_line("2024-01-01 ERROR connection refused from 10.0.0.1")
             .unwrap();
     }
-    // Similar lines should be in one group
     assert_eq!(
         f.buffer.len(),
         1,
@@ -1913,12 +1818,11 @@ fn process_line_dissimilar_lines_create_separate_groups() {
 #[test]
 fn process_line_batches_in_parallel_mode() {
     let mut f = PatternFolder::new(Config {
-        thread_count: None, // parallel mode
+        thread_count: None,
         min_collapse: 3,
         ..Config::default()
     });
     f.process_line("2024-01-01 INFO hello 10.0.0.1").unwrap();
-    // Parallel mode buffers lines instead of processing immediately
     assert_eq!(f.batch_buffer.len(), 1, "line should be in batch_buffer");
     assert_eq!(
         f.buffer.len(),
@@ -1930,7 +1834,6 @@ fn process_line_batches_in_parallel_mode() {
 #[test]
 fn process_line_finish_outputs_collapsed_groups() {
     let mut f = make_folder();
-    // Feed 5 similar lines — above min_collapse=3, so they should collapse
     for i in 0..5 {
         f.process_line(&format!(
             "2024-01-01 ERROR timeout connecting to 10.0.0.{i}"
@@ -1941,15 +1844,12 @@ fn process_line_finish_outputs_collapsed_groups() {
     let joined = output.join("\n");
     assert!(
         joined.contains("similar"),
-        "collapsed output should contain 'similar', got: {joined}"
+        "5 lines exceed min_collapse 3 and collapse, got: {joined}"
     );
 }
 
-// --- Mutant-killing tests for process_line ---
-
 #[test]
 fn process_line_advances_position_counter() {
-    // Kills: position_counter += 1 → *= 1 (stays at 0)
     let mut f = make_folder();
     assert_eq!(f.position_counter, 0);
     f.process_line("hello 10.0.0.1").unwrap();
@@ -1960,7 +1860,6 @@ fn process_line_advances_position_counter() {
 
 #[test]
 fn finish_accumulates_output_lines() {
-    // Kills: output_lines += count → *= count (0 * N = 0)
     let mut f = make_folder();
     f.buffer
         .push(PatternGroup::new(make_line("output line", vec![]), 1));
@@ -1971,10 +1870,6 @@ fn finish_accumulates_output_lines() {
         "output_lines should be incremented once the group is emitted, got 0"
     );
 }
-
-// ---------------------------------------------------------------
-// JSON output: format_group_json, print_summary_json, format_group_dispatch
-// ---------------------------------------------------------------
 
 fn make_folder_json() -> PatternFolder {
     PatternFolder::new(Config {
@@ -1995,9 +1890,12 @@ fn format_group_json_below_min_collapse_no_stats_change() {
             vec![Token::IPv4("10.0.0.2".into())],
         ],
     );
-    assert_eq!(group.count(), 2); // below min_collapse=3
+    assert_eq!(group.count(), 2);
     let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
-    assert_eq!(f.stats.collapsed_groups, 0);
+    assert_eq!(
+        f.stats.collapsed_groups, 0,
+        "count 2 is below min_collapse 3"
+    );
     assert_eq!(f.stats.lines_saved, 0);
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["count"], 2);
@@ -2014,13 +1912,13 @@ fn format_group_json_at_min_collapse_updates_stats() {
             vec![Token::IPv4("10.0.0.3".into())],
         ],
     );
-    assert_eq!(group.count(), 3); // exactly min_collapse
+    assert_eq!(group.count(), 3);
     let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
     assert_eq!(f.stats.collapsed_groups, 1);
-    // One definition across every mode: a collapsed group preserves 3
-    // lines (first + marker + last), so a group at exactly min_collapse
-    // saves 0. Same arithmetic as the text renderer.
-    assert_eq!(f.stats.lines_saved, 0);
+    assert_eq!(
+        f.stats.lines_saved, 0,
+        "a collapsed group shows 3 lines (first, marker, last), so 3 members save 0"
+    );
 
     let bigger = make_group(
         "warn <IP>",
@@ -2034,7 +1932,7 @@ fn format_group_json_at_min_collapse_updates_stats() {
     );
     let _ = f.format_group_json(&bigger, BTreeMap::new()).unwrap();
     assert_eq!(f.stats.collapsed_groups, 2);
-    assert_eq!(f.stats.lines_saved, 2); // 5 - 3, matching text mode
+    assert_eq!(f.stats.lines_saved, 2, "5 - 3, as text mode counts");
 }
 
 #[test]
@@ -2059,11 +1957,9 @@ fn format_group_json_essence_mode_saves_like_text_mode() {
         f.stats.collapsed_groups, 0,
         "essence_mode should skip collapsed_groups"
     );
-    // Essence shows a group once, so each further member is saved: the
-    // same arithmetic as the text renderer (3 members -> 2 saved).
     assert_eq!(
         f.stats.lines_saved, 2,
-        "essence_mode saves count - 1, as text mode does"
+        "essence shows a group once: 3 members save count - 1, as text mode does"
     );
 }
 
@@ -2082,7 +1978,6 @@ fn format_group_json_id_increments() {
 #[test]
 fn format_group_json_token_types_sorted() {
     let mut f = make_folder_json();
-    // Use tokens whose type names sort alphabetically: "ipv4" < "uuid"
     let group = make_group(
         "error <IP> <UUID>",
         vec![vec![
@@ -2136,14 +2031,15 @@ fn format_group_json_record_type_is_group() {
 
 #[test]
 fn a_group_record_opens_with_the_head_the_report_index_reads() {
-    // The report index reads id and count from a record's first bytes and
-    // parses in full otherwise; a reordered GroupRecord stays correct but
-    // loses the fast path, so pin the order here.
     let mut f = make_folder_json();
     let group = make_group("line", vec![vec![], vec![]]);
     f.format_group_json(&group, BTreeMap::new()).unwrap();
     let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
-    assert_eq!(crate::overview::group_head(&json), Some((1, 2)));
+    assert_eq!(
+        crate::overview::group_head(&json),
+        Some((1, 2)),
+        "the report index fast path reads id and count from the record's first bytes"
+    );
 }
 
 #[test]
@@ -2160,7 +2056,7 @@ fn print_summary_json_zero_lines() {
 }
 
 #[test]
-fn print_summary_json_with_stats() {
+fn print_summary_json_ratio_is_saved_over_input_percent() {
     let mut f = make_folder_json();
     f.stats.total_lines = 100;
     f.stats.lines_saved = 80;
@@ -2181,8 +2077,10 @@ fn print_summary_json_with_stats() {
     assert_eq!(v["lines_saved"], 80);
     assert_eq!(v["patterns_detected"], 50);
     assert_eq!(v["elapsed_ms"], 42);
-    // compression_ratio = 80/100 * 100 = 80.0
-    assert!((v["compression_ratio"].as_f64().unwrap() - 80.0).abs() < 0.01);
+    assert!(
+        (v["compression_ratio"].as_f64().unwrap() - 80.0).abs() < 0.01,
+        "ratio = 80 saved / 100 input * 100"
+    );
     assert_eq!(v["pattern_hits"]["timestamps"], 10);
     assert_eq!(v["pattern_hits"]["ips"], 5);
 }
@@ -2218,9 +2116,6 @@ fn print_summary_json_reports_fit_omissions_exactly() {
 
 #[test]
 fn finish_top_n_derives_json_group_completeness() {
-    // Four distinct patterns, top 3 requested, fit budget of 2: the fit
-    // slice keeps budget-1 = 1 entry and truncates the other 2 of the top
-    // 3; the fourth group was omitted by the explicit --top cap.
     let mut f = make_folder_json();
     for i in 0..4 {
         for _ in 0..(4 - i) {
@@ -2238,8 +2133,8 @@ fn finish_top_n_derives_json_group_completeness() {
         ..
     } = f.finish_top_n(3, Some(2), false).unwrap();
     assert_eq!(total, 4);
-    assert_eq!(shown.len(), 1);
-    assert_eq!(fit_truncated, 2);
+    assert_eq!(shown.len(), 1, "a fit budget of 2 keeps budget - 1 groups");
+    assert_eq!(fit_truncated, 2, "the other 2 of the top 3 are cut by fit");
 
     let mut buf = Vec::new();
     f.print_summary_json(&mut buf, std::time::Duration::ZERO)
@@ -2248,7 +2143,10 @@ fn finish_top_n_derives_json_group_completeness() {
     let groups = &value["completeness"]["groups"];
     assert_eq!(groups["emitted"], 1);
     assert_eq!(groups["total"]["value"], 4);
-    assert_eq!(groups["omitted_by_top"]["value"], 1);
+    assert_eq!(
+        groups["omitted_by_top"]["value"], 1,
+        "the fourth group is omitted by --top 3"
+    );
     assert_eq!(groups["omitted_by_summary_cap"]["value"], 0);
     assert_eq!(groups["omitted_by_fit"]["value"], 2);
     assert!(!groups["complete"].as_bool().unwrap());
@@ -2256,8 +2154,6 @@ fn finish_top_n_derives_json_group_completeness() {
 
 #[test]
 fn summary_keeps_groups_that_share_a_template_but_not_an_anchor() {
-    // `merge_converged` keys on (template, anchor); the summary merge must
-    // too, or two events the fold keeps apart read as one in --summary.
     let mut f = make_folder();
     for (anchor, pos) in [(11_u64, 0), (22, 1)] {
         let mut line = make_line("svc <PATH> failed", vec![]);
@@ -2269,15 +2165,15 @@ fn summary_keeps_groups_that_share_a_template_but_not_an_anchor() {
         total_patterns: total,
         ..
     } = f.prepare_summary(None, None).unwrap();
-    assert_eq!(total, 2);
+    assert_eq!(
+        total, 2,
+        "the summary merge keys on template and anchor, as merge_converged does"
+    );
     assert_eq!(shown.len(), 2);
 }
 
 #[test]
 fn finish_top_n_coverage_counts_only_the_groups_shown_after_fit() {
-    // Groups of 4, 3, 2 and 1 lines (10 in all). Top 3 with a fit budget of
-    // 2 shows only the 4-line group: 40% of the input, not the 90% the
-    // three groups ranked before the fit cut would claim.
     let mut f = make_folder();
     for i in 0..4 {
         for _ in 0..(4 - i) {
@@ -2296,13 +2192,14 @@ fn finish_top_n_coverage_counts_only_the_groups_shown_after_fit() {
     } = f.finish_top_n(3, Some(2), false).unwrap();
     assert_eq!(shown.len(), 1);
     assert_eq!(fit_truncated, 2);
-    assert_eq!(coverage, 40);
+    assert_eq!(
+        coverage, 40,
+        "only the 4-line group is shown: 4 of 10 lines, not the 9 the top 3 hold"
+    );
 }
 
 #[test]
 fn finish_top_n_summary_cap_classifies_omissions() {
-    // Same shape but the cap came from summary-mode's default: omissions
-    // land in omitted_by_summary_cap, not omitted_by_top.
     let mut f = make_folder_json();
     for i in 0..3 {
         for _ in 0..(3 - i) {
@@ -2326,7 +2223,10 @@ fn finish_top_n_summary_cap_classifies_omissions() {
         .unwrap();
     let value: serde_json::Value = serde_json::from_slice(&buf).unwrap();
     let groups = &value["completeness"]["groups"];
-    assert_eq!(groups["omitted_by_summary_cap"]["value"], 2);
+    assert_eq!(
+        groups["omitted_by_summary_cap"]["value"], 2,
+        "a cap from summary mode's default is not an explicit --top"
+    );
     assert_eq!(groups["omitted_by_top"]["value"], 0);
 }
 
@@ -2355,11 +2255,10 @@ fn absorb_ingest_report_sets_input_completeness() {
 }
 
 #[test]
-fn format_group_dispatch_text_mode() {
+fn format_group_dispatch_text_mode_emits_no_json() {
     let mut f = make_folder();
     let group = make_group("hello", vec![vec![]]);
     let output = f.format_group_dispatch(&group).unwrap();
-    // Text mode: should NOT be valid JSON
     assert!(
         serde_json::from_str::<serde_json::Value>(&output).is_err(),
         "text mode output should not be JSON"
@@ -2367,18 +2266,13 @@ fn format_group_dispatch_text_mode() {
 }
 
 #[test]
-fn format_group_dispatch_json_mode() {
+fn format_group_dispatch_json_mode_emits_valid_json() {
     let mut f = make_folder_json();
     let group = make_group("hello", vec![vec![]]);
     let output = f.format_group_dispatch(&group).unwrap();
-    // JSON mode: should be valid JSON
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "group");
 }
-
-// ---------------------------------------------------------------
-// Stats counters: count_pattern_types
-// ---------------------------------------------------------------
 
 #[test]
 fn count_pattern_types_timestamp() {
@@ -2395,9 +2289,8 @@ fn count_pattern_types_ip_variants() {
         Token::IPv6("::1".into()),
         Token::Port(8080),
     ]);
-    // IPv4 + IPv6 count as ips; ports have their own counter
-    assert_eq!(f.stats.ips, 2);
-    assert_eq!(f.stats.ports, 1);
+    assert_eq!(f.stats.ips, 2, "IPv4 and IPv6 both count as ips");
+    assert_eq!(f.stats.ports, 1, "ports have a counter of their own");
 }
 
 #[test]
@@ -2420,7 +2313,7 @@ fn count_pattern_types_kubernetes_variants() {
 }
 
 #[test]
-fn count_pattern_types_overloaded_bucket() {
+fn count_pattern_types_gives_every_token_type_its_own_counter() {
     let mut f = make_folder();
     f.count_pattern_types(&[
         Token::Number("42".into()),
@@ -2440,7 +2333,6 @@ fn count_pattern_types_overloaded_bucket() {
             level: "info".into(),
         },
     ]);
-    // Every token type lands in its own counter — nothing is lumped.
     assert_eq!(f.stats.numbers, 1, "only Number counts as numbers");
     assert_eq!(f.stats.quoted_strings, 1);
     assert_eq!(f.stats.names, 1);
@@ -2451,18 +2343,39 @@ fn count_pattern_types_overloaded_bucket() {
 }
 
 #[test]
-fn count_pattern_types_empty_tokens() {
+fn count_pattern_types_leaves_every_counter_zero_without_tokens() {
     let mut f = make_folder();
     f.count_pattern_types(&[]);
-    // No stats should change — all still zero
-    assert_eq!(f.stats.timestamps, 0);
-    assert_eq!(f.stats.ips, 0);
-    assert_eq!(f.stats.emails, 0);
+    let s = &f.stats;
+    assert_eq!(
+        [
+            s.timestamps,
+            s.ips,
+            s.ports,
+            s.emails,
+            s.kubernetes,
+            s.hashes,
+            s.fqdns,
+            s.numbers,
+            s.quoted_strings,
+            s.names,
+            s.brackets,
+            s.key_values,
+            s.log_modules,
+            s.structured,
+            s.uuids,
+            s.pids,
+            s.durations,
+            s.cpu_quantities,
+            s.http_status,
+            s.sizes,
+            s.paths,
+            s.json,
+            s.macs,
+        ],
+        [0; 23]
+    );
 }
-
-// ---------------------------------------------------------------
-// Text formatting: format_group
-// ---------------------------------------------------------------
 
 #[test]
 fn format_group_below_min_collapse_outputs_all_lines() {
@@ -2470,9 +2383,12 @@ fn format_group_below_min_collapse_outputs_all_lines() {
     let group = make_group("error connecting", vec![vec![], vec![]]);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // 2 lines < min_collapse=3, should output all lines individually
     let lines: Vec<&str> = output.lines().collect();
-    assert_eq!(lines.len(), 2);
+    assert_eq!(
+        lines.len(),
+        2,
+        "2 lines are below min_collapse 3 and print one by one"
+    );
 }
 
 #[test]
@@ -2513,7 +2429,6 @@ fn format_group_essence_mode_uses_normalized() {
         essence_mode: true,
         ..Config::default()
     });
-    // In essence mode, single-line groups output normalized text
     let group = make_group(
         "normalized <IP>",
         vec![vec![Token::IPv4("10.0.0.1".into())]],
@@ -2531,7 +2446,6 @@ fn format_group_pii_masking_masks_emails() {
         sanitize_pii: true,
         ..Config::default()
     });
-    // Build a group with email token where original contains the email
     let mut line = make_line(
         "user alice@test.com logged in",
         vec![Token::Email("alice@test.com".into())],
@@ -2549,10 +2463,6 @@ fn format_group_pii_masking_masks_emails() {
         "email should be masked, got: {output}"
     );
 }
-
-// ---------------------------------------------------------------
-// print_preflight_json / print_stats: the briefing (lessence-xxz)
-// ---------------------------------------------------------------
 
 #[test]
 fn preflight_report_is_the_briefing_schema() {
@@ -2634,14 +2544,7 @@ fn build_briefing_levels_aggregate_from_process_line() {
 }
 
 #[test]
-fn build_briefing_format_sniff_from_process_line() {
-    // Format is read off tokens where tokens can answer, plus an O(1)
-    // matched-delimiter test on the raw line. `Token::Json` fires only on
-    // *embedded* JSON blobs, so a well-formed top-level record like
-    // `{"a":1}` produces no `Token::Json` and no `KeyValuePair` pair — the
-    // delimiter test is what recognises it. Without that test a 27,760-line
-    // all-JSON argocd log reported `plain 100%`, inverting the one decision
-    // the sniff exists to inform: jq or awk.
+fn build_briefing_sniffs_a_top_level_json_record_as_json() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -2652,7 +2555,10 @@ fn build_briefing_format_sniff_from_process_line() {
     f.process_line("more plain text").unwrap();
     let _ = f.finish().unwrap();
     let briefing = f.build_briefing();
-    assert_eq!(briefing.format.json, 1);
+    assert_eq!(
+        briefing.format.json, 1,
+        "a top-level record has no Json token; the matched-delimiter test on the raw line finds it"
+    );
     assert_eq!(briefing.format.plain, 2);
     assert_eq!(briefing.format.dominant, "plain");
     assert!(
@@ -2704,10 +2610,6 @@ fn build_briefing_template_counts_complete_after_finish() {
 
 #[test]
 fn finish_top_n_records_omitted_templates_too() {
-    // Only the top N groups get formatted through format_group_dispatch;
-    // the rest must still be recorded so the template map stays complete
-    // regardless of --top's cutoff (this is what the debug_assert in
-    // build_briefing checks on every call).
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -2719,7 +2621,11 @@ fn finish_top_n_records_omitted_templates_too() {
             .unwrap();
     }
     let _ = f.finish_top_n(1, None, false).unwrap();
-    assert_eq!(f.stats.template_counts.total_members(), f.stats.total_lines);
+    assert_eq!(
+        f.stats.template_counts.total_members(),
+        f.stats.total_lines,
+        "groups past --top are recorded too, so the template map stays complete"
+    );
 }
 
 #[test]
@@ -2740,13 +2646,8 @@ fn print_stats_stdin_source_in_header() {
     assert!(output.contains("--- lessence briefing: stdin ("));
 }
 
-// ---------------------------------------------------------------
-// format_group: lines_saved accounting
-// ---------------------------------------------------------------
-
 #[test]
 fn format_group_collapsed_lines_saved_count() {
-    // 5 lines, min_collapse=3: lines_saved = count - 3 = 2
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -2765,7 +2666,6 @@ fn format_group_collapsed_lines_saved_count() {
 
 #[test]
 fn format_group_collapsed_at_min_saves_zero() {
-    // Exactly min_collapse=3 lines: lines_saved = 3-3 = 0
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -2785,7 +2685,6 @@ fn format_group_collapsed_at_min_saves_zero() {
 
 #[test]
 fn format_group_essence_mode_lines_saved() {
-    // In essence mode below min_collapse, lines_saved = count - 1 when count > 1
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -2809,7 +2708,6 @@ fn format_group_essence_mode_lines_saved() {
 
 #[test]
 fn format_group_no_collapse_no_lines_saved() {
-    // Below min_collapse in standard mode: no lines saved
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -2825,7 +2723,6 @@ fn format_group_no_collapse_no_lines_saved() {
 
 #[test]
 fn format_group_collapsed_output_has_three_sections() {
-    // Collapsed group should have: first line, collapse marker, last line
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -2846,23 +2743,16 @@ fn format_group_collapsed_output_has_three_sections() {
     );
 }
 
-// ---------------------------------------------------------------
-// finish_top_n
-// ---------------------------------------------------------------
-
 #[test]
 fn finish_top_n_returns_sorted_by_count() {
     let mut f = make_folder();
-    // Group A: 5 lines
     for _ in 0..5 {
         f.process_line("2024-01-01 ERROR timeout from 10.0.0.1")
             .unwrap();
     }
-    // Group B: 2 lines
     for _ in 0..2 {
         f.process_line("GET /api/health HTTP/1.1 200 OK").unwrap();
     }
-    // Group C: 1 line
     f.process_line("unique log entry with no pattern match")
         .unwrap();
 
@@ -2893,18 +2783,16 @@ fn finish_top_n_returns_correct_total_groups() {
 }
 
 #[test]
-fn finish_top_n_n_exceeds_groups() {
+fn finish_top_n_returns_every_group_when_n_exceeds_them() {
     let mut f = make_folder();
     f.process_line("only one line 10.0.0.1").unwrap();
     let TopGroups { shown: top, .. } = f.finish_top_n(100, None, false).unwrap();
-    // Should return all groups (1 or more), not crash
-    assert!(!top.is_empty());
+    assert_eq!(top.len(), 1, "n = 100 over one group returns that group");
 }
 
 #[test]
-fn finish_top_n_coverage_percentage() {
+fn finish_top_n_one_group_of_identical_lines_covers_100_percent() {
     let mut f = make_folder();
-    // 10 identical lines = 1 group covering 100%
     for _ in 0..10 {
         f.process_line("2024-01-01 ERROR same 10.0.0.1").unwrap();
     }
@@ -2915,21 +2803,15 @@ fn finish_top_n_coverage_percentage() {
     assert_eq!(coverage, 100, "single group covering all lines = 100%");
 }
 
-// ---------------------------------------------------------------
-// finish (drains buffer in chronological order)
-// ---------------------------------------------------------------
-
 #[test]
 fn finish_drains_buffer_chronologically() {
     let mut f = make_folder();
-    // Feed dissimilar lines to create multiple groups
     f.process_line("2024-01-01 ERROR first unique line with 10.0.0.1")
         .unwrap();
     f.process_line("GET /api/v2/status HTTP/1.1 200 OK")
         .unwrap();
     let output = f.finish().unwrap();
     assert!(output.len() >= 2, "should output at least 2 groups");
-    // First group in output should be the first line (chronological)
     assert!(
         output[0].contains("first unique"),
         "first output should be the earliest group"
@@ -2948,14 +2830,9 @@ fn finish_updates_output_lines() {
     );
 }
 
-// ---------------------------------------------------------------
-// prepare_summary (extracted from finish_summary for testability)
-// ---------------------------------------------------------------
-
 #[test]
 fn prepare_summary_merges_identical_groups() {
     let mut f = make_folder();
-    // Two groups with same normalized text should merge
     f.buffer.push(PatternGroup::new(
         make_line("error <IP>", vec![Token::IPv4("10.0.0.1".into())]),
         1,
@@ -2976,7 +2853,6 @@ fn prepare_summary_merges_identical_groups() {
 #[test]
 fn prepare_summary_accumulates_counts() {
     let mut f = make_folder();
-    // Group with 3 lines + group with 2 lines (same normalized) = 5 total
     let mut g1 = PatternGroup::new(make_line("err <IP>", vec![]), 1);
     g1.add_line(make_line("err <IP>", vec![]), 2);
     g1.add_line(make_line("err <IP>", vec![]), 3);
@@ -3013,7 +2889,6 @@ fn account_summary_counts_printed_lines_and_shared_savings() {
 #[test]
 fn prepare_summary_sorts_descending() {
     let mut f = make_folder();
-    // Group A: 1 line, Group B: 5 lines — B should come first
     f.buffer
         .push(PatternGroup::new(make_line("small", vec![]), 1));
     let mut big = PatternGroup::new(make_line("big", vec![]), 10);
@@ -3094,7 +2969,6 @@ fn prepare_summary_fit_budget_limits() {
 
 #[test]
 fn prepare_summary_flushes_batch_buffer() {
-    // Parallel mode: lines go to batch_buffer, not buffer directly
     let mut f = PatternFolder::new(Config {
         thread_count: None,
         min_collapse: 3,
@@ -3106,14 +2980,8 @@ fn prepare_summary_flushes_batch_buffer() {
     assert!(!display.is_empty(), "should have processed batch");
 }
 
-// ---------------------------------------------------------------
-// format_group_dispatch: rollup computed for collapsible groups
-// ---------------------------------------------------------------
-
 #[test]
 fn format_group_dispatch_computes_rollup_for_collapsible() {
-    // Kills: >= min_collapse → < min_collapse
-    // A group at min_collapse should get rollup metadata in the output
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -3124,20 +2992,13 @@ fn format_group_dispatch_computes_rollup_for_collapsible() {
             vec![Token::IPv4("10.0.0.4".into())],
         ],
     );
-    assert_eq!(group.count(), 4); // >= min_collapse=3
+    assert_eq!(group.count(), 4);
     let output = f.format_group_dispatch(&group).unwrap();
-    // Rollup produces variation markers with type names (e.g., "ipv4")
-    // The legacy format_collapsed_line produces "[+N similar, varying: X]"
-    // With rollup, it produces "[+N similar | ipv4×M ...]"
     assert!(
-        output.contains("ipv4") || output.contains("similar"),
-        "collapsible group should have rollup or collapse marker, got: {output}"
+        output.contains("ipv4"),
+        "a collapsible group gets the rollup marker, which names ipv4; the legacy marker does not, got: {output}"
     );
 }
-
-// ---------------------------------------------------------------
-// format_summary_line (extracted from finish_summary)
-// ---------------------------------------------------------------
 
 #[test]
 fn summary_line_no_width() {
@@ -3161,25 +3022,23 @@ fn summary_line_truncated() {
 
 #[test]
 fn summary_line_avail_under_20_no_truncate() {
-    // Width so small that avail <= 20: don't truncate, just show full
     let line = PatternFolder::format_summary_line(5, "abcdefghij", Some(10));
-    assert_eq!(line, "[5x] abcdefghij");
+    assert_eq!(
+        line, "[5x] abcdefghij",
+        "avail of 20 or less keeps the full text"
+    );
 }
 
 #[test]
 fn summary_line_truncates_on_multibyte_char_boundary() {
-    // A 3-byte char (™ = U+2122, 3 bytes UTF-8) repeated, with the
-    // truncation byte budget (avail = 30 - 5 - 3 = 22) landing inside a
-    // char. Slicing at the raw byte index would panic; must snap down.
-    let rep = "\u{2122}".repeat(30); // 90 bytes, none on a 22-byte boundary
+    let rep = "\u{2122}".repeat(30);
     let line = PatternFolder::format_summary_line(5, &rep, Some(30));
-    assert!(line.ends_with("..."), "should truncate: {line}");
+    assert!(
+        line.ends_with("..."),
+        "avail 30 - 5 - 3 = 22 bytes lands inside a 3-byte char and snaps down: {line}"
+    );
     assert!(line.len() <= 30, "should fit in width: len={}", line.len());
 }
-
-// ---------------------------------------------------------------
-// format_coverage_message (extracted from finish_summary)
-// ---------------------------------------------------------------
 
 #[test]
 fn coverage_msg_capped() {
@@ -3202,10 +3061,6 @@ fn coverage_msg_zero_lines() {
     let msg = PatternFolder::format_coverage_message(0, 0, 0, 0, false);
     assert!(msg.contains("0% coverage"));
 }
-
-// ---------------------------------------------------------------
-// build_stats_json (extracted from print_stats_json)
-// ---------------------------------------------------------------
 
 #[test]
 fn build_stats_json_zero_lines() {
@@ -3233,10 +3088,6 @@ fn build_stats_json_with_data() {
     assert_eq!(json.pattern_hits.ips, 5);
 }
 
-// ---------------------------------------------------------------
-// print_stats: FormatSniff.mixed boundary (< 90% dominant is mixed)
-// ---------------------------------------------------------------
-
 #[test]
 fn build_briefing_format_exactly_90_pct_dominant_not_mixed() {
     let mut f = make_folder();
@@ -3263,10 +3114,6 @@ fn build_briefing_format_all_one_class_not_mixed() {
     assert!(!briefing.format.mixed);
     assert_eq!(briefing.format.dominant, "plain");
 }
-
-// ---------------------------------------------------------------
-// count_pattern_types: remaining token type tests
-// ---------------------------------------------------------------
 
 #[test]
 fn count_pattern_types_hash() {
@@ -3360,9 +3207,8 @@ fn count_pattern_types_fqdn() {
     f.count_pattern_types(&[Token::Fqdn("example.com".into())]);
     assert_eq!(f.stats.fqdns, 1);
     assert_eq!(f.stats.ips, 0, "FQDNs must not count as IPs");
-    // Accumulates (kills += -> -= / *= mutants).
     f.count_pattern_types(&[Token::Fqdn("example.org".into())]);
-    assert_eq!(f.stats.fqdns, 2);
+    assert_eq!(f.stats.fqdns, 2, "a second hit accumulates");
 }
 
 #[test]
@@ -3371,9 +3217,8 @@ fn count_pattern_types_name() {
     f.count_pattern_types(&[Token::Name("app".into())]);
     assert_eq!(f.stats.names, 1);
     assert_eq!(f.stats.numbers, 0);
-    // Second hit must accumulate (kills += -> -= / *= mutants).
     f.count_pattern_types(&[Token::Name("app".into())]);
-    assert_eq!(f.stats.names, 2);
+    assert_eq!(f.stats.names, 2, "a second hit accumulates");
 }
 
 #[test]
@@ -3417,10 +3262,6 @@ fn count_pattern_types_structured_message() {
     assert_eq!(f.stats.numbers, 0);
 }
 
-// ---------------------------------------------------------------
-// sequential_clustering
-// ---------------------------------------------------------------
-
 #[test]
 fn sequential_clustering_empty_tokens_no_pattern() {
     let mut f = make_folder();
@@ -3437,10 +3278,6 @@ fn sequential_clustering_with_tokens_increments() {
     assert_eq!(f.stats.patterns_detected, 1);
     assert_eq!(f.stats.ips, 1);
 }
-
-// ---------------------------------------------------------------
-// prepare_summary boundary tests
-// ---------------------------------------------------------------
 
 #[test]
 fn prepare_summary_exactly_30_not_capped() {
@@ -3514,10 +3351,6 @@ fn prepare_summary_fit_budget_10_of_50() {
     assert!(fit_truncated > 0);
 }
 
-// ---------------------------------------------------------------
-// finish_top_n boundary tests
-// ---------------------------------------------------------------
-
 #[test]
 fn finish_top_n_zero_input_lines() {
     let mut f = make_folder();
@@ -3529,34 +3362,26 @@ fn finish_top_n_zero_input_lines() {
     assert_eq!(coverage, 0);
 }
 
-// ---------------------------------------------------------------
-// Targeted tests for remaining missed mutants
-// ---------------------------------------------------------------
-
-// format_group_dispatch line 729: >= with < boundary
-// count < min_collapse should NOT compute rollup
 #[test]
 fn format_group_dispatch_below_min_collapse_no_rollup() {
-    let mut f = make_folder(); // min_collapse = 3
+    let mut f = make_folder();
     let group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
             vec![Token::IPv4("10.0.0.2".into())],
         ],
-    ); // count = 2, below min_collapse = 3
+    );
     let output = f.format_group_dispatch(&group).unwrap();
-    // Below min_collapse: no rollup marker, just the raw lines
     assert!(
         !output.contains("similar"),
-        "2 lines should not collapse: {output}"
+        "count 2 is below min_collapse 3: the raw lines print: {output}"
     );
 }
 
 #[test]
 fn format_group_dispatch_at_min_collapse_computes_rollup() {
-    let mut f = make_folder(); // min_collapse = 3
-    // Use enough varied tokens that rollup produces distinct output vs legacy
+    let mut f = make_folder();
     let group = make_group(
         "error <IP>",
         vec![
@@ -3566,18 +3391,14 @@ fn format_group_dispatch_at_min_collapse_computes_rollup() {
             vec![Token::IPv4("10.0.0.4".into())],
             vec![Token::IPv4("10.0.0.5".into())],
         ],
-    ); // count = 5, well above min_collapse
+    );
     let output = f.format_group_dispatch(&group).unwrap();
-    // Rollup path produces "ipv4×N" markers; legacy produces "[+N similar, varying: ...]"
-    // If >= is mutated to <, count=5 >= 3 would become 5 < 3 = false → empty rollup
-    // → legacy format which says "similar" but NOT "ipv4"
     assert!(
         output.contains("ipv4"),
-        "rollup should produce ipv4 marker, got legacy format: {output}"
+        "count 5 takes the rollup path, whose marker names ipv4; the legacy one does not: {output}"
     );
 }
 
-// prepare_summary: return value substitution tests (lines 941)
 #[test]
 fn prepare_summary_returns_nonempty_for_nonempty_buffer() {
     let mut f = make_folder();
@@ -3598,9 +3419,8 @@ fn prepare_summary_returns_nonempty_for_nonempty_buffer() {
     assert_eq!(fit_truncated, 0);
 }
 
-// prepare_summary line 969: > boundary with top_n=Some(0) + fit_budget
 #[test]
-fn prepare_summary_top_zero_fit_budget_exact_boundary() {
+fn prepare_summary_budget_equal_to_group_count_truncates_nothing() {
     let mut f = make_folder();
     for i in 0..5 {
         f.buffer.push(PatternGroup::new(
@@ -3608,18 +3428,20 @@ fn prepare_summary_top_zero_fit_budget_exact_boundary() {
             i + 1,
         ));
     }
-    // top=0 + budget=5: sorted.len() == budget, NOT > budget → no truncation
     let SummaryRows {
         display,
         fit_truncated,
         ..
     } = f.prepare_summary(Some(0), Some(5)).unwrap();
     assert_eq!(display.len(), 5);
-    assert_eq!(fit_truncated, 0, "exact fit should not truncate");
+    assert_eq!(
+        fit_truncated, 0,
+        "5 groups equal the budget of 5, not more: nothing truncated"
+    );
 }
 
 #[test]
-fn prepare_summary_top_zero_fit_budget_over() {
+fn prepare_summary_budget_below_group_count_keeps_budget_minus_one() {
     let mut f = make_folder();
     for i in 0..5 {
         f.buffer.push(PatternGroup::new(
@@ -3627,17 +3449,15 @@ fn prepare_summary_top_zero_fit_budget_over() {
             i + 1,
         ));
     }
-    // top=0 + budget=3: sorted.len() > budget → truncate
     let SummaryRows {
         display,
         fit_truncated,
         ..
     } = f.prepare_summary(Some(0), Some(3)).unwrap();
-    assert_eq!(display.len(), 2); // budget.saturating_sub(1) = 2
-    assert_eq!(fit_truncated, 3); // 5 - 2 = 3 remaining
+    assert_eq!(display.len(), 2, "budget 3 shows budget - 1 = 2");
+    assert_eq!(fit_truncated, 3, "5 - 2 = 3 remaining");
 }
 
-// prepare_summary line 971: saturating_sub arithmetic
 #[test]
 fn prepare_summary_top_zero_fit_budget_one() {
     let mut f = make_folder();
@@ -3647,17 +3467,15 @@ fn prepare_summary_top_zero_fit_budget_one() {
             i + 1,
         ));
     }
-    // budget=1, saturating_sub(1) = 0 → show 0 patterns, remaining = 5
     let SummaryRows {
         display,
         fit_truncated,
         ..
     } = f.prepare_summary(Some(0), Some(1)).unwrap();
-    assert_eq!(display.len(), 0);
-    assert_eq!(fit_truncated, 5);
+    assert_eq!(display.len(), 0, "budget 1 shows budget - 1 = 0");
+    assert_eq!(fit_truncated, 5, "all 5 remain");
 }
 
-// prepare_summary line 983: > with >= on fit_budget (no top_n)
 #[test]
 fn prepare_summary_fit_budget_exact() {
     let mut f = make_folder();
@@ -3667,60 +3485,59 @@ fn prepare_summary_fit_budget_exact() {
             i + 1,
         ));
     }
-    // fit_budget=5, sorted.len()=5 → NOT > budget → no truncation
     let SummaryRows {
         display,
         fit_truncated,
         ..
     } = f.prepare_summary(None, Some(5)).unwrap();
     assert_eq!(display.len(), 5);
-    assert_eq!(fit_truncated, 0);
+    assert_eq!(
+        fit_truncated, 0,
+        "5 groups equal the budget of 5, not more: nothing truncated"
+    );
 }
 
-// format_summary_line: detailed boundary tests
 #[test]
-fn summary_line_truncation_arithmetic() {
-    // Width = 30, prefix "[5x] " = 5 chars, representative = 30 chars
-    // prefix.len() + representative.len() = 35 > 30 → truncate
-    // avail = 30 - 5 - 3 = 22 > 20 → do truncate with ...
+fn summary_line_truncates_with_ellipsis_when_avail_exceeds_20() {
     let line = PatternFolder::format_summary_line(5, &"x".repeat(30), Some(30));
-    assert!(line.ends_with("..."), "should truncate: {line}");
+    assert!(
+        line.ends_with("..."),
+        "5 + 30 exceeds width 30 and avail 30 - 5 - 3 = 22 is over 20: {line}"
+    );
     assert!(line.len() <= 30, "should fit in width: len={}", line.len());
 }
 
 #[test]
 fn summary_line_prefix_plus_rep_exactly_at_width() {
-    // prefix "[5x] " = 5 chars + representative 25 chars = 30 = width → no truncation
     let line = PatternFolder::format_summary_line(5, &"x".repeat(25), Some(30));
     assert!(
         !line.ends_with("..."),
-        "exact fit should not truncate: {line}"
+        "prefix 5 + text 25 equals width 30: no truncation: {line}"
     );
 }
 
 #[test]
-fn summary_line_avail_exactly_20() {
-    // Width = 28, prefix "[5x] " = 5, avail = 28 - 5 - 3 = 20 → exactly 20, NOT > 20
-    // So: don't truncate (avail must be > 20)
+fn summary_line_avail_of_exactly_20_does_not_truncate() {
     let long = "x".repeat(30);
     let line = PatternFolder::format_summary_line(5, &long, Some(28));
     assert!(
         !line.ends_with("..."),
-        "avail=20 should not truncate: {line}"
+        "avail 28 - 5 - 3 = 20 is not over 20: {line}"
     );
 }
 
 #[test]
 fn summary_line_avail_21_does_truncate() {
-    // Width = 29, prefix "[5x] " = 5, avail = 29 - 5 - 3 = 21 > 20 → truncate
     let long = "x".repeat(30);
     let line = PatternFolder::format_summary_line(5, &long, Some(29));
-    assert!(line.ends_with("..."), "avail=21 should truncate: {line}");
+    assert!(
+        line.ends_with("..."),
+        "avail 29 - 5 - 3 = 21 is over 20: {line}"
+    );
 }
 
-// finish_summary line 1068: fit_truncated > 0 boundary
 #[test]
-fn finish_summary_with_fit_truncation() {
+fn finish_summary_accounts_only_the_rows_a_fit_budget_shows() {
     let mut f = make_folder();
     f.stats.total_lines = 100;
     for i in 0..10 {
@@ -3729,17 +3546,17 @@ fn finish_summary_with_fit_truncation() {
             i + 1,
         ));
     }
-    // fit_budget=3 with 10 patterns → fit_truncated > 0
     f.finish_summary(None, Some(3)).unwrap();
-    // Can't capture stdout, but no panic = OK
+    assert_eq!(
+        f.stats.output_lines, 2,
+        "a fit budget of 3 over 10 patterns prints budget - 1 rows"
+    );
 }
 
-// finish_top_n line 1108: delete ! on batch_buffer.is_empty()
 #[test]
 fn finish_top_n_flushes_batch_buffer() {
     let mut f = make_folder();
     f.stats.total_lines = 5;
-    // Put lines in batch_buffer (simulating unprocessed batch)
     f.batch_buffer.push("error one".to_string());
     f.batch_buffer.push("error two".to_string());
     let TopGroups {
@@ -3747,12 +3564,14 @@ fn finish_top_n_flushes_batch_buffer() {
         total_groups: total,
         ..
     } = f.finish_top_n(10, None, false).unwrap();
-    // Should have flushed and processed the batch
     assert!(f.batch_buffer.is_empty(), "batch should be flushed");
-    assert!(total > 0 || output.is_empty()); // processed something
+    assert_eq!(
+        (total, output.len()),
+        (2, 2),
+        "both buffered lines were processed into groups"
+    );
 }
 
-// finish_top_n line 1131: += on output_lines
 #[test]
 fn finish_top_n_updates_output_lines() {
     let mut f = make_folder();
@@ -3771,12 +3590,10 @@ fn finish_top_n_updates_output_lines() {
     );
 }
 
-// finish_top_n line 1139: > with >= on coverage calc
 #[test]
 fn finish_top_n_coverage_50_percent() {
     let mut f = make_folder();
     f.stats.total_lines = 100;
-    // Create one group with 50 lines
     let mut group = PatternGroup::new(make_line("error", vec![]), 1);
     for i in 1..50 {
         group.add_line(make_line("error", vec![]), i + 1);
@@ -3786,10 +3603,12 @@ fn finish_top_n_coverage_50_percent() {
         coverage_pct: coverage,
         ..
     } = f.finish_top_n(10, None, false).unwrap();
-    assert_eq!(coverage, 50, "50/100 lines = 50% coverage");
+    assert_eq!(
+        coverage, 50,
+        "one 50-line group of 100 input lines = 50% coverage"
+    );
 }
 
-// format_group line 1198: delete ! on rollup.is_empty()
 #[test]
 fn format_group_empty_rollup_uses_legacy() {
     let mut f = make_folder();
@@ -3803,10 +3622,9 @@ fn format_group_empty_rollup_uses_legacy() {
     );
     let empty_rollup = BTreeMap::new();
     let output = f.format_group(&group, &empty_rollup).unwrap();
-    // Empty rollup → legacy format_collapsed_line path
     assert!(
         output.contains("similar"),
-        "empty rollup should use legacy: {output}"
+        "an empty rollup takes the format_collapsed_line path: {output}"
     );
 }
 
@@ -3823,14 +3641,12 @@ fn format_group_nonempty_rollup_uses_compact() {
     );
     let rollup = f.rollup_computer.compute(&group);
     let output = f.format_group(&group, &rollup).unwrap();
-    // Non-empty rollup → compact marker path
     assert!(
-        output.contains("ipv4") || output.contains("similar"),
-        "non-empty rollup should use compact: {output}"
+        output.contains("ipv4"),
+        "a non-empty rollup takes the compact marker path, which names ipv4: {output}"
     );
 }
 
-// format_group line 1202/1213: - with + on count-2 and count-3
 #[test]
 fn format_group_lines_saved_arithmetic() {
     let mut f = make_folder();
@@ -3843,14 +3659,12 @@ fn format_group_lines_saved_arithmetic() {
             vec![Token::IPv4("10.0.0.4".into())],
             vec![Token::IPv4("10.0.0.5".into())],
         ],
-    ); // count = 5
+    );
     let rollup = BTreeMap::new();
     f.format_group(&group, &rollup).unwrap();
-    // lines_saved = count - 3 = 5 - 3 = 2
-    assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed saves 2");
+    assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed saves 5 - 3 = 2");
 }
 
-// format_group line 1228: && with || and delete ! on essence_mode PII
 #[test]
 fn format_group_pii_masking_only_in_non_essence() {
     let mut f = PatternFolder::new(Config {
@@ -3870,21 +3684,18 @@ fn format_group_pii_masking_only_in_non_essence() {
     );
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // PII masking: email should be masked
     assert!(
         output.contains("***@***") || !output.contains("test@example.com"),
         "PII should be masked in non-essence mode: {output}"
     );
 }
 
-// format_group line 1238: > with >= on group.count() > 1
 #[test]
 fn format_group_single_line_no_last() {
     let mut f = make_folder();
     let group = make_group("single line", vec![vec![]]);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // Single line: no "last line" section
     assert_eq!(
         output.lines().count(),
         1,
@@ -3898,14 +3709,12 @@ fn format_group_two_lines_has_last() {
     let group = make_group("error msg", vec![vec![], vec![]]);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // Two lines, below min_collapse: both lines shown
     assert!(
         output.lines().count() >= 2,
         "two lines should show both: {output}"
     );
 }
 
-// format_group line 1249: != with == on essence_mode first!=last
 #[test]
 fn format_group_essence_identical_suppresses_last() {
     let mut f = PatternFolder::new(Config {
@@ -3914,7 +3723,6 @@ fn format_group_essence_identical_suppresses_last() {
         essence_mode: true,
         ..Config::default()
     });
-    // 4 lines, all same normalized text → in essence mode, last = first, suppress last
     let group = make_group(
         "error <IP>",
         vec![
@@ -3927,17 +3735,11 @@ fn format_group_essence_identical_suppresses_last() {
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
     let line_count = output.lines().count();
-    // Essence mode with identical first/last normalized: last suppressed
-    // Should have first line + collapsed marker, but NOT a third "last" line
     assert!(
         line_count <= 2,
-        "essence mode should suppress identical last: {output}"
+        "essence mode with identical first and last template suppresses the last line: {output}"
     );
 }
-
-// ---------------------------------------------------------------
-// build_briefing: the tokens filter is strictly > 0, not >= 0
-// ---------------------------------------------------------------
 
 #[test]
 fn build_briefing_tokens_count_of_one_is_shown() {
@@ -3954,14 +3756,8 @@ fn build_briefing_tokens_count_of_zero_is_absent() {
     assert!(briefing.tokens.is_empty());
 }
 
-// ---------------------------------------------------------------
-// format_group: rollup vs legacy path (line 1198 delete ! mutant)
-// Distinguishes by output content: rollup has "ipv4×N", legacy has "varying"
-// ---------------------------------------------------------------
-
 #[test]
 fn format_group_rollup_path_vs_legacy_path_output_differs() {
-    // Non-empty rollup should produce compact marker (with type names)
     let mut f1 = make_folder();
     let group = make_group(
         "error <IP>",
@@ -3979,27 +3775,18 @@ fn format_group_rollup_path_vs_legacy_path_output_differs() {
     );
     let output_with_rollup = f1.format_group(&group, &rollup).unwrap();
 
-    // Empty rollup should produce legacy format with "similar" and "varying"
     let mut f2 = make_folder();
     let empty_rollup = BTreeMap::new();
     let output_legacy = f2.format_group(&group, &empty_rollup).unwrap();
 
-    // The two paths must produce different output
     assert_ne!(
         output_with_rollup, output_legacy,
-        "rollup vs legacy path should produce different output"
+        "the rollup marker names types; the legacy one says similar and varying"
     );
 }
 
-// ---------------------------------------------------------------
-// format_group: exact count in collapsed marker (lines 1202, 1213)
-// Kills `- with +` and `- with /` on count-2 and count-3
-// ---------------------------------------------------------------
-
 #[test]
 fn format_group_collapsed_marker_exact_count_legacy() {
-    // Legacy path (empty rollup): collapsed count = count - 2
-    // With 5 lines, the marker should say "+3 similar" (5-2=3)
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -4013,7 +3800,6 @@ fn format_group_collapsed_marker_exact_count_legacy() {
     );
     let empty_rollup = BTreeMap::new();
     let output = f.format_group(&group, &empty_rollup).unwrap();
-    // Legacy format: "[+3 similar, varying: ...]"
     assert!(
         output.contains("+3 similar"),
         "5 lines with empty rollup: marker should say +3 similar (5-2=3), got: {output}"
@@ -4022,8 +3808,6 @@ fn format_group_collapsed_marker_exact_count_legacy() {
 
 #[test]
 fn format_group_collapsed_marker_exact_count_rollup() {
-    // Rollup path: collapsed count = count - 2, lines_saved = count - 3
-    // With 6 lines, the rollup marker should say "+4 similar" (6-2=4)
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -4038,19 +3822,12 @@ fn format_group_collapsed_marker_exact_count_rollup() {
     );
     let rollup = f.rollup_computer.compute(&group);
     let output = f.format_group(&group, &rollup).unwrap();
-    // Rollup format: "[+4 similar | ...]"
     assert!(
         output.contains("+4 similar"),
         "6 lines with rollup: marker should say +4 similar (6-2=4), got: {output}"
     );
-    // Also verify lines_saved = count - 3 = 3
     assert_eq!(f.stats.lines_saved, 3, "6 lines collapsed: saved = 6-3 = 3");
 }
-
-// ---------------------------------------------------------------
-// format_group: PII + essence interaction. Essence mode shows the
-// template, and the template is masked like every other output.
-// ---------------------------------------------------------------
 
 #[test]
 fn format_group_pii_plus_essence_masks_the_template() {
@@ -4061,8 +3838,6 @@ fn format_group_pii_plus_essence_masks_the_template() {
         essence_mode: true,
         ..Config::default()
     });
-    // In essence mode, normalized text is used (not original). Build a group
-    // where normalized contains the email text to check masking is NOT applied.
     let mut line = make_line(
         "user alice@test.com logged in",
         vec![Token::Email("alice@test.com".into())],
@@ -4074,38 +3849,26 @@ fn format_group_pii_plus_essence_masks_the_template() {
     assert_eq!(output, "user <EMAIL> logged in");
 }
 
-// ---------------------------------------------------------------
-// format_group: count=1 vs count=2 last line (line 1238 > with >=)
-// ---------------------------------------------------------------
-
 #[test]
-fn format_group_count_1_collapsed_no_last_line() {
-    // A group with exactly 1 line above min_collapse threshold cannot
-    // happen in practice, but we can test the boundary via a single-line
-    // group that does NOT collapse (below min_collapse).
-    // The real test: with count=1, `group.count() > 1` is false, so no last line.
+fn format_group_single_line_group_has_no_last_line() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        min_collapse: 2, // low threshold to make 3 lines collapse
+        min_collapse: 2,
         ..Config::default()
     });
     let group = make_group("single", vec![vec![]]);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // count=1: should be just the one line, no extra "last line"
     assert_eq!(
         output.lines().count(),
         1,
-        "count=1 should produce exactly 1 line: {output}"
+        "a one-line group has no last line to show, even at min_collapse 2: {output}"
     );
 }
 
 #[test]
 fn format_group_count_4_collapsed_has_last_line() {
-    // With min_collapse=3 and count=4, group collapses and
-    // count > 1 is true, so last line should appear.
-    // (count must be >= 3 to avoid overflow on lines_saved = count - 3)
-    let mut f = make_folder(); // min_collapse=3
+    let mut f = make_folder();
     let mut line1 = make_line("error connecting to server", vec![]);
     line1.original = "error connecting to server A".to_string();
     let mut line2 = make_line("error connecting to server", vec![]);
@@ -4120,31 +3883,20 @@ fn format_group_count_4_collapsed_has_last_line() {
     group.add_line(line4, 4);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // count=4 > 1, so last line should be present (3 lines total:
-    // first + marker + last)
     let line_count = output.lines().count();
     assert!(
         line_count >= 3,
         "count=4 collapsed should have first+marker+last ({line_count} lines): {output}"
     );
-    // Verify the last line content is present
     assert!(
         output.contains("server D"),
         "last line should appear in collapsed output: {output}"
     );
 }
 
-// ---------------------------------------------------------------
-// format_group: essence mode with different first/last (line 1249)
-// Kills `!= with ==` — different lines should show last line
-// ---------------------------------------------------------------
-
 #[test]
 fn format_group_non_essence_different_first_last_shows_both() {
-    // In non-essence collapsed mode, when first_line != last_line,
-    // the last line should appear in the output.
-    // This tests line 1249: `!self.config.essence_mode || first_line != last_line`
-    let mut f = make_folder(); // non-essence, min_collapse=3
+    let mut f = make_folder();
     let mut line1 = make_line("error connecting to server", vec![]);
     line1.original = "error connecting to A".to_string();
     let mut line2 = make_line("error connecting to server", vec![]);
@@ -4156,8 +3908,6 @@ fn format_group_non_essence_different_first_last_shows_both() {
     group.add_line(line3, 3);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // Non-essence mode: condition is true (short-circuits on !essence_mode)
-    // So last line ("error connecting to C") should appear
     assert!(
         output.contains("error connecting to C"),
         "non-essence collapsed with different first/last should show last: {output}"
@@ -4166,10 +3916,7 @@ fn format_group_non_essence_different_first_last_shows_both() {
 
 #[test]
 fn format_group_non_essence_same_first_last_still_shows_last() {
-    // Even when first and last original text are identical, in non-essence
-    // mode the last line still shows (because !essence_mode is true).
-    // This exercises line 1249 where the != check is redundant in non-essence.
-    let mut f = make_folder(); // non-essence, min_collapse=3
+    let mut f = make_folder();
     let line1 = make_line("identical text", vec![]);
     let line2 = make_line("identical text", vec![]);
     let line3 = make_line("identical text", vec![]);
@@ -4179,16 +3926,11 @@ fn format_group_non_essence_same_first_last_still_shows_last() {
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
     let line_count = output.lines().count();
-    // Non-essence mode: last line always shown when count > 1
     assert_eq!(
         line_count, 3,
         "non-essence collapsed with same first/last should still show 3 lines: {output}"
     );
 }
-
-// ---------------------------------------------------------------
-// format_group: PII masking for last line (line 1253 && with ||)
-// ---------------------------------------------------------------
 
 #[test]
 fn format_group_pii_masks_last_line_in_non_essence() {
@@ -4199,7 +3941,6 @@ fn format_group_pii_masks_last_line_in_non_essence() {
         essence_mode: false,
         ..Config::default()
     });
-    // Build a group with 3 lines (collapses). Last line has an email.
     let line1 = make_line(
         "user <EMAIL> logged in",
         vec![Token::Email("first@test.com".into())],
@@ -4218,7 +3959,6 @@ fn format_group_pii_masks_last_line_in_non_essence() {
     group.add_line(line3, 3);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    // In non-essence mode with PII, last line's email should be masked
     assert!(
         !output.contains("last@test.com"),
         "last line email should be masked with PII in non-essence mode: {output}"
@@ -4234,12 +3974,10 @@ fn format_group_pii_masks_the_essence_line() {
         essence_mode: true,
         ..Config::default()
     });
-    // Essence mode shows the group once, as its template, masked.
     let line1 = make_line(
         "user alice@test.com logged in",
         vec![Token::Email("alice@test.com".into())],
     );
-    // The same template, as two lines the join rule puts in one group have.
     let mut line2 = make_line(
         "user alice@test.com logged in",
         vec![Token::Email("bob@test.com".into())],
@@ -4249,13 +3987,11 @@ fn format_group_pii_masks_the_essence_line() {
     group.add_line(line2, 2);
     let rollup = BTreeMap::new();
     let output = f.format_group(&group, &rollup).unwrap();
-    assert_eq!(output, "user <EMAIL> logged in");
+    assert_eq!(
+        output, "user <EMAIL> logged in",
+        "essence shows the group once, as its shared template, masked"
+    );
 }
-
-// ---------------------------------------------------------------
-// format_group: non-collapsed group boundary (line 1273 > with >=)
-// When count > 1 in non-collapsed essence path, lines_saved accumulates
-// ---------------------------------------------------------------
 
 #[test]
 fn format_group_essence_non_collapsed_count_1_no_lines_saved() {
@@ -4268,7 +4004,6 @@ fn format_group_essence_non_collapsed_count_1_no_lines_saved() {
     let group = make_group("single pattern", vec![vec![]]);
     let rollup = BTreeMap::new();
     let _ = f.format_group(&group, &rollup).unwrap();
-    // count=1, so `count > 1` is false → no lines_saved
     assert_eq!(
         f.stats.lines_saved, 0,
         "essence mode count=1 should not save lines"
@@ -4292,25 +4027,16 @@ fn format_group_essence_non_collapsed_count_2_saves_lines() {
     );
     let rollup = BTreeMap::new();
     let _ = f.format_group(&group, &rollup).unwrap();
-    // count=2, in essence mode below min_collapse: lines_saved = 2-1 = 1
     assert_eq!(
         f.stats.lines_saved, 1,
         "essence mode count=2 should save 1 line"
     );
 }
 
-// ---------------------------------------------------------------
-// finish_summary: observable side effects (line 1051 replace with Ok(()))
-// ---------------------------------------------------------------
-
 #[test]
 fn finish_summary_flushes_batch_buffer() {
-    // finish_summary calls prepare_summary which flushes batch_buffer.
-    // If replaced with Ok(()), prepare_summary wouldn't be called
-    // and batch_buffer would remain non-empty.
     let mut f = make_folder();
     f.stats.total_lines = 5;
-    // Put lines in batch_buffer (simulating unprocessed parallel batch)
     f.batch_buffer
         .push("2024-01-01 ERROR one 10.0.0.1".to_string());
     f.batch_buffer
@@ -4318,21 +4044,14 @@ fn finish_summary_flushes_batch_buffer() {
     assert!(!f.batch_buffer.is_empty());
     let result = f.finish_summary(None, None);
     assert!(result.is_ok());
-    // prepare_summary drains batch_buffer via process_batch
     assert!(
         f.batch_buffer.is_empty(),
         "finish_summary should flush batch_buffer via prepare_summary"
     );
 }
 
-// ---------------------------------------------------------------
-// finish_summary: fit_truncated=0 should NOT print extra line (line 1068)
-// Kills `> with >=` and `> with ==` and `> with <`
-// ---------------------------------------------------------------
-
 #[test]
 fn prepare_summary_fit_truncated_zero_when_under_budget() {
-    // When patterns fit within budget, fit_truncated should be exactly 0
     let mut f = make_folder();
     for i in 0..3 {
         f.buffer.push(PatternGroup::new(
@@ -4340,7 +4059,6 @@ fn prepare_summary_fit_truncated_zero_when_under_budget() {
             i + 1,
         ));
     }
-    // budget=10, only 3 patterns → fit_truncated = 0
     let SummaryRows { fit_truncated, .. } = f.prepare_summary(None, Some(10)).unwrap();
     assert_eq!(
         fit_truncated, 0,
@@ -4357,25 +4075,17 @@ fn prepare_summary_fit_truncated_nonzero_when_over_budget() {
             i + 1,
         ));
     }
-    // budget=5, 10 patterns → fit_truncated > 0
     let SummaryRows { fit_truncated, .. } = f.prepare_summary(None, Some(5)).unwrap();
-    assert!(
-        fit_truncated > 0,
-        "10 patterns with budget=5 should have fit_truncated > 0, got {fit_truncated}"
+    assert_eq!(
+        fit_truncated, 6,
+        "budget 5 shows budget - 1 = 4 of 10 patterns"
     );
 }
-
-// ---------------------------------------------------------------
-// finish_top_n: coverage with total_input_lines > 0 (line 1139)
-// Kills `> with >=` — when total_input_lines=0, coverage=0
-// ---------------------------------------------------------------
 
 #[test]
 fn finish_top_n_zero_total_lines_zero_coverage() {
     let mut f = make_folder();
     f.stats.total_lines = 0;
-    // Even with a group in the buffer, coverage should be 0
-    // because total_input_lines is 0
     f.buffer
         .push(PatternGroup::new(make_line("error", vec![]), 1));
     let TopGroups {
@@ -4404,17 +4114,8 @@ fn finish_top_n_nonzero_total_lines_nonzero_coverage() {
     assert_eq!(coverage, 100, "10/10 lines should be 100% coverage");
 }
 
-// ---------------------------------------------------------------
-// print_stats_json: verify it writes to stderr (line 1506)
-// Since print_stats_json writes to real stderr, we test via
-// build_stats_json (the extracted testable core) and verify
-// the JSON can be serialized to a writer.
-// ---------------------------------------------------------------
-
 #[test]
 fn build_stats_json_serializes_to_writer() {
-    // This kills the "replace with Ok(())" mutant by proving
-    // the stats JSON is valid and non-empty when serialized.
     let mut f = make_folder();
     f.stats.total_lines = 50;
     f.stats.lines_saved = 25;
@@ -4431,11 +4132,6 @@ fn build_stats_json_serializes_to_writer() {
     assert_eq!(v["elapsed_ms"], 42);
     assert_eq!(v["pattern_hits"]["timestamps"], 5);
 }
-
-// ---------------------------------------------------------------
-// get_stats: verify it returns current stats (line 1613)
-// Kills return substitution mutant
-// ---------------------------------------------------------------
 
 #[test]
 fn get_stats_returns_current_stats() {
@@ -4458,7 +4154,6 @@ fn get_stats_returns_current_stats() {
 #[test]
 fn get_stats_reflects_processing() {
     let mut f = make_folder();
-    // Process some lines to populate stats
     f.process_line("2024-01-01 10:00:00 INFO hello 192.168.1.1")
         .unwrap();
     f.process_line("2024-01-01 10:00:01 INFO world 192.168.1.2")
@@ -4470,11 +4165,6 @@ fn get_stats_reflects_processing() {
         "should detect patterns after processing"
     );
 }
-
-// ---------------------------------------------------------------
-// Masking: --sanitize-pii must mask in every output mode, not just
-// the text fold path.
-// ---------------------------------------------------------------
 
 #[test]
 fn json_records_mask_pii_when_enabled() {
@@ -4502,9 +4192,6 @@ fn text_marker_masks_email_samples_when_enabled() {
         sanitize_pii: true,
         ..Config::default()
     });
-    // Six lines, three distinct emails: distinct_count is within the
-    // text sample threshold, so the compact marker would surface the
-    // raw values inline without masking.
     for who in ["alice", "bob", "eve", "alice", "bob", "eve"] {
         f.process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
@@ -4512,7 +4199,7 @@ fn text_marker_masks_email_samples_when_enabled() {
     let out = f.finish().unwrap().join("\n");
     assert!(
         !out.contains("example.com"),
-        "raw email in text output: {out}"
+        "3 distinct emails are within the inline sample threshold, so the marker shows samples, masked: {out}"
     );
 }
 #[test]
@@ -4536,11 +4223,6 @@ fn summary_masks_pii_when_enabled() {
     }
 }
 
-// ---------------------------------------------------------------
-// Cross-mode consistency: one fold-metric definition shared by the
-// text footer, --stats-json, the JSONL summary record, and markdown.
-// ---------------------------------------------------------------
-
 #[test]
 fn fold_metrics_agree_between_text_and_json_modes() {
     let run = |format: &str| {
@@ -4555,15 +4237,17 @@ fn fold_metrics_agree_between_text_and_json_modes() {
         }
         let _ = f.finish().unwrap();
         let s = f.build_stats_json(Duration::from_millis(1));
-        // bit-exact ratio comparison: both modes must run the same
-        // computation, not merely land close
         (
             s.lines_saved,
             s.collapsed_groups,
             s.compression_ratio.to_bits(),
         )
     };
-    assert_eq!(run("text"), run("json"));
+    assert_eq!(
+        run("text"),
+        run("json"),
+        "bit-exact ratio: both modes run one computation"
+    );
 }
 #[test]
 fn summary_record_and_stats_json_report_identical_metrics() {
@@ -4624,10 +4308,6 @@ fn markdown_document_masks_pii_and_shares_fold_metrics() {
     );
 }
 
-// ---------------------------------------------------------------
-// --threads N thread-pool sizing (r98.11)
-// ---------------------------------------------------------------
-
 #[test]
 fn new_sizes_thread_pool_from_explicit_thread_count() {
     let f = PatternFolder::new(Config {
@@ -4645,8 +4325,6 @@ fn new_sizes_thread_pool_from_explicit_thread_count() {
     );
 }
 
-/// --threads with an absurd value must clamp to available parallelism, not
-/// spawn N raw OS threads (--threads 999999 once took the dev machine down).
 #[test]
 fn new_caps_thread_pool_at_available_parallelism() {
     let f = PatternFolder::new(Config {
@@ -4715,12 +4393,6 @@ fn sized_pool_produces_same_output_as_default_pool() {
     );
 }
 
-// ---------------------------------------------------------------
-// format_collapsed_line helpers (moved here with the renderer)
-// ---------------------------------------------------------------
-
-// --- summarize_variation_types direct tests (mutant kills) ---
-
 #[test]
 fn variation_types_different_ips() {
     let f = make_folder();
@@ -4768,9 +4440,7 @@ fn variation_types_multiple_types_sorted() {
 }
 
 #[test]
-fn variation_types_presence_only_kinds_compare_fixed() {
-    // LogWithModule / StructuredMessage vary by presence, not value: two
-    // different level:module payloads must NOT count as variation.
+fn variation_types_ignore_payloads_of_presence_only_kinds() {
     let f = make_folder();
     let first = vec![Token::LogWithModule {
         level: "error".to_string(),
@@ -4785,8 +4455,6 @@ fn variation_types_presence_only_kinds_compare_fixed() {
         "presence-only kinds must not vary by payload"
     );
 }
-
-// ---- template honesty (hosts/k8s study 2026-08-29) ----
 
 #[test]
 fn command_options_keep_operations_apart_and_trace_variation_truthful() {
@@ -4874,10 +4542,6 @@ fn repeated_option_names_survive_arguments_of_different_lengths() {
 
 #[test]
 fn a_placeholder_against_a_plain_word_varies_too() {
-    // usw_dmesg: `creating proc entry for system.info` founded the group and
-    // ten bare words joined it (system.info is literal since lessence-c2f,
-    // so an address stands in for the placeholder here);
-    // ten bare words joined it; the template said <FQDN> for all eleven.
     let mut f = make_folder();
     for l in [
         "[    5.450000] creating proc entry for 10.0.0.1",
@@ -4889,7 +4553,8 @@ fn a_placeholder_against_a_plain_word_varies_too() {
     assert_eq!(f.buffer.len(), 1);
     assert_eq!(
         f.buffer[0].template(),
-        "<TIMESTAMP> creating proc entry for <VARIES>"
+        "<TIMESTAMP> creating proc entry for <VARIES>",
+        "the founder's placeholder varies against members that hold plain words there"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
@@ -4898,8 +4563,6 @@ fn a_placeholder_against_a_plain_word_varies_too() {
 
 #[test]
 fn a_shared_field_name_stays_in_front_of_varies() {
-    // hubble: `msg=Connecting` beside `msg=Connected` used to become a bare
-    // <VARIES> that swallowed the key; the JSON form the same.
     let mut f = make_folder();
     for l in [
         "time=2026-08-26T12:46:24.203681666Z level=info msg=Connecting subsys=hubble-relay address=10.59.151.22:4244 tls=true peer=lupah/ik",
@@ -4911,7 +4574,7 @@ fn a_shared_field_name_stays_in_front_of_varies() {
     assert_eq!(f.buffer.len(), 1);
     assert!(
         f.buffer[0].template().contains(" msg=<VARIES> subsys="),
-        "{}",
+        "the shared key msg= stays in front of the slot: {}",
         f.buffer[0].template()
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
@@ -4939,19 +4602,15 @@ fn a_shared_field_name_stays_in_front_of_varies() {
 
 #[test]
 fn a_member_with_fewer_words_marks_the_words_it_lacks() {
-    // cloudflared: a box title row folded with the blank spacer rows; the
-    // template showed the title for members that had none. Refused now (two
-    // sentence words) — and where a shorter member does join, the missing
-    // words vary and count as absent.
     assert_eq!(
         spans_of("alpha beta gamma delta", "alpha gamma delta"),
-        vec![(6, 4)]
+        vec![(6, 4)],
+        "the word the member lacks becomes a slot"
     );
-    // and a word only the member has opens a slot of its own after the
-    // last unit
     assert_eq!(
         spans_of("alpha beta gamma", "alpha zeta gamma extra"),
-        vec![(6, 4), (16, 0)]
+        vec![(6, 4), (16, 0)],
+        "a word only the member has opens a slot of its own after the last unit"
     );
     let mut f = make_folder();
     for l in [
@@ -4967,15 +4626,16 @@ fn a_member_with_fewer_words_marks_the_words_it_lacks() {
         "<TIMESTAMP> INF | request served <VARIES> |"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
-    assert_eq!(r[VARIES].samples, vec!["∅", "8"]);
+    assert_eq!(
+        r[VARIES].samples,
+        vec!["∅", "8"],
+        "the members without the word count as absent"
+    );
     assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
 }
 
 #[test]
 fn a_kept_prefix_widens_for_a_member_that_lacks_it() {
-    // netbox (lessence-veg): two members that began `10:` made the slot
-    // `10:<VARIES>`, and every later member was skipped at that unit
-    // because it already varied — 58 of 72 sat under a prefix they lacked.
     let mut f = make_folder();
     for l in [
         "job 10:30:01 cleaning registries for queue high",
@@ -4987,7 +4647,8 @@ fn a_kept_prefix_widens_for_a_member_that_lacks_it() {
     assert_eq!(f.buffer.len(), 1);
     assert_eq!(
         f.buffer[0].template(),
-        "job <VARIES> cleaning registries for queue high"
+        "job <VARIES> cleaning registries for queue high",
+        "the kept prefix 10: widens for the member that lacks it"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].samples, vec!["10:30:01", "10:31:02", "11:08:43"]);
@@ -4997,50 +4658,58 @@ fn a_kept_prefix_widens_for_a_member_that_lacks_it() {
 fn kept_affixes_keep_only_what_the_member_shares() {
     assert_eq!(kept_affixes("msg=", "", "msg=Connected"), (4, 0));
     assert_eq!(kept_affixes("10:", "", "11:08:43"), (0, 0));
-    // cut back to the last delimiter the two share, as a new slot is
     assert_eq!(
         kept_affixes("k8s:app.kubernetes.io/component=", "", "k8s:app=rook"),
-        (4, 0)
+        (4, 0),
+        "cut back to the last delimiter the two share"
     );
     assert_eq!(kept_affixes("a=b:", ")", "a=c)"), (2, 1));
     assert_eq!(kept_affixes("slot[", "]", "slot[2]"), (5, 1));
     assert_eq!(kept_affixes("slot[", "]", "slot[2"), (5, 0));
-    // a member that is the prefix alone leaves no byte for the slot
-    assert_eq!(kept_affixes("key=", "", "key="), (0, 0));
+    assert_eq!(
+        kept_affixes("key=", "", "key="),
+        (0, 0),
+        "a member that is the prefix alone leaves no byte for the slot"
+    );
 }
 
 #[test]
 fn a_slot_against_a_member_of_another_length_is_rechecked_in_its_gap() {
-    // A unit carrying <VARIES> equals no member unit, so the word alignment
-    // never pairs it: its counterpart is what the member has between the
-    // slot's aligned neighbours.
-    // a word past the template's last opens a slot there
-    assert_eq!(spans_of("a msg=<VARIES> c", "a msg=z c d"), vec![(16, 0)]);
+    assert_eq!(
+        spans_of("a msg=<VARIES> c", "a msg=z c d"),
+        vec![(16, 0)],
+        "a word past the template's last opens a slot there"
+    );
     assert!(spans_of("a msg=<VARIES> c", "a msg=y z c").is_empty());
     assert_eq!(
         spans_of("a msg=<VARIES> c", "a other=y c d"),
         vec![(2, 12), (16, 0)]
     );
-    // nothing there: the slot keeps nothing
-    assert_eq!(spans_of("a msg=<VARIES> c d", "a c d"), vec![(2, 12)]);
-    // two template units over another number of member units: a slot
-    // whose affix a member unit carries anchors there, and the rest of
-    // the gap is read on either side of it
+    assert_eq!(
+        spans_of("a msg=<VARIES> c d", "a c d"),
+        vec![(2, 12)],
+        "with nothing in the gap the slot keeps nothing"
+    );
     assert_eq!(
         spans_of("a k=<VARIES> j=<VARIES> c", "a k=1 c"),
-        vec![(13, 10)]
+        vec![(13, 10)],
+        "a slot whose affix a member unit carries anchors there"
     );
-    assert!(spans_of("a x <VARIES> k=<VARIES> c", "a x y z k=1 c").is_empty());
-    // and with no anchor, which pairs is unknown
+    assert!(
+        spans_of("a x <VARIES> k=<VARIES> c", "a x y z k=1 c").is_empty(),
+        "the rest of the gap is read on either side of the anchored slot"
+    );
     assert_eq!(
         spans_of("a k=<VARIES> j=<VARIES> c", "a x=1 y=2 z=3 c"),
-        vec![(2, 10), (13, 10)]
+        vec![(2, 10), (13, 10)],
+        "with no anchor, which units pair is unknown"
     );
-    // a slot with nothing kept has nothing to recheck
-    assert!(spans_of("a <VARIES> c", "a b b c").is_empty());
+    assert!(
+        spans_of("a <VARIES> c", "a b b c").is_empty(),
+        "a slot with nothing kept has nothing to recheck"
+    );
 }
 
-/// `template` with every span `member` turns into `<VARIES>` replaced.
 fn marked(template: &str, member: &str) -> String {
     let mut t = template.to_string();
     apply_edits(&mut t, &template_edits(template, member).unwrap());
@@ -5049,68 +4718,69 @@ fn marked(template: &str, member: &str) -> String {
 
 #[test]
 fn a_slot_keeps_both_quotes_of_a_pair_or_neither() {
-    // tetragon (lessence-veg): `"…redis:8.2.1"` against `"…redis:8.2.7"`
-    // kept `"…redis:` and took the closing quote into the slot, and the
-    // template's words after it ran together as one quoted string.
     assert_eq!(
         marked(
             r#"pull image="cache:8.2.1" node=n1"#,
             r#"pull image="cache:8.2.7" node=n1"#
         ),
-        r#"pull image="cache:<VARIES>" node=n1"#
+        r#"pull image="cache:<VARIES>" node=n1"#,
+        "the closing quote stays out of the slot, paired with the opening one"
     );
-    // a quoted sentence's opening quote stays beside the slot
     assert_eq!(
         marked(
             r#"x msg="Failed to sync the pod now" y"#,
             r#"x msg="Passed to sync the pod now" y"#
         ),
-        r#"x msg="<VARIES> to sync the pod now" y"#
+        r#"x msg="<VARIES> to sync the pod now" y"#,
+        "a quoted sentence's opening quote stays beside the slot"
     );
-    // and its closing quote, with the closers before it
     assert_eq!(
         marked(
             r#"x msg="sync failed for [alpha]" y"#,
             r#"x msg="sync failed for [beta]" y"#
         ),
-        r#"x msg="sync failed for [<VARIES>]" y"#
+        r#"x msg="sync failed for [<VARIES>]" y"#,
+        "and its closing quote, with the closers before it"
     );
-    // a `\` travels with the quote it escapes
     assert_eq!(
         marked(
             r#"x err="failed for pod=a1(u)\"" pod="n/p""#,
             r#"x err="failed for pod=b2(u)\"" pod="n/p""#
         ),
-        r#"x err="failed for pod=<VARIES>)\"" pod="n/p""#
+        r#"x err="failed for pod=<VARIES>)\"" pod="n/p""#,
+        "a backslash travels with the quote it escapes"
     );
-    // a whole quoted value is covered whole
     assert_eq!(
         marked(r#"x key="v1" y"#, r#"x key="v2" y"#),
-        "x key=<VARIES> y"
+        "x key=<VARIES> y",
+        "a whole quoted value is covered whole"
     );
-    // a slot that widens keeps its quotes paired too
     assert_eq!(
         marked(r#"x image="cache:<VARIES>" y"#, r#"x image="other" y"#),
-        r#"x image="<VARIES>" y"#
+        r#"x image="<VARIES>" y"#,
+        "a slot that widens keeps its quotes paired too"
     );
-    // a unit whose own quote has no partner, against a member without it,
-    // is left as it was: nothing else would be true
-    assert_eq!(balance_quotes("[a]\"", "[b]", 1, 0), (1, 0));
+    assert_eq!(
+        balance_quotes("[a]\"", "[b]", 1, 0),
+        (1, 0),
+        "a unit whose own quote has no partner, against a member without it, is left as it was"
+    );
     assert!(!unpaired_quote(r#"a\"b\""#, 0, 6));
     assert!(unpaired_quote(r#"a\"b""#, 0, 5));
 }
 
 #[test]
 fn a_member_of_another_length_is_counted_by_its_value_not_as_absent() {
-    // lessence-veg: a slot equals no member unit, so where the unit counts
-    // differ the alignment left it unpaired and the rollup said `∅` for a
-    // member that had `img.v3 img.v4` there.
     let r = rollup_of(&[
         "sync worker finished copying layer img.v1 into the local cache store ok",
         "sync worker finished copying layer img.v2 into the local cache store ok",
         "sync worker finished copying layer img.v3 img.v4 into the local cache store ok",
     ]);
-    assert_eq!(r[VARIES].samples, vec!["img.v1", "img.v2", "img.v3 img.v4"]);
+    assert_eq!(
+        r[VARIES].samples,
+        vec!["img.v1", "img.v2", "img.v3 img.v4"],
+        "the member with two units in the slot is counted by its value, not as absent"
+    );
     assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
 }
 
@@ -5121,7 +4791,6 @@ fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
         let lines: Vec<LogLine> = lines.iter().map(|l| make_line(l, vec![])).collect();
         let mut varies = SlotCounts::new();
         rc.accumulate_varies(&lines, template, &mut varies);
-        // one list per slot, in template order
         let out: Vec<Vec<(String, usize)>> = varies
             .into_iter()
             .map(|slot| {
@@ -5138,48 +4807,46 @@ fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
             .map(|&(s, n)| vec![(s.to_string(), n)])
             .collect()
     };
-    // a run of bare slots reads the member in order, the last taking the rest
     assert_eq!(
         counted("a <VARIES> <VARIES> c", &["a x y z c"]),
-        v(&[("x", 1), ("y z", 1)])
+        v(&[("x", 1), ("y z", 1)]),
+        "a run of bare slots reads the member in order, the last taking the rest"
     );
     assert_eq!(
         counted("a <VARIES> <VARIES> c", &["a x c"]),
         v(&[("x", 1), ("∅", 1)])
     );
-    // only a true absence is `∅`
     assert_eq!(
         counted("a <VARIES> <VARIES> c", &["a c"]),
-        v(&[("∅", 1), ("∅", 1)])
+        v(&[("∅", 1), ("∅", 1)]),
+        "only a true absence is counted as absent"
     );
-    // a slot whose kept affix a member unit carries is anchored on it
     assert_eq!(
         counted("a k=<VARIES> j=<VARIES> c", &["a k=1 c"]),
-        v(&[("1", 1), ("∅", 1)])
+        v(&[("1", 1), ("∅", 1)]),
+        "a slot whose kept affix a member unit carries is anchored on it"
     );
-    // the affix is stripped from a value spanning several units
     assert_eq!(
         counted("a msg=<VARIES> c", &["a msg=y z c"]),
-        v(&[("y z", 1)])
+        v(&[("y z", 1)]),
+        "the affix is stripped from a value spanning several units"
     );
 }
 
 #[test]
 fn two_sentence_words_apart_is_another_event() {
-    // oauth2-proxy redis: `Synchronization … succeeded` folded with
-    // `Connection … lost.`; k8s events: SuccessfulCreate with
-    // SuccessfulDelete; sentinel: +sdown with +reboot. One differing word
-    // is a name and folds; two are a different sentence.
     assert_eq!(
         plain_word_diffs(
             "1:S 28 Aug <NUMBER> <TIMESTAMP> * Synchronization with replica <FQDN>:<PORT> succeeded",
             "1:S 28 Aug <NUMBER> <TIMESTAMP> * Connection with replica <FQDN>:<PORT> lost."
         ),
-        Some(2)
+        Some(2),
+        "two differing sentence words make another sentence"
     );
     assert_eq!(
         plain_word_diffs("user alice from <IP>", "user bob from <IP>"),
-        Some(1)
+        Some(1),
+        "one differing word is a name and folds"
     );
     assert_eq!(
         plain_word_diffs(
@@ -5188,14 +4855,13 @@ fn two_sentence_words_apart_is_another_event() {
         ),
         Some(3)
     );
-    // Values are not sentence words: quoted, typed, keyed with structure,
-    // numbers, placeholders.
     assert_eq!(
         plain_word_diffs(
             r#"Failed to watch *v1.Node: nodes is forbidden: cannot list resource "nodes""#,
             r#"Failed to watch *v1.Pod: pods is forbidden: cannot list resource "pods""#
         ),
-        Some(1)
+        Some(1),
+        "values are not sentence words: quoted, typed, keyed, numbers and placeholders"
     );
     assert_eq!(
         plain_word_diffs(
@@ -5212,13 +4878,13 @@ fn two_sentence_words_apart_is_another_event() {
         plain_word_diffs("x k8s:app=virt-handler y", "x k8s:app=traefik y"),
         Some(0)
     );
-    // A JSON sentence's words are sentence words: the key goes, the word stays.
     assert_eq!(
         plain_word_diffs(
             r#"{"msg":"finished scheduled compaction"}"#,
             r#"{"msg":"storing new hash"}"#
         ),
-        Some(3)
+        Some(3),
+        "a JSON sentence's words are sentence words: the key goes, the words stay"
     );
 
     let mut f = make_folder();
@@ -5234,10 +4900,6 @@ fn two_sentence_words_apart_is_another_event() {
 
 #[test]
 fn two_small_integers_are_one_shape_and_stay_on_the_line() {
-    // Pi journal: `GPS mode 3 -> 2` and `GPS mode 2 -> 3` were two groups
-    // with identical templates; `Aircraft: 4 of 7 Mode S, 18 of 19 ADS-B
-    // used` was twenty-five. The digits stay literal by design (k2b); they
-    // just no longer keep a short line from folding.
     let mut f = make_folder();
     for l in [
         "Aug 26 09:24:57 gasida chrony-gps-toff[5097]: INFO GPS mode 3 -> 2",
@@ -5249,7 +4911,8 @@ fn two_small_integers_are_one_shape_and_stay_on_the_line() {
     assert_eq!(f.buffer.len(), 1);
     assert_eq!(
         f.buffer[0].template(),
-        "<TIMESTAMP> <HOST> chrony-gps-toff[<PID>]: INFO GPS mode <VARIES> -> <VARIES>"
+        "<TIMESTAMP> <HOST> chrony-gps-toff[<PID>]: INFO GPS mode <VARIES> -> <VARIES>",
+        "small integers stay literal, but no longer keep a short line from folding"
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].counts, Some(vec![3, 2, 1]));
@@ -5257,8 +4920,6 @@ fn two_small_integers_are_one_shape_and_stay_on_the_line() {
 
 #[test]
 fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
-    // The slot dropped the `password=` the credential mask keys on, so the
-    // raw values reached the rollup once short lines started folding.
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
@@ -5275,7 +4936,10 @@ fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
     assert_eq!(f.buffer.len(), 1);
     let r = f.rollup_computer.compute(&f.buffer[0]);
     let joined = format!("{:?}", r[VARIES].samples);
-    assert!(!joined.contains("FIXVALUE"), "{joined}");
+    assert!(
+        !joined.contains("FIXVALUE"),
+        "the slot keeps the password= key the credential mask needs: {joined}"
+    );
     assert!(joined.contains("<SECRET>"), "{joined}");
 }
 
@@ -5292,8 +4956,6 @@ fn request_route_survives_repeated_method_and_version_variation() {
         assert_eq!(template, r#"request="<VARIES> /health HTTP/<VARIES>" done"#);
     }
     assert_eq!(unit_spans(r#"controller="crt configmap" done"#).len(), 2);
-    // The raw anchor accepts a request prefix even if the log ended
-    // before its closing quote or protocol version.
     for suffix in ["HTTP/1", "HTTP/", "HTTP/\""] {
         let first = format!("\"GET /health {suffix}");
         let next = format!("\"POST /health {suffix}");
@@ -5301,7 +4963,11 @@ fn request_route_survives_repeated_method_and_version_variation() {
         for (at, len) in spans_of(&first, &next).into_iter().rev() {
             template.replace_range(at..at + len, VARIES_MARK);
         }
-        assert_eq!(template, format!("\"<VARIES> /health {suffix}"));
+        assert_eq!(
+            template,
+            format!("\"<VARIES> /health {suffix}"),
+            "a request cut before its closing quote or version still anchors"
+        );
         assert!(unit_spans(&template).iter().all(|&(_, len)| len > 0));
     }
 }
@@ -5426,9 +5092,6 @@ fn hid_suffix_variations_keep_the_pci_address_out_of_the_varies_rollup() {
 
 #[test]
 fn a_quoted_sentence_keeps_its_words_and_a_quoted_name_is_one_slot() {
-    // kubelet: `"… started for volume \"host-sys\" (UniqueName: …) pod \"x\""`
-    // is the event's own sentence; a differing value inside it varies on
-    // its own, the sentence stays. `controller="crt configmap"` is a name.
     assert_eq!(
         unit_spans(r#"a "b c" d"#).len(),
         3,
@@ -5450,7 +5113,7 @@ fn a_quoted_sentence_keeps_its_words_and_a_quoted_name_is_one_slot() {
     let t = f.buffer[0].template();
     assert!(
         t.contains("started for volume <VARIES> (UniqueName:"),
-        "{t}"
+        "a differing quoted value inside the sentence varies on its own: {t}"
     );
     assert!(
         t.contains("VerifyControllerAttachedVolume"),
@@ -5460,7 +5123,6 @@ fn a_quoted_sentence_keeps_its_words_and_a_quoted_name_is_one_slot() {
 
 #[test]
 fn a_token_ending_in_a_small_integer_folds_with_its_siblings() {
-    // usw_messages: `slot[1]` beside `slot[2]`; `id=1` beside `id=2`.
     let mut f = make_folder();
     for slot in [1, 2, 1] {
         f.process_line(&format!(
@@ -5477,16 +5139,14 @@ fn a_token_ending_in_a_small_integer_folds_with_its_siblings() {
         f.buffer[0].template()
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
-    assert_eq!(r[VARIES].samples, vec!["1", "2"]);
+    assert_eq!(
+        r[VARIES].samples,
+        vec!["1", "2"],
+        "slot[1] and slot[2] fold into one group"
+    );
     assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
 }
 
-// ---- lessence-682: groups that converge on one template are one group ----
-
-/// Two founders two plain words apart each found a group; one more member
-/// each turns both differing words into `<VARIES>`, so both groups render
-/// the same claim. `finish` must fold them into one line with one count,
-/// and the rollup must carry every member's words.
 #[test]
 fn groups_converging_on_one_template_render_once() {
     let mut f = make_folder_json();
@@ -5592,9 +5252,6 @@ fn cpu_quantity_rollup_keeps_values_separate_from_time() {
     );
 }
 
-/// When two groups merge, the shown last line is the later of the two
-/// groups' last members, whichever group founded first (kills the
-/// comparison mutants in `absorb`).
 #[test]
 fn a_merged_group_shows_the_later_last_line() {
     let stem = "svc node ready check pass level info region east";
@@ -5608,7 +5265,6 @@ fn a_merged_group_shows_the_later_last_line() {
         let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
         record["last"]["line_no"].as_u64().unwrap()
     };
-    // Founder A first; A's last member (6) is later than B's (4).
     assert_eq!(
         last_line_no(&[
             "alpha state one",
@@ -5618,9 +5274,9 @@ fn a_merged_group_shows_the_later_last_line() {
             "gamma state one",
             "alpha state three",
         ]),
-        6
+        6,
+        "alpha founded first and its last member is the later one"
     );
-    // Founder A first; B's last member (6) is later than A's (4).
     assert_eq!(
         last_line_no(&[
             "alpha state one",
@@ -5630,14 +5286,11 @@ fn a_merged_group_shows_the_later_last_line() {
             "delta state two",
             "beta state four",
         ]),
-        6
+        6,
+        "alpha founded first but beta's last member is the later one"
     );
 }
 
-// ---- e8v: survivors in absorb / merge_converged ----
-
-/// Three groups converging on one template merge into one, not two
-/// (kills the early-return mutant in `merge_converged`).
 #[test]
 fn three_converging_groups_merge_into_one() {
     let mut f = make_folder_json();
@@ -5662,9 +5315,6 @@ fn three_converging_groups_merge_into_one() {
     assert_eq!(record["count"], 9);
 }
 
-/// When two converging groups come from different sources with the same
-/// line number, founding position is the deterministic tie-breaker. The
-/// later group's last member must remain the merged group's last member.
 #[test]
 fn absorb_uses_position_to_break_equal_source_line_numbers() {
     let make = |text: &str, source: u32, position: usize| {
@@ -5683,8 +5333,6 @@ fn absorb_uses_position_to_break_equal_source_line_numbers() {
     assert_eq!(first.last().normalized, "svc beta");
 }
 
-// ---- e8v: render.rs survivors — summary completeness, briefing span, markdown ----
-
 fn summary_json(f: &PatternFolder) -> serde_json::Value {
     let mut buf = Vec::new();
     f.print_summary_json(&mut buf, std::time::Duration::ZERO)
@@ -5692,9 +5340,6 @@ fn summary_json(f: &PatternFolder) -> serde_json::Value {
     serde_json::from_slice(&buf).unwrap()
 }
 
-/// A clean run: every completeness flag true, nothing omitted, nothing
-/// sampled (kills the `== 0` → `!= 0` mutants in print_summary_json and
-/// the `>= 0` ones on the omitted_values kind).
 #[test]
 fn a_clean_json_run_reports_complete_everywhere() {
     let mut f = make_folder_json();
@@ -5718,9 +5363,6 @@ fn a_clean_json_run_reports_complete_everywhere() {
     assert_eq!(c["variation_values"]["omitted_values"]["value"], 0, "{c}");
 }
 
-/// Groups below min_collapse carry no computed variation; the summary
-/// counts them and declares the omitted values unknown (kills the
-/// `uncomputed += 1` → `*=` mutant and the `> 0` kind selection).
 #[test]
 fn uncomputed_variation_groups_make_omitted_values_unknown() {
     let mut f = make_folder_json();
@@ -5740,10 +5382,6 @@ fn uncomputed_variation_groups_make_omitted_values_unknown() {
     assert_eq!(c["complete"], false, "{c}");
 }
 
-/// One entry with more distinct values than samples, one without: exactly
-/// one entry is "sampled", exactly one value is omitted, and the count is
-/// exact (kills the `capped || omitted > 0` family and the two `+=`
-/// counters in format_group_json).
 #[test]
 fn a_sampled_but_uncapped_entry_is_counted_once_with_its_exact_omission() {
     let mut f = make_folder_json();
@@ -5768,9 +5406,6 @@ fn a_sampled_but_uncapped_entry_is_counted_once_with_its_exact_omission() {
     assert_eq!(v["completeness"]["complete"], false, "{v}");
 }
 
-/// More distinct values than the rollup cap: the entry is capped and the
-/// omitted count becomes a lower bound (kills `capped_entries += 1` →
-/// `-=`/`*=` and the `capped > 0` kind selection).
 #[test]
 fn a_capped_entry_makes_omitted_values_a_lower_bound() {
     let mut f = make_folder_json();
@@ -5790,9 +5425,6 @@ fn a_capped_entry_makes_omitted_values_a_lower_bound() {
     assert_eq!(c["complete"], false, "{c}");
 }
 
-/// Only the --top cap omits: groups are incomplete, input and variation
-/// stay complete, and the run is incomplete (kills the `&&` → `||` splits
-/// of the groups conjunction where the left side is false).
 #[test]
 fn a_top_omission_alone_makes_groups_and_the_run_incomplete() {
     let mut f = make_folder_json();
@@ -5816,9 +5448,6 @@ fn a_top_omission_alone_makes_groups_and_the_run_incomplete() {
     assert_eq!(c["complete"], false, "{c}");
 }
 
-/// Only an overlong line was skipped: input is incomplete, groups and
-/// variation complete, the run incomplete (kills the input conjunction's
-/// `&&` → `||` and `== 0` → `!= 0` where the other term is true).
 #[test]
 fn an_overlong_skip_alone_makes_input_and_the_run_incomplete() {
     let mut f = make_folder_json();
@@ -5848,9 +5477,6 @@ fn an_overlong_skip_alone_makes_input_and_the_run_incomplete() {
     assert_eq!(c["complete"], false, "{c}");
 }
 
-/// Ten lines over a five-second span: the briefing's rate is exactly two
-/// lines per second and the histogram exists (kills the `(Some, Some)`
-/// arm deletions, the `d > 0` guard → false, and `/` → `%`/`*`).
 #[test]
 fn the_briefing_rate_is_lines_over_the_span_in_seconds() {
     let mut f = make_folder_json();
@@ -5866,9 +5492,6 @@ fn the_briefing_rate_is_lines_over_the_span_in_seconds() {
     assert!(b.histogram.is_some());
 }
 
-/// Two lines at the same instant: a zero-second span has no rate (kills
-/// the `d > 0` guard → true and `>` → `==`/`>=`, which would divide by
-/// zero into infinity).
 #[test]
 fn a_zero_second_span_has_no_rate() {
     let mut f = make_folder_json();
@@ -5880,8 +5503,6 @@ fn a_zero_second_span_has_no_rate() {
     assert_eq!(b.span.lines_per_second, None, "{:?}", b.span);
 }
 
-/// One JSON line and one plain line: the format mix is mixed, and the
-/// counts add up (kills `json + logfmt + plain` → `-`).
 #[test]
 fn a_json_and_a_plain_line_make_the_format_mix_mixed() {
     let mut f = make_folder_json();
@@ -5901,8 +5522,6 @@ fn a_json_and_a_plain_line_make_the_format_mix_mixed() {
     assert!(b.format.mixed, "{:?}", b.format);
 }
 
-/// A single unfolded line that happens to contain `+` is not a folded
-/// entry (kills `contains('+') && contains("similar")` → `||`).
 #[test]
 fn an_unfolded_markdown_entry_with_a_plus_is_not_marked_folded() {
     let mut f = PatternFolder::new(Config {
@@ -5936,14 +5555,6 @@ fn an_unsampled_variation_entry_keeps_the_sampled_count_zero() {
     assert_eq!(variation["complete"], true, "{summary}");
 }
 
-// ---- e8v folder remainder, Claude's half: word alignment, affixes, units,
-// ---- plain-word diffs, compact marker, sources ----
-// Every assertion names the survivors it is meant to kill; all of them are
-// hypotheses until the mutants are re-run. Where a function is shown to be
-// unreachable in a branch, the note says so instead of asserting.
-
-/// align_words 1187 (cap), 1193/1197/1199 (table indexing), 1208/1209
-/// (advance), 1210 (tie-break).
 #[test]
 fn word_alignment_is_an_lcs_with_its_documented_tie_break() {
     let same = align_words(&["a", "b"], &["a", "b"]);
@@ -5952,29 +5563,37 @@ fn word_alignment_is_an_lcs_with_its_documented_tie_break() {
     assert_eq!(skip, vec![Some(0), None, Some(1), Some(2)]);
     let insert = align_words(&["x", "b", "y"], &["b"]);
     assert_eq!(insert, vec![None, Some(0), None]);
-    // a tie: dropping the left word first is the documented choice
     let tie = align_words(&["a", "b"], &["b", "a", "c"]);
-    assert_eq!(tie, vec![None, Some(0)]);
-    // repeated words align in order, never crossing
+    assert_eq!(
+        tie,
+        vec![None, Some(0)],
+        "a tie drops the left word first, the documented choice"
+    );
     let rep = align_words(&["k", "v", "k", "w"], &["k", "w"]);
-    assert_eq!(rep, vec![Some(0), None, None, Some(1)]);
-    // the cap is inclusive on both sides; past it only the band aligns
-    assert!(alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS - 1));
+    assert_eq!(
+        rep,
+        vec![Some(0), None, None, Some(1)],
+        "repeated words align in order, never crossing"
+    );
+    assert!(
+        alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS - 1),
+        "the cap is inclusive on both sides"
+    );
     assert!(alignable(MAX_ALIGN_WORDS, 1));
     assert!(alignable(1, MAX_ALIGN_WORDS));
     assert!(!alignable(MAX_ALIGN_WORDS + 1, 1));
     assert!(!alignable(1, MAX_ALIGN_WORDS + 1));
-    // what is not alignable is paired by position, which is still true
     let bigger: Vec<&str> = std::iter::repeat_n("w", MAX_ALIGN_WORDS + 1).collect();
     let mut by_position = vec![None; MAX_ALIGN_WORDS + 1];
     by_position[0] = Some(0);
-    assert_eq!(align_words(&bigger, &["v"]), by_position);
+    assert_eq!(
+        align_words(&bigger, &["v"]),
+        by_position,
+        "past the cap and outside the band, units pair by position"
+    );
     assert_eq!(align_words(&["v"], &bigger), vec![Some(0)]);
 }
 
-/// Past the cap, counts within the band align and the band's edge is
-/// inclusive on both sides; equal counts align by position at any length,
-/// and inside the cap any difference aligns exactly.
 #[test]
 fn long_lines_align_within_the_band_and_no_further() {
     let over = MAX_ALIGN_WORDS + 1;
@@ -5984,28 +5603,32 @@ fn long_lines_align_within_the_band_and_no_further() {
     assert!(alignable(over + ALIGN_BAND, over));
     assert!(!alignable(over, over + ALIGN_BAND + 1));
     assert!(!alignable(over + ALIGN_BAND + 1, over));
-    // one side at the cap, the other past it: still the band that decides
-    assert!(alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS + ALIGN_BAND));
+    assert!(
+        alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS + ALIGN_BAND),
+        "one side at the cap, the other past it: the band decides"
+    );
     assert!(!alignable(
         MAX_ALIGN_WORDS,
         MAX_ALIGN_WORDS + ALIGN_BAND + 1
     ));
-    // both inside the cap: exact, whatever the difference
-    assert!(alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS - ALIGN_BAND - 1));
-    // and it is the exact table that runs there, not the band
+    assert!(
+        alignable(MAX_ALIGN_WORDS, MAX_ALIGN_WORDS - ALIGN_BAND - 1),
+        "both inside the cap: exact, whatever the difference"
+    );
     let words: Vec<String> = (0..MAX_ALIGN_WORDS).map(|i| format!("w{i}")).collect();
     let full: Vec<&str> = words.iter().map(String::as_str).collect();
     let short: Vec<&str> = full[ALIGN_BAND + 1..].to_vec();
     let aligned = align_words(&full, &short);
-    assert_eq!(aligned[..=ALIGN_BAND], vec![None; ALIGN_BAND + 1]);
+    assert_eq!(
+        aligned[..=ALIGN_BAND],
+        vec![None; ALIGN_BAND + 1],
+        "inside the cap the exact table runs, not the band"
+    );
     for (i, slot) in aligned.iter().enumerate().skip(ALIGN_BAND + 1) {
         assert_eq!(*slot, Some(i - ALIGN_BAND - 1));
     }
 }
 
-/// Distinct words, so every alignment below is forced: an inserted or
-/// dropped unit is the only one left unpaired, on either side and at
-/// either end, and the walk back crosses many 64-bit words of its table.
 #[test]
 fn a_long_line_with_inserted_units_pairs_every_other_unit() {
     let words: Vec<String> = (0..400).map(|i| format!("u{i}")).collect();
@@ -6024,18 +5647,18 @@ fn a_long_line_with_inserted_units_pairs_every_other_unit() {
         let back: Vec<Option<usize>> = (0..399).map(|i| Some(i + usize::from(i >= at))).collect();
         assert_eq!(align_words(&shorter, &line), back, "inserted at {at}");
     }
-    // the band's whole width: eight units gone from one place
     let mut gap = line.clone();
     gap.drain(100..100 + ALIGN_BAND);
     let aligned = align_words(&line, &gap);
-    assert_eq!(aligned.iter().filter(|a| a.is_none()).count(), ALIGN_BAND);
+    assert_eq!(
+        aligned.iter().filter(|a| a.is_none()).count(),
+        ALIGN_BAND,
+        "the band's whole width gone from one place leaves exactly those units unpaired"
+    );
     assert!(aligned[100..100 + ALIGN_BAND].iter().all(Option::is_none));
     assert_eq!(aligned[100 + ALIGN_BAND], Some(100));
 }
 
-/// A long line that gained a value folds (0 plain words differ), one that
-/// gained a sentence word is one difference, and one that gained more than
-/// the band is refused outright.
 #[test]
 fn long_lines_count_plain_word_diffs_through_the_band() {
     let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
@@ -6060,7 +5683,6 @@ fn long_lines_count_plain_word_diffs_through_the_band() {
     assert_eq!(plain_word_diffs(&with(&values), &line), None);
 }
 
-/// The template a long member is folded into marks what that member lacks.
 #[test]
 fn a_long_template_marks_the_unit_a_shorter_member_lacks() {
     let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
@@ -6071,12 +5693,14 @@ fn a_long_template_marks_the_unit_a_shorter_member_lacks() {
     let edits = spans_of(&founder, &member);
     let at = founder.find("shard=").unwrap();
     assert_eq!(edits, vec![(at, "shard=k7/east".len())]);
-    // a member that carries a unit the template lacks opens a slot there
     let after = member.find(" w150").unwrap();
-    assert_eq!(spans_of(&member, &founder), vec![(after, 0)]);
+    assert_eq!(
+        spans_of(&member, &founder),
+        vec![(after, 0)],
+        "a member unit the template lacks opens a slot there"
+    );
 }
 
-/// shared_affixes 1227 (prefix cap), 1233/1234 (suffix loop bounds).
 #[test]
 fn shared_affixes_keep_the_field_name_and_the_closing_brackets_only() {
     assert_eq!(shared_affixes("msg=Connecting", "msg=Connected"), (4, 0));
@@ -6087,17 +5711,20 @@ fn shared_affixes_keep_the_field_name_and_the_closing_brackets_only() {
         (11, 0)
     );
     assert_eq!(shared_affixes("alpha", "beta"), (0, 0));
-    // the prefix stops one short of the whole word, so a value is never empty
-    assert_eq!(shared_affixes("k=", "k="), (0, 0));
+    assert_eq!(
+        shared_affixes("k=", "k="),
+        (0, 0),
+        "the prefix stops one short of the whole word, so a value is never empty"
+    );
     assert_eq!(shared_affixes("a=x", "a=x"), (2, 0));
-    // the suffix stops one short too, even when every byte is a bracket
-    assert_eq!(shared_affixes("]]]", "]]]"), (0, 2));
+    assert_eq!(
+        shared_affixes("]]]", "]]]"),
+        (0, 2),
+        "the suffix stops one short too, even when every byte is a bracket"
+    );
     assert_eq!(shared_affixes("x]]", "y]]"), (0, 2));
 }
 
-/// field_value 1318-1328: a plain key starts with a letter or `_`, holds
-/// only word characters and `-`, and the value is what follows the first
-/// separator (the second byte after `":` for a JSON key).
 #[test]
 fn a_field_value_follows_a_plain_key_and_nothing_else() {
     assert_eq!(field_value("k=v"), Some("v"));
@@ -6113,7 +5740,6 @@ fn a_field_value_follows_a_plain_key_and_nothing_else() {
     assert_eq!(field_value(r#""9k":v"#), None);
 }
 
-/// data_shaped 1346: a bracketed value needs both brackets.
 #[test]
 fn a_bracketed_value_needs_both_brackets_to_be_data() {
     assert!(data_shaped("v=[x]"));
@@ -6125,9 +5751,6 @@ fn a_bracketed_value_needs_both_brackets_to_be_data() {
     assert!(!data_shaped("plain"));
 }
 
-/// unit_spans / cli_option_units 1410-1449, 1477-1527: quoted requests,
-/// CLI option names and PCI addresses become their own units, and the
-/// bytes around them stay in order with nothing lost.
 #[test]
 fn units_cut_requests_options_and_pci_addresses_out_whole() {
     let texts = |s: &str| -> Vec<String> {
@@ -6174,8 +5797,6 @@ fn units_cut_requests_options_and_pci_addresses_out_whole() {
     assert!(esc.iter().any(|u| u == "--z"), "{esc:?}");
 }
 
-/// plain_word_diffs 1544/1545 (data words), 1569/1570 (a unit that gained
-/// words), 1580/1592 (a lone unit the other line has elsewhere).
 #[test]
 fn plain_word_diffs_count_sentence_words_not_values() {
     assert_eq!(plain_word_diffs("user alice", "user bob"), Some(1));
@@ -6192,8 +5813,6 @@ fn plain_word_diffs_count_sentence_words_not_values() {
     );
 }
 
-/// render_compact_marker 1704: the ellipsis appears only when more values
-/// exist than samples shown.
 #[test]
 fn the_compact_marker_ellipsis_means_more_values_than_shown() {
     let entry = |distinct: usize, samples: &[&str]| VariationEntry {
@@ -6211,7 +5830,6 @@ fn the_compact_marker_ellipsis_means_more_values_than_shown() {
     assert!(!render_compact_marker(10, &all, None, None, 3).contains('…'));
 }
 
-/// source_name 2358: a registered source answers by name, stdin has none.
 #[test]
 fn a_registered_source_has_its_name_and_stdin_has_none() {
     let mut f = make_folder();
@@ -6220,8 +5838,6 @@ fn a_registered_source_has_its_name_and_stdin_has_none() {
     assert_eq!(f.source_name(SourceId::STDIN), None);
 }
 
-/// nearest_group 2456: anchor_mismatch is the anchors disagreeing, so it
-/// is set for two endpoints and clear for two anchorless lines.
 #[test]
 fn anchor_mismatch_is_set_only_when_the_anchors_differ() {
     let mut f = explaining_folder();
@@ -6243,27 +5859,29 @@ fn anchor_mismatch_is_set_only_when_the_anchors_differ() {
     assert!(!f.buffer[1].nearest.as_ref().unwrap().anchor_mismatch);
 }
 
-/// Second pass on the e8v folder-half survivors. Equal-length pairs let the
-/// redundant `r`/`w` bounds in shared_affixes shadow each other, so every
-/// case here binds on one side only. 1187:52 (right at the cap), 1227:37/54,
-/// 1233:18/27/31, 1234:19/28/32.
 #[test]
 fn shared_affix_bounds_bind_on_the_shorter_side() {
     assert!(alignable(MAX_ALIGN_WORDS - 1, MAX_ALIGN_WORDS));
-    // prefix cap: the whole shorter word is never a prefix
-    assert_eq!(shared_affixes("k=", "k=x"), (0, 0));
+    assert_eq!(
+        shared_affixes("k=", "k=x"),
+        (0, 0),
+        "the whole shorter word is never a prefix"
+    );
     assert_eq!(shared_affixes("k=x", "k="), (0, 0));
-    // suffix bound: brackets stop one short of the shorter word
-    assert_eq!(shared_affixes("]]", "]]]"), (0, 1));
+    assert_eq!(
+        shared_affixes("]]", "]]]"),
+        (0, 1),
+        "brackets stop one short of the shorter word"
+    );
     assert_eq!(shared_affixes("]]]", "]]"), (0, 1));
-    // prefix and suffix together, so `prefix + suffix` is not `prefix * suffix`
-    assert_eq!(shared_affixes("f(())", "f((x))"), (3, 1));
+    assert_eq!(
+        shared_affixes("f(())", "f((x))"),
+        (3, 1),
+        "prefix and suffix are kept together"
+    );
     assert_eq!(shared_affixes("f((x))", "f(())"), (3, 1));
 }
 
-/// align_words 1199:27: a dropped left word must still let the table see
-/// the match below it. Without it `a` aligns to the trailing `a` instead
-/// of `b` reaching `b`.
 #[test]
 fn word_alignment_drops_a_left_word_to_reach_a_later_match() {
     assert_eq!(
@@ -6285,20 +5903,12 @@ fn word_alignment_drops_a_left_word_to_reach_a_later_match() {
     );
 }
 
-/// plain_word_diffs 1592: an unaligned left unit the right side has
-/// elsewhere is not a difference.
 #[test]
 fn a_repeated_left_unit_is_not_a_plain_word_diff() {
     assert_eq!(plain_word_diffs("p q q", "p q"), Some(0));
     assert_eq!(plain_word_diffs("p q x.y", "p q"), Some(0));
 }
 
-/// unit_spans 1477/1489/1520/1527, cli_option_units 1410-1449: the exact
-/// spans, measured on the clean build and reviewed against the intended
-/// cuts. A request is quote, method, path, `HTTP/`, version, quote; an
-/// option name is cut from its `=value`; an escaped quote stays inside its
-/// string; a PCI address is one atom. Any boundary off by one moves,
-/// empties or drops one of these.
 #[test]
 fn unit_spans_are_non_empty_ordered_and_reach_every_request_and_option() {
     let pinned = [
@@ -6390,24 +6000,17 @@ fn unit_spans_are_non_empty_ordered_and_reach_every_request_and_option() {
     }
     assert!(texts(r#"a "GET /x HTTP/1.1" b "POST /y HTTP/2" c"#).contains(&"/y"));
     assert!(texts(r#"a="q \" --z=3" b"#).contains(&"--z"));
-    // Long quoted values are split into words before option boundaries.
-    // Their final word must still be separated from the closing quote.
     let last_word = texts(r#"a="--x b c y""#);
-    assert!(last_word.contains(&"y") && last_word.contains(&"\""));
+    assert!(
+        last_word.contains(&"y") && last_word.contains(&"\""),
+        "a long quoted value's final word stays apart from the closing quote: {last_word:?}"
+    );
     assert!(!last_word.contains(&"y\""));
     let after_quote = texts(r#"a="--x b c d "tail"#);
     assert!(after_quote.contains(&"\"") && after_quote.contains(&"tail"));
     assert!(!after_quote.contains(&"\"tail"));
 }
 
-/// cli_option_units 1415:65, 1429:27 and unit_spans 1477:37, 1489:42 (x3):
-/// the cut after a closing quote, the advancing range and request cursors,
-/// and the skip loop that clears stale boundaries. Each input reaches one
-/// boundary the pinned vectors do not: a word glued to the closing quote,
-/// a short quoted value after the string, an unterminated request before
-/// another, and a doubled opening quote that puts a second word after the
-/// closing quote inside one unit. The last two panic under the mutants,
-/// so any assertion kills them; the first three assert the cut itself.
 #[test]
 fn unit_boundaries_hold_for_glued_stale_and_doubled_quotes() {
     fn texts(s: &str) -> Vec<&str> {
@@ -6423,32 +6026,33 @@ fn unit_boundaries_hold_for_glued_stale_and_doubled_quotes() {
             .map(|(at, len)| &s[at..at + len])
             .collect()
     }
-    // 1415:65 — the closing quote is cut from the word glued behind it
     let glued = texts(r#"a="--x"tail"#);
     assert!(
         glued.contains(&"tail") && !glued.contains(&"\"tail"),
-        "{glued:?}"
+        "the closing quote is cut from the word glued behind it: {glued:?}"
     );
-    // 1429:27 — the range cursor moves past the option string, so the
-    // short quoted value after it stays one unit
     let after_option = texts(r#"a="--x" m="p q""#);
-    assert!(after_option.contains(&"m=\"p q\""), "{after_option:?}");
-    // 1477:37 — the request cursor moves past the request likewise
+    assert!(
+        after_option.contains(&"m=\"p q\""),
+        "the range cursor moves past the option string: {after_option:?}"
+    );
     let after_request = texts(r#""GET /x HTTP/1.1" m="p q""#);
-    assert!(after_request.contains(&"m=\"p q\""), "{after_request:?}");
-    // 1489:42 == and > — an unterminated request leaves a boundary at the
-    // end of its version; the skip loop must clear it before the next
-    // request's first word or the cut underflows
+    assert!(
+        after_request.contains(&"m=\"p q\""),
+        "the request cursor moves past the request: {after_request:?}"
+    );
     let stale = texts(r#"x "GET /a HTTP/1.1 "POST /b HTTP/1.1" y"#);
-    assert!(stale.contains(&"/a") && stale.contains(&"/b"), "{stale:?}");
-    // 1489:42 <= — a doubled opening quote leaves `z"` inside the unit that
-    // holds the closing quote, and the skip loop runs again with every
-    // boundary consumed
+    assert!(
+        stale.contains(&"/a") && stale.contains(&"/b"),
+        "an unterminated request's stale boundary is cleared before the next request: {stale:?}"
+    );
     let doubled = texts(r#"""GET /x HTTP/1.1" z""#);
-    assert!(doubled.contains(&"/x"), "{doubled:?}");
+    assert!(
+        doubled.contains(&"/x"),
+        "a doubled opening quote leaves every boundary consumed: {doubled:?}"
+    );
 }
 
-// The earlier founder keeps the latest member after convergence.
 #[test]
 fn an_earlier_founder_keeps_its_later_last_member() {
     let mut f = make_folder_json();
@@ -6577,9 +6181,6 @@ fn framed_continuations_add_to_input_and_saved_line_totals() {
     assert_eq!(f.stats.lines_saved, 8);
 }
 
-/// The absorbed continuation lines are also kept apart from the total, so
-/// the record count (total minus absorbed) stays checkable: they accumulate
-/// by addition across reports, never by anything else.
 #[test]
 fn absorbed_continuation_lines_accumulate_apart_from_the_total() {
     let mut f = make_folder_json();
@@ -6599,8 +6200,6 @@ fn absorbed_continuation_lines_accumulate_apart_from_the_total() {
     assert_eq!(f.stats.continuation_lines_absorbed, 5);
 }
 
-/// The locator's `input:` field reads the same degraded codes the summary
-/// record carries: none for a clean run, the exact code names otherwise.
 #[test]
 fn input_degraded_codes_name_exactly_what_the_ingest_proved() {
     let mut f = make_folder_json();
@@ -6660,11 +6259,14 @@ fn converging_groups_from_one_batch_end_on_the_true_last_member() {
     }
     f.process_batch().unwrap();
     assert_eq!(f.buffer.len(), 2);
-    // Every line of a batch takes its own position, as it would one at a
-    // time, and carries its own line number, so the two groups tie on
-    // neither where they began nor where they ended.
-    assert!(f.buffer[0].position < f.buffer[1].position);
-    assert_ne!(f.buffer[0].last_line_no, f.buffer[1].last_line_no);
+    assert!(
+        f.buffer[0].position < f.buffer[1].position,
+        "every batch line takes its own position, as it would one at a time"
+    );
+    assert_ne!(
+        f.buffer[0].last_line_no, f.buffer[1].last_line_no,
+        "every batch line carries its own line number"
+    );
     let out = f.finish().unwrap();
     assert_eq!(out.len(), 1);
     let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
@@ -6755,17 +6357,11 @@ fn distillation_keeps_converging_groups_separate_until_selection() {
     assert_eq!(f.distill_groups.len(), 2);
 }
 
-// ---------------------------------------------------------------
-// Property-based tests for the banded word alignment
-// ---------------------------------------------------------------
-
 mod alignment_properties {
     use super::*;
     use proptest::collection::vec as pvec;
     use proptest::prelude::*;
 
-    /// The exact table's walk back, with the diagonal `j - i` of every cell
-    /// it visits: an oracle written apart from `align_exact`.
     fn exact_with_path(left: &[&str], right: &[&str]) -> (Vec<Option<usize>>, Vec<isize>) {
         let (rows, cols) = (left.len(), right.len());
         let mut lcs = vec![vec![0usize; cols + 1]; rows + 1];
@@ -6796,9 +6392,6 @@ mod alignment_properties {
         (out, path)
     }
 
-    /// A short sequence over a three-word alphabet and a copy of it with a
-    /// few units inserted, dropped or changed: alike enough that the exact
-    /// walk mostly stays near its diagonal, unlike enough to leave it.
     fn arb_pair() -> impl Strategy<Value = (Vec<&'static str>, Vec<&'static str>)> {
         const WORDS: [&str; 3] = ["a", "b", "c"];
         (
@@ -6838,12 +6431,11 @@ mod alignment_properties {
             if path.iter().all(|k| (lo..=hi).contains(k)) {
                 prop_assert_eq!(&banded, &exact);
             }
-            // whatever the band, a pairing of equal words in order
             let mut last = None;
             for (i, slot) in banded.iter().enumerate() {
                 if let Some(j) = *slot {
-                    prop_assert_eq!(left[i], right[j]);
-                    prop_assert!(last.is_none_or(|l| j > l));
+                    prop_assert_eq!(left[i], right[j], "any band pairs only equal words");
+                    prop_assert!(last.is_none_or(|l| j > l), "any band pairs words in order");
                     last = Some(j);
                 }
             }
@@ -6857,9 +6449,6 @@ mod alignment_properties {
     }
 }
 
-/// `joins_through_slots`, unit by unit: a slot covers what its kept
-/// affixes allow, a differing quoted value counts against the threshold,
-/// and any other differing unit refuses the join.
 #[test]
 fn a_line_joins_through_slots_only_in_quoted_values() {
     let joins = |template: &str, line: &str, threshold: u8| {
@@ -6873,54 +6462,83 @@ fn a_line_joins_through_slots_only_in_quoted_values() {
     };
     let template =
         r#"attach volume <VARIES> src <VARIES> pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n1"#;
-    // differs from the template only under slots
-    assert!(joins(
-        template,
-        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n1"#,
-        83
-    ));
-    // one quoted value more: 10 of 11 units agree
-    assert!(joins(
-        template,
-        r#"attach volume \"a\" src \"b\" pod \"cilium-<SUFFIX>\" uid (\"0f3c\") node n1"#,
-        83
-    ));
-    // a quoted value inside the same brackets still counts as a value
-    assert!(joins(
-        template,
-        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"7a21\") node n1"#,
-        83
-    ));
-    // two quoted values more: 9 of 11 is under 84%, over 80%
+    assert!(
+        joins(
+            template,
+            r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n1"#,
+            83
+        ),
+        "the line differs from the template only under slots"
+    );
+    assert!(
+        joins(
+            template,
+            r#"attach volume \"a\" src \"b\" pod \"cilium-<SUFFIX>\" uid (\"0f3c\") node n1"#,
+            83
+        ),
+        "one quoted value more: 10 of 11 units agree"
+    );
+    assert!(
+        joins(
+            template,
+            r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"7a21\") node n1"#,
+            83
+        ),
+        "a quoted value inside the same brackets still counts as a value"
+    );
     let two = r#"attach volume \"a\" src \"b\" pod \"cilium-<SUFFIX>\" uid (\"7a21\") node n1"#;
-    assert!(!joins(template, two, 84));
-    assert!(joins(template, two, 80));
-    // a bare word is the sentence, never a value
-    assert!(!joins(
-        template,
-        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n2"#,
-        50
-    ));
-    // the brackets around a quoted value are part of the shape
-    assert!(!joins(
-        template,
-        r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid \"0f3c\" node n1"#,
-        50
-    ));
-    // under a slot only a quoted value agrees, in what the slot keeps
-    // around it
-    assert!(joins("uid <VARIES>) ok", r#"uid \"x\") ok"#, 83));
-    assert!(!joins("uid <VARIES>) ok", r#"uid \"x\" ok"#, 10));
-    assert!(!joins("uid <VARIES> ok", "uid late ok", 10));
-    assert!(!joins("msg=<VARIES> ok", "msg=late ok", 10));
-    // a JSON field is not a quoted value: its key is the sentence
-    assert!(!joins(
-        r#"{"file":<VARIES>,"reason":"bad_ext"} x y z"#,
-        r#"{"file":"a.jpg","reason":"bad_body"} x y z"#,
-        10
-    ));
-    // a different unit count is never joined this way
-    assert!(!joins(template, r#"attach volume \"a\" pod"#, 10));
+    assert!(
+        !joins(template, two, 84),
+        "two quoted values more: 9 of 11 is under 84%"
+    );
+    assert!(
+        joins(template, two, 80),
+        "two quoted values more: 9 of 11 is over 80%"
+    );
+    assert!(
+        !joins(
+            template,
+            r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid (\"0f3c\") node n2"#,
+            50
+        ),
+        "a bare word is the sentence, never a value"
+    );
+    assert!(
+        !joins(
+            template,
+            r#"attach volume \"a\" src \"b\" pod \"relay-<SUFFIX>\" uid \"0f3c\" node n1"#,
+            50
+        ),
+        "the brackets around a quoted value are part of the shape"
+    );
+    assert!(
+        joins("uid <VARIES>) ok", r#"uid \"x\") ok"#, 83),
+        "under a slot a quoted value agrees, with what the slot keeps around it"
+    );
+    assert!(
+        !joins("uid <VARIES>) ok", r#"uid \"x\" ok"#, 10),
+        "the slot's kept ) is missing"
+    );
+    assert!(
+        !joins("uid <VARIES> ok", "uid late ok", 10),
+        "under a slot only a quoted value agrees"
+    );
+    assert!(
+        !joins("msg=<VARIES> ok", "msg=late ok", 10),
+        "under a slot only a quoted value agrees"
+    );
+    assert!(
+        !joins(
+            r#"{"file":<VARIES>,"reason":"bad_ext"} x y z"#,
+            r#"{"file":"a.jpg","reason":"bad_body"} x y z"#,
+            10
+        ),
+        "a JSON field is not a quoted value: its key is the sentence"
+    );
+    assert!(
+        !joins(template, r#"attach volume \"a\" pod"#, 10),
+        "a different unit count is never joined this way"
+    );
 }
 
 #[test]
@@ -6937,9 +6555,6 @@ fn quoted_value_sets_aside_brackets_and_separators() {
     assert_eq!(quoted_value(r#"\"a\"b\""#), None);
 }
 
-/// The prefilter refuses only what `joins_through_slots` refuses: the
-/// first word where a line parts from the template must be one that may
-/// differ. Spacing between words is not a difference.
 #[test]
 fn first_difference_may_vary_reads_the_first_differing_word() {
     assert!(first_difference_may_vary(
@@ -6962,49 +6577,63 @@ fn first_difference_may_vary_reads_the_first_differing_word() {
     assert!(first_difference_may_vary("a b", "a b c"));
 }
 
-// ---- mutation gaps in code changed since v0.8.1 (outside the timeline) ----
-
 #[test]
 fn a_kept_prefix_the_member_carries_whole_stays_whole_without_a_delimiter() {
-    // the whole prefix is kept when the member has it and a byte more,
-    // even where it ends in no field delimiter to cut back to
-    assert_eq!(kept_affixes("ab", "", "abc"), (2, 0));
+    assert_eq!(
+        kept_affixes("ab", "", "abc"),
+        (2, 0),
+        "the member has the whole prefix and a byte more, so the prefix stays whole with no delimiter to cut back to"
+    );
 }
 
 #[test]
 fn a_kept_suffix_leaves_the_slot_at_least_one_byte_of_the_member() {
-    // `a=` and `bc` would cover all of `a=bc`: the suffix gives back `b`
-    assert_eq!(kept_affixes("a=", "bc", "a=bc"), (2, 1));
+    assert_eq!(
+        kept_affixes("a=", "bc", "a=bc"),
+        (2, 1),
+        "a= and bc would cover all of a=bc: the suffix gives back b"
+    );
     assert_eq!(kept_affixes("a=", "x", "a=x"), (2, 0));
-    // with room to spare, the whole suffix is compared from its end
-    assert_eq!(kept_affixes("f(", "x)", "f(ax)"), (2, 2));
+    assert_eq!(
+        kept_affixes("f(", "x)", "f(ax)"),
+        (2, 2),
+        "with room to spare the whole suffix is compared from its end"
+    );
 }
 
 #[test]
 fn an_escaped_quote_after_an_opening_quote_leaves_that_quote_unpaired() {
-    // `"` at 0 is unescaped, `\"` at 3 is not: one of each, so the
-    // unescaped count is odd
-    assert!(unpaired_quote(r#""a\""#, 0, 4));
+    assert!(
+        unpaired_quote(r#""a\""#, 0, 4),
+        "the quote at 0 is unescaped and the one at 3 is escaped: an odd unescaped count"
+    );
 }
 
 #[test]
 fn a_slot_starting_at_an_escaped_quote_does_not_take_the_backslash_before_it() {
-    // the `\` belongs to the kept prefix; the quote joins the prefix too
-    assert_eq!(balance_quotes(r#"a\"b"#, r#"a\"xx\"b"#, 2, 0), (3, 0));
+    assert_eq!(
+        balance_quotes(r#"a\"b"#, r#"a\"xx\"b"#, 2, 0),
+        (3, 0),
+        "the backslash belongs to the kept prefix, and the quote joins it"
+    );
 }
 
 #[test]
 fn a_slot_whose_only_quote_opens_it_keeps_that_quote_in_the_prefix() {
-    // the member ends with the slot's own `"ab` too, but the quote opens
-    // the slot: it is read from the opening side, not taken as a closer
-    assert_eq!(balance_quotes(r#"x"ab"#, r#"x"zz"ab"#, 1, 0), (2, 0));
+    assert_eq!(
+        balance_quotes(r#"x"ab"#, r#"x"zz"ab"#, 1, 0),
+        (2, 0),
+        "the quote opens the slot, so it is read from the opening side, not taken as a closer"
+    );
 }
 
 #[test]
 fn closers_after_a_closing_quote_stop_one_byte_short_of_the_template() {
-    // `k="))"` with the slot from byte 3: the quote and one `)` join the
-    // suffix; the other `)` stays in the slot, which may not be empty
-    assert_eq!(balance_quotes(r#"k="))""#, r#"k="a)))""#, 3, 0), (3, 2));
+    assert_eq!(
+        balance_quotes(r#"k="))""#, r#"k="a)))""#, 3, 0),
+        (3, 2),
+        "the quote and one ) join the suffix; the other ) stays, as the slot may not be empty"
+    );
 }
 
 #[test]
@@ -7014,29 +6643,43 @@ fn closers_after_a_closing_quote_stop_one_byte_short_of_the_member() {
 
 #[test]
 fn an_opening_quote_at_the_slot_end_is_not_kept_beside_it() {
-    // keeping the quote would leave the slot empty: the slot stays as it was
-    assert_eq!(balance_quotes(r#"k=v"]"#, r#"k=v"zz]"#, 2, 1), (2, 1));
+    assert_eq!(
+        balance_quotes(r#"k=v"]"#, r#"k=v"zz]"#, 2, 1),
+        (2, 1),
+        "keeping the quote would empty the slot, so the slot stays as it was"
+    );
 }
 
 #[test]
 fn an_opening_quote_is_kept_only_where_the_member_has_a_byte_after_it() {
-    // `k="` kept with `]` leaves the four-byte member nothing for the slot
-    assert_eq!(balance_quotes(r#"k="ab]"#, r#"k="]"#, 2, 1), (2, 1));
-    // and a member that does not open the same way keeps nothing either
-    assert_eq!(balance_quotes(r#"k="ab]"#, r#"j="xyz]"#, 2, 1), (2, 1));
+    assert_eq!(
+        balance_quotes(r#"k="ab]"#, r#"k="]"#, 2, 1),
+        (2, 1),
+        "k=\" kept with ] would leave the four-byte member nothing for the slot"
+    );
+    assert_eq!(
+        balance_quotes(r#"k="ab]"#, r#"j="xyz]"#, 2, 1),
+        (2, 1),
+        "a member that does not open the same way keeps nothing more either"
+    );
 }
 
 #[test]
 fn a_whole_quoted_value_is_cut_after_its_field_delimiter() {
-    // neither side's quote can stay beside the slot: the slot covers the
-    // whole quoted value and the suffix keeps its `)`
-    assert_eq!(balance_quotes(r#"k="v1")"#, "k=v2)", 4, 1), (2, 1));
+    assert_eq!(
+        balance_quotes(r#"k="v1")"#, "k=v2)", 4, 1),
+        (2, 1),
+        "neither quote can stay beside the slot: it covers the whole quoted value and the suffix keeps )"
+    );
 }
 
 #[test]
 fn a_suffix_holding_the_partner_quote_is_given_up_to_the_slot() {
-    // `a"b` + `"`: the quotes pair only once the slot takes the suffix
-    assert_eq!(balance_quotes(r#"a"b""#, "x", 0, 1), (0, 0));
+    assert_eq!(
+        balance_quotes(r#"a"b""#, "x", 0, 1),
+        (0, 0),
+        "the quotes pair only once the slot takes the suffix"
+    );
 }
 
 #[test]
@@ -7074,9 +6717,6 @@ fn a_slot_that_loses_only_its_suffix_still_widens() {
     );
 }
 
-/// Two sequences of distinct words whose only common subsequence sits
-/// `shift` words off the diagonal: `shift` new words lead `right` when
-/// positive, `left` when negative, and that side is cut to its length.
 fn shifted_lines(left_len: usize, right_len: usize, shift: isize) -> (Vec<String>, Vec<String>) {
     let lead = |n: usize| (0..n).map(|i| format!("new{i}"));
     let word = |i: usize| format!("w{i}");
@@ -7102,8 +6742,11 @@ fn either_side_past_the_cap_makes_the_band_decide() {
         let left: Vec<&str> = left.iter().map(String::as_str).collect();
         let right: Vec<&str> = right.iter().map(String::as_str).collect();
         let banded = align_banded(&left, &right, ALIGN_BAND);
-        // the exact path lies outside the band, so the two disagree
-        assert_ne!(banded, align_exact(&left, &right));
+        assert_ne!(
+            banded,
+            align_exact(&left, &right),
+            "the exact path lies outside the band, so the two disagree"
+        );
         assert_eq!(align_words(&left, &right), banded, "{left_len} {right_len}");
     }
 }
@@ -7163,16 +6806,18 @@ fn a_count_only_type_at_its_cap_is_capped_only_by_a_new_value() {
             .map(|i| vec![Token::Timestamp(format!("ts-{i:04}"))])
             .collect()
     };
-    // a repeat at the cap needs no room
-    let mut lines = stamps(64);
+    let mut lines = stamps(ROLLUP_DISTINCT_CAP);
     lines.push(vec![Token::Timestamp("ts-0000".into())]);
     let entry = rc.compute(&make_group("<TIMESTAMP> beat", lines))["TIMESTAMP"].clone();
-    assert_eq!(entry.distinct_count, 64);
-    assert!(!entry.capped);
-    // a new value past it does
-    let entry = rc.compute(&make_group("<TIMESTAMP> beat", stamps(65)))["TIMESTAMP"].clone();
-    assert_eq!(entry.distinct_count, 64);
-    assert!(entry.capped);
+    assert_eq!(entry.distinct_count, ROLLUP_DISTINCT_CAP);
+    assert!(!entry.capped, "a repeat at the cap needs no room");
+    let entry = rc.compute(&make_group(
+        "<TIMESTAMP> beat",
+        stamps(ROLLUP_DISTINCT_CAP + 1),
+    ))["TIMESTAMP"]
+        .clone();
+    assert_eq!(entry.distinct_count, ROLLUP_DISTINCT_CAP);
+    assert!(entry.capped, "a new value past the cap does");
 }
 
 fn plain_line(s: &str) -> LogLine {
@@ -7249,10 +6894,6 @@ fn a_json_group_carries_its_timeline_on_the_log_wide_grid() {
     );
 }
 
-// ---------------------------------------------------------------
-// template_holds: the claim checked each time a line joins a group
-// ---------------------------------------------------------------
-
 #[test]
 fn a_template_without_a_slot_holds_only_for_its_own_words() {
     assert!(template_holds("worker ready now", "worker ready now"));
@@ -7269,12 +6910,10 @@ fn a_bare_slot_stands_for_any_word_or_none() {
 
 #[test]
 fn a_member_word_the_template_does_not_show_breaks_the_claim() {
-    // lessence-1tee: a template that hides what a member holds is as false
-    // as one that names what it lacks
-    assert!(!template_holds(
-        "worker <VARIES> ready",
-        "worker c3 ready now"
-    ));
+    assert!(
+        !template_holds("worker <VARIES> ready", "worker c3 ready now"),
+        "a template that hides a member word is as false as one that names a word the member lacks"
+    );
     assert!(!template_holds("worker ready", "worker is ready"));
     assert!(!template_holds("[ -f <PATH> ]", "[ ! -f <PATH> ]"));
 }
@@ -7297,8 +6936,10 @@ fn a_bare_slot_shows_a_run_of_words_or_none() {
 fn a_slot_with_kept_text_shows_no_word_outside_its_run() {
     assert!(!template_holds("x q=[<VARIES>] done", "x q=[a b] c done"));
     assert!(!template_holds("x q=[<VARIES>] done", "x w q=[a b] done"));
-    // a run that both starts and ends in one word
-    assert!(template_holds("x q=[<VARIES>] done", "x q=[a] done"));
+    assert!(
+        template_holds("x q=[<VARIES>] done", "x q=[a] done"),
+        "a run that starts and ends in one word"
+    );
 }
 
 #[test]
@@ -7314,25 +6955,30 @@ fn text_kept_beside_a_slot_is_part_of_the_claim() {
     assert!(!template_holds("x msg=<VARIES> y", "x text=hello y"));
     assert!(template_holds("x [<VARIES>] y", "x [a1] y"));
     assert!(!template_holds("x [<VARIES>] y", "x [a1 y"));
-    // shorter than the kept text on both sides together
-    assert!(!template_holds("x ab<VARIES>bc y", "x abc y"));
+    assert!(
+        !template_holds("x ab<VARIES>bc y", "x abc y"),
+        "the member is shorter than the kept text on both sides together"
+    );
 }
 
 #[test]
 fn a_slot_with_kept_text_may_stand_for_several_words() {
     assert!(template_holds("x q=[<VARIES>] done", "x q=[a b c] done"));
     assert!(!template_holds("x q=[<VARIES>] done", "x q=[a b c done"));
-    // the words after the slot's last one are still checked, in order
-    assert!(!template_holds("x q=[<VARIES>] done", "x done q=[a b c]"));
+    assert!(
+        !template_holds("x q=[<VARIES>] done", "x done q=[a b c]"),
+        "the words after the slot's last one are still checked, in order"
+    );
 }
 
 #[test]
 fn a_template_holds_when_it_reads_true_character_by_character() {
-    // The slot swallowed a quote, so the two no longer split into the same
-    // units; read as text the template is still true of the member.
     let template = r#"{"req":"put >> <VARIES>,"size":"22"}"#;
     let member = r#"{"req":"put >> range > >>","size":"22"}"#;
-    assert!(template_holds(template, member));
+    assert!(
+        template_holds(template, member),
+        "the slot swallowed a quote, so the units differ, but read as text the template is true"
+    );
     assert!(!template_holds(
         template,
         r#"{"req":"put >> range > >>","size":"23"}"#
@@ -7344,21 +6990,14 @@ fn a_template_holds_when_it_reads_true_character_by_character() {
     assert!(!reads_as("abc", "abcd"));
 }
 
-/// The check is compiled into test builds only.
 #[cfg(debug_assertions)]
 #[test]
 #[should_panic(expected = "the template does not hold for the line that joined")]
 fn a_line_its_groups_template_is_false_of_stops_a_test_build() {
-    // Two lines the join rule never puts in one group, pushed in by hand: a
-    // word that looks like data is not made a slot, so the template would go
-    // on naming alice for a line that says bob.
     let mut group = PatternGroup::new(make_line("user alice@test.com logged in", vec![]), 1);
     group.add_line(make_line("user bob@test.com logged in", vec![]), 2);
 }
 
-/// `template_edits` for a member the template can be made to show, each
-/// edit as the span it turns into `<VARIES>`, and an opened slot as the
-/// empty span where it goes in.
 fn spans_of(template: &str, member: &str) -> Vec<(usize, usize)> {
     template_edits(template, member)
         .expect("the member can be shown")
@@ -7369,10 +7008,6 @@ fn spans_of(template: &str, member: &str) -> Vec<(usize, usize)> {
         })
         .collect()
 }
-
-// ---------------------------------------------------------------
-// lessence-1tee: words only some members have open a slot of their own
-// ---------------------------------------------------------------
 
 #[test]
 fn a_word_only_a_later_member_has_opens_a_slot_where_it_sits() {
@@ -7400,8 +7035,11 @@ fn a_run_of_extra_words_is_one_slot() {
 #[test]
 fn extra_words_before_the_first_unit_open_a_slot_in_front() {
     assert_eq!(marked("a b", "x a b"), "<VARIES> a b");
-    // written with the separator the member has after them
-    assert_eq!(marked("a b", "x,a b"), "<VARIES>,a b");
+    assert_eq!(
+        marked("a b", "x,a b"),
+        "<VARIES>,a b",
+        "written with the separator the member has after the words"
+    );
 }
 
 #[test]
@@ -7419,20 +7057,19 @@ fn an_opened_slot_keeps_the_separator_the_member_has_before_it() {
 
 #[test]
 fn a_slot_anchored_in_a_gap_leaves_the_words_after_it_to_a_slot_of_their_own() {
-    // `k=` anchors on `k=1`; `z` after it is shown by nothing else
     assert_eq!(
         marked("a <VARIES> k=<VARIES> c", "a y k=1 z c"),
-        "a <VARIES> k=<VARIES> <VARIES> c"
+        "a <VARIES> k=<VARIES> <VARIES> c",
+        "k= anchors on k=1, and nothing else shows the z after it"
     );
 }
 
 #[test]
 fn a_lone_unit_in_a_gap_keeps_the_affixes_it_shares_with_its_counterpart() {
-    // the counts differ, so the pair is not aligned, but the gap holds one
-    // unit on each side and they pair as an aligned pair would
     assert_eq!(
         marked("a [x:error] b c", "a [y:error] b c d"),
-        "a [<VARIES>] b c <VARIES>"
+        "a [<VARIES>] b c <VARIES>",
+        "the unit counts differ, but one unit on each side of the gap pairs as an aligned pair would"
     );
 }
 
@@ -7453,10 +7090,10 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
         })
     };
     let member = ("a b c", [(0, 1), (2, 1), (4, 1)]);
-    // template units 0 and 1 touch: nowhere to put a unit between them
     assert_eq!(
         slot_opening("abcdefg", &[(0, 3), (3, 4)], member.0, &member.1, 1, (1, 2)),
-        None
+        None,
+        "template units 0 and 1 touch: nowhere to put a unit between them"
     );
     assert_eq!(
         slot_opening(
@@ -7469,7 +7106,6 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
         ),
         open(3, " <VARIES>")
     );
-    // the run touches the member unit before it, or after it
     let template = ("a c", [(0, 1), (2, 1)]);
     assert_eq!(
         slot_opening(
@@ -7480,7 +7116,8 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
             1,
             (1, 2)
         ),
-        None
+        None,
+        "the run touches the member unit before it"
     );
     assert_eq!(
         slot_opening(
@@ -7491,46 +7128,54 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
             1,
             (1, 2)
         ),
-        None
+        None,
+        "the run touches the member unit after it"
     );
-    // in front of the first unit and past the last nothing needs a gap
     assert_eq!(
         slot_opening("a", &[(0, 1)], "x;a", &[(0, 1), (2, 1)], 0, (0, 1)),
-        open(0, "<VARIES>;")
+        open(0, "<VARIES>;"),
+        "in front of the first unit nothing needs a gap"
     );
     assert_eq!(
         slot_opening("a", &[(0, 1)], "a;x", &[(0, 1), (2, 1)], 1, (1, 2)),
-        open(1, ";<VARIES>")
+        open(1, ";<VARIES>"),
+        "past the last unit nothing needs a gap"
     );
-    // a run that is the whole member has no separator of its own to use
     assert_eq!(
         slot_opening("a", &[(0, 1)], "x", &[(0, 1)], 0, (0, 1)),
-        open(0, "<VARIES> ")
+        open(0, "<VARIES> "),
+        "a run that is the whole member has no separator of its own to use"
     );
     assert_eq!(
         slot_opening("a", &[(0, 1)], "x", &[(0, 1)], 1, (0, 1)),
         open(1, " <VARIES>")
     );
-    // an empty template has no unit to open a slot beside
-    assert_eq!(slot_opening("", &[], "x", &[(0, 1)], 0, (0, 1)), None);
+    assert_eq!(
+        slot_opening("", &[], "x", &[(0, 1)], 0, (0, 1)),
+        None,
+        "an empty template has no unit to open a slot beside"
+    );
 }
 
 #[test]
 fn a_slot_goes_between_the_separators_the_template_shares_with_the_member() {
-    // `{}` is the member's ` {` and `}` with the run taken out
     assert_eq!(
         slot_opening("a {}", &[(0, 1)], "a {x}", &[(0, 1), (3, 1)], 1, (1, 2)),
         Some(Edit::Open {
             at: 3,
             unit_with_separator: VARIES_MARK.into()
-        })
+        }),
+        "the {{}} is the member's space-brace and closing brace with the run taken out"
     );
     assert_eq!(
         marked("GRPC response: {}", r#"GRPC response: {"size":7}"#),
         "GRPC response: {<VARIES>}"
     );
-    // in front of the first unit, with the member's separator after the run
-    assert_eq!(marked("{a}", "{x,a}"), "{<VARIES>,a}");
+    assert_eq!(
+        marked("{a}", "{x,a}"),
+        "{<VARIES>,a}",
+        "in front of the first unit, with the member's separator after the run"
+    );
     assert_eq!(marked("{a}", "x{a}"), "<VARIES>{a}");
 }
 
@@ -7565,8 +7210,6 @@ fn a_full_scan_counts_an_opened_slot_as_absent_for_the_members_without_it() {
     }
 }
 
-/// The lines of the refused-join tests: a word only the last one has,
-/// glued to an address that is split from it as a unit of its own.
 const GLUED: [&str; 3] = [
     "pci slot 0000:21:00.0 link is up and ready for traffic now",
     "pci slot 0000:21:00.0 link is up and ready for traffic now",
@@ -7596,21 +7239,35 @@ fn a_line_equal_to_the_founder_calls_for_no_edit() {
 
 #[test]
 fn every_member_unit_is_shown_read_unit_by_unit() {
-    // the unit reading alone, without the character reading beside it
-    assert!(shows_every_unit("x msg=<VARIES> y", "x msg=hello y"));
+    assert!(
+        shows_every_unit("x msg=<VARIES> y", "x msg=hello y"),
+        "the unit reading alone, without the character reading beside it"
+    );
     assert!(!shows_every_unit("x msg=<VARIES> y", "x text=hello y"));
-    // the kept text on both sides needs room in one word, overlapping none
-    assert!(!shows_every_unit("x ab<VARIES>b y", "x ab y"));
-    // a run of one unit, and of several
-    assert!(shows_every_unit("x q=[<VARIES>] done", "x q=[a] done"));
-    assert!(shows_every_unit("x q=[<VARIES>] done", "x q=[a b c] done"));
+    assert!(
+        !shows_every_unit("x ab<VARIES>b y", "x ab y"),
+        "the kept text on both sides needs room in one word, overlapping none"
+    );
+    assert!(
+        shows_every_unit("x q=[<VARIES>] done", "x q=[a] done"),
+        "a run of one unit"
+    );
+    assert!(
+        shows_every_unit("x q=[<VARIES>] done", "x q=[a b c] done"),
+        "a run of several units"
+    );
     assert!(shows_every_unit("q=[<VARIES>] done", "q=[a b] done"));
     assert!(!shows_every_unit("x q=[<VARIES>] done", "x q=[a b] c done"));
     assert!(!shows_every_unit("x q=[<VARIES>]", "x q=[a b] c"));
-    // a bare slot: any run or none, and nothing past the template's end
-    assert!(shows_every_unit("a <VARIES> b", "a b"));
+    assert!(
+        shows_every_unit("a <VARIES> b", "a b"),
+        "a bare slot shows any run or none"
+    );
     assert!(shows_every_unit("a <VARIES> b", "a x y b"));
     assert!(shows_every_unit("a <VARIES>", "a x y"));
-    assert!(!shows_every_unit("a b", "a b c"));
+    assert!(
+        !shows_every_unit("a b", "a b c"),
+        "nothing past the template's end is shown"
+    );
     assert!(!shows_every_unit("a b", "a"));
 }
