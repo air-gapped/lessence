@@ -566,7 +566,7 @@ fn explain_retains_a_recurring_group_past_flush_threshold() {
 /// Deterministic 6-letter words: single-token lines that never group with
 /// each other (zero shared tokens → similarity score 0).
 #[test]
-fn the_batch_path_evicts_and_folds_exactly_as_the_single_thread_path() {
+fn only_the_inline_path_evicts_and_both_paths_fold_the_same_records() {
     let run = |thread_count| {
         let mut f = PatternFolder::new(Config {
             thread_count,
@@ -587,17 +587,14 @@ fn the_batch_path_evicts_and_folds_exactly_as_the_single_thread_path() {
         output.extend(f.finish().unwrap());
         (retained, output)
     };
-    let (single_retained, single) = run(Some(1));
+    let (inline_retained, inline) = run(Some(1));
     let (batch_retained, batch) = run(None);
     assert!(
-        single_retained > 0,
+        inline_retained > 0,
         "2,403 distinct lines overflow the buffer"
     );
-    assert_eq!(
-        batch_retained, single_retained,
-        "the batch path evicts the same groups"
-    );
-    assert_eq!(batch, single, "and renders the same records");
+    assert_eq!(batch_retained, 0, "the batch path holds every group");
+    assert_eq!(batch, inline, "and the two render the same records");
 }
 
 fn eviction_word(i: usize) -> String {
