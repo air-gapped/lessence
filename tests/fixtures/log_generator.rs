@@ -1,24 +1,3 @@
-//! Synthetic log generator for integration tests.
-//!
-//! Generates deterministic, realistic log output exercising all major token
-//! types. Used by constitutional compliance tests so they don't depend on
-//! gitignored corpus files.
-//!
-//! The generator produces kubelet-style logs with 5 repeating patterns.
-//! Static text within each pattern is identical — only token values (IPs,
-//! UUIDs, timestamps, hashes, pod names) vary between lines. This mirrors
-//! how real repetitive logs behave and produces high compression ratios.
-
-/// Generate synthetic log lines exercising all major token types.
-///
-/// Patterns and their token coverage:
-/// - Volume errors: Timestamp, UUID, Path, IP, Port, PID, QuotedString
-/// - Transport warnings: Timestamp, IP, PID, Path
-/// - Lease errors: Timestamp, PID, Duration
-/// - Pod reconciliation: Timestamp, PodName, KubernetesNamespace, PID
-/// - Configmap syncs: Timestamp, Hash, KubernetesNamespace, PID
-///
-/// Compression ratios: ~93% at 500 lines, ~96% at 2000 lines.
 pub fn generate_log(line_count: usize) -> String {
     let mut lines = Vec::with_capacity(line_count);
 
@@ -30,7 +9,6 @@ pub fn generate_log(line_count: usize) -> String {
 
         let line = match i % 5 {
             0 => {
-                // Volume mount failure: UUID, Path, IP, Port, PID
                 let uuid = format!("{:08x}-e29b-41d4-a716-{:012x}", i % 256, i % 4096);
                 let ip = format!("10.0.{}.{}", (i / 256) % 10, i % 256);
                 let port = 8080 + (i % 3);
@@ -42,7 +20,6 @@ pub fn generate_log(line_count: usize) -> String {
                 )
             }
             1 => {
-                // Transport warning: IP, PID, Path
                 let ip = format!("10.0.{}.{}", (i / 256) % 10, i % 256);
                 format!(
                     "W0909 13:{min:02}:{sec:02}.{ms:06} {pid} transport.go:356] \
@@ -52,7 +29,6 @@ pub fn generate_log(line_count: usize) -> String {
                 )
             }
             2 => {
-                // Lease failure: PID, Duration
                 format!(
                     "E0909 13:{min:02}:{sec:02}.{ms:06} {pid} controller.go:145] \
                      Failed to ensure lease exists, will retry in 7s, err: \
@@ -60,7 +36,6 @@ pub fn generate_log(line_count: usize) -> String {
                 )
             }
             3 => {
-                // Pod reconciliation: PodName, Namespace, PID
                 let pods = [
                     "api-server-7b8c9d0e1f",
                     "worker-batch-6a7b8c9d0e",
@@ -79,8 +54,7 @@ pub fn generate_log(line_count: usize) -> String {
                 )
             }
             4 => {
-                // Configmap sync: Hash (fixed-length SHA256-like), Namespace, PID
-                let hash = format!(
+                let sha256_shaped_hash = format!(
                     "{:016x}{:016x}{:016x}{:016x}",
                     (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15),
                     (i as u64).wrapping_mul(0x517c_c1b7_2722_0a95),
@@ -89,7 +63,7 @@ pub fn generate_log(line_count: usize) -> String {
                 );
                 format!(
                     "I0909 13:{min:02}:{sec:02}.{ms:06} {pid} sync.go:190] \
-                     Successfully synced configmap \"kube-system/coredns\" with hash {hash}"
+                     Successfully synced configmap \"kube-system/coredns\" with hash {sha256_shaped_hash}"
                 )
             }
             _ => unreachable!(),

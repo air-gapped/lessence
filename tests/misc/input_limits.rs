@@ -1,7 +1,8 @@
 use lessence::config::Config;
 use lessence::ingest::{Event, IngestReport, Ingestor, InputReader, Source};
 
-/// Run text through the real ingestion path and collect the delivered lines.
+const MIB: usize = 1024 * 1024;
+
 fn ingest_lines(config: &Config, text: String) -> (Vec<String>, IngestReport) {
     let ingestor = Ingestor::from_config(config).expect("valid config");
     let readers = vec![InputReader {
@@ -23,11 +24,11 @@ fn ingest_lines(config: &Config, text: String) -> (Vec<String>, IngestReport) {
 #[test]
 fn test_line_length_limit_enforcement() {
     let config = Config {
-        max_line_length: Some(1024 * 1024), // 1MB
+        max_line_length: Some(MIB),
         ..Default::default()
     };
 
-    let huge_line = "A".repeat(2 * 1024 * 1024); // 2MB
+    let huge_line = "A".repeat(2 * MIB);
     let normal_line = "User admin logged in";
 
     let (delivered, report) = ingest_lines(&config, format!("{huge_line}\n{normal_line}\n"));
@@ -106,7 +107,7 @@ fn test_no_limit_allows_all_lines() {
         ..Default::default()
     };
 
-    let huge_line = "A".repeat(10 * 1024 * 1024); // 10MB
+    let huge_line = "A".repeat(10 * MIB);
 
     let (delivered, report) = ingest_lines(&config, format!("{huge_line}\n"));
     assert_eq!(

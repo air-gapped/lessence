@@ -1,6 +1,3 @@
-//! `--format markdown` supports only the default fold output; every
-//! other mode must fail loudly instead of silently emitting plain text.
-
 use std::io::Write;
 use std::process::Stdio;
 
@@ -12,10 +9,9 @@ fn run_with_flags(args: &[&str]) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn lessence");
-    // A rejected combination exits before reading stdin, so this write can
-    // hit a broken pipe; that is fine — the exit code carries the verdict.
     let mut stdin = child.stdin.take().unwrap();
-    let _ = stdin.write_all(b"error one\nerror two\nerror three\n");
+    let _write_may_meet_a_closed_pipe_after_a_rejection =
+        stdin.write_all(b"error one\nerror two\nerror three\n");
     drop(stdin);
     child
         .wait_with_output()
@@ -27,7 +23,7 @@ fn assert_rejected(args: &[&str]) {
     assert_eq!(
         out.status.code(),
         Some(2),
-        "{args:?} must exit 2, got {:?}",
+        "--format markdown supports only the default fold output; {args:?} must exit 2, got {:?}",
         out.status.code()
     );
     let stderr = String::from_utf8_lossy(&out.stderr);

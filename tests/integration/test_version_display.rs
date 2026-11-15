@@ -1,8 +1,5 @@
 #[test]
 fn test_version_shows_lessence_name() {
-    // T007: CLI contract test for version display
-    // Verifies that version output contains lessence name
-
     let output = crate::common::lessence()
         .arg("--version")
         .output()
@@ -15,13 +12,11 @@ fn test_version_shows_lessence_name() {
 
     let version_output = String::from_utf8_lossy(&output.stdout);
 
-    // Check for "lessence" in version output
     assert!(
         version_output.to_lowercase().contains("lessence"),
         "Version output should contain 'lessence', got: {version_output}"
     );
 
-    // Ensure no old "logfold" references
     assert!(
         !version_output.to_lowercase().contains("logfold"),
         "Version output should not contain 'logfold', got: {version_output}"
@@ -30,7 +25,6 @@ fn test_version_shows_lessence_name() {
 
 #[test]
 fn test_version_format() {
-    // Verify version follows semantic versioning
     let output = crate::common::lessence()
         .arg("--version")
         .output()
@@ -38,7 +32,6 @@ fn test_version_format() {
 
     let version_output = String::from_utf8_lossy(&output.stdout);
 
-    // Should contain version number pattern (x.y.z)
     let version_regex = regex::Regex::new(r"\d+\.\d+\.\d+").unwrap();
     assert!(
         version_regex.is_match(&version_output),
@@ -48,7 +41,6 @@ fn test_version_format() {
 
 #[test]
 fn test_version_short_flag() {
-    // Test -V short flag works
     let output = crate::common::lessence()
         .arg("-V")
         .output()
@@ -70,10 +62,6 @@ fn test_version_short_flag() {
 
 #[test]
 fn test_version_reports_build_identity() {
-    // A binary's semver alone does not identify it: any commit between
-    // releases changes behaviour without bumping Cargo.toml, and the musl
-    // and glibc builds differ in allocator. `--version` must therefore also
-    // name the commit it was built from and the target triple.
     let output = crate::common::lessence()
         .arg("--version")
         .output()
@@ -81,13 +69,10 @@ fn test_version_reports_build_identity() {
 
     let version_output = String::from_utf8_lossy(&output.stdout);
 
-    // `lessence 0.4.5 (2475c9bdc-dirty, x86_64-unknown-linux-gnu)`
-    // The build id degrades to `unknown` when built without git (crates.io
-    // tarball), so the shape is asserted, not the value.
     let shape = regex::Regex::new(r"^lessence \d+\.\d+\.\d+ \([^,()]+, [^,()]+\)\s*$").unwrap();
     assert!(
         shape.is_match(version_output.trim_end()),
-        "Version should read `lessence X.Y.Z (<build-id>, <target>)`, got: {version_output}"
+        "semver alone does not identify a build, so --version reads `lessence X.Y.Z (<build-id>, <target>)` (the build id is `unknown` without git, so only the shape is checked), got: {version_output}"
     );
 
     let inner = version_output

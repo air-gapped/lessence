@@ -1,60 +1,43 @@
-//! Drives `tests/fixtures/fold_regressions.log` through the real binary.
-//!
-//! The corpus is the data; this file is only the harness. See the header of
-//! that file for the block format and for why it exists.
-//!
-//! Running the binary rather than the library is deliberate: half the defects
-//! in the corpus are only reachable through a flag — `--sanitize-pii`,
-//! `--disable-patterns`, `--summary`, `--preflight`, `--format markdown` — and
-//! an in-crate harness cannot see those surfaces at all.
-
 use std::io::Write;
 use std::process::Stdio;
 use std::sync::LazyLock;
 
 const DEFAULT_CORPUS: &str = include_str!("../fixtures/fold_regressions.log");
 
-/// `LESSENCE_FIXTURE` overrides the corpus file (gate.sh points this at a
-/// throwaway fixture holding only the new blocks); unset, the compiled-in
-/// corpus is unchanged.
-static CORPUS: LazyLock<String> = LazyLock::new(|| match std::env::var("LESSENCE_FIXTURE") {
-    Ok(path) => {
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("LESSENCE_FIXTURE={path}: {e}"))
-    }
-    Err(_) => DEFAULT_CORPUS.to_string(),
-});
+const NEW_BLOCKS_FIXTURE_ENV_SET_BY_GATE: &str = "LESSENCE_FIXTURE";
+const BASELINE_BIN_ENV_SET_BY_GATE: &str = "LESSENCE_BIN";
+const HOLDS_ON_BASE_MARKER_READ_BY_GATE: &str = " holds-on-base";
 
-/// `LESSENCE_BIN` overrides which binary the harness drives (gate.sh points
-/// this at the baseline build); unset, the cargo-built binary is unchanged.
+static CORPUS: LazyLock<String> =
+    LazyLock::new(|| match std::env::var(NEW_BLOCKS_FIXTURE_ENV_SET_BY_GATE) {
+        Ok(path) => std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{NEW_BLOCKS_FIXTURE_ENV_SET_BY_GATE}={path}: {e}")),
+        Err(_) => DEFAULT_CORPUS.to_string(),
+    });
+
 static BIN: LazyLock<String> = LazyLock::new(|| {
-    std::env::var("LESSENCE_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_lessence").to_string())
+    std::env::var(BASELINE_BIN_ENV_SET_BY_GATE)
+        .unwrap_or_else(|_| env!("CARGO_BIN_EXE_lessence").to_string())
 });
 
 #[derive(Debug, PartialEq)]
 enum Expect {
-    /// Exactly this many groups come out.
-    Groups(usize),
-    /// The first group's normalized template must not contain this.
-    TemplateAbsent(String),
-    /// The first group's normalized template must contain this.
-    TemplatePresent(String),
-    /// Raw stdout must not contain this.
-    OutAbsent(String),
-    /// Raw stdout must contain this.
-    OutPresent(String),
-    /// Raw stderr must contain this.
-    ErrPresent(String),
-    /// The process must exit with this status.
-    Exit(i32),
+    ExactGroupCount(usize),
+    FirstTemplateAbsent(String),
+    FirstTemplatePresent(String),
+    StdoutAbsent(String),
+    StdoutPresent(String),
+    StderrPresent(String),
+    ExitStatus(i32),
 }
 
 impl Expect {
-    /// Expectations about the fold itself need the machine format; the harness
-    /// supplies it so a case does not have to remember.
-    fn needs_json(&self) -> bool {
+    fn reads_the_fold_so_harness_adds_json(&self) -> bool {
         matches!(
             self,
-            Expect::Groups(_) | Expect::TemplateAbsent(_) | Expect::TemplatePresent(_)
+            Expect::ExactGroupCount(_)
+                | Expect::FirstTemplateAbsent(_)
+                | Expect::FirstTemplatePresent(_)
         )
     }
 }
@@ -66,9 +49,7 @@ struct Case {
     flags: Vec<String>,
     expect: Expect,
     lines: Vec<String>,
-    /// `##TODO`: a known defect with no fix yet. Documents the expected
-    /// behaviour; checked only by the ignored `known_open_defects` test.
-    todo: bool,
+    todo_known_open_defect: bool,
 }
 
 fn parse(corpus: &str) -> Vec<Case> {
@@ -78,34 +59,35 @@ fn parse(corpus: &str) -> Vec<Case> {
         let lineno = n + 1;
         let bad = |msg: &str| -> ! { panic!("fold_regressions.log line {lineno}: {msg}") };
 
-        let (rest, todo) = match (raw.strip_prefix("##CASE "), raw.strip_prefix("##TODO ")) {
-            (Some(r), _) => (Some(r), false),
-            (None, Some(r)) => (Some(r), true),
-            _ => (None, false),
-        };
+        let (rest, todo_known_open_defect) =
+            match (raw.strip_prefix("##CASE "), raw.strip_prefix("##TODO ")) {
+                (Some(r), _) => (Some(r), false),
+                (None, Some(r)) => (Some(r), true),
+                _ => (None, false),
+            };
         if let Some(rest) = rest {
             let (bead, spec) = rest
                 .split_once(' ')
                 .unwrap_or_else(|| bad("##CASE needs a bead and an expectation"));
-            // `holds-on-base` is a marker gate.sh reads from the raw header
-            // text; the harness itself ignores it.
-            let spec = spec.strip_suffix(" holds-on-base").unwrap_or(spec);
+            let spec = spec
+                .strip_suffix(HOLDS_ON_BASE_MARKER_READ_BY_GATE)
+                .unwrap_or(spec);
             let (kind, value) = spec
                 .split_once('=')
                 .unwrap_or_else(|| bad("expectation must be key=value"));
             let value = value.to_string();
             let expect = match kind {
-                "groups" => Expect::Groups(
+                "groups" => Expect::ExactGroupCount(
                     value
                         .parse()
                         .unwrap_or_else(|_| bad("groups= wants a number")),
                 ),
-                "template_absent" => Expect::TemplateAbsent(value),
-                "template_present" => Expect::TemplatePresent(value),
-                "out_absent" => Expect::OutAbsent(value),
-                "out_present" => Expect::OutPresent(value),
-                "err_present" => Expect::ErrPresent(value),
-                "exit" => Expect::Exit(
+                "template_absent" => Expect::FirstTemplateAbsent(value),
+                "template_present" => Expect::FirstTemplatePresent(value),
+                "out_absent" => Expect::StdoutAbsent(value),
+                "out_present" => Expect::StdoutPresent(value),
+                "err_present" => Expect::StderrPresent(value),
+                "exit" => Expect::ExitStatus(
                     value
                         .parse()
                         .unwrap_or_else(|_| bad("exit= wants a number")),
@@ -119,11 +101,12 @@ fn parse(corpus: &str) -> Vec<Case> {
                 flags: Vec::new(),
                 expect,
                 lines: Vec::new(),
-                todo,
+                todo_known_open_defect,
             });
             continue;
         }
 
+        let file_header_or_block_closing_blank = raw.starts_with("##") || raw.trim().is_empty();
         if raw.starts_with("##WHY ") || raw.starts_with("##FROM ") || raw.starts_with("##FLAGS ") {
             let case = out
                 .last_mut()
@@ -139,9 +122,7 @@ fn parse(corpus: &str) -> Vec<Case> {
                 case.flags
                     .extend(flags.split_whitespace().map(str::to_string));
             }
-        } else if raw.starts_with("##") || raw.trim().is_empty() {
-            // File header, or the blank line that closes a block.
-        } else {
+        } else if !file_header_or_block_closing_blank {
             out.last_mut()
                 .unwrap_or_else(|| panic!("line {lineno}: input line outside a case"))
                 .lines
@@ -158,51 +139,48 @@ fn parse(corpus: &str) -> Vec<Case> {
     out
 }
 
-/// What one run of the binary produced.
 struct Run {
     stdout: String,
     stderr: String,
     status: i32,
 }
 
-/// Run the binary over a case's lines.
+const SAME_PSEUDONYM_KEY_FOR_EVERY_THREAD_COUNT: &str = "fixture";
+
 fn run(case: &Case, threads: &str) -> Run {
     let mut args: Vec<String> = vec!["--threads".into(), threads.into(), "-q".into()];
     args.extend(case.flags.iter().cloned());
-    if case.expect.needs_json() && !case.flags.iter().any(|f| f == "--format") {
+    if case.expect.reads_the_fold_so_harness_adds_json()
+        && !case.flags.iter().any(|f| f == "--format")
+    {
         args.push("--format".into());
         args.push("json".into());
     }
-    // A ##CASE asserts the folded text of the run itself. The saved-report
-    // default would replace that text with a bounded overview of a file, so
-    // a text-mode case runs with --no-report; the report path has its own
-    // tests in tests/integration/test_report.rs.
-    if !args.iter().any(|f| {
+    let text_mode_asserts_folded_text_not_report_overview = !args.iter().any(|f| {
         matches!(
             f.as_str(),
             "--format" | "--json" | "--summary" | "--top" | "--fit" | "--preflight" | "--explain"
         )
-    }) || args.iter().any(|f| f == "text")
-    {
+    }) || args.iter().any(|f| f == "text");
+    if text_mode_asserts_folded_text_not_report_overview {
         args.push("--no-report".into());
     }
 
     let mut child = crate::common::command(&*BIN)
         .args(&args)
-        // A pseudonym key is drawn per run; the thread-count check compares
-        // two processes, so both get the same one.
-        .env("LESSENCE_SANITIZE_KEY", "fixture")
+        .env(
+            "LESSENCE_SANITIZE_KEY",
+            SAME_PSEUDONYM_KEY_FOR_EVERY_THREAD_COUNT,
+        )
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .expect("failed to spawn lessence");
-    // A case may exercise a flag combination the binary refuses, in which case
-    // it exits before reading all of stdin. The broken pipe is the behaviour
-    // under test, not a harness failure — the expectation checks the exit code.
     let mut stdin = child.stdin.take().expect("stdin");
     for line in &case.lines {
-        if writeln!(stdin, "{line}").is_err() {
+        let refused_flags_exited_before_reading_all_input = writeln!(stdin, "{line}").is_err();
+        if refused_flags_exited_before_reading_all_input {
             break;
         }
     }
@@ -215,9 +193,9 @@ fn run(case: &Case, threads: &str) -> Run {
     }
 }
 
-/// `elapsed_ms` is wall-clock and differs run to run; it is not part of the
-/// fold. Everything else in the output is.
-fn without_timing(stdout: &str) -> String {
+const MARKDOWN_HEADER_STAMPED_TO_THE_SECOND: &str = "*Generated by lessence";
+
+fn without_wall_clock(stdout: &str) -> String {
     let mut out = String::with_capacity(stdout.len());
     let mut rest = stdout;
     while let Some(at) = rest.find("\"elapsed_ms\":") {
@@ -230,11 +208,9 @@ fn without_timing(stdout: &str) -> String {
         rest = &after[skip..];
     }
     out.push_str(rest);
-    // The markdown header stamps the wall clock to the second; two runs can
-    // straddle a boundary.
     out.lines()
         .map(|l| {
-            if l.starts_with("*Generated by lessence") {
+            if l.starts_with(MARKDOWN_HEADER_STAMPED_TO_THE_SECOND) {
                 "*Generated by lessence <VERSION> on <TIME>*"
             } else {
                 l
@@ -244,7 +220,6 @@ fn without_timing(stdout: &str) -> String {
         .join("\n")
 }
 
-/// The `normalized` field of the first group record.
 fn first_template(stdout: &str) -> String {
     for line in stdout.lines() {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
@@ -272,9 +247,7 @@ fn count_groups(stdout: &str) -> usize {
         .count()
 }
 
-/// Run `f` over every case on all cores, keeping the cases' order. Each case
-/// spawns the binary; 150 spawns in series is the suite's longest test.
-fn par_map<T: Send>(cases: &[Case], f: impl Fn(&Case) -> Option<T> + Sync) -> Vec<T> {
+fn par_map_in_case_order<T: Send>(cases: &[Case], f: impl Fn(&Case) -> Option<T> + Sync) -> Vec<T> {
     let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     let chunk = cases.len().div_ceil(workers).max(1);
     std::thread::scope(|s| {
@@ -289,49 +262,46 @@ fn par_map<T: Send>(cases: &[Case], f: impl Fn(&Case) -> Option<T> + Sync) -> Ve
     })
 }
 
-/// Run every case in `cases`, returning one complaint per failure.
 fn check(cases: &[Case]) -> Vec<String> {
-    par_map(cases, |case| {
+    par_map_in_case_order(cases, |case| {
         let got = run(case, "1");
         let stdout = got.stdout.as_str();
         let complaint = match &case.expect {
-            Expect::Groups(want) => {
+            Expect::ExactGroupCount(want) => {
                 let n = count_groups(stdout);
                 (n != *want).then(|| format!("want {want} group(s), got {n}\n     {stdout}"))
             }
-            Expect::TemplateAbsent(text) => {
+            Expect::FirstTemplateAbsent(text) => {
                 let t = first_template(stdout);
                 t.contains(text.as_str())
                     .then(|| format!("`{text}` must not appear\n     template: {t}"))
             }
-            Expect::TemplatePresent(text) => {
+            Expect::FirstTemplatePresent(text) => {
                 let t = first_template(stdout);
                 (!t.contains(text.as_str()))
                     .then(|| format!("`{text}` is missing\n     template: {t}"))
             }
-            Expect::OutAbsent(text) => {
-                let needle = unescape(text);
+            Expect::StdoutAbsent(text) => {
+                let needle = unescape_ansi_escape_and_tab(text);
                 stdout
                     .contains(&needle)
                     .then(|| format!("`{text}` must not appear in output\n     {stdout}"))
             }
-            Expect::OutPresent(text) => {
-                let needle = unescape(text);
+            Expect::StdoutPresent(text) => {
+                let needle = unescape_ansi_escape_and_tab(text);
                 (!stdout.contains(&needle))
                     .then(|| format!("`{text}` is missing from output\n     {stdout}"))
             }
-            Expect::ErrPresent(text) => {
-                let needle = unescape(text);
+            Expect::StderrPresent(text) => {
+                let needle = unescape_ansi_escape_and_tab(text);
                 (!got.stderr.contains(&needle))
                     .then(|| format!("`{text}` is missing from stderr\n     {}", got.stderr))
             }
-            Expect::Exit(want) => (got.status != *want)
+            Expect::ExitStatus(want) => (got.status != *want)
                 .then(|| format!("want exit {want}, got {}\n     {}", got.status, got.stderr)),
         };
-        // A check built into the binary (a template that does not hold, a
-        // gate narrower than its pattern) ends the run with a panic: say
-        // so, or the case only reads as a wrong group count.
-        let crash = if got.stderr.contains("panicked at") {
+        let binary_panicked_in_a_built_in_check = got.stderr.contains("panicked at");
+        let crash = if binary_panicked_in_a_built_in_check {
             format!(
                 "\n     the binary panicked:\n     {}",
                 got.stderr.trim_end()
@@ -350,7 +320,10 @@ fn check(cases: &[Case]) -> Vec<String> {
 
 #[test]
 fn known_fold_regressions() {
-    let cases: Vec<Case> = parse(&CORPUS).into_iter().filter(|c| !c.todo).collect();
+    let cases: Vec<Case> = parse(&CORPUS)
+        .into_iter()
+        .filter(|c| !c.todo_known_open_defect)
+        .collect();
     let failures = check(&cases);
     assert!(
         failures.is_empty(),
@@ -361,15 +334,13 @@ fn known_fold_regressions() {
     );
 }
 
-/// The `##TODO` blocks: defects the 25-corpus study found that have no fix
-/// yet. Ignored so the suite stays green; run it to see what is still open,
-/// and promote a block to `##CASE` when its fix lands:
-///
-///     cargo test --test integration known_open_defects -- --ignored --nocapture
 #[test]
 #[ignore = "documents open defects; promote each ##TODO to ##CASE as it is fixed"]
 fn known_open_defects() {
-    let cases: Vec<Case> = parse(&CORPUS).into_iter().filter(|c| c.todo).collect();
+    let cases: Vec<Case> = parse(&CORPUS)
+        .into_iter()
+        .filter(|c| c.todo_known_open_defect)
+        .collect();
     let failures = check(&cases);
     let fixed = cases.len() - failures.len();
     eprintln!(
@@ -385,28 +356,23 @@ fn known_open_defects() {
             .collect();
         eprintln!("promote: {passing:?}\n");
     }
-    // Deliberately no assert: this test reports, it does not gate.
 }
 
-/// `\e` for the escape byte, so an ANSI case stays readable in the corpus.
-fn unescape(text: &str) -> String {
+fn unescape_ansi_escape_and_tab(text: &str) -> String {
     text.replace("\\e", "\u{1b}").replace("\\t", "\t")
 }
 
-/// Every case must produce identical output however many threads run it. The
-/// parallel path batches and re-clusters, which is a separate way to get the
-/// same fold wrong.
 #[test]
 fn every_case_is_identical_at_any_thread_count() {
     let cases = parse(&CORPUS);
-    let diffs = par_map(&cases, |case| {
-        let a = without_timing(&run(case, "1").stdout);
-        let b = without_timing(&run(case, "8").stdout);
+    let diffs = par_map_in_case_order(&cases, |case| {
+        let a = without_wall_clock(&run(case, "1").stdout);
+        let b = without_wall_clock(&run(case, "8").stdout);
         (a != b).then(|| format!("{} — {} differs at 8 threads", case.bead, case.why))
     });
     assert!(
         diffs.is_empty(),
-        "{} case(s) differ at 8 threads:\n{}",
+        "{} case(s) differ at 8 threads (the parallel path batches and re-clusters):\n{}",
         diffs.len(),
         diffs.join("\n")
     );

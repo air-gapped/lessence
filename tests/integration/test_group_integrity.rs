@@ -1,7 +1,3 @@
-//! Fold-integrity regressions found by audit: a line is never dropped, the
-//! shown last line does not depend on the thread count, and the JSON and
-//! text modes agree on what folding saved. All input is invented.
-
 use std::io::Write;
 use std::process::Stdio;
 
@@ -33,8 +29,7 @@ fn stdout(args: &[&str], input: &str) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-/// Three-letter syllable words: plain words no detector tokenises.
-fn word(i: usize) -> String {
+fn untokenised_syllable_word(i: usize) -> String {
     const SYL: [&str; 12] = [
         "ba", "ko", "ri", "mu", "te", "so", "la", "vi", "ne", "pu", "da", "fe",
     ];
@@ -48,9 +43,6 @@ fn word(i: usize) -> String {
 
 #[test]
 fn a_group_below_min_collapse_keeps_every_line_past_a_thousand_others() {
-    // Five identical lines, then 1,200 distinct ones. The group never
-    // reaches --min-collapse 10, so it renders line by line and none may be
-    // cut, at any thread count.
     let mut input = String::new();
     for _ in 0..5 {
         input.push_str("heartbeat missed from upstream\n");
@@ -58,9 +50,9 @@ fn a_group_below_min_collapse_keeps_every_line_past_a_thousand_others() {
     for i in 0..1200 {
         input.push_str(&format!(
             "{} {} {} done\n",
-            word(i),
-            word(i * 7 + 3),
-            word(i * 13 + 5)
+            untokenised_syllable_word(i),
+            untokenised_syllable_word(i * 7 + 3),
+            untokenised_syllable_word(i * 13 + 5)
         ));
     }
     for threads in ["1", "4"] {
@@ -78,16 +70,13 @@ fn a_group_below_min_collapse_keeps_every_line_past_a_thousand_others() {
         assert_eq!(
             text.matches("heartbeat missed from upstream").count(),
             5,
-            "--threads {threads} must print all five lines"
+            "a group below --min-collapse renders line by line, so --threads {threads} must print all five lines"
         );
     }
 }
 
 #[test]
 fn shown_last_line_does_not_depend_on_thread_count() {
-    // Three distinct shapes founded in order that later converge on one
-    // template: which member ends the merged group must come from the true
-    // line order, not from the batch the parallel path reads in.
     let input = "\
 [pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"+    imageName: registry.example.test/vessel-9:1.2-p3,\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:07:25Z\"}
 [pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"+          sideImage: registry.example.test/vessel-9:1.2-p3,\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:07:26Z\"}
@@ -96,7 +85,10 @@ fn shown_last_line_does_not_depend_on_thread_count() {
 ";
     let one = stdout(&["--no-report", "-q", "--threads", "1"], input);
     let four = stdout(&["--no-report", "-q", "--threads", "4"], input);
-    assert_eq!(one, four, "text output must not depend on --threads");
+    assert_eq!(
+        one, four,
+        "the member that ends a merged group comes from true line order, so text output must not depend on --threads"
+    );
     assert!(
         one.contains("→ 2026-02-01T05:43:31Z"),
         "the marker's range ends at the true last line: {one}"
@@ -105,8 +97,6 @@ fn shown_last_line_does_not_depend_on_thread_count() {
 
 #[test]
 fn repeating_a_known_value_at_the_cap_is_not_capped() {
-    // 64 distinct addresses fill the set; the 65th line repeats one. No
-    // value was lost, so the entry is neither capped nor incomplete.
     let mut input = String::new();
     for i in 0..64 {
         input.push_str(&format!("connect to 10.0.0.{} failed\n", i + 1));
@@ -117,7 +107,10 @@ fn repeating_a_known_value_at_the_cap_is_not_capped() {
         let group: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
         let ip = &group["variation"]["IPV4"];
         assert_eq!(ip["distinct_count"], 64, "--threads {threads}");
-        assert_eq!(ip["capped"], false, "--threads {threads}");
+        assert_eq!(
+            ip["capped"], false,
+            "a repeat of a known value at the 64-value cap loses nothing, so it is not capped: --threads {threads}"
+        );
     }
 }
 

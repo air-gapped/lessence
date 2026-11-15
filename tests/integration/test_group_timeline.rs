@@ -1,11 +1,3 @@
-//! Per-group timeline (lessence-sfu): a group's `time_range` carries its
-//! members' counts per time bucket on the briefing histogram's grid, and a
-//! group whose lines bunch in time says when in its text marker.
-//!
-//! Every log here is invented. The shape used throughout: eight hours from
-//! 09:00, a heartbeat once a minute (steady), and a refusal that happens
-//! twice early and 98 times in the last few minutes (bunched).
-
 use std::io::Write;
 use std::process::Stdio;
 
@@ -19,8 +11,7 @@ fn stamp(seconds_after_nine: u64) -> String {
     )
 }
 
-/// The steady heartbeat and the bunched refusal, in time order.
-fn mixed_log() -> String {
+fn steady_heartbeat_and_bunched_refusal_log() -> String {
     let mut lines: Vec<(u64, String)> = Vec::new();
     for i in 0..480u64 {
         let t = 60 * i + 2;
@@ -116,13 +107,15 @@ fn marker_with<'a>(text: &'a str, word: &str) -> &'a str {
 
 #[test]
 fn a_bursty_group_gets_the_clause_and_its_buckets() {
-    let log = mixed_log();
+    let log = steady_heartbeat_and_bunched_refusal_log();
     let recs = records(&["--format", "json", "--threads", "1"], &log);
     let refused = group_matching(&recs, "refused");
     assert_eq!(refused["count"], 100);
     let tr = &refused["time_range"];
-    // Eight hours on 24 buckets: 1198 s each (span / 24 + 1).
-    assert_eq!(tr["bucket_seconds"], 1198);
+    assert_eq!(
+        tr["bucket_seconds"], 1198,
+        "lessence-sfu: a group's buckets sit on the briefing histogram's grid, eight hours on 24 buckets (span / 24 + 1)"
+    );
     let b = buckets(refused);
     assert_eq!(b.len(), 24);
     assert_eq!(b[0], 1, "09:00:00");
@@ -146,19 +139,18 @@ fn a_bursty_group_gets_the_clause_and_its_buckets() {
         "{marker}"
     );
 
-    // The default run's overview carries the same clause on the group's line.
     let overview = run(&["-q", "--threads", "1"], &log);
     assert!(
         overview.contains(
             "[100x] id=0 2026-09-09T09:00:00Z → 2026-09-09T16:58:14Z | 98% in 16:55\u{2013}16:58\n"
         ),
-        "{overview}"
+        "the default overview carries the same bunched clause on the group's line: {overview}"
     );
 }
 
 #[test]
 fn a_steady_groups_marker_is_unchanged() {
-    let log = mixed_log();
+    let log = steady_heartbeat_and_bunched_refusal_log();
     let recs = records(&["--format", "json", "--threads", "1"], &log);
     let beat = group_matching(&recs, "heartbeat");
     assert_eq!(buckets(beat), vec![20; 24]);
@@ -179,7 +171,6 @@ fn a_steady_groups_marker_is_unchanged() {
 
 #[test]
 fn a_group_under_the_thresholds_has_no_buckets() {
-    // Two timestamped members, then three that all fall in one bucket.
     let mut log = String::new();
     log.push_str(&format!("{} WARN disk nearly full on vol-a\n", stamp(0)));
     log.push_str(&format!("{} WARN disk nearly full on vol-b\n", stamp(7200)));
@@ -195,12 +186,15 @@ fn a_group_under_the_thresholds_has_no_buckets() {
         let tr = g["time_range"].as_object().unwrap();
         assert!(
             !tr.contains_key("buckets") && !tr.contains_key("bucket_seconds"),
-            "{word}: {g}"
+            "two members, or three in one bucket, are under the thresholds: {word}: {g}"
         );
     }
-    // Three members in more than one bucket: the smallest group that has one.
     let tick = group_matching(&recs, "tick");
-    assert_eq!(buckets(tick).iter().sum::<u64>(), 3);
+    assert_eq!(
+        buckets(tick).iter().sum::<u64>(),
+        3,
+        "three members across more than one bucket is the smallest group with a timeline"
+    );
 }
 
 #[test]
@@ -221,7 +215,7 @@ fn a_group_without_timestamps_has_no_timeline() {
 
 #[test]
 fn group_buckets_sum_to_their_members_and_never_exceed_the_log() {
-    let log = mixed_log();
+    let log = steady_heartbeat_and_bunched_refusal_log();
     let recs = records(&["--format", "json", "--threads", "1"], &log);
     let summary = recs.iter().find(|r| r["type"] == "summary").unwrap();
     let hist = &summary["briefing"]["histogram"];
@@ -238,23 +232,27 @@ fn group_buckets_sum_to_their_members_and_never_exceed_the_log() {
         assert_eq!(g["time_range"]["bucket_seconds"], hist["bucket_seconds"]);
         let b = buckets(g);
         assert_eq!(b.len(), log_wide.len(), "same grid, index by index");
-        // Every member of these groups carries a timestamp.
-        assert_eq!(b.iter().sum::<u64>(), g["count"].as_u64().unwrap());
+        assert_eq!(
+            b.iter().sum::<u64>(),
+            g["count"].as_u64().unwrap(),
+            "every member of these groups carries a timestamp"
+        );
         for (i, (&mine, &all)) in b.iter().zip(&log_wide).enumerate() {
             assert!(mine <= all, "bucket {i}: group {mine} > log {all}");
             summed[i] += mine;
         }
     }
-    // Every line is in exactly one group, so the groups add up to the log.
-    assert_eq!(summed, log_wide);
+    assert_eq!(
+        summed, log_wide,
+        "every line is in exactly one group, so the groups add up to the log"
+    );
 }
 
 #[test]
 fn the_timeline_is_the_same_at_every_thread_count_and_mode() {
-    // Enough lines to cross the 10,000-line parallel batch, so lines arrive
-    // both one at a time and in batches.
+    let lines_past_the_10_000_line_parallel_batch = 30_000u64;
     let mut log = String::new();
-    for i in 0..30_000u64 {
+    for i in 0..lines_past_the_10_000_line_parallel_batch {
         let t = i;
         if i % 3 == 0 {
             log.push_str(&format!(

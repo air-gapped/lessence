@@ -1,14 +1,8 @@
-//! Integration tests for `--format json` JSONL output.
-//!
-//! Phase 2 scope: schema shape validation, no rollup fields yet. Phase 3
-//! will add `variation` field coverage in a separate test file.
-
 use std::io::Write;
 use std::process::Stdio;
 use std::str;
 use tempfile::NamedTempFile;
 
-/// Run lessence on a fixture and return stdout as a string.
 fn run_lessence_json(fixture: &str) -> String {
     let output = crate::common::lessence()
         .args(["--format", "json", "--threads", "1", fixture])
@@ -22,7 +16,6 @@ fn run_lessence_json(fixture: &str) -> String {
     String::from_utf8(output.stdout).expect("lessence stdout was not UTF-8")
 }
 
-/// Parse a JSONL stream into a Vec<serde_json::Value>.
 fn parse_jsonl(raw: &str) -> Vec<serde_json::Value> {
     raw.lines()
         .filter(|l| !l.is_empty())
@@ -90,7 +83,6 @@ fn json_output_is_valid_jsonl_on_nginx_fixture() {
         records.len()
     );
 
-    // Every record must have a "type" field.
     for (i, rec) in records.iter().enumerate() {
         let ty = rec["type"]
             .as_str()
@@ -151,7 +143,6 @@ fn json_group_record_has_required_fields() {
         assert!(rec.get("last").is_some(), "missing last: {rec}");
         assert!(rec.get("time_range").is_some(), "missing time_range: {rec}");
 
-        // first / last must have source, line, and line_no
         for side in ["first", "last"] {
             let line_ref = &rec[side];
             assert!(
@@ -172,7 +163,6 @@ fn json_group_record_has_required_fields() {
             );
         }
 
-        // token_types must be a sorted array of strings
         let types = rec["token_types"]
             .as_array()
             .unwrap_or_else(|| panic!("token_types not array: {rec}"));
@@ -209,7 +199,6 @@ fn json_summary_record_has_required_fields() {
         );
     }
 
-    // pattern_hits must be an object with the expected sub-fields
     let hits = summary["pattern_hits"]
         .as_object()
         .expect("pattern_hits not object");
@@ -237,22 +226,21 @@ fn json_summary_record_has_required_fields() {
 
 #[test]
 fn json_output_is_deterministic_across_runs() {
-    // Run twice, diff everything except elapsed_ms (intentionally non-deterministic).
+    let wall_clock_field = "elapsed_ms";
     let raw1 = run_lessence_json("tests/fixtures/nginx_sample.log");
     let raw2 = run_lessence_json("tests/fixtures/nginx_sample.log");
 
     let mut recs1 = parse_jsonl(&raw1);
     let mut recs2 = parse_jsonl(&raw2);
 
-    // Strip elapsed_ms from both runs' summary records before comparing.
     for r in &mut recs1 {
         if r["type"] == "summary" {
-            r.as_object_mut().unwrap().remove("elapsed_ms");
+            r.as_object_mut().unwrap().remove(wall_clock_field);
         }
     }
     for r in &mut recs2 {
         if r["type"] == "summary" {
-            r.as_object_mut().unwrap().remove("elapsed_ms");
+            r.as_object_mut().unwrap().remove(wall_clock_field);
         }
     }
 
@@ -261,9 +249,6 @@ fn json_output_is_deterministic_across_runs() {
 
 #[test]
 fn json_output_includes_expected_group_count_for_microservices_fixture() {
-    // Coherence check: the group count should be > 0 and the sum of group
-    // counts should equal input_lines (every input line is in exactly one
-    // group).
     let raw = run_lessence_json("tests/fixtures/microservices.log");
     let records = parse_jsonl(&raw);
 

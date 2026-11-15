@@ -42,10 +42,6 @@ fn timestamps(analysis: &serde_json::Value) -> u64 {
 
 #[test]
 fn preflight_analyzes_colorized_logs_fully() {
-    // The preflight loop used to skip escape stripping, unlike the fold and
-    // summary loops. All three now share one ingestion path, so a colorized
-    // log (CI, kubectl, journalctl) must analyze exactly like its plain
-    // equivalent.
     let mut input = String::new();
     for i in 0..100 {
         input.push_str(&format!(
@@ -60,17 +56,12 @@ fn preflight_analyzes_colorized_logs_fully() {
     assert_eq!(
         timestamps(&analysis),
         100,
-        "preflight must detect every timestamp under ANSI colors, got: {analysis}"
+        "preflight shares the fold run's ingestion, so it must detect every timestamp under ANSI colors, got: {analysis}"
     );
 }
 
 #[test]
 fn preflight_strips_escape_payloads_like_the_fold_run_would() {
-    // A timestamp hidden inside an OSC window-title sequence is terminal
-    // noise, not log content. The fold run strips it before analysis, so
-    // preflight must forecast on the same sanitized text: zero timestamps.
-    // Under --preserve-color both paths analyze the raw bytes instead and
-    // the embedded timestamp counts.
     let input = "\x1b]0;2024-01-01 10:00:00\x07ERROR: connection refused\n".repeat(50);
 
     let stripped = run_preflight(&input, &[]);
@@ -78,7 +69,7 @@ fn preflight_strips_escape_payloads_like_the_fold_run_would() {
     assert_eq!(
         timestamps(&stripped),
         0,
-        "escape-sequence payloads must not be analyzed as log content, got: {stripped}"
+        "an OSC window-title payload is terminal noise the fold run strips, so preflight must not analyze it as log content, got: {stripped}"
     );
 
     let preserved = run_preflight(&input, &["--preserve-color"]);
@@ -181,8 +172,8 @@ fn run_raw(args: &[&str], input: &str) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .expect("Failed to start");
-    // A usage error exits before reading stdin; the write may meet a closed pipe.
-    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let _write_may_meet_a_closed_pipe_after_a_usage_error =
+        child.stdin.take().unwrap().write_all(input.as_bytes());
     child.wait_with_output().expect("Failed to wait")
 }
 

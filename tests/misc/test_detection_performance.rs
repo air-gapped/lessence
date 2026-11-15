@@ -1,10 +1,3 @@
-// Performance Tests: Timestamp Detection (T044)
-//
-// Tests that detection scales linearly with input complexity.
-// Relative-comparison tests (API overhead, compat layer) test that
-// one approach isn't dramatically slower than another.
-// All tests are immune to CPU contention from parallel test runs.
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 use std::time::Instant;
 
@@ -59,7 +52,6 @@ fn test_long_text_performance() {
 
 #[test]
 fn test_overlap_resolution_performance() {
-    // Overlapping timestamps should still be linear
     let build = |count: usize| {
         let mut line = String::new();
         for _ in 0..count {
@@ -77,7 +69,6 @@ fn test_overlap_resolution_performance() {
 
 #[test]
 fn test_no_match_performance() {
-    // Non-matching input should be fast — and linear with input size
     let small = "Regular log message without timestamps. Error 404 process 12345. ".repeat(10);
     let large = "Regular log message without timestamps. Error 404 process 12345. ".repeat(40);
 
@@ -105,7 +96,6 @@ fn test_pattern_priority_performance() {
 
 #[test]
 fn test_backward_compatibility_performance() {
-    // Compatibility layer should not add significant overhead (< 2x)
     let input = "2025-09-29T10:15:30Z Compatibility test";
     let iters = 2000;
 
@@ -130,7 +120,6 @@ fn test_backward_compatibility_performance() {
 
 #[test]
 fn test_unix_timestamp_penalty_performance() {
-    // Unix timestamp penalty should not add major overhead vs ISO
     let unix_input = "Process started at 1727676930 with PID 12345";
     let iso_input = "Process started at 2025-09-29T10:15:30Z with PID 12345";
     let iters = 2000;
@@ -147,7 +136,6 @@ fn test_unix_timestamp_penalty_performance() {
 
 #[test]
 fn test_concurrent_detection_correctness() {
-    // Verify detection is thread-safe (correctness, not speed)
     use std::sync::Arc;
     use std::thread;
 
@@ -159,7 +147,10 @@ fn test_concurrent_detection_correctness() {
         let handle = thread::spawn(move || {
             for _ in 0..250 {
                 let result = UnifiedTimestampDetector::detect_with_metadata(&input_clone);
-                assert!(!result.matches.is_empty());
+                assert!(
+                    !result.matches.is_empty(),
+                    "detection is thread-safe: every thread finds the timestamp"
+                );
             }
         });
         handles.push(handle);
@@ -172,12 +163,9 @@ fn test_concurrent_detection_correctness() {
 
 #[test]
 fn test_memory_allocation_consistency() {
-    // Verify detection doesn't degrade over many iterations.
-    // Measure first batch vs last batch — ratio should be ~1.0.
     let input = "2025-09-29T10:15:30Z Memory allocation test";
     let batch = 1000;
 
-    // Warmup
     for _ in 0..batch {
         let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     }
@@ -188,8 +176,8 @@ fn test_memory_allocation_consistency() {
     }
     let time_early = start_early.elapsed();
 
-    // Run more iterations to age any allocator effects
-    for _ in 0..5000 {
+    let allocator_ageing_iterations = 5000;
+    for _ in 0..allocator_ageing_iterations {
         let _ = UnifiedTimestampDetector::detect_with_metadata(input);
     }
 
@@ -208,7 +196,6 @@ fn test_memory_allocation_consistency() {
 
 #[test]
 fn test_scalability_with_pattern_count() {
-    // More pattern types in input should scale linearly
     let inputs_1 = vec!["2025-09-29T10:15:30Z ISO only"];
     let inputs_4 = vec![
         "2025-09-29T10:15:30Z ISO format",
@@ -236,9 +223,9 @@ fn test_scalability_with_pattern_count() {
     let time_4 = start.elapsed();
 
     let ratio = time_4.as_nanos() as f64 / time_1.as_nanos().max(1) as f64;
-    // 4 patterns should take ~4x, not 16x
     assert!(
         ratio < 8.0,
-        "Detection doesn't scale linearly with pattern count: {ratio:.1}x for 4 patterns"
+        "Detection doesn't scale linearly with pattern count: {ratio:.1}x for 4 patterns \
+         (linear is ~4x, quadratic ~16x)"
     );
 }

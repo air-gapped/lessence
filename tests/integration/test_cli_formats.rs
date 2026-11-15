@@ -2,9 +2,6 @@ use std::str;
 
 #[test]
 fn test_text_format_default() {
-    // Test that text format is the default and produces expected output
-
-    // Test with default format (no --format flag)
     let output = crate::common::lessence()
         .args(["--no-stats", "--no-report"])
         .stdin(
@@ -22,11 +19,9 @@ fn test_text_format_default() {
 
     let text_output = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
 
-    // Text format should produce plain log lines
     let lines = text_output.lines().collect::<Vec<_>>();
     assert!(!lines.is_empty(), "Text output should not be empty");
 
-    // Should not be JSON (no braces) or Markdown (no # headers)
     assert!(
         !text_output.starts_with('{'),
         "Default output should not be JSON"
@@ -36,12 +31,10 @@ fn test_text_format_default() {
         "Default output should not be Markdown"
     );
 
-    // Should contain compressed log patterns with folding indicators
     let has_folded_content = lines
         .iter()
         .any(|line| line.contains('+') && line.contains("similar"));
 
-    // Test explicit --format text flag produces same result
     let explicit_output = crate::common::lessence()
         .args(["--format", "text", "--no-stats", "--no-report"])
         .stdin(
@@ -72,8 +65,6 @@ fn test_text_format_default() {
 
 #[test]
 fn test_markdown_format_flag() {
-    // Test --format markdown produces valid markdown structure
-
     let output = crate::common::lessence()
         .args(["--format", "markdown", "--no-stats"])
         .stdin(
@@ -92,7 +83,6 @@ fn test_markdown_format_flag() {
     let markdown_output = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
     let lines = markdown_output.lines().collect::<Vec<_>>();
 
-    // Validate markdown structure
     assert!(
         lines.iter().any(|line| line.starts_with("# Log Analysis")),
         "Should contain main header '# Log Analysis'"
@@ -110,7 +100,6 @@ fn test_markdown_format_flag() {
         "Should contain compressed logs section '## Compressed Logs'"
     );
 
-    // Validate summary content
     let has_original_lines = lines.iter().any(|line| line.contains("**Original lines**"));
     let has_compressed_lines = lines
         .iter()
@@ -126,7 +115,6 @@ fn test_markdown_format_flag() {
     );
     assert!(has_compression_ratio, "Should contain compression ratio");
 
-    // Validate folded entries are properly formatted
     let has_folded_entries = lines
         .iter()
         .any(|line| line.starts_with("### Entry") && line.contains("(Folded)"));
@@ -136,7 +124,6 @@ fn test_markdown_format_flag() {
         assert!(has_code_blocks, "Folded entries should be in code blocks");
     }
 
-    // Should not be JSON
     assert!(
         !markdown_output.starts_with('{'),
         "Markdown output should not be JSON"
@@ -149,8 +136,6 @@ fn test_markdown_format_flag() {
 
 #[test]
 fn test_format_selection_errors() {
-    // Test that invalid format values produce appropriate errors
-
     let invalid_formats = vec!["xml", "csv", "yaml", "invalid"];
 
     for invalid_format in invalid_formats {
@@ -163,13 +148,10 @@ fn test_format_selection_errors() {
             .output()
             .expect("Failed to execute lessence");
 
-        // Should either fail or fall back to text format
         if !output.status.success() {
-            // Expected behavior: command fails with error
             let stderr = String::from_utf8_lossy(&output.stderr);
             println!("Expected error for format '{invalid_format}': {stderr}");
         } else {
-            // Alternative behavior: falls back to text format
             let stdout = str::from_utf8(&output.stdout).expect("Invalid UTF-8 output");
             assert!(
                 !stdout.starts_with('{'),
@@ -185,13 +167,6 @@ fn test_format_selection_errors() {
 
     println!("✅ Format selection error handling validated");
 }
-
-// ---- Alias and case canonicalization (lessence-fiz) ----
-//
-// Every accepted spelling of --format must reach the dispatch code in its
-// canonical form. Before the fix, validation lowercased but dispatch
-// compared the raw string, so `--format md` and any uppercase spelling
-// silently emitted text.
 
 fn run_with_format(format: &str) -> String {
     use std::io::Write;
@@ -221,7 +196,7 @@ fn assert_markdown(format: &str) {
     let stdout = run_with_format(format);
     assert!(
         stdout.contains("# Log Analysis"),
-        "--format {format} must emit the markdown document, got: {stdout}"
+        "lessence-fiz: every spelling of --format reaches dispatch canonicalised; --format {format} must emit the markdown document, got: {stdout}"
     );
 }
 
@@ -229,7 +204,7 @@ fn assert_json(format: &str) {
     let stdout = run_with_format(format);
     assert!(
         stdout.lines().all(|l| l.starts_with('{')),
-        "--format {format} must emit JSONL records, got: {stdout}"
+        "lessence-fiz: every spelling of --format reaches dispatch canonicalised; --format {format} must emit JSONL records, got: {stdout}"
     );
 }
 
@@ -237,7 +212,7 @@ fn assert_text(format: &str) {
     let stdout = run_with_format(format);
     assert!(
         !stdout.starts_with('{') && !stdout.contains("# Log Analysis"),
-        "--format {format} must emit plain text, got: {stdout}"
+        "lessence-fiz: every spelling of --format reaches dispatch canonicalised; --format {format} must emit plain text, got: {stdout}"
     );
 }
 

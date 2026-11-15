@@ -1,5 +1,3 @@
-//! `--skill` ships the agent skill from the binary (lessence-xo4).
-
 use std::process::Stdio;
 
 fn run(args: &[&str]) -> (i32, String, String) {
@@ -18,7 +16,10 @@ fn run(args: &[&str]) -> (i32, String, String) {
 #[test]
 fn skill_prints_the_frontmatter_first_and_the_provenance_after_it() {
     let (code, out, err) = run(&["--skill"]);
-    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        code, 0,
+        "lessence-xo4: --skill ships the agent skill from the binary: {err}"
+    );
     assert!(out.starts_with("---\nname: lessence\n"), "{}", &out[..60]);
     let after = out.find("\n---\n").expect("frontmatter end") + 5;
     let note = &out[after..];
@@ -51,7 +52,6 @@ fn skill_flags_prints_the_flag_reference() {
 
 #[test]
 fn skill_exits_before_reading_input_and_ignores_files() {
-    // stdin is null and the file does not exist: --skill must not open either
     let (code, out, err) = run(&["--skill", "/nonexistent/never.log"]);
     assert_eq!(code, 2, "a file name is not a topic: {out}");
     assert!(err.contains("unknown --skill topic"), "{err}");
@@ -68,7 +68,6 @@ fn skill_unknown_topic_exits_2_and_names_the_topics() {
     assert!(err.contains("skill, flags"), "{err}");
 }
 
-/// Run lessence with `args` on `input` and parse every stdout line as JSON.
 fn jsonl(args: &[&str], input: &[u8]) -> Vec<serde_json::Value> {
     use std::io::Write;
     let out = crate::common::lessence()
@@ -100,11 +99,13 @@ fn json_is_the_same_as_format_json() {
     let mut a = jsonl(&["--json", "-q"], input);
     let mut b = jsonl(&["--format", "json", "-q"], input);
     assert!(a.len() >= 2, "{a:?}");
-    // the only field that legitimately differs between two runs
     for records in [&mut a, &mut b] {
         let last = records.last_mut().unwrap();
         assert_eq!(last["type"], "summary", "{last}");
-        last.as_object_mut().unwrap().remove("elapsed_ms");
+        let only_field_that_differs_between_two_runs = "elapsed_ms";
+        last.as_object_mut()
+            .unwrap()
+            .remove(only_field_that_differs_between_two_runs);
     }
     assert_eq!(a, b);
 }

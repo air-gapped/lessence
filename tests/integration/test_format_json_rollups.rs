@@ -1,11 +1,3 @@
-//! Phase 3 tests: the `variation` field in JSON group records.
-//!
-//! Schema validation for the rollup metadata + determinism check that
-//! catches any platform-specific drift in the seeded sampler. The plain
-//! cross-run determinism is already covered by `test_format_json.rs`;
-//! this file adds rollup-specific shape checks and a hard-coded sample
-//! assertion that would fail if the RNG or seed function ever changed.
-
 fn run_lessence_json(fixture: &str) -> String {
     let output = crate::common::lessence()
         .args(["--format", "json", "--threads", "1", fixture])
@@ -42,7 +34,6 @@ fn variation_field_exists_on_every_group_record() {
         let variation = rec["variation"]
             .as_object()
             .unwrap_or_else(|| panic!("variation not an object: {rec}"));
-        // Every entry must have the three required fields.
         for (key, value) in variation {
             assert!(
                 value.get("distinct_count").is_some(),
@@ -62,11 +53,7 @@ fn variation_field_exists_on_every_group_record() {
 
 #[test]
 fn variation_samples_never_exceed_k() {
-    // K is ROLLUP_K in src/folder/mod.rs. The calibrated value is 7 as of
-    // Phase 5 (P95 of distinct_count on sample-worthy types across
-    // the full corpus, capped at terminal-width ceiling of 8).
-    // Any sample list longer than K is a bug in the sampler.
-    const ROLLUP_K: usize = 7;
+    const ROLLUP_K_AS_SRC_FOLDER_MOD_DECLARES: usize = 7;
 
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
@@ -76,8 +63,8 @@ fn variation_samples_never_exceed_k() {
         for (key, entry) in variation {
             let samples = entry["samples"].as_array().unwrap();
             assert!(
-                samples.len() <= ROLLUP_K,
-                "variation[{key}] has {} samples, exceeds K={ROLLUP_K}: {entry}",
+                samples.len() <= ROLLUP_K_AS_SRC_FOLDER_MOD_DECLARES,
+                "variation[{key}] has {} samples, exceeds K={ROLLUP_K_AS_SRC_FOLDER_MOD_DECLARES}: {entry}",
                 samples.len()
             );
         }
@@ -86,18 +73,14 @@ fn variation_samples_never_exceed_k() {
 
 #[test]
 fn variation_samples_are_sorted_lexicographically() {
-    // Sorting the drawn samples is load-bearing for determinism across
-    // hash iteration orders. If this test fails, the sort step in
-    // RollupComputer::compute was dropped.
+    const VARIES_ORDERED_BY_COUNT_RAREST_LAST: &str = "VARIES";
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
 
     for rec in records.iter().filter(|r| r["type"] == "group") {
         let variation = rec["variation"].as_object().unwrap();
         for (key, entry) in variation {
-            if key == "VARIES" {
-                // words are ordered by count, most frequent first, the
-                // rarest last — the distribution is the point there
+            if key == VARIES_ORDERED_BY_COUNT_RAREST_LAST {
                 continue;
             }
             let samples: Vec<&str> = entry["samples"]
@@ -110,7 +93,8 @@ fn variation_samples_are_sorted_lexicographically() {
             sorted.sort_unstable();
             assert_eq!(
                 samples, sorted,
-                "variation[{key}] samples not sorted: {samples:?}"
+                "variation[{key}] samples not sorted; RollupComputer::compute sorts the \
+                 drawn samples so hash iteration order cannot change them: {samples:?}"
             );
         }
     }
@@ -118,10 +102,6 @@ fn variation_samples_are_sorted_lexicographically() {
 
 #[test]
 fn count_only_types_have_empty_samples() {
-    // Timestamp, Duration, Number, Size, and other measurement types
-    // should never surface per-value samples — they're tracked for
-    // distinct_count only. Agents use them to understand *cardinality*,
-    // not to read specific values (which would just be noise).
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
 
@@ -134,7 +114,7 @@ fn count_only_types_have_empty_samples() {
                 let samples = entry["samples"].as_array().unwrap();
                 assert!(
                     samples.is_empty(),
-                    "{count_only} is a count-only type but got samples: {entry}"
+                    "{count_only} is a count-only type (cardinality, never values) but got samples: {entry}"
                 );
             }
         }
@@ -143,8 +123,6 @@ fn count_only_types_have_empty_samples() {
 
 #[test]
 fn sample_worthy_types_produce_samples_when_distinct_values_exist() {
-    // IPV4, PATH, QUOTED_STRING are sample-worthy. If their distinct_count
-    // is > 0, samples must be populated.
     let raw = run_lessence_json("tests/fixtures/nginx_sample.log");
     let records = parse_jsonl(&raw);
 
@@ -177,15 +155,9 @@ fn sample_worthy_types_produce_samples_when_distinct_values_exist() {
 }
 
 #[test]
-fn distinct_count_is_correct_when_under_cap() {
-    // For small groups (distinct_count well below the cap), the count
-    // must be exact and the samples must be a subset of the group's
-    // actual values. This catches off-by-one errors in the accumulator
-    // and cap-checking logic.
-    //
-    // We pick the microservices fixture because it has small, easily
-    // enumerable groups.
-    let raw = run_lessence_json("tests/fixtures/microservices.log");
+fn uncapped_samples_never_outnumber_distinct_count() {
+    let small_enumerable_groups = "tests/fixtures/microservices.log";
+    let raw = run_lessence_json(small_enumerable_groups);
     let records = parse_jsonl(&raw);
 
     for rec in records.iter().filter(|r| r["type"] == "group") {
@@ -195,13 +167,11 @@ fn distinct_count_is_correct_when_under_cap() {
             let capped = entry["capped"].as_bool().unwrap();
             let samples = entry["samples"].as_array().unwrap();
 
-            // Not-capped means distinct_count is the exact number of
-            // distinct values. Samples length must be ≤ distinct_count
-            // (you can never draw more samples than you have values).
             if !capped {
                 assert!(
                     (samples.len() as u64) <= distinct,
-                    "samples ({}) > distinct_count ({distinct}) with capped=false",
+                    "samples ({}) > distinct_count ({distinct}) with capped=false: \
+                     more samples drawn than distinct values exist",
                     samples.len()
                 );
             }
@@ -211,9 +181,6 @@ fn distinct_count_is_correct_when_under_cap() {
 
 #[test]
 fn rollup_is_deterministic_across_runs() {
-    // Stricter variant of the parent determinism test: byte-for-byte
-    // equality after stripping elapsed_ms. A regression in the seed
-    // function or the drawn-sample order would fail here.
     let raw1 = run_lessence_json("tests/fixtures/nginx_sample.log");
     let raw2 = run_lessence_json("tests/fixtures/nginx_sample.log");
 
@@ -233,6 +200,6 @@ fn rollup_is_deterministic_across_runs() {
 
     assert_eq!(
         recs1, recs2,
-        "rollup sampling is not deterministic across runs"
+        "rollup sampling is not deterministic across runs (seed function or drawn-sample order)"
     );
 }

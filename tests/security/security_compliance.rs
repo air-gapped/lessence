@@ -1,12 +1,9 @@
-// Security Compliance Tests
-//
-// ReDoS tests use scaling-ratio approach (4x input should take ~4x time).
-// Non-timing security tests (input limits, PII) use direct assertions.
-
 use lessence::config::Config;
 use lessence::patterns::email::EmailPatternDetector;
 use lessence::patterns::network::NetworkDetector;
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
+
+const MIB: usize = 1024 * 1024;
 
 #[test]
 fn test_redos_protection_email() {
@@ -45,7 +42,6 @@ fn test_redos_protection_ipv6() {
     });
 }
 
-/// Run text through the real ingestion path and collect the delivered lines.
 fn ingest_lines(config: &Config, text: String) -> (Vec<String>, lessence::ingest::IngestReport) {
     use lessence::ingest::{Event, Ingestor, InputReader, Source};
     let ingestor = Ingestor::from_config(config).expect("valid config");
@@ -67,11 +63,11 @@ fn ingest_lines(config: &Config, text: String) -> (Vec<String>, lessence::ingest
 
 #[test]
 fn test_input_line_length_limit() {
-    let huge_line = "A".repeat(10 * 1024 * 1024); // 10MB
+    let huge_line = "A".repeat(10 * MIB);
     let normal_line = "User admin logged in";
 
     let config_with_limit = Config {
-        max_line_length: Some(1024 * 1024), // 1MB
+        max_line_length: Some(MIB),
         ..Default::default()
     };
 
@@ -103,12 +99,14 @@ fn test_input_line_count_limit() {
 
 #[test]
 fn test_pii_sanitization_functionality() {
-    // The production masking path: emails found as tokens become <EMAIL>.
     use lessence::apply_pii_masking;
     use lessence::patterns::Token;
     let tokens = vec![Token::Email("user@example.com".into())];
     let masked = apply_pii_masking("login user@example.com ok", &tokens);
-    assert_eq!(masked, "login <EMAIL> ok");
+    assert_eq!(
+        masked, "login <EMAIL> ok",
+        "emails found as tokens become <EMAIL>"
+    );
 }
 
 #[test]
@@ -159,7 +157,6 @@ fn test_pii_sanitization_flag_integration() {
 
 #[test]
 fn test_security_performance_overhead() {
-    // Security features (sanitize_pii, max_line_length) must scale linearly.
     fn make_input(multiplier: usize) -> String {
         let count = 10 * multiplier;
         (0..count)
@@ -195,7 +192,6 @@ fn test_security_performance_overhead() {
 
 #[test]
 fn test_graceful_degradation_on_evil_patterns() {
-    // Evil inputs should produce SOME output, not crash
     let evil_inputs = vec![
         format!("{}@{}.com", "a".repeat(1000), "b".repeat(1000)),
         format!("2024{}", "-01".repeat(100)),

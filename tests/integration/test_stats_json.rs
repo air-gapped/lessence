@@ -5,7 +5,6 @@ fn lessence_bin() -> Command {
     crate::common::lessence()
 }
 
-/// stdout, and the `--stats-json` record (the last stderr line) of one run.
 fn stats_of(args: &[&str], input: &str) -> (String, serde_json::Value) {
     let mut child = lessence_bin()
         .args(args)
@@ -32,8 +31,6 @@ fn stats_of(args: &[&str], input: &str) -> (String, serde_json::Value) {
 
 #[test]
 fn summary_stats_agree_with_top_and_the_default_run() {
-    // Seven physical lines: four that fold, one event, two indented frames
-    // that --frame-continuations attaches to it.
     let input = "courier 11 picked parcel north\n\
                  courier 12 picked parcel north\n\
                  courier 13 picked parcel north\n\
@@ -138,7 +135,6 @@ fn test_stats_json_suppresses_human_readable_stats() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Stdout should not contain the markdown stats footer
     assert!(
         !stdout.contains("lessence briefing"),
         "Human stats should not appear on stdout"
@@ -148,7 +144,6 @@ fn test_stats_json_suppresses_human_readable_stats() {
         "Human stats should not appear on stdout"
     );
 
-    // Stderr should contain JSON, not human-readable stats
     let json: serde_json::Value = serde_json::from_str(&stderr)
         .unwrap_or_else(|e| panic!("Expected JSON on stderr: {e}\nContent: {stderr}"));
     assert!(json.is_object());
@@ -175,7 +170,6 @@ fn test_human_stats_footer_goes_to_stderr_not_stdout() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // stdout must carry only log output so pipelines stay clean
     assert!(
         !stdout.contains("lessence briefing"),
         "Stats footer must not pollute stdout, got:\n{stdout}"
@@ -232,7 +226,6 @@ fn test_stats_json_contains_all_required_fields() {
     let json: serde_json::Value = serde_json::from_str(&stderr)
         .unwrap_or_else(|e| panic!("Invalid JSON: {e}\nContent: {stderr}"));
 
-    // Top-level fields
     assert!(json["input_lines"].is_number(), "Missing input_lines");
     assert!(json["output_lines"].is_number(), "Missing output_lines");
     assert!(
@@ -250,7 +243,6 @@ fn test_stats_json_contains_all_required_fields() {
     );
     assert!(json["elapsed_ms"].is_number(), "Missing elapsed_ms");
 
-    // pattern_hits object with all categories (even zero)
     let hits = &json["pattern_hits"];
     assert!(hits.is_object(), "Missing pattern_hits object");
     for field in &[
@@ -271,10 +263,8 @@ fn test_stats_json_contains_all_required_fields() {
         assert!(hits[field].is_number(), "Missing pattern_hits.{field}");
     }
 
-    // Verify input_lines is correct
     assert_eq!(json["input_lines"].as_u64().unwrap(), 6);
 
-    // Verify elapsed_ms is present (as_u64 returns Some for non-negative)
     assert!(
         json["elapsed_ms"].as_u64().is_some(),
         "elapsed_ms should be a non-negative integer"

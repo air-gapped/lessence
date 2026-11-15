@@ -1,6 +1,3 @@
-// Integration Test: Thread Safety (T011)
-// Validates concurrent access to unified timestamp detection
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 use std::sync::Arc;
 use std::thread;
@@ -9,20 +6,17 @@ use std::thread;
 fn test_concurrent_pattern_access() {
     let mut handles = vec![];
 
-    // Spawn multiple threads accessing patterns simultaneously
     for _ in 0..20 {
         let handle = thread::spawn(|| lessence::patterns::timestamp::patterns().len());
         handles.push(handle);
     }
 
-    // All threads should succeed and return consistent results
     let mut results = Vec::new();
     for handle in handles {
         let result = handle.join().expect("Thread should complete successfully");
         results.push(result);
     }
 
-    // All results should be identical (consistent pattern count)
     assert!(!results.is_empty(), "Should have thread results");
     let first_result = results[0];
     for result in &results {
@@ -46,7 +40,6 @@ fn test_concurrent_detection_operations() {
 
     let mut handles = vec![];
 
-    // Spawn multiple threads performing detection operations
     for i in 0..50 {
         let inputs_clone = Arc::clone(&test_inputs);
         let handle = thread::spawn(move || {
@@ -57,21 +50,19 @@ fn test_concurrent_detection_operations() {
         handles.push(handle);
     }
 
-    // All threads should complete successfully
     let mut results = Vec::new();
     for handle in handles {
         let (result, token_count) = handle.join().expect("Thread should complete successfully");
         results.push((result, token_count));
     }
 
-    // Verify all results are sensible
     for (result, token_count) in results {
         assert!(!result.is_empty(), "Result should not be empty");
         assert!(
             result.contains("<TIMESTAMP>") || token_count == 0,
             "Should either have timestamp or no tokens"
         );
-        assert!(token_count <= 5, "Should not have excessive tokens"); // Sanity check
+        assert!(token_count <= 5, "Should not have excessive tokens");
     }
 }
 
@@ -81,26 +72,23 @@ fn test_registry_thread_safety() {
 
     let mut handles = vec![];
 
-    // Multiple threads creating registries (lazy initialization test)
     for _ in 0..10 {
         let handle = thread::spawn(|| patterns().len());
         handles.push(handle);
     }
 
-    // All should succeed with consistent results
     let mut results = Vec::new();
     for handle in handles {
         let pattern_count = handle.join().expect("Thread should complete");
         results.push(pattern_count);
     }
 
-    // All registries should have same pattern count (consistent initialization)
     assert!(!results.is_empty(), "Should have results");
     let first = results[0];
     for count in &results {
         assert_eq!(
             *count, first,
-            "Pattern count should be consistent across threads"
+            "the lazily initialised registry has the same pattern count in every thread"
         );
     }
 }
@@ -110,11 +98,9 @@ fn test_stress_concurrent_access() {
     let input = Arc::new("2025-09-29T10:15:30Z Stress test message".to_string());
     let mut handles = vec![];
 
-    // High-stress concurrent access
     for _ in 0..100 {
         let input_clone = Arc::clone(&input);
         let handle = thread::spawn(move || {
-            // Multiple operations per thread
             for _ in 0..10 {
                 let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&input_clone);
                 assert!(
@@ -127,7 +113,6 @@ fn test_stress_concurrent_access() {
         handles.push(handle);
     }
 
-    // All operations should complete without panics or data races
     for handle in handles {
         handle
             .join()

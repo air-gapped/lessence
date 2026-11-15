@@ -1,9 +1,3 @@
-// Contract Test: Pattern Detection Timeout Protection
-//
-// Tests that the full normalization pipeline scales linearly on evil
-// inputs. Uses scaling-ratio approach instead of absolute wall-clock
-// thresholds, so results are immune to CPU contention.
-
 use lessence::config::Config;
 use lessence::normalize::Normalizer;
 use lessence::patterns::email::EmailPatternDetector;

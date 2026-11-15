@@ -43,7 +43,6 @@ mod pii_masking_tests {
         let masked = apply_pii_masking(original, &tokens);
 
         assert_eq!(masked, "Reply-To: <EMAIL> (<EMAIL>)");
-        // Count occurrences of <EMAIL>
         assert_eq!(masked.matches("<EMAIL>").count(), 2);
         assert!(!masked.contains("alice@ex.com"));
     }
@@ -51,20 +50,19 @@ mod pii_masking_tests {
     #[test]
     fn test_no_emails_unchanged() {
         let original = "ERROR: Connection timeout";
-        let tokens = vec![]; // No email tokens
+        let no_email_tokens = vec![];
 
-        let masked = apply_pii_masking(original, &tokens);
+        let masked = apply_pii_masking(original, &no_email_tokens);
 
         assert_eq!(masked, original, "Should be unchanged when no emails");
     }
 
     #[test]
     fn test_malformed_emails_unchanged() {
-        // EmailPatternDetector.validate_email() rejects these
         let original = "Contact: user@domain (no TLD) or @example.com (no local)";
-        let tokens = vec![]; // Malformed emails not detected
+        let tokens_validate_email_rejects_malformed = vec![];
 
-        let masked = apply_pii_masking(original, &tokens);
+        let masked = apply_pii_masking(original, &tokens_validate_email_rejects_malformed);
 
         assert_eq!(masked, original, "Malformed emails should be unchanged");
     }

@@ -7,18 +7,14 @@ fn default_normalizer() -> Normalizer {
 }
 
 proptest! {
-    // NOTE: normalization is NOT fully idempotent — known issue.
-    // Example: "P 0%:" → "P <PCT>:" → "<TIMESTAMP> <PCT>:"
-    // Token placeholders like <PCT> change context for subsequent passes.
-    // This is acceptable because lessence normalizes each line only once.
-    // Tracked as a known property violation, not a bug to fix.
-
     #[test]
     fn normalization_preserves_tokens(input in "[ -~]{1,200}") {
         let normalizer = default_normalizer();
         let result = normalizer.normalize_line(input).unwrap();
-        // Normalized output should never be empty if input wasn't
-        prop_assert!(!result.normalized.is_empty() || result.original.is_empty());
+        prop_assert!(
+            !result.normalized.is_empty() || result.original.is_empty(),
+            "a non-empty line never normalizes to an empty one"
+        );
     }
 
     #[test]
@@ -51,14 +47,10 @@ proptest! {
     #[test]
     fn normalization_never_panics(input in "\\PC{0,500}") {
         let normalizer = default_normalizer();
-        // Should not panic on any input
         let _ = normalizer.normalize_line(input);
     }
 }
 
-/// A line with `planted` between two runs of random text, masked the three
-/// ways an output can meet it: the original with its tokens, the original
-/// alone, and its normalized form.
 fn masked_forms(spec: &str, planted: &str, before: &str, after: &str) -> Vec<String> {
     use lessence::sanitize::Sanitizer;
     let z = Sanitizer::parse(&[spec.to_string()], false)

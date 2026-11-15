@@ -1,8 +1,5 @@
 #[test]
 fn test_help_text_contains_lessence_branding() {
-    // T006: CLI contract test for help text branding
-    // Verifies that help text contains proper lessence branding
-
     let output = crate::common::lessence()
         .arg("--help")
         .output()
@@ -15,13 +12,11 @@ fn test_help_text_contains_lessence_branding() {
 
     let help_text = String::from_utf8_lossy(&output.stdout);
 
-    // Check for "lessence" branding in help text
     assert!(
         help_text.to_lowercase().contains("lessence"),
         "Help text should contain 'lessence' branding, got: {help_text}"
     );
 
-    // Ensure no old "lessence" references remain
     assert!(
         !help_text.to_lowercase().contains("logfold"),
         "Help text should not contain old 'logfold' references, got: {help_text}"
@@ -30,7 +25,6 @@ fn test_help_text_contains_lessence_branding() {
 
 #[test]
 fn test_help_text_contains_seo_description() {
-    // Verify SEO-optimized description appears in help
     let output = crate::common::lessence()
         .arg("--help")
         .output()
@@ -38,7 +32,6 @@ fn test_help_text_contains_seo_description() {
 
     let help_text = String::from_utf8_lossy(&output.stdout);
 
-    // Should contain key SEO terms
     let seo_terms = ["log compression", "essence", "intelligent", "LLM"];
     let found_terms: Vec<_> = seo_terms
         .iter()
@@ -53,7 +46,6 @@ fn test_help_text_contains_seo_description() {
 
 #[test]
 fn test_help_text_structure() {
-    // Verify help text has proper structure
     let output = crate::common::lessence()
         .arg("--help")
         .output()
@@ -61,7 +53,6 @@ fn test_help_text_structure() {
 
     let help_text = String::from_utf8_lossy(&output.stdout);
 
-    // Should contain standard help sections
     assert!(
         help_text.contains("Usage:") || help_text.contains("USAGE:"),
         "Help should contain usage section"
@@ -78,9 +69,6 @@ fn test_help_text_structure() {
     );
 }
 
-/// The help speaks to the agent reading it before anything else, the way
-/// herdr's does: an agent that already holds the skill must not fetch it
-/// again, and --skill comes before every folding knob (lessence-blind-test).
 #[test]
 fn test_help_is_agent_first() {
     for flag in ["--help", "-h"] {
@@ -92,13 +80,13 @@ fn test_help_is_agent_first() {
         let first = help.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
         assert!(
             first.contains("AI agent"),
-            "{flag}: first line is {first:?}"
+            "lessence-blind-test: the help speaks to the agent first; {flag}: first line is {first:?}"
         );
         assert!(
             help.contains(
                 "SKIP if a lessence skill is already in your context. Otherwise run: lessence --skill"
             ),
-            "{flag}"
+            "an agent that already holds the skill must not fetch it again: {flag}"
         );
         assert!(help.contains("Humans: lessence --help-human"), "{flag}");
         let skill = help.find("--skill").expect("--skill listed");
@@ -110,8 +98,6 @@ fn test_help_is_agent_first() {
     }
 }
 
-/// --help-human is for a person: short, no option table, and it exits
-/// before touching input.
 #[test]
 fn test_help_human() {
     let output = crate::common::lessence()
@@ -119,23 +105,24 @@ fn test_help_human() {
         .stdin(std::process::Stdio::null())
         .output()
         .expect("lessence binary should exist");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "--help-human exits before touching input"
+    );
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("lessence --help"), "{text}");
     assert!(text.contains("README"), "{text}");
     assert!(text.contains("--fit"), "{text}");
-    assert!(!text.contains("Usage:"), "{text}");
+    assert!(
+        !text.contains("Usage:"),
+        "--help-human is short, with no option table: {text}"
+    );
     assert!(!text.contains("AI agent"), "{text}");
 }
 
-/// `lessence` with nothing to read must not sit waiting on a terminal: a
-/// person sees a hang, an agent hangs its session. With a terminal on stdin
-/// and no file it prints the help and exits 0; a pipe still folds.
 #[cfg(unix)] // python's pty module is Unix-only
 #[test]
 fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
-    // python's pty module lends the child a pseudo-terminal on stdin; the
-    // parent's stdin is /dev/null so nothing ever arrives on it.
     let output = crate::common::command("python3")
         .args([
             "-c",
@@ -144,8 +131,7 @@ fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
         ])
         .stdin(std::process::Stdio::null())
         .output();
-    // The cross-rs aarch64 image has no python3. Skip there as corpus tests
-    // do on CI; anywhere else a missing python3 is a failure, not a pass.
+    // The cross-rs aarch64 image has no python3.
     let output = match output {
         Ok(output) => output,
         Err(e) if std::env::var_os("CI").is_some() => {
@@ -158,15 +144,17 @@ fn test_bare_invocation_on_a_terminal_prints_help_instead_of_waiting() {
     assert!(output.status.success(), "{text}");
     assert!(
         text.contains("AI agent") && text.contains("Usage:"),
-        "{text}"
+        "with a terminal on stdin and no file, lessence prints the help instead of waiting: {text}"
     );
 
-    // a pipe is input, even an empty one: no help, an empty fold
     let piped = crate::common::lessence()
         .arg("-q")
         .stdin(std::process::Stdio::null())
         .output()
         .expect("lessence binary should exist");
     assert!(piped.status.success());
-    assert!(!String::from_utf8_lossy(&piped.stdout).contains("Usage:"));
+    assert!(
+        !String::from_utf8_lossy(&piped.stdout).contains("Usage:"),
+        "a pipe is input, even an empty one: an empty fold, no help"
+    );
 }

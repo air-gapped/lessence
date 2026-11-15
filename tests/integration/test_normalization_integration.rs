@@ -1,19 +1,13 @@
-// Integration Test: Normalization Module Compatibility
-// Tests integration with existing normalization workflow
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
 fn test_detect_and_replace_api_compatibility() {
-    // Verify that the existing API is preserved
     let input = "2025-09-29T10:15:30Z Processing request";
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
-    // API contract verification
     assert_eq!(result, "<TIMESTAMP> Processing request");
     assert_eq!(tokens.len(), 1);
 
-    // Verify token format matches existing expectations
     match &tokens[0] {
         lessence::patterns::Token::Timestamp(ts) => {
             assert_eq!(ts, "2025-09-29T10:15:30Z");
@@ -30,7 +24,6 @@ fn test_multiple_timestamp_handling() {
     assert_eq!(result, "Start: <TIMESTAMP> End: <TIMESTAMP>");
     assert_eq!(tokens.len(), 2);
 
-    // Verify both timestamps are captured
     if let lessence::patterns::Token::Timestamp(ts1) = &tokens[0] {
         assert_eq!(ts1, "2025-09-29T10:15:30Z");
     } else {
@@ -55,7 +48,6 @@ fn test_no_timestamp_handling() {
 
 #[test]
 fn test_pattern_accuracy_preservation() {
-    // Test that all major timestamp formats are still detected correctly
     let test_cases = vec![
         ("2025-09-29T10:15:30.123Z", "<TIMESTAMP>"),
         ("E0929 13:07:09.181236 3116 error", "<TIMESTAMP> 3116 error"),
@@ -79,7 +71,6 @@ fn test_token_format_consistency() {
     assert_eq!(result, "Multiple formats: <TIMESTAMP> and <TIMESTAMP>");
     assert_eq!(tokens.len(), 2);
 
-    // All tokens should be Timestamp variants
     for token in tokens {
         assert!(matches!(token, lessence::patterns::Token::Timestamp(_)));
     }
@@ -98,18 +89,15 @@ fn test_performance_scales_linearly() {
 
 #[test]
 fn test_edge_case_handling() {
-    // Test edge cases that might break the normalization flow
     let edge_cases = vec![
-        "",                                         // Empty string
-        "No timestamps here at all",                // No matches
-        "2025-13-45T25:99:99Z",                     // Invalid but pattern-matching timestamp
-        "Almost 2025-09-29T10:15 timestamp",        // Partial match
-        "Nested [2025-09-29T10:15:30Z] timestamps", // Bracketed
+        "",
+        "No timestamps here at all",
+        "2025-13-45T25:99:99Z",
+        "Almost 2025-09-29T10:15 timestamp",
+        "Nested [2025-09-29T10:15:30Z] timestamps",
     ];
 
     for input in edge_cases {
-        let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
-        // Should not panic or crash
-        let _ = (result, tokens);
+        drop(UnifiedTimestampDetector::detect_and_replace(input));
     }
 }

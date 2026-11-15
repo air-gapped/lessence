@@ -1,10 +1,3 @@
-//! Whole-output masking regression (lessence-iyw).
-//!
-//! With --sanitize-pii enabled, no fixture secret may appear anywhere in
-//! the process output — stdout or stderr, any field, any mode. Every
-//! value below is a synthetic fixture. One test per output mode so a
-//! regression names the mode that leaked.
-
 use std::io::Write;
 use std::process::Stdio;
 
@@ -15,17 +8,16 @@ auth user alice@example.com password=FIXVALUEA4 req 4\n\
 session Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.dozjgNryP4J3jVmN start\n\
 push key ghp_FixtureAbCd1234EfGh done\n";
 
-/// Substrings that must not survive in any output. FIXVALUEA covers all
-/// four per-line values; the JWT is matched by its header segment.
+const PREFIX_OF_ALL_FOUR_PASSWORDS: &str = "FIXVALUEA";
+const JWT_HEADER_SEGMENT: &str = "eyJhbGciOiJIUzI1NiJ9";
+
 const SECRETS: &[&str] = &[
     "alice@example.com",
-    "FIXVALUEA",
-    "eyJhbGciOiJIUzI1NiJ9",
+    PREFIX_OF_ALL_FOUR_PASSWORDS,
+    JWT_HEADER_SEGMENT,
     "ghp_FixtureAbCd1234EfGh",
 ];
 
-/// Run the binary with --sanitize-pii plus `args`, feed the fixture on
-/// stdin, and return stdout and stderr concatenated.
 fn run_masked(args: &[&str]) -> String {
     let mut child = crate::common::lessence()
         .arg("--sanitize-pii")
@@ -56,7 +48,7 @@ fn assert_no_secret(mode: &str, output: &str) {
     for secret in SECRETS {
         assert!(
             !output.contains(secret),
-            "{mode}: fixture secret {secret:?} survived in output:\n{output}"
+            "{mode}: fixture secret {secret:?} survived in output (lessence-iyw):\n{output}"
         );
     }
     assert!(!output.is_empty(), "{mode}: produced no output at all");
@@ -104,9 +96,10 @@ fn masking_regression_preflight() {
 
 #[test]
 fn masking_regression_essence() {
-    // Essence mode tokenises emails during normalization; credential
-    // values are not tokens and must be masked by the credential rules.
     let out = run_masked(&["--essence"]);
     assert_no_secret("essence", &out);
-    assert!(out.contains("<SECRET>"), "essence: mask missing:\n{out}");
+    assert!(
+        out.contains("<SECRET>"),
+        "essence: credential values are not tokens, the credential rules mask them:\n{out}"
+    );
 }

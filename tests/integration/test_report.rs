@@ -1,11 +1,3 @@
-//! The saved report and the bounded stdout overview of a default run.
-//!
-//! Three things are proved here and nowhere else: the report is byte-for-byte
-//! the same inventory `--format json` produces (so "the report is complete" is
-//! not a second implementation's promise), stdout stays inside its byte
-//! budget on every distilled corpus, and every failure path says truthfully
-//! what is on disk and what the input actually was.
-
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -14,25 +6,19 @@ fn bin() -> Command {
     crate::common::lessence()
 }
 
-/// A disk-backed scratch directory. Not `tempfile::tempdir()`: `/tmp` is a
-/// tmpfs on most Linux distributions, and the filesystem policy rejects
-/// tmpfs for automatic placement — which is the behaviour under test
-/// elsewhere in this file, not the harness's choice of scratch space.
-fn tmpdir() -> tempfile::TempDir {
+// /tmp is a tmpfs on most Linux distributions.
+fn disk_backed_tmpdir() -> tempfile::TempDir {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-reports");
     std::fs::create_dir_all(&base).expect("scratch dir");
     tempfile::TempDir::new_in(&base).expect("scratch dir")
 }
 
-/// The gitignored distilled corpora every gate runs on. A gate that passes
-/// by absence proves nothing, so this panics when they are missing unless
-/// CI (which carries no corpora) is set.
 fn distilled_corpora() -> Vec<PathBuf> {
     let dir = Path::new("examples/distilled");
     let Ok(entries) = std::fs::read_dir(dir) else {
         assert!(
             std::env::var_os("CI").is_some(),
-            "examples/distilled is required for this test and could not be read"
+            "examples/distilled is required for this test and could not be read; a gate never passes by absence (only CI, which carries no corpora, skips)"
         );
         return Vec::new();
     };
@@ -57,7 +43,6 @@ fn run_default(dir: &Path, args: &[&str]) -> Output {
         .expect("failed to run lessence")
 }
 
-/// The one report directory a run created, and the report inside it.
 fn report_file(dir: &Path) -> PathBuf {
     let runs: Vec<PathBuf> = std::fs::read_dir(dir)
         .expect("report dir")
@@ -85,14 +70,10 @@ fn groups(records: &[Value]) -> Vec<&Value> {
     records.iter().filter(|r| r["type"] == "group").collect()
 }
 
-/// Acceptance 1, 2 and 3 in one pass over every corpus: the report's records
-/// equal `--format json`'s on the same input and options, every
-/// representative points at the raw source line, and the summary record
-/// matches except `elapsed_ms`.
 #[test]
 fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
     crate::common::sweep_corpora(&distilled_corpora(), |corpus| {
-        let tmp = tmpdir();
+        let tmp = disk_backed_tmpdir();
         let run = run_default(tmp.path(), &["-q", corpus.to_str().unwrap()]);
         assert!(
             run.status.success(),
@@ -126,10 +107,14 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
         );
         assert!(!ga.is_empty(), "{}: no groups at all", corpus.display());
         for (x, y) in ga.iter().zip(&gb) {
-            assert_eq!(x, y, "{}: a group record differs", corpus.display());
+            assert_eq!(
+                x,
+                y,
+                "{}: the report must be the same inventory --format json produces; a group record differs",
+                corpus.display()
+            );
         }
 
-        // Acceptance 3: the summary records match except elapsed_ms.
         let mut sa = a.last().unwrap().clone();
         let mut sb = b.last().unwrap().clone();
         assert_eq!(sa["type"], "summary", "{}", corpus.display());
@@ -137,12 +122,13 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
         for s in [&mut sa, &mut sb] {
             s.as_object_mut().unwrap().remove("elapsed_ms");
         }
-        assert_eq!(sa, sb, "{}: summary differs", corpus.display());
+        assert_eq!(
+            sa,
+            sb,
+            "{}: the summary must match --format json except elapsed_ms",
+            corpus.display()
+        );
 
-        // Acceptance 2: with no transforming options, first.line is the raw
-        // source line at line_no.
-        // Owned and dropped with this iteration: leaking one corpus per
-        // loop turn keeps every corpus in memory to the end of the test.
         let text = std::fs::read_to_string(corpus).unwrap();
         let raw: Vec<&str> = text.lines().collect();
         for g in &ga {
@@ -150,7 +136,7 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
             assert_eq!(
                 g["first"]["line"].as_str().unwrap(),
                 raw[line_no - 1],
-                "{}: group {} first.line is not the raw line at {line_no}",
+                "{}: with no transforming options, group {} first.line is not the raw line at {line_no}",
                 corpus.display(),
                 g["id"]
             );
@@ -158,12 +144,10 @@ fn the_report_is_the_same_inventory_format_json_produces_on_every_corpus() {
     });
 }
 
-/// Acceptance 4: the 16 KiB bound holds on every distilled corpus at default
-/// flags, and the run reports what it left out.
 #[test]
 fn default_stdout_stays_inside_sixteen_kib_on_every_corpus() {
     crate::common::sweep_corpora(&distilled_corpora(), |corpus| {
-        let tmp = tmpdir();
+        let tmp = disk_backed_tmpdir();
         let run = run_default(tmp.path(), &[corpus.to_str().unwrap()]);
         assert!(run.status.success(), "{}", corpus.display());
         assert!(
@@ -181,15 +165,13 @@ fn default_stdout_stays_inside_sixteen_kib_on_every_corpus() {
     });
 }
 
-// ---- the locator, the tail and the entry counts ----
-
 fn fixture() -> &'static str {
     "tests/fixtures/nginx_sample.log"
 }
 
 #[test]
 fn the_locator_is_the_first_and_the_last_line_and_names_the_report() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = run_default(tmp.path(), &["-q", fixture()]);
     assert!(run.status.success());
     let stdout = String::from_utf8(run.stdout).unwrap();
@@ -204,7 +186,6 @@ fn the_locator_is_the_first_and_the_last_line_and_names_the_report() {
     assert!(head.contains("run: run-"), "{head}");
     assert!(head.contains(" size: "), "{head}");
 
-    // The tail repeats the locator verbatim, then the four recipes.
     let tail_locator = lines
         .iter()
         .rposition(|l| l.starts_with("report: "))
@@ -221,9 +202,9 @@ fn the_locator_is_the_first_and_the_last_line_and_names_the_report() {
 
 #[test]
 fn quiet_drops_the_briefing_block_and_keeps_the_locators() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let loud = run_default(tmp.path(), &[fixture()]);
-    let quiet_dir = tmpdir();
+    let quiet_dir = disk_backed_tmpdir();
     let quiet = run_default(quiet_dir.path(), &["-q", fixture()]);
 
     let loud = String::from_utf8(loud.stdout).unwrap();
@@ -239,13 +220,13 @@ fn quiet_drops_the_briefing_block_and_keeps_the_locators() {
 
 #[test]
 fn overview_zero_prints_no_entries_and_overview_n_prints_n() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let none = run_default(tmp.path(), &["-q", "--overview", "0", fixture()]);
     let none = String::from_utf8(none.stdout).unwrap();
     assert!(none.contains("0 selected, 0 printed"), "{none}");
     assert!(!none.contains("x] id="), "no entries: {none}");
 
-    let some = tmpdir();
+    let some = disk_backed_tmpdir();
     let out = run_default(some.path(), &["-q", "--overview", "3", fixture()]);
     let out = String::from_utf8(out.stdout).unwrap();
     assert_eq!(out.matches("x] id=").count(), 3, "exactly 3 entries: {out}");
@@ -254,7 +235,7 @@ fn overview_zero_prints_no_entries_and_overview_n_prints_n() {
 
 #[test]
 fn overview_all_prints_every_group_the_report_holds() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = run_default(tmp.path(), &["-q", "--overview", "all", fixture()]);
     assert!(run.status.success());
     let stdout = String::from_utf8(run.stdout).unwrap();
@@ -274,7 +255,7 @@ fn overview_all_prints_every_group_the_report_holds() {
 
 #[test]
 fn no_report_writes_nothing_and_streams_the_folded_text() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = bin()
         .env("LESSENCE_REPORT_DIR", tmp.path())
         .args(["--no-report", "-q", fixture()])
@@ -296,7 +277,7 @@ fn no_report_writes_nothing_and_streams_the_folded_text() {
 
 #[test]
 fn a_non_empty_xdg_state_home_carries_the_default_report_directory() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = bin()
         .env_remove("LESSENCE_REPORT_DIR")
         .env("XDG_STATE_HOME", tmp.path())
@@ -317,7 +298,7 @@ fn a_non_empty_xdg_state_home_carries_the_default_report_directory() {
 
 #[test]
 fn the_environment_directory_is_used_when_no_flag_gives_one() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let nested = tmp.path().join("a/b");
     let run = bin()
         .env("LESSENCE_REPORT_DIR", &nested)
@@ -335,8 +316,6 @@ fn the_environment_directory_is_used_when_no_flag_gives_one() {
     );
 }
 
-// ---- rejected combinations (contract §3) ----
-
 fn usage_error(args: &[&str]) -> String {
     let out = bin().args(args).stdin(Stdio::null()).output().unwrap();
     assert_eq!(
@@ -349,7 +328,6 @@ fn usage_error(args: &[&str]) -> String {
     String::from_utf8(out.stderr).unwrap()
 }
 
-/// Every mode other than the default text run: none of them saves a report.
 const NO_REPORT_MODES: [&str; 8] = [
     "--format=json",
     "--json",
@@ -379,9 +357,7 @@ fn every_report_flag_is_a_usage_error_outside_the_default_text_run() {
     }
 }
 
-/// stdout with the two run-dependent values — JSON `elapsed_ms` and the
-/// markdown generation time — blanked, so two runs of one command compare.
-fn stable_stdout(out: &Output) -> String {
+fn stdout_without_run_dependent_values(out: &Output) -> String {
     let text = String::from_utf8_lossy(&out.stdout);
     let text = regex::Regex::new(r#""elapsed_ms": ?\d+"#)
         .unwrap()
@@ -411,8 +387,8 @@ fn no_report_is_accepted_and_changes_nothing_in_a_mode_that_writes_no_report() {
         assert_eq!(with.status.code(), Some(0), "{mode} --no-report: {stderr}");
         assert!(!stderr.contains("--no-report"), "{mode}: {stderr}");
         assert_eq!(
-            stable_stdout(&with),
-            stable_stdout(&without),
+            stdout_without_run_dependent_values(&with),
+            stdout_without_run_dependent_values(&without),
             "{mode}: --no-report must change nothing"
         );
     }
@@ -436,12 +412,12 @@ fn no_report_cannot_be_combined_with_a_report_flag() {
 fn overview_above_the_maximum_and_all_with_a_byte_budget_are_usage_errors() {
     let err = usage_error(&["--overview=10001", fixture()]);
     assert!(err.contains("10000"), "{err}");
-    // The boundary itself is accepted, so the check is a bound, not a ban.
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     assert!(
         run_default(tmp.path(), &["-q", "--overview", "10000", fixture()])
             .status
-            .success()
+            .success(),
+        "--overview 10000 itself is accepted: the check is a bound, not a ban"
     );
 
     let err = usage_error(&["--overview=all", "--overview-bytes=1", fixture()]);
@@ -450,8 +426,6 @@ fn overview_above_the_maximum_and_all_with_a_byte_budget_are_usage_errors() {
     let err = usage_error(&["--overview=lots", fixture()]);
     assert!(err.contains("'lots'"), "{err}");
 }
-
-// ---- failure paths (contract §4) ----
 
 fn assert_no_partial(dir: &Path) {
     let leftovers: Vec<PathBuf> = walk(dir)
@@ -481,7 +455,7 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_quota_too_small_for_the_report_writes_no_report_and_exits_one() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = run_default(tmp.path(), &["--report-max-bytes", "4096", "-q", fixture()]);
     assert_eq!(run.status.code(), Some(1));
     let err = String::from_utf8(run.stderr).unwrap();
@@ -494,7 +468,7 @@ fn a_quota_too_small_for_the_report_writes_no_report_and_exits_one() {
 #[cfg(unix)] // a directory is made unwritable with Unix mode bits
 #[test]
 fn an_unwritable_directory_fails_before_any_input_is_read() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let locked = tmp.path().join("locked");
     std::fs::create_dir(&locked).unwrap();
     {
@@ -535,7 +509,6 @@ fn tmpfs_is_rejected_for_automatic_placement_and_accepted_by_the_explicit_pair()
     let dir = shm.join(format!("lessence-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
 
-    // Automatic placement through the environment: rejected, by name.
     let run = bin()
         .env("LESSENCE_REPORT_DIR", &dir)
         .args(["-q", fixture()])
@@ -543,10 +516,12 @@ fn tmpfs_is_rejected_for_automatic_placement_and_accepted_by_the_explicit_pair()
         .unwrap();
     assert_eq!(run.status.code(), Some(1));
     let err = String::from_utf8(run.stderr).unwrap();
-    assert!(err.contains("tmpfs"), "{err}");
+    assert!(
+        err.contains("tmpfs"),
+        "automatic placement through the environment is rejected by name: {err}"
+    );
     assert!(walk(&dir).is_empty(), "nothing is written to a rejected fs");
 
-    // An explicit directory alone is not the exception.
     let run = bin()
         .args(["--report-dir", dir.to_str().unwrap(), "-q", fixture()])
         .output()
@@ -557,7 +532,6 @@ fn tmpfs_is_rejected_for_automatic_placement_and_accepted_by_the_explicit_pair()
         "an explicit dir alone is refused"
     );
 
-    // The bounded, acknowledged pair accepts it.
     let run = bin()
         .args([
             "--report-dir",
@@ -580,7 +554,7 @@ fn tmpfs_is_rejected_for_automatic_placement_and_accepted_by_the_explicit_pair()
 
 #[test]
 fn a_failure_writing_the_first_record_removes_the_partial_and_says_the_input_is_complete() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = bin()
         .env("LESSENCE_TEST_FAIL_WRITE", "1")
         .args([
@@ -610,18 +584,19 @@ fn a_failure_writing_the_first_record_removes_the_partial_and_says_the_input_is_
 
 #[test]
 fn a_failure_writing_the_summary_record_never_claims_a_complete_report() {
-    let tmp = tmpdir();
-    // Count the records a clean run writes, then fail on the last one — the
-    // summary — after EOF was reached.
-    let clean = tmpdir();
+    let tmp = disk_backed_tmpdir();
+    let clean = disk_backed_tmpdir();
     run_default(clean.path(), &["-q", fixture()]);
-    let n = std::fs::read_to_string(report_file(clean.path()))
+    let summary_record_number = std::fs::read_to_string(report_file(clean.path()))
         .unwrap()
         .lines()
         .count();
 
     let run = bin()
-        .env("LESSENCE_TEST_FAIL_WRITE", n.to_string())
+        .env(
+            "LESSENCE_TEST_FAIL_WRITE",
+            summary_record_number.to_string(),
+        )
         .args([
             "--report-dir",
             tmp.path().to_str().unwrap(),
@@ -634,7 +609,7 @@ fn a_failure_writing_the_summary_record_never_claims_a_complete_report() {
     let err = String::from_utf8(run.stderr).unwrap();
     assert!(err.contains("report: not written"), "{err}");
     assert!(
-        err.contains(&format!("record {n}")),
+        err.contains(&format!("record {summary_record_number}")),
         "the failure names the summary write: {err}"
     );
     assert!(
@@ -647,7 +622,7 @@ fn a_failure_writing_the_summary_record_never_claims_a_complete_report() {
 
 #[test]
 fn a_directory_fsync_failure_after_the_rename_keeps_the_complete_report() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = bin()
         .env("LESSENCE_TEST_FAIL_DIR_FSYNC", "1")
         .args([
@@ -682,7 +657,7 @@ fn a_directory_fsync_failure_after_the_rename_keeps_the_complete_report() {
 
 #[test]
 fn a_fatal_utf8_error_removes_the_report_and_says_the_input_was_incomplete() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let bad = tmp.path().join("bad.log");
     std::fs::write(&bad, b"fine line one\nfine line two\n\xff\xfe not utf8\n").unwrap();
     let run = bin()
@@ -711,9 +686,8 @@ fn a_fatal_utf8_error_removes_the_report_and_says_the_input_was_incomplete() {
 
 #[test]
 fn a_damaged_report_leaves_the_file_in_place_and_says_the_overview_is_unavailable() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = bin()
-        // Cut the report mid-record after it was completed and renamed.
         .env("LESSENCE_TEST_TRUNCATE_REPORT", "200")
         .args([
             "--report-dir",
@@ -742,7 +716,7 @@ fn a_damaged_report_leaves_the_file_in_place_and_says_the_overview_is_unavailabl
 
 #[test]
 fn a_degraded_input_still_completes_the_report_and_the_locator_names_the_code() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = run_default(tmp.path(), &["--max-lines", "20", "-q", fixture()]);
     assert!(
         run.status.success(),
@@ -764,7 +738,7 @@ fn a_degraded_input_still_completes_the_report_and_the_locator_names_the_code() 
 
 #[test]
 fn stats_json_goes_to_stderr_alongside_the_overview() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = run_default(tmp.path(), &["--stats-json", fixture()]);
     assert!(run.status.success());
     let stdout = String::from_utf8(run.stdout).unwrap();
@@ -782,7 +756,7 @@ fn stats_json_goes_to_stderr_alongside_the_overview() {
 #[test]
 fn the_run_directory_is_private() {
     use std::os::unix::fs::PermissionsExt;
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     assert!(run_default(tmp.path(), &["-q", fixture()]).status.success());
     let report = report_file(tmp.path());
     assert_eq!(
@@ -801,7 +775,7 @@ fn the_run_directory_is_private() {
 
 #[test]
 fn fail_on_pattern_still_exits_one_with_a_complete_report() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let run = run_default(tmp.path(), &["--fail-on-pattern", ".", "-q", fixture()]);
     assert_eq!(run.status.code(), Some(1));
     let stdout = String::from_utf8(run.stdout).unwrap();
@@ -809,12 +783,6 @@ fn fail_on_pattern_still_exits_one_with_a_complete_report() {
     assert!(report_file(tmp.path()).is_file());
 }
 
-// ---- transformed options: the report is the same JSON those options give ----
-
-/// Acceptance 1 and 3 again, with the options that transform what a record
-/// holds. The report is produced by the same renderer as `--format json`, so
-/// sanitization, continuation framing and escape handling must land in it
-/// identically — parity on default flags alone would not show that.
 #[test]
 fn the_report_matches_format_json_under_the_transforming_options_too() {
     for options in [
@@ -823,7 +791,7 @@ fn the_report_matches_format_json_under_the_transforming_options_too() {
         vec!["--frame-continuations"],
         vec!["--preserve-color"],
     ] {
-        let tmp = tmpdir();
+        let tmp = disk_backed_tmpdir();
         let mut args = options.clone();
         args.extend(["-q", fixture()]);
         let run = run_default(tmp.path(), &args);
@@ -845,7 +813,10 @@ fn the_report_matches_format_json_under_the_transforming_options_too() {
         assert_eq!(ga.len(), gb.len(), "{options:?}: group count differs");
         assert!(!ga.is_empty(), "{options:?}: no groups at all");
         for (x, y) in ga.iter().zip(&gb) {
-            assert_eq!(x, y, "{options:?}: a group record differs");
+            assert_eq!(
+                x, y,
+                "{options:?}: an option that transforms records must land in the report as in --format json; a group record differs"
+            );
         }
         let mut sa = a.last().unwrap().clone();
         let mut sb = b.last().unwrap().clone();
@@ -856,11 +827,7 @@ fn the_report_matches_format_json_under_the_transforming_options_too() {
     }
 }
 
-// ---- a closed reader never changes the exit code ----
-
-/// Run with stdout connected to a pipe whose read end is closed before the
-/// overview is written. Rust ignores SIGPIPE, so the write fails with EPIPE
-/// inside the process — which must be an early stop, not a verdict.
+// Rust ignores SIGPIPE, so a closed reader surfaces as EPIPE on write.
 fn with_closed_reader(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Option<i32> {
     let mut cmd = bin();
     cmd.args(["--report-dir", dir.to_str().unwrap()]).args(args);
@@ -879,16 +846,13 @@ fn with_closed_reader(dir: &Path, env: &[(&str, &str)], args: &[&str]) -> Option
 
 #[test]
 fn a_closed_reader_keeps_a_successful_run_successful_and_keeps_the_report() {
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     assert_eq!(with_closed_reader(tmp.path(), &[], &[fixture()]), Some(0));
     assert!(report_file(tmp.path()).is_file(), "the artifact survives");
 }
 
 #[test]
 fn a_closed_reader_never_turns_a_determined_failure_into_a_success() {
-    // A failed source, --fail-on-pattern, a directory-fsync failure after
-    // the rename, and an overview pass that cannot read the report: each
-    // exits 1 with the reader gone, exactly as it does with a reader.
     let cases: Vec<(&str, Vec<(&str, &str)>, Vec<&str>)> = vec![
         ("failed source", vec![], vec![fixture(), "no/such/file.log"]),
         (
@@ -908,7 +872,7 @@ fn a_closed_reader_never_turns_a_determined_failure_into_a_success() {
         ),
     ];
     for (name, env, args) in cases {
-        let tmp = tmpdir();
+        let tmp = disk_backed_tmpdir();
         assert_eq!(
             with_closed_reader(tmp.path(), &env, &args),
             Some(1),
@@ -921,8 +885,6 @@ fn a_closed_reader_never_turns_a_determined_failure_into_a_success() {
         assert_no_partial(tmp.path());
     }
 }
-
-// ---- the early and dev dispatches reject the report flags ----
 
 #[test]
 fn diff_and_the_other_early_modes_reject_a_report_flag_instead_of_ignoring_it() {
@@ -949,24 +911,15 @@ fn a_rejected_combination_names_the_command_that_does_work() {
     assert!(err.contains("drop --no-report"), "{err}");
 }
 
-// ---- --overview all streams: many groups under a memory cap ----
-
-/// 200,000 small groups is a report no `--overview all` may assemble in
-/// memory: the pass streams one record at a time to the writer, so the
-/// resident set is the reader's buffer plus one record whatever the group
-/// count is. The `slow` nextest profile runs it uncapped, which proves the
-/// pass completes and writes every group; the memory claim needs a cap:
-///
-/// ```text
-/// systemd-run --user --scope -p MemoryMax=1G \
-///   cargo nextest run --release --profile slow -E 'test(overview_all_streams)'
-/// ```
+// The memory bound needs a cgroup cap:
+// systemd-run --user --scope -p MemoryMax=1G \
+//   cargo nextest run --release --profile slow -E 'test(overview_all_streams)'
 #[test]
 fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
     use std::io::Write;
 
     const GROUPS: usize = 200_000;
-    let tmp = tmpdir();
+    let tmp = disk_backed_tmpdir();
     let path = tmp.path().join("report.jsonl");
     {
         let mut f = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
@@ -981,13 +934,11 @@ fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
         writeln!(f, r#"{{"type":"summary","complete":true}}"#).unwrap();
     }
 
-    /// Counts what was written without keeping it: the assertions need the
-    /// size and the head, not the output.
-    struct Counting {
+    struct ByteCounterKeepingTheHead {
         bytes: usize,
         head: Vec<u8>,
     }
-    impl Write for Counting {
+    impl Write for ByteCounterKeepingTheHead {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.bytes += buf.len();
             if self.head.len() < 4096 {
@@ -1007,7 +958,7 @@ fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
         run_id: "run-test",
         size_bytes: std::fs::metadata(&path).unwrap().len(),
     };
-    let mut out = Counting {
+    let mut out = ByteCounterKeepingTheHead {
         bytes: 0,
         head: Vec::new(),
     };
@@ -1020,7 +971,7 @@ fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
         None,
         None,
     )
-    .expect("--overview all must complete on a 200k-group report");
+    .expect("--overview all streams one record at a time and must complete on a 200k-group report");
     assert!(
         out.bytes > GROUPS * 20,
         "every group must have been written: {} bytes",

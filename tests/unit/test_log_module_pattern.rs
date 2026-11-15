@@ -17,7 +17,6 @@ mod tests {
         for log_line in apache_logs {
             let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
-            // Should detect log level + module pattern
             assert!(
                 !tokens.is_empty(),
                 "Should detect log with module pattern in: {log_line}"
@@ -106,8 +105,6 @@ mod tests {
         for log_line in systemd_logs {
             let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
-            // Note: systemd logs might have different formats
-            // This test validates detection when the pattern exists
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
                     matches!(
@@ -150,7 +147,6 @@ mod tests {
         for log_line in syslog_entries {
             let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
-            // Syslog format: facility.level module: message
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
                     matches!(
@@ -190,7 +186,6 @@ mod tests {
         for log_line in framework_logs {
             let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
-            // Modern logging frameworks often use [module] format
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
                     matches!(
@@ -235,8 +230,6 @@ mod tests {
         for test_case in non_module_cases {
             let (result, tokens) = LogWithModuleDetector::detect_and_replace(test_case);
 
-            // A non-logging line never reads as a level and a module, and
-            // nothing on it is rewritten.
             let has_log_module = tokens
                 .iter()
                 .any(|token| matches!(token, Token::LogWithModule { .. }));
@@ -244,7 +237,10 @@ mod tests {
                 !has_log_module,
                 "not a level+module line: {test_case:?} -> {result:?} {tokens:?}"
             );
-            assert_eq!(result, test_case, "rewritten: {tokens:?}");
+            assert_eq!(
+                result, test_case,
+                "nothing on a non-logging line is rewritten: {tokens:?}"
+            );
         }
     }
 
@@ -260,7 +256,6 @@ mod tests {
         for log_line in mixed_case_logs {
             let (_, tokens) = LogWithModuleDetector::detect_and_replace(log_line);
 
-            // Should handle different case variations
             if !tokens.is_empty() {
                 let has_log_module = tokens.iter().any(|token| {
                     matches!(
@@ -277,7 +272,6 @@ mod tests {
                         .iter()
                         .find(|t| matches!(t, Token::LogWithModule { .. }))
                     {
-                        // Level should be normalized to lowercase
                         assert!(
                             level.chars().all(char::is_lowercase),
                             "Log level should be normalized to lowercase: {level}"
@@ -290,9 +284,6 @@ mod tests {
 
     #[test]
     fn test_compression_improvement_target() {
-        // This test validates that log-with-module normalization improves
-        // compression for Apache and system logs
-
         let apache_samples = vec![
             "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6",
             "[Sun Dec 04 04:51:18 2005] [error] mod_jk child workerEnv in error state 7",
@@ -302,13 +293,13 @@ mod tests {
             "[Sun Dec 04 04:55:45 2005] [info] mod_rewrite URL rewrite enabled",
         ];
 
-        // The level and the module are what tells these events apart, so
-        // the detector leaves them on the line and only records the token;
-        // folding the repeated mod_jk lines is the folder's job, on the
-        // varying number, never on an erased level or module.
         for line in &apache_samples {
             let (normalized, tokens) = LogWithModuleDetector::detect_and_replace(line);
-            assert_eq!(&normalized, line, "the line must come back unchanged");
+            assert_eq!(
+                &normalized, line,
+                "the level and the module tell these events apart, so they stay on the line; \
+                 folding the repeated mod_jk lines is the folder's job, on the varying number"
+            );
             assert!(
                 tokens
                     .iter()

@@ -1,8 +1,3 @@
-// Contract Test: Email Pattern ReDoS Resistance
-//
-// Tests that email pattern detection scales linearly with input size.
-// Uses scaling-ratio approach: 4x input should take ~4x time, not 16x.
-
 use lessence::patterns::email::EmailPatternDetector;
 
 #[test]

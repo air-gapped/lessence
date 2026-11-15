@@ -1,13 +1,3 @@
-// Integration Test: Performance Benchmarks (T014)
-// Validates performance characteristics and regression prevention.
-//
-// All timing tests use the scaling-ratio pattern: measure at N and 4N,
-// assert ratio < 8.0. This tests algorithmic complexity (O(n) vs O(n²))
-// and is immune to CPU speed, contention, and debug/release differences.
-//
-// Coverage: every pattern detector + the full normalization pipeline.
-// If a new detector is added, add a scaling test here.
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
@@ -60,10 +50,6 @@ fn test_long_line_scales_linearly() {
         let _ = UnifiedTimestampDetector::detect_and_replace(input);
     });
 }
-
-// ---- Pattern detector scaling tests ----
-// Each detector gets a scaling test with realistic input.
-// The input triggers that detector's regex — not just pass-through.
 
 #[test]
 fn test_key_value_detection_scales_linearly() {
@@ -198,9 +184,6 @@ fn test_process_detection_scales_linearly() {
     });
 }
 
-// ---- Full pipeline scaling test ----
-// Tests the complete normalize → cluster → format path.
-
 #[test]
 fn test_full_pipeline_scales_linearly() {
     use lessence::config::Config;
@@ -220,7 +203,6 @@ fn test_full_pipeline_scales_linearly() {
 
 #[test]
 fn test_pattern_compilation_succeeds() {
-    // Verify patterns load correctly and have expected count
     use lessence::patterns::timestamp::patterns;
     let patterns = patterns();
     assert!(
@@ -234,12 +216,12 @@ fn test_pattern_compilation_succeeds() {
 fn test_memory_usage_stability() {
     let input = "2025-09-29T10:15:30Z Memory test message";
 
-    // Repeated detection must stay correct AND identical on every
-    // iteration (catches state leaking between calls), not merely not
-    // panic.
     for i in 0..10000 {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
-        assert_eq!(result, "<TIMESTAMP> Memory test message", "iteration {i}");
+        assert_eq!(
+            result, "<TIMESTAMP> Memory test message",
+            "no state leaks between calls: iteration {i}"
+        );
         assert_eq!(tokens.len(), 1, "iteration {i}");
     }
 }
@@ -253,15 +235,15 @@ fn test_concurrent_performance() {
 
     let mut handles = vec![];
 
-    // Concurrent detection must produce the correct result on every call
-    // in every thread — a wrong result under contention is a real bug,
-    // not just a panic.
     for _ in 0..4 {
         let input_clone = Arc::clone(&input);
         let handle = thread::spawn(move || {
             for _ in 0..250 {
                 let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&input_clone);
-                assert_eq!(result, "<TIMESTAMP> Concurrent test message");
+                assert_eq!(
+                    result, "<TIMESTAMP> Concurrent test message",
+                    "every call in every thread gives the correct result under contention"
+                );
                 assert_eq!(tokens.len(), 1);
             }
         });
@@ -275,10 +257,6 @@ fn test_concurrent_performance() {
 
 #[test]
 fn test_repeated_detection_is_deterministic() {
-    // Replaces a wall-clock "cache effectiveness" check that was too noisy
-    // to fail meaningfully in CI. The property worth pinning is that the
-    // lazily-initialized pattern registry gives byte-identical results on
-    // every subsequent call for every format family.
     let test_inputs = vec![
         "2025-09-29T10:15:30Z ISO format",
         "E0929 13:07:09.181236 3116 K8S format",
@@ -291,9 +269,6 @@ fn test_repeated_detection_is_deterministic() {
         .iter()
         .map(|i| UnifiedTimestampDetector::detect_and_replace(i))
         .collect();
-    // The first four formats must actually exercise the detector; the
-    // bare unix-epoch form is deliberately NOT detected at this level
-    // (too false-positive-prone — key-value handling covers it).
     for ((result, tokens), input) in first.iter().zip(&test_inputs).take(4) {
         assert!(
             result.contains("<TIMESTAMP>"),
@@ -302,13 +277,19 @@ fn test_repeated_detection_is_deterministic() {
         assert!(!tokens.is_empty());
     }
     let (unix_result, unix_tokens) = &first[4];
-    assert_eq!(unix_result, test_inputs[4]);
+    assert_eq!(
+        unix_result, test_inputs[4],
+        "a bare unix epoch is left to key-value handling, not detected as a timestamp"
+    );
     assert!(unix_tokens.is_empty());
     for round in 0..100 {
         let again: Vec<_> = test_inputs
             .iter()
             .map(|i| UnifiedTimestampDetector::detect_and_replace(i))
             .collect();
-        assert_eq!(first, again, "results drifted on round {round}");
+        assert_eq!(
+            first, again,
+            "the lazily built pattern registry gives byte-identical results on every call: drifted on round {round}"
+        );
     }
 }

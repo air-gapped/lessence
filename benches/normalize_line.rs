@@ -1,17 +1,3 @@
-//! Pattern-detection micro-benchmark.
-//!
-//! Targets `Normalizer::normalize_line()` directly, bypassing the
-//! similarity/grouping logic. Small, cheap, and fast — its purpose is
-//! to catch regressions in the pattern-detection hot path that would
-//! otherwise be diluted by the folder-level benches.
-//!
-//! Corpus: the first 1000 lines of each Tier 1 gate file. Different
-//! files exercise different pattern detectors (kubernetes for kubelet,
-//! postgres for harbor_postgres, etc.).
-//!
-//! Run with:
-//!   cargo bench --bench normalize_line -- --save-baseline main-pre-feature
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use lessence::Config;
 use lessence::normalize::Normalizer;
@@ -40,6 +26,7 @@ const TIER1_CORPUS: &[(&str, &str)] = &[
 ];
 
 const SAMPLE_LINES: usize = 1000;
+const NEWLINE_BYTES: u64 = 1;
 
 fn load_corpus_sample(relative_path: &str, max_lines: usize) -> Option<Vec<String>> {
     let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), relative_path);
@@ -59,7 +46,7 @@ fn load_corpus_sample(relative_path: &str, max_lines: usize) -> Option<Vec<Strin
 fn sample_byte_size(sample: &[String]) -> u64 {
     sample
         .iter()
-        .map(|line| line.len() as u64 + 1) // +1 for the newline that would sit between them
+        .map(|line| line.len() as u64 + NEWLINE_BYTES)
         .sum()
 }
 
@@ -75,9 +62,6 @@ fn run_normalize(normalizer: &Normalizer, sample: &[String]) -> usize {
 
 fn bench_normalize_line(c: &mut Criterion) {
     let mut group = c.benchmark_group("normalize_line");
-    // normalize_line is fast (~1 ms per 1000-line sample), so the default
-    // ceremony is fine. Keeping sample_size lower for consistency with the
-    // folder benches.
     group.sample_size(30);
     group.measurement_time(Duration::from_secs(10));
     group.warm_up_time(Duration::from_secs(2));
@@ -102,13 +86,13 @@ fn bench_normalize_line(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_criterion() -> Criterion {
+fn criterion_honouring_cli_baseline_flags() -> Criterion {
     Criterion::default().configure_from_args()
 }
 
 criterion_group! {
     name = benches;
-    config = build_criterion();
+    config = criterion_honouring_cli_baseline_flags();
     targets = bench_normalize_line
 }
 criterion_main!(benches);

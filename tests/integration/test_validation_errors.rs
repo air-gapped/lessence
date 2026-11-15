@@ -4,9 +4,6 @@ use std::time::Instant;
 
 #[test]
 fn test_validation_fails_fast_no_stdin_read() {
-    // Validation should happen before stdin reading
-    // Even with large input, error should be instant
-
     let start = Instant::now();
 
     let mut child = crate::common::lessence()
@@ -17,7 +14,6 @@ fn test_validation_fails_fast_no_stdin_read() {
         .spawn()
         .expect("Failed to spawn command");
 
-    // Try to write large input (should not be consumed)
     if let Some(mut stdin) = child.stdin.take() {
         let large_line = "A".repeat(10000);
         for _ in 0..100 {
@@ -33,10 +29,9 @@ fn test_validation_fails_fast_no_stdin_read() {
 
     assert!(!output.status.success(), "Should exit with error");
 
-    // Validation should be instant (<1 second even with large input)
     assert!(
         duration.as_secs() < 5,
-        "Validation should fail fast (took {duration:?}, expected <5s)"
+        "validation runs before stdin is read, so it fails fast however large the input (took {duration:?}, expected <5s)"
     );
 }
 
@@ -51,7 +46,6 @@ fn test_pattern_error_lists_all_valid_patterns() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Verify all 15 pattern names are listed
     let expected_patterns = vec![
         "timestamp",
         "hash",
@@ -96,7 +90,6 @@ fn test_validation_accepts_large_valid_values() {
         .wait_with_output()
         .expect("Failed to wait for command");
 
-    // Should accept very large valid values (system will limit threads naturally)
     assert!(
         output.status.success(),
         "Should accept large valid thread count. Stderr: {}",

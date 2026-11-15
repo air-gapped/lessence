@@ -1,15 +1,13 @@
-//! Bad arguments fail cleanly: a usage error is exit 2 with a `lessence:`
-//! message, never a hang, a panic, or a silently different run.
-
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+const USAGE_ERROR_EXIT: Option<i32> = Some(2);
 
 fn bin() -> Command {
     crate::common::lessence()
 }
 
-/// Run with `input` on stdin; kill and fail if it does not finish in 20 s.
 fn run_with_timeout(mut cmd: Command, input: &str) -> std::process::Output {
     let mut child = cmd
         .stdin(Stdio::piped())
@@ -68,7 +66,12 @@ fn repeated_stdin_dash_does_not_hang() {
 fn size_overflow_is_a_usage_error_not_a_panic() {
     for flag in ["--max-line-length", "--report-max-bytes"] {
         let out = run(&[flag, "99999999999999999G"]);
-        assert_eq!(out.status.code(), Some(2), "{flag}: {}", stderr(&out));
+        assert_eq!(
+            out.status.code(),
+            USAGE_ERROR_EXIT,
+            "{flag}: {}",
+            stderr(&out)
+        );
         assert!(!stderr(&out).contains("panicked"), "{}", stderr(&out));
     }
 }
@@ -82,7 +85,7 @@ fn report_max_bytes_zero_is_rejected_up_front() {
         .arg(&log)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), USAGE_ERROR_EXIT, "{}", stderr(&out));
     assert!(
         stderr(&out).contains("--report-max-bytes"),
         "{}",
@@ -95,14 +98,14 @@ fn report_max_bytes_zero_is_rejected_up_front() {
 fn diff_without_a_file_is_a_usage_error() {
     let bin_path = env!("CARGO_BIN_EXE_lessence");
     let out = run(&["--diff", bin_path]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), USAGE_ERROR_EXIT, "{}", stderr(&out));
     assert!(
         stderr(&out).contains("--diff needs a file path"),
         "{}",
         stderr(&out)
     );
     let out = run(&["--diff", bin_path, "-"]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), USAGE_ERROR_EXIT, "{}", stderr(&out));
     assert!(
         stderr(&out).contains("--diff needs a file path"),
         "{}",
@@ -130,7 +133,12 @@ fn diff_rejects_fold_flags_it_would_ignore() {
             .arg(&log)
             .output()
             .unwrap();
-        assert_eq!(out.status.code(), Some(2), "{flag:?}: {}", stderr(&out));
+        assert_eq!(
+            out.status.code(),
+            USAGE_ERROR_EXIT,
+            "{flag:?}: {}",
+            stderr(&out)
+        );
         assert!(stderr(&out).starts_with("lessence: "), "{}", stderr(&out));
         let name = if flag[0] == "--distill" {
             "--diff"
@@ -151,7 +159,7 @@ fn diff_error_exits_2_not_1() {
         .arg(&log)
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), USAGE_ERROR_EXIT, "{}", stderr(&out));
     assert!(stderr(&out).starts_with("lessence: "), "{}", stderr(&out));
 }
 
@@ -179,7 +187,7 @@ fn directory_argument_is_skipped_like_a_missing_file() {
 #[test]
 fn invalid_format_is_a_usage_error_listing_every_spelling() {
     let out = run(&["--format", "xml"]);
-    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert_eq!(out.status.code(), USAGE_ERROR_EXIT, "{}", stderr(&out));
     let err = stderr(&out);
     assert!(err.starts_with("lessence: "), "{err}");
     assert!(!err.contains("Error: Error"), "{err}");
@@ -192,16 +200,24 @@ fn invalid_format_is_a_usage_error_listing_every_spelling() {
 fn explain_with_an_explicit_non_json_format_is_rejected() {
     for fmt in ["markdown", "text"] {
         let out = run(&["--explain", "--format", fmt]);
-        assert_eq!(out.status.code(), Some(2), "{fmt}: {}", stderr(&out));
+        assert_eq!(
+            out.status.code(),
+            USAGE_ERROR_EXIT,
+            "{fmt}: {}",
+            stderr(&out)
+        );
         assert!(stderr(&out).starts_with("lessence: "), "{}", stderr(&out));
         assert!(stderr(&out).contains("--explain"), "{}", stderr(&out));
     }
-    // --explain alone, and with a JSON format, still works.
     for args in [&["--explain"][..], &["--explain", "--format", "jsonl"]] {
         let mut cmd = bin();
         cmd.args(args);
         let out = run_with_timeout(cmd, "a\nb\nc\n");
-        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        assert!(
+            out.status.success(),
+            "--explain alone or with a JSON format still runs: {args:?}: {}",
+            stderr(&out)
+        );
         assert!(String::from_utf8_lossy(&out.stdout).starts_with('{'));
     }
 }

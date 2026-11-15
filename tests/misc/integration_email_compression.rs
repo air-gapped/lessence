@@ -2,7 +2,6 @@ use std::io::Write;
 use std::process::Stdio;
 use tempfile::NamedTempFile;
 
-/// Helper: run lessence with --no-stats on a temp file via stdin.
 fn run_lessence_file(temp_file: &NamedTempFile) -> String {
     let file = std::fs::File::open(temp_file.path()).expect("Failed to open temp file");
     let output = crate::common::lessence()
@@ -13,18 +12,22 @@ fn run_lessence_file(temp_file: &NamedTempFile) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// Helper: run lessence with args, piping input string via stdin.
+const FLAGS_WHOSE_RUN_SAVES_NO_REPORT: &[&str] = &[
+    "--format",
+    "--json",
+    "--summary",
+    "--top",
+    "--fit",
+    "--preflight",
+    "--explain",
+];
+
 fn run_lessence_stdin(args: &[&str], input: &str) -> String {
-    // Only the default text run saves a report, so only it needs
-    // --no-report. These tests assert the streamed text of a run that saves
-    // no report.
     let mut args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
-    if !args.iter().any(|a| {
-        matches!(
-            a.as_str(),
-            "--format" | "--json" | "--summary" | "--top" | "--fit" | "--preflight" | "--explain"
-        )
-    }) {
+    if !args
+        .iter()
+        .any(|a| FLAGS_WHOSE_RUN_SAVES_NO_REPORT.contains(&a.as_str()))
+    {
         args.push("--no-report".to_string());
     }
     let mut child = crate::common::lessence()
@@ -45,7 +48,6 @@ fn run_lessence_stdin(args: &[&str], input: &str) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
-/// Test basic email detection and folding
 #[test]
 fn test_basic_email_detection() {
     let mut temp_file = NamedTempFile::new().unwrap();
@@ -67,7 +69,6 @@ fn test_basic_email_detection() {
 
     let stdout = run_lessence_file(&temp_file);
 
-    // Should fold similar lines with different emails
     assert!(
         stdout.contains("similar"),
         "Should contain folded output: {stdout}"
@@ -77,12 +78,10 @@ fn test_basic_email_detection() {
         "Should indicate email variation: {stdout}"
     );
 
-    // Should output first line, folded indicator, and last line
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() >= 2, "Should have at least 2 lines of output");
 }
 
-/// Test email pattern with mixed patterns (emails, IPs, timestamps)
 #[test]
 fn test_email_with_mixed_patterns() {
     let mut temp_file = NamedTempFile::new().unwrap();
@@ -109,7 +108,6 @@ fn test_email_with_mixed_patterns() {
 
     let stdout = run_lessence_file(&temp_file);
 
-    // Should fold all lines into a single pattern with multiple varying types
     assert!(
         stdout.contains("similar"),
         "Should contain folded output: {stdout}"
@@ -119,7 +117,6 @@ fn test_email_with_mixed_patterns() {
         "Should indicate email variation: {stdout}"
     );
 
-    // Should significantly compress the output
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(
         lines.len() < 4,
@@ -127,7 +124,6 @@ fn test_email_with_mixed_patterns() {
     );
 }
 
-/// Test email pattern control with disable flag
 #[test]
 fn test_email_pattern_disabled() {
     let input = "2025-09-26T10:15:00Z User alice@company.com successfully authenticated\n\
@@ -136,15 +132,12 @@ fn test_email_pattern_disabled() {
 
     let stdout = run_lessence_stdin(&["--disable-patterns", "email", "--no-stats"], input);
 
-    // With email patterns disabled, timestamps still get normalized so lines may fold.
-    // The key check is that original email addresses are preserved in the output.
     assert!(
         stdout.contains("alice@company.com") || stdout.contains("charlie@company.com"),
         "Should preserve at least some original emails when email pattern is disabled"
     );
 }
 
-/// Test email validation (no false positives)
 #[test]
 fn test_email_validation_no_false_positives() {
     let input = "2025-09-26T10:15:00Z Error: missing @ symbol in userexample.com\n\
@@ -154,14 +147,11 @@ fn test_email_validation_no_false_positives() {
 
     let stdout = run_lessence_stdin(&["--no-stats"], input);
 
-    // The "userexample.com" string (no @ sign) should remain intact
     assert!(
         stdout.contains("userexample.com"),
         "Should NOT detect 'userexample.com' as email"
     );
 
-    // Lines have similar structure so some folding is expected.
-    // The key validation is that invalid email patterns are preserved in output.
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(
         lines.len() <= 4,
@@ -169,7 +159,6 @@ fn test_email_validation_no_false_positives() {
     );
 }
 
-/// Test email with URL handling (pattern order dependency)
 #[test]
 fn test_email_url_pattern_order() {
     let input = "2025-09-26T10:15:00Z Click mailto:support@company.com for help\n\
@@ -178,8 +167,6 @@ fn test_email_url_pattern_order() {
 
     let stdout = run_lessence_stdin(&["--no-stats"], input);
 
-    // Lines have similar structure (all have email-like patterns and timestamps)
-    // so folding is expected. Just verify the output is valid and compressed.
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(
         lines.len() <= 3,
@@ -188,12 +175,10 @@ fn test_email_url_pattern_order() {
     assert!(!stdout.is_empty(), "Should produce some output");
 }
 
-/// Test performance - ensure email detection doesn't significantly impact speed
 #[test]
 fn test_email_performance_impact() {
     let mut input = String::new();
 
-    // Create larger test input with mixed email and non-email content
     for i in 0..1000 {
         input.push_str(&format!(
             "2025-09-26T10:15:{:02}Z User user{}@company.com performed action {}\n",
@@ -219,17 +204,14 @@ fn test_email_performance_impact() {
 
     let output_lines: Vec<&str> = stdout.lines().collect();
 
-    // Should achieve significant compression. The 1-2 digit counters stay
-    // literal (numbers under 3 digits are never folded), so these 6-token
-    // lines fold only while the default threshold admits a 1-token
-    // difference (LCS 5/6 ≈ 83.3%) — this bound would fail at 84+.
     assert!(
         output_lines.len() < 100,
-        "Should compress 2000 lines to less than 100"
+        "Should compress 2000 lines to less than 100: the 1-2 digit counters stay literal, \
+         so these 6-token lines fold only while the default threshold admits one differing \
+         token (LCS 5/6 = 83.3%); a threshold of 84 or more fails this bound"
     );
 }
 
-/// Test complex email formats
 #[test]
 fn test_complex_email_formats() {
     let input = "User first.last@subdomain.example.org logged in\n\
@@ -239,16 +221,13 @@ fn test_complex_email_formats() {
 
     let stdout = run_lessence_stdin(&["--no-stats"], input);
 
-    // Should fold similar lines with different complex emails
     assert!(stdout.contains("similar"), "Should contain folded output");
     assert!(stdout.contains("email"), "Should indicate email variation");
 
-    // Should compress to fewer lines
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() < 4, "Should compress complex email patterns");
 }
 
-/// Integration test with existing log format (ensure no regression)
 #[test]
 fn test_integration_with_existing_patterns() {
     let input = "2025-09-26T10:15:00.123Z [INFO] User alice@company.com authenticated from 192.168.1.100 with session abc123def456\n\
@@ -257,14 +236,11 @@ fn test_integration_with_existing_patterns() {
 
     let stdout = run_lessence_stdin(&["--no-stats"], input);
 
-    // Should fold all lines together since they have the same pattern
-    // with varying timestamp, email, IP, and hash
     assert!(stdout.contains("similar"), "Should contain folded output");
 
     let lines: Vec<&str> = stdout.lines().collect();
     assert!(lines.len() <= 3, "Should compress to at most 3 lines");
 
-    // Should indicate multiple varying types
     let folded_line = stdout
         .lines()
         .find(|line| line.contains("similar"))

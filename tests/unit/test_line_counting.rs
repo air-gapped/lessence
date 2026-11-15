@@ -1,5 +1,3 @@
-// Unit tests for output line counting and compression stats
-
 use lessence::config::Config;
 use lessence::folder::{FoldingStats, PatternFolder};
 

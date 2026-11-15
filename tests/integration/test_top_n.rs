@@ -20,7 +20,6 @@ fn test_top_n_shows_exactly_n_groups() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Count groups by counting [Nx] prefixes
     let group_count = stdout
         .lines()
         .filter(|l| l.starts_with('[') && l.contains("x]"))
@@ -46,7 +45,6 @@ fn test_top_n_sorted_descending() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Extract counts from [Nx] prefixes
     let counts: Vec<usize> = stdout
         .lines()
         .filter_map(|l| {
@@ -89,7 +87,6 @@ fn test_top_n_larger_than_groups_shows_all() {
         "Should produce output even when N > total groups"
     );
 
-    // Coverage footer should show on stderr
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("showing top"),
@@ -99,7 +96,6 @@ fn test_top_n_larger_than_groups_shows_all() {
 
 #[test]
 fn test_without_top_output_unchanged() {
-    // Without --top, output should be chronological (no [Nx] prefixes)
     let output = lessence_bin()
         .args([
             "--no-stats",
@@ -132,7 +128,6 @@ fn test_top_n_with_stdin() {
         .expect("Failed to spawn");
 
     if let Some(mut stdin) = child.stdin.take() {
-        // Write lines that will create 3 groups with different frequencies
         for _ in 0..10 {
             writeln!(stdin, "ERROR connection refused to 10.0.0.1:8080").ok();
         }
@@ -181,8 +176,6 @@ fn test_top_n_coverage_footer() {
     );
 }
 
-/// 45 lines sharing no token, so each is its own pattern: more than the
-/// summary default cap of 30, which is what makes "all" distinguishable.
 fn forty_five_distinct_patterns() -> String {
     fn word(n: usize) -> String {
         let a = (b'a' + (n / 26) as u8 % 26) as char;
@@ -275,7 +268,6 @@ fn top_zero_summary_still_shows_all() {
     assert_eq!(zero.lines().count(), big.lines().count());
 }
 
-/// Sorted (count, first.line_no, last.line_no) of every group record.
 fn group_shape(args: &[&str], file: &str) -> Vec<(u64, u64, u64)> {
     let output = lessence_bin()
         .args(["--json", "-q"])
@@ -304,10 +296,6 @@ fn group_shape(args: &[&str], file: &str) -> Vec<(u64, u64, u64)> {
     shape
 }
 
-/// A display flag must never change the group set: `--top 0` shows exactly
-/// the groups the default run does (lessence-mdh: the ranked path skipped
-/// the merge of groups that converge on one template, so one template was
-/// shown twice).
 #[test]
 fn test_top_zero_shows_the_same_groups_as_default_on_every_distilled_corpus() {
     let Some(_) = crate::common::require_example("examples/distilled") else {
@@ -341,7 +329,7 @@ fn test_top_zero_shows_the_same_groups_as_default_on_every_distilled_corpus() {
     disagreeing.sort();
     assert!(
         disagreeing.is_empty(),
-        "--top 0 changed the group set on:\n{}",
+        "lessence-mdh: a display flag never changes the group set, and --top 0 shows exactly the default run's groups; it changed them on:\n{}",
         disagreeing.join("\n")
     );
 }
@@ -351,6 +339,10 @@ fn summary_caps_text_and_json_at_the_same_default() {
     let input = forty_five_distinct_patterns();
     let (text, _) = run_stdin(&["--summary", "-q"], &input);
     let (json, _) = run_stdin(&["--summary", "--format", "json", "-q"], &input);
-    assert_eq!(text.lines().count(), 30, "{text}");
+    assert_eq!(
+        text.lines().count(),
+        30,
+        "45 distinct patterns exceed the summary default cap of 30: {text}"
+    );
     assert_eq!(count_json_groups(&json), 30, "{json}");
 }

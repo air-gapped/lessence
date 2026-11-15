@@ -19,7 +19,6 @@ mod tests {
 
             assert!(!tokens.is_empty(), "Should detect metrics in: {line}");
 
-            // Check that percentage values are properly typed
             let has_percentage = tokens.iter().any(|token| {
                 if let Token::KeyValuePair { key: _, value_type } = token {
                     value_type.as_str() == "percentage"
@@ -47,9 +46,6 @@ mod tests {
         for test_case in non_kv_cases {
             let (result, tokens) = KeyValueDetector::detect_and_replace(test_case);
 
-            // Should be careful not to match programming constructs
-            // This depends on context - URL params might be valid to match
-            // Programming assignments should not be matched
             if test_case.contains("variable =") || test_case.contains("x=y") {
                 assert_eq!(
                     result, test_case,
@@ -66,9 +62,6 @@ mod tests {
 
     #[test]
     fn test_compression_improvement_target() {
-        // This test validates that key-value normalization improves compression
-        // for configuration and metrics logs
-
         let config_samples = vec![
             "Database: host=db1, port=5432, ssl=true, timeout=30s",
             "Database: host=db2, port=5432, ssl=true, timeout=30s",
@@ -84,27 +77,19 @@ mod tests {
             normalized_lines.push(normalized);
         }
 
-        // After normalization, configuration lines with same structure
-        // but different values should be more similar for folding
         let structural_patterns: Vec<_> = normalized_lines
             .iter()
-            .map(|line| {
-                // Count key-value tokens to see structural similarity
-                line.matches("<KEY_VALUE>").count()
-            })
+            .map(|line| line.matches("<KEY_VALUE>").count())
             .collect();
 
-        // Lines with same number of key-value pairs should group better
-        let db_lines = &structural_patterns[0..3]; // Database configs
-        let cache_lines = &structural_patterns[3..6]; // Cache configs
+        let db_lines = &structural_patterns[0..3];
+        let cache_lines = &structural_patterns[3..6];
 
-        // Database configs should have same structure
         assert!(
             db_lines.iter().all(|&count| count == db_lines[0]),
             "Database configs should have same structural pattern"
         );
 
-        // Cache configs should have same structure
         assert!(
             cache_lines.iter().all(|&count| count == cache_lines[0]),
             "Cache configs should have same structural pattern"

@@ -1,6 +1,3 @@
-// Integration Test: Edge Case Handling (T013)
-// Validates robust behavior with unusual inputs and boundary conditions
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
@@ -29,27 +26,27 @@ fn test_very_long_line() {
 
 #[test]
 fn test_malformed_timestamps() {
-    let malformed_cases = vec![
-        "2025-13-45T25:99:99Z", // Invalid dates/times
-        "2025-02-30T10:15:30Z", // Invalid date
-        "2025-09-29T25:15:30Z", // Invalid hour
-        "20250929T101530Z",     // Missing separators
-        "2025/09/29T10:15:30Z", // Wrong separators
+    let shape_valid_impossible_calendar_dates = [
+        "2025-13-45T25:99:99Z",
+        "2025-02-30T10:15:30Z",
+        "2025-09-29T25:15:30Z",
     ];
+    let missing_or_wrong_separators = ["20250929T101530Z", "2025/09/29T10:15:30Z"];
 
-    // Shape-valid but semantically impossible dates ARE replaced: the
-    // detector is regex-shaped, not a calendar validator, and for folding
-    // purposes treating 2025-02-30 as a timestamp is correct behavior.
-    for input in &malformed_cases[..3] {
+    for input in &shape_valid_impossible_calendar_dates {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
-        assert_eq!(result, "<TIMESTAMP>", "shape-valid input: {input}");
+        assert_eq!(
+            result, "<TIMESTAMP>",
+            "the detector checks shape, not the calendar, so an impossible date still folds as a timestamp: {input}"
+        );
         assert_eq!(tokens.len(), 1);
     }
-    // Wrong separators don't match any format — input must pass through
-    // byte-identical with no tokens.
-    for input in &malformed_cases[3..] {
+    for input in &missing_or_wrong_separators {
         let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
-        assert_eq!(&result, input, "wrong-separator input must be untouched");
+        assert_eq!(
+            &result, input,
+            "wrong-separator input matches no format and passes through byte-identical"
+        );
         assert!(tokens.is_empty());
     }
 }
@@ -93,9 +90,9 @@ fn test_nested_brackets() {
 #[test]
 fn test_timestamp_at_boundaries() {
     let test_cases = vec![
-        "2025-09-29T10:15:30Z",  // Only timestamp
-        "2025-09-29T10:15:30Z ", // Timestamp at start
-        " 2025-09-29T10:15:30Z", // Timestamp at end
+        "2025-09-29T10:15:30Z",
+        "2025-09-29T10:15:30Z ",
+        " 2025-09-29T10:15:30Z",
     ];
 
     for input in test_cases {
@@ -107,11 +104,12 @@ fn test_timestamp_at_boundaries() {
         assert_eq!(tokens.len(), 1);
     }
 
-    // No word-boundary separators: the embedded timestamp is NOT detected
-    // and the input passes through unchanged.
     let no_sep = "Start2025-09-29T10:15:30ZEnd";
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(no_sep);
-    assert_eq!(result, no_sep);
+    assert_eq!(
+        result, no_sep,
+        "a timestamp with no word boundary on either side is not detected"
+    );
     assert!(tokens.is_empty());
 }
 
@@ -126,14 +124,12 @@ fn test_repeated_timestamps() {
 
 #[test]
 fn test_overlapping_pattern_candidates() {
-    // Patterns that might partially overlap
     let input = "2025-09-29T10:15:30.123456789Z";
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
     assert_eq!(result, "<TIMESTAMP>");
     assert_eq!(tokens.len(), 1);
 
-    // Should match the full pattern, not subparts
     if let lessence::patterns::Token::Timestamp(ts) = &tokens[0] {
         assert!(ts.len() > 20, "Should match full precision timestamp");
     }
@@ -142,11 +138,11 @@ fn test_overlapping_pattern_candidates() {
 #[test]
 fn test_false_positive_prevention() {
     let false_positives = vec![
-        "Process ID 12345",           // Should not match as Unix timestamp
-        "Port 8080 is open",          // Should not match as timestamp
-        "Error code 404",             // Should not match as timestamp
-        "Version 2025.09.29",         // Version numbers
-        "File size 1727676930 bytes", // Large numbers
+        "Process ID 12345",
+        "Port 8080 is open",
+        "Error code 404",
+        "Version 2025.09.29",
+        "File size 1727676930 bytes",
     ];
 
     for input in false_positives {
@@ -161,12 +157,12 @@ fn test_false_positive_prevention() {
 
 #[test]
 fn test_binary_data_safety() {
-    // Test with binary-like data that might contain timestamp-like patterns
     let binary_like = "ÿþ2025\x00\x01\x0229T10:15:30Zÿþ";
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(binary_like);
 
-    // Control bytes break the timestamp shape: input passes through
-    // unchanged with no tokens (and no panic).
-    assert_eq!(result, binary_like);
+    assert_eq!(
+        result, binary_like,
+        "control bytes break the timestamp shape, so the input passes through unchanged"
+    );
     assert!(tokens.is_empty());
 }

@@ -1,18 +1,3 @@
-//! Doc-contract tests — the release gate that makes shipped doc surfaces
-//! (README, agent skill) physically unable to drift from the binary.
-//!
-//! Mechanism: README sections between `<!-- gen:NAME:begin -->` /
-//! `<!-- gen:NAME:end -->` markers are GENERATED from the clap command
-//! definition and from running the binary on a committed fixture. The tests
-//! fail when the committed region differs from what the binary produces.
-//!
-//! Regenerate stale regions with `make docs`
-//! (= `LESSENCE_UPDATE_DOCS=1 cargo test --release --test doc_contract`).
-//!
-//! These tests run in the default suite, so they fire in `make ci`, the
-//! pre-push hook, and the required `test (ubuntu-latest)` CI check — drift
-//! is caught at the commit that introduces it, on every path to a release.
-
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,13 +5,9 @@ use std::sync::Mutex;
 
 mod common;
 
-/// Serializes every gen-region read-modify-write. Three tests rewrite
-/// README.md under `LESSENCE_UPDATE_DOCS=1`, and libtest runs them on
-/// parallel threads — without this lock one test's full-file write clobbers
-/// another's region update (a lost-update race), leaving `make docs` output
-/// stale. The lock also covers the check path so a reader never sees a
-/// half-written file.
-static DOC_LOCK: Mutex<()> = Mutex::new(());
+static GEN_REGION_READ_MODIFY_WRITE_LOCK_ACROSS_TEST_THREADS: Mutex<()> = Mutex::new(());
+
+const UPDATE_DOCS_ENV: &str = "LESSENCE_UPDATE_DOCS";
 
 fn repo_path(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
@@ -36,14 +17,8 @@ fn read(rel: &str) -> String {
     std::fs::read_to_string(repo_path(rel)).unwrap_or_else(|e| panic!("cannot read {rel}: {e}"))
 }
 
-/// Assert that the `<!-- gen:{name}:begin/end -->` region in `rel_path`
-/// matches `want`. With `LESSENCE_UPDATE_DOCS` set, rewrite the region
-/// instead (and pass).
-fn assert_generated_region(rel_path: &str, name: &str, want: &str) {
-    // Hold the lock across read + compare/write — see DOC_LOCK. A panicking
-    // assert below poisons the mutex; later tests still need the lock, so
-    // recover the guard instead of cascading spurious poison panics.
-    let _guard = DOC_LOCK
+fn assert_generated_region(rel_path: &str, name: &str, want: &str, owner_bead: Option<&str>) {
+    let _guard = GEN_REGION_READ_MODIFY_WRITE_LOCK_ACROSS_TEST_THREADS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let begin_marker = format!("<!-- gen:{name}:begin -->");
@@ -76,7 +51,7 @@ fn assert_generated_region(rel_path: &str, name: &str, want: &str) {
     let want_trimmed = want.trim_matches('\n');
     let current_trimmed = current.trim_matches('\n');
 
-    if std::env::var_os("LESSENCE_UPDATE_DOCS").is_some() {
+    if std::env::var_os(UPDATE_DOCS_ENV).is_some() {
         let mut out: Vec<String> = Vec::new();
         out.extend(lines[..=b].iter().map(|s| (*s).to_string()));
         out.push(want_trimmed.to_string());
@@ -91,9 +66,10 @@ fn assert_generated_region(rel_path: &str, name: &str, want: &str) {
         return;
     }
 
+    let owner = owner_bead.map_or(String::new(), |bead| format!(" ({bead})"));
     assert!(
         current_trimmed == want_trimmed,
-        "{rel_path} gen:{name} region is stale — docs no longer match the binary.\n\
+        "{rel_path} gen:{name} region{owner} is stale — docs no longer match the binary.\n\
          --- committed\n{current_trimmed}\n+++ generated\n{want_trimmed}\n\
          FIX: run `make docs` (= LESSENCE_UPDATE_DOCS=1 cargo test --release --test doc_contract),\n\
          review the rewritten regions (a diff here can also mean the CODE regressed —\n\
@@ -101,15 +77,12 @@ fn assert_generated_region(rel_path: &str, name: &str, want: &str) {
     );
 }
 
-/// Built (realized) clap command for inspection.
 fn built_command() -> clap::Command {
     let mut cmd = lessence::cli::command();
     cmd.build();
     cmd
 }
 
-/// Render the flags reference from clap — one line per long flag, in
-/// declaration order, plus the positional.
 fn render_flags() -> String {
     let cmd = built_command();
     let mut out = Vec::new();
@@ -175,18 +148,16 @@ fn render_flags() -> String {
 
 #[test]
 fn readme_flags_block() {
-    assert_generated_region("README.md", "flags", &render_flags());
+    assert_generated_region("README.md", "flags", &render_flags(), None);
 }
 
-/// The flag reference `lessence --skill flags` prints carries the same
-/// binary-generated block as the README, so the list an agent installs is
-/// the binary's own (lessence-xo4).
 #[test]
 fn skill_flags_block() {
     assert_generated_region(
         ".claude/skills/lessence/references/flags.md",
         "flags",
         &render_flags(),
+        Some("lessence-xo4: the flag list `lessence --skill flags` installs is the binary's own"),
     );
 }
 
@@ -199,14 +170,11 @@ fn readme_pattern_names() {
         patterns.len(),
         patterns.join(", ")
     );
-    assert_generated_region("README.md", "patterns", &want);
+    assert_generated_region("README.md", "patterns", &want, None);
 }
 
 #[test]
 fn readme_headline_example() {
-    // The default run on the committed slice: report file plus bounded overview.
-    // The report lands under target/ (disk-backed; /tmp may be tmpfs and is
-    // refused). Path, run id and size vary per run and are shown as placeholders.
     let fixture = repo_path("tests/fixtures/kubelet_2k.log");
     let reports = repo_path("target/doc-contract-reports");
     let _ = std::fs::remove_dir_all(&reports);
@@ -224,7 +192,7 @@ fn readme_headline_example() {
         String::from_utf8_lossy(&output.stderr)
     );
     let path_re = regex::Regex::new(&format!(
-        // Either separator: a Windows build prints `\run-…\report.jsonl`.
+        // A Windows build prints `\` separators.
         "{}[/\\\\]run-[0-9]{{8}}-[0-9]{{6}}-[0-9a-f]{{8}}[/\\\\]report\\.jsonl",
         regex::escape(&reports.to_string_lossy())
     ))
@@ -263,17 +231,19 @@ fn readme_headline_example() {
             block.push('\n');
         }
     };
-    show(&mut block, 0..top + 4); // the briefing head and three top templates
+    let briefing_head_and_three_top_templates = 0..top + 4;
+    let locator_and_first_two_groups = locator..third_group;
+    let locator_again_and_first_recipe = recipes - 1..recipes + 2;
+    show(&mut block, briefing_head_and_three_top_templates);
     block.push_str("...\n");
-    show(&mut block, locator..third_group); // the locator and the first two groups
+    show(&mut block, locator_and_first_two_groups);
     block.push_str("...\n");
-    show(&mut block, recipes - 1..recipes + 2); // the locator again and the first recipe
+    show(&mut block, locator_again_and_first_recipe);
     block.push_str("  ...");
     let want = format!("```\n{block}\n```");
-    assert_generated_region("README.md", "example", &want);
+    assert_generated_region("README.md", "example", &want, None);
 }
 
-/// Extract the contents of all fenced code blocks in a markdown document.
 fn fenced_blocks(markdown: &str) -> String {
     let mut inside = false;
     let mut out = String::new();
@@ -297,8 +267,9 @@ fn no_impossible_rollup_counts() {
     for rel in ["README.md", ".claude/skills/lessence/SKILL.md"] {
         let blocks = fenced_blocks(&read(rel));
         for cap_match in re.captures_iter(&blocks) {
-            if &cap_match[2] == "+" {
-                continue; // documented capped marker, e.g. hash×64+
+            let documented_capped_marker = &cap_match[2] == "+";
+            if documented_capped_marker {
+                continue;
             }
             let n: usize = cap_match[1].parse().unwrap();
             assert!(
@@ -310,6 +281,8 @@ fn no_impossible_rollup_counts() {
         }
     }
 }
+
+const UNSHIPPED_PROPOSALS_FILE: &str = "improvement-backlog.md";
 
 #[test]
 fn skill_flags_coverage() {
@@ -331,20 +304,17 @@ fn skill_flags_coverage() {
             known.insert(format!("--{alias}"));
         }
     }
-    // Flags of OTHER tools that legitimately appear in doc examples
-    // (cargo, kubectl, journalctl invocations etc.) — not lessence flags,
-    // not drift. Extend this list when the assertion below flags one.
     let foreign: HashSet<&str> = [
-        "--release",  // cargo
-        "--since",    // journalctl
-        "--previous", // kubectl logs
+        ("--release", "cargo"),
+        ("--since", "journalctl"),
+        ("--previous", "kubectl logs"),
     ]
     .into_iter()
+    .map(|(flag, _other_tool)| flag)
     .collect();
 
     let flags_md = read(".claude/skills/lessence/references/flags.md");
 
-    // (a) every primary flag is documented in the agent skill
     for flag in &primary {
         assert!(
             flags_md.contains(flag.as_str()),
@@ -353,10 +323,7 @@ fn skill_flags_coverage() {
         );
     }
 
-    // (b) no stale flag names anywhere in the shipped doc surfaces: the
-    // README, the agent skill body (SKILL.md — the file agents actually
-    // load, and the #1 historical drift surface), and every reference doc.
-    let mut surfaces: Vec<(String, String)> = vec![
+    let mut shipped_doc_surfaces: Vec<(String, String)> = vec![
         ("README.md".to_string(), read("README.md")),
         (
             ".claude/skills/lessence/SKILL.md".to_string(),
@@ -371,18 +338,15 @@ fn skill_flags_coverage() {
                 ".claude/skills/lessence/references/{}",
                 path.file_name().unwrap().to_string_lossy()
             );
-            // The improvement backlog is a proposals file — it legitimately
-            // names flags that do not (yet) exist, so it is not a shipped
-            // doc surface and is excluded from the stale-flag net.
-            if rel.ends_with("improvement-backlog.md") {
+            if rel.ends_with(UNSHIPPED_PROPOSALS_FILE) {
                 continue;
             }
             let text = read(&rel);
-            surfaces.push((rel, text));
+            shipped_doc_surfaces.push((rel, text));
         }
     }
     let flag_re = regex::Regex::new(r"--[a-z][a-z0-9-]*").unwrap();
-    for (rel, text) in &surfaces {
+    for (rel, text) in &shipped_doc_surfaces {
         for m in flag_re.find_iter(text) {
             let found = m.as_str();
             assert!(
@@ -395,7 +359,6 @@ fn skill_flags_coverage() {
         }
     }
 
-    // every pattern name must be documented in the skill
     for name in lessence::cli::VALID_PATTERNS {
         assert!(
             flags_md.contains(name),
@@ -423,8 +386,7 @@ fn readme_doc_links_exist() {
             .current_dir(repo_path(""))
             .output()
             .expect("failed to run git");
-        // cargo-mutants tests a copy of the tree without .git; there, "committed"
-        // cannot be asked, so the link is checked for existence instead.
+        // cargo-mutants tests a copy of the tree without .git.
         let in_git = Command::new("git")
             .args(["rev-parse", "--is-inside-work-tree"])
             .current_dir(repo_path(""))

@@ -64,7 +64,6 @@ mod tests {
         for log_line in docker_logs {
             let (_result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
-            // Docker logs might have nested structure - detect if present
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
                     matches!(
@@ -187,10 +186,8 @@ mod tests {
     #[test]
     fn test_mixed_structured_formats() {
         let mixed_logs = vec![
-            // JSON with different field names
             r#"{"time":"2024-01-01T10:00:00Z","lvl":"info","component":"api-gateway","msg":"Request received"}"#,
             r#"{"timestamp":"2024-01-01T10:00:01Z","severity":"error","module":"auth-service","message":"Token expired"}"#,
-            // Logfmt-style
             "time=2024-01-01T10:00:02Z level=warn component=cache msg=\"Memory usage high\"",
             "ts=1640995200 lvl=debug service=database message=\"Query executed\"",
         ];
@@ -198,7 +195,6 @@ mod tests {
         for log_line in mixed_logs {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
-            // Should handle various structured logging formats
             if !tokens.is_empty() {
                 let has_structured = tokens.iter().any(|token| {
                     matches!(
@@ -223,10 +219,10 @@ mod tests {
     #[test]
     fn test_no_false_positives() {
         let non_structured_cases = vec![
-            r#"{"user_id": 12345, "action": "login", "result": "success"}"#, // Data JSON, not log
+            r#"{"user_id": 12345, "action": "login", "result": "success"}"#,
             r"Regular log message without structure",
             r#"Some JSON data: {"config": {"timeout": 30}}"#,
-            r#"{"api_response": {"data": [], "status": 200}}"#, // API response
+            r#"{"api_response": {"data": [], "status": 200}}"#,
             "Plain text log entry",
             "Error: something went wrong (not structured)",
         ];
@@ -234,8 +230,6 @@ mod tests {
         for test_case in non_structured_cases {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
-            // Data JSON and plain text carry no level+component structure,
-            // and nothing on them is rewritten.
             let has_structured = tokens
                 .iter()
                 .any(|token| matches!(token, Token::StructuredMessage { .. }));
@@ -243,15 +237,15 @@ mod tests {
                 !has_structured,
                 "not a structured log line: {test_case:?} -> {result:?} {tokens:?}"
             );
-            assert_eq!(result, test_case, "rewritten: {tokens:?}");
+            assert_eq!(
+                result, test_case,
+                "data JSON and plain text are never rewritten: {tokens:?}"
+            );
         }
     }
 
     #[test]
     fn test_compression_improvement_target() {
-        // This test validates that structured message normalization improves
-        // compression for microservices and cloud-native logs
-
         let microservices_samples = vec![
             r#"{"timestamp":"2024-01-01T10:00:00Z","level":"INFO","service":"user-api","message":"Request processed","request_id":"req_123"}"#,
             r#"{"timestamp":"2024-01-01T10:00:01Z","level":"INFO","service":"user-api","message":"Request processed","request_id":"req_456"}"#,
@@ -267,27 +261,19 @@ mod tests {
             normalized_lines.push(normalized);
         }
 
-        // After normalization, structured logs with same service+level+message
-        // should group better for folding
-        // Similar service patterns should help compression
         let user_api_lines: Vec<_> = normalized_lines
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i < 3) // First 3 are user-api
+            .filter(|(i, _)| *i < 3)
             .map(|(_, line)| line)
             .collect();
 
         if !user_api_lines.is_empty() {
-            // User API logs should have similar structure after normalization
             let structural_similarity = user_api_lines
                 .iter()
-                .map(|line| {
-                    // Remove variable parts to see structural similarity
-                    line.replace(|c: char| c.is_ascii_alphanumeric(), "X")
-                })
+                .map(|line| line.replace(|c: char| c.is_ascii_alphanumeric(), "X"))
                 .collect::<std::collections::HashSet<_>>();
 
-            // Similar service logs should have very similar structure
             assert!(
                 structural_similarity.len() <= 2,
                 "Similar service logs should have similar structure for compression"
@@ -305,7 +291,6 @@ mod tests {
         for log_line in complex_logs {
             let (result, tokens) = StructuredMessageDetector::detect_and_replace(log_line);
 
-            // Should potentially detect multiple structured messages
             let structured_count = tokens
                 .iter()
                 .filter(|token| matches!(token, Token::StructuredMessage { .. }))
@@ -323,29 +308,33 @@ mod tests {
     #[test]
     fn test_edge_cases() {
         let edge_cases = vec![
-            r#"{"level":"info"}"#,                            // Missing component
-            r#"{"component":"api"}"#,                         // Missing level
-            r#"{"level":"info","component":"api"}"#,          // Missing message
-            r#"{"level":"info","component":"api","msg":""}"#, // Empty message
-            r#"{"level":"","component":"api","msg":"test"}"#, // Empty level
+            ("missing component", r#"{"level":"info"}"#),
+            ("missing level", r#"{"component":"api"}"#),
+            ("missing message", r#"{"level":"info","component":"api"}"#),
+            (
+                "empty message",
+                r#"{"level":"info","component":"api","msg":""}"#,
+            ),
+            (
+                "empty level",
+                r#"{"level":"","component":"api","msg":"test"}"#,
+            ),
         ];
 
-        for test_case in edge_cases {
+        for (shape, test_case) in edge_cases {
             let (_result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
-            // Should be conservative with incomplete structured logs
             let structured_count = tokens
                 .iter()
                 .filter(|token| matches!(token, Token::StructuredMessage { .. }))
                 .count();
 
             if structured_count > 0 {
-                // If detected, should have valid components
                 for token in &tokens {
                     if let Token::StructuredMessage { component, level } = token {
                         assert!(
                             !component.is_empty() || !level.is_empty(),
-                            "Should have at least component or level"
+                            "Should have at least component or level ({shape})"
                         );
                     }
                 }

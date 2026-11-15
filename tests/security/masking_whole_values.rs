@@ -1,7 +1,3 @@
-//! Masked values leave no byte behind, in any output stream or saved file,
-//! whichever spelling of `--sanitize` asks for them. Every value here is
-//! invented, from the documentation ranges.
-
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,16 +7,12 @@ fn bin() -> Command {
     crate::common::lessence()
 }
 
-/// A disk-backed scratch directory: the report's filesystem policy refuses
-/// the tmpfs `/tmp` usually is.
-fn scratch() -> tempfile::TempDir {
+fn scratch_outside_tmpfs() -> tempfile::TempDir {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-reports");
     std::fs::create_dir_all(&base).expect("scratch dir");
     tempfile::TempDir::new_in(&base).expect("scratch dir")
 }
 
-/// Every output mode; the ones that are a default text run also save a
-/// report, which is read back with the streams.
 const MODES: &[&[&str]] = &[
     &["--overview", "all"],
     &["--no-report"],
@@ -54,7 +46,6 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A tag followed directly by an alphanumeric.
 static GLUED_TAG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"<(?:IP|HOST|EMAIL|SECRET|JWT|KEY)(?::[0-9a-f]{16})?>[0-9A-Za-z]").unwrap()
 });
@@ -65,9 +56,8 @@ fn write_input(dir: &Path, lines: &[String]) -> PathBuf {
     path
 }
 
-/// stdout, stderr and every saved file of one run, concatenated.
-fn run(input: &Path, args: &[&str], mode: &[&str]) -> String {
-    let dir = scratch();
+fn all_output_of_run(input: &Path, args: &[&str], mode: &[&str]) -> String {
+    let dir = scratch_outside_tmpfs();
     let mut cmd = bin();
     cmd.args(args).args(mode);
     if saves_report(mode) {
@@ -91,12 +81,10 @@ fn run(input: &Path, args: &[&str], mode: &[&str]) -> String {
     all
 }
 
-/// Run `input` through every mode under each argument set and assert no
-/// listed value is in anything the run wrote.
 fn assert_absent_everywhere(input: &Path, variants: &[(&[&str], &[&str])]) {
     for (args, values) in variants {
         for mode in MODES {
-            let out = run(input, args, mode);
+            let out = all_output_of_run(input, args, mode);
             for value in *values {
                 assert!(
                     !out.contains(value),
@@ -113,7 +101,7 @@ fn assert_absent_everywhere(input: &Path, variants: &[(&[&str], &[&str])]) {
 
 #[test]
 fn masking_replaces_whole_addresses() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let lines: Vec<String> = (1..=4)
         .map(|i| {
             format!(
@@ -139,8 +127,7 @@ fn masking_replaces_whole_addresses() {
         ],
     );
 
-    // Two addresses are two pseudonyms, not one.
-    let out = run(&input, &["--sanitize", "ip:pseudonym"], &["--no-report"]);
+    let out = all_output_of_run(&input, &["--sanitize", "ip:pseudonym"], &["--no-report"]);
     let line = out
         .lines()
         .find(|l| l.starts_with("route 1 "))
@@ -150,12 +137,16 @@ fn masking_replaces_whole_addresses() {
         .find_iter(line)
         .map(|m| m.as_str())
         .collect();
-    assert_eq!(tags.len(), 2, "{line}");
+    assert_eq!(
+        tags.len(),
+        2,
+        "two addresses are two pseudonyms, not one: {line}"
+    );
 }
 
 #[test]
 fn masking_is_independent_of_disabled_detectors() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let mut lines = Vec::new();
     for i in 1..=4 {
         lines.push(format!(
@@ -218,7 +209,7 @@ fn masking_is_independent_of_disabled_detectors() {
 
 #[test]
 fn credential_forms_mask_the_secret_part() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let mut lines = Vec::new();
     lines.push("dial postgres://app:Hunter2Secret@db.example.com:5432/x".to_string());
     lines.push("cache redis://:Hunter2Secret@cache.example.net:6379 connected".to_string());
@@ -246,20 +237,22 @@ fn credential_forms_mask_the_secret_part() {
         ],
     );
 
-    // The rest of each line stays.
-    let out = run(&input, &["--sanitize", "credential"], &["--no-report"]);
+    let out = all_output_of_run(&input, &["--sanitize", "credential"], &["--no-report"]);
     for kept in [
         "Authorization: Bearer <SECRET>",
         "postgres://app:<SECRET>@db.example.com:5432/x",
         "Proxy-Authorization: Basic <SECRET>",
     ] {
-        assert!(out.contains(kept), "{kept:?} missing:\n{out}");
+        assert!(
+            out.contains(kept),
+            "{kept:?} missing; the rest of each line stays:\n{out}"
+        );
     }
 }
 
 #[test]
 fn ranked_output_masks_every_template() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let mut lines: Vec<String> = (1..=6)
         .map(|i| format!("job {i} finished cleanly in worker pool"))
         .collect();
@@ -276,7 +269,7 @@ fn ranked_output_masks_every_template() {
     );
     for top in ["0", "1", "2"] {
         for format in ["text", "json"] {
-            let out = run(
+            let out = all_output_of_run(
                 &input,
                 &["--sanitize-pii", "--format", format],
                 &["--top", top],
@@ -286,12 +279,9 @@ fn ranked_output_masks_every_template() {
     }
 }
 
-/// `--explain` names the first word two lines differ in. That word is
-/// shown as the masked line shows it, and its offset points into the
-/// masked `normalized` text.
 #[test]
 fn explain_shows_the_first_difference_masked() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let mut lines: Vec<String> = (1..=3)
         .map(|i| format!("login user=bob password=Wren{i}Fable9 ok"))
         .collect();
@@ -343,19 +333,17 @@ fn explain_shows_the_first_difference_masked() {
                 normalized
                     .get(at..)
                     .is_some_and(|rest| rest.starts_with(ours)),
-                "{args:?}: {ours:?} is not at {at} of {normalized:?}"
+                "{args:?}: first_diff shows the word as the masked line shows it, at an offset \
+                 into the masked normalized text; {ours:?} is not at {at} of {normalized:?}"
             );
         }
         assert!(diffs >= 3, "{args:?}: no first_diff records:\n{out}");
     }
 }
 
-/// A rollup sample that holds a longer value beside a shorter one of the
-/// same group (a path through `192.0.2.123` in a group that also names
-/// `192.0.2.1`) has the longer value replaced whole.
 #[test]
 fn a_rollup_sample_masks_each_value_whole() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let lines: Vec<String> = (1..=4)
         .map(|i| format!("copy {i} from 192.0.2.1 to /data/192.0.2.123/out"))
         .collect();
@@ -368,17 +356,16 @@ fn a_rollup_sample_masks_each_value_whole() {
             (&["--sanitize", "ip:pseudonym"], values),
         ],
     );
-    let out = run(&input, &["--sanitize", "ip"], &["--no-report"]);
-    assert!(out.contains("{/data/<IP>/out}"), "{out}");
+    let out = all_output_of_run(&input, &["--sanitize", "ip"], &["--no-report"]);
+    assert!(
+        out.contains("{/data/<IP>/out}"),
+        "a rollup sample masks each value whole: {out}"
+    );
 }
 
-/// A credential that folds is masked in the rollup too: a sample a
-/// detector reads out of it (the `password@host` of a URL, a path inside a
-/// header's credentials) is counted as the masked line shows it, whichever
-/// entities the run names.
 #[test]
 fn a_folded_credential_is_masked_in_every_sample() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let mut lines = Vec::new();
     for (i, pw) in ["Gale4Hollow", "Brook9Cinder", "Fern6Thistle", "Moss2Quarry"]
         .iter()
@@ -402,16 +389,16 @@ fn a_folded_credential_is_masked_in_every_sample() {
             (&["--sanitize-pii"], secrets),
         ],
     );
-    let out = run(&input, &["--sanitize", "credential"], &["--no-report"]);
-    assert!(out.contains("{<SECRET>@db.example.com}"), "{out}");
+    let out = all_output_of_run(&input, &["--sanitize", "credential"], &["--no-report"]);
+    assert!(
+        out.contains("{<SECRET>@db.example.com}"),
+        "a folded credential is masked in every rollup sample: {out}"
+    );
 }
 
-/// An entity `--sanitize` names is still found and folded as one value
-/// when `--disable-patterns` names the detector that finds it, so the
-/// template and the rollup hold its tag, never a piece of it.
 #[test]
 fn a_named_entity_is_found_with_its_detector_disabled() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let lines: Vec<String> = (1..=4)
         .map(|i| {
             let host = if i % 2 == 0 { "gwlab-b" } else { "gwlab" };
@@ -461,7 +448,7 @@ fn a_named_entity_is_found_with_its_detector_disabled() {
 
 #[test]
 fn an_address_with_any_port_is_replaced() {
-    let dir = scratch();
+    let dir = scratch_outside_tmpfs();
     let mut lines = Vec::new();
     for i in 1..=4 {
         lines.push(format!("peer 198.51.100.3:99999 dropped {i}"));

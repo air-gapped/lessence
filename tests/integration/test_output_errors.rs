@@ -25,7 +25,6 @@ fn closed_output_pipe_is_a_successful_early_stop() {
     }
 }
 
-/// Every mode that streams to stdout instead of saving a report.
 const STREAMING_MODES: [&[&str]; 5] = [
     &["--no-report"],
     &["--format", "json"],
@@ -34,8 +33,6 @@ const STREAMING_MODES: [&[&str]; 5] = [
     &["--preflight"],
 ];
 
-/// Run lessence with the reader of its stdout already gone, so the first
-/// write of any mode meets a closed pipe.
 fn run_with_closed_stdout(args: &[&str], stdin: Stdio) -> std::process::Output {
     let (reader, writer) = UnixStream::pair().unwrap();
     drop(reader);

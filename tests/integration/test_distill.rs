@@ -1,9 +1,3 @@
-//! `--distill` / `--anonymize`: the distilled file must fold the way the log
-//! it came from did, and must carry none of that log's values.
-//!
-//! Development tooling, hidden flags — but the contract is the whole point,
-//! so it is tested end to end through the binary.
-
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
@@ -11,8 +5,11 @@ use std::process::{Command, Output, Stdio};
 const KUBELET: &str = "tests/fixtures/kubelet_2k.log";
 const MICRO: &str = "tests/fixtures/microservices.log";
 
-/// The `--members` default, as `src/cli.rs` declares it.
-const DEFAULT_MEMBERS: usize = 3;
+const DEFAULT_MEMBERS_AS_SRC_CLI_DECLARES: usize = 3;
+const MIN_FOLDED_GROUP_COUNT: usize = 3;
+const ANONYMIZE_INVENTED_CLASSES: [&str; 8] = [
+    "IPV4", "IPV6", "UUID", "HASH", "FQDN", "HOST", "MAC", "EMAIL",
+];
 
 fn lessence_bin() -> Command {
     crate::common::lessence()
@@ -39,7 +36,6 @@ fn run_stdin(args: &[&str], input: &[u8]) -> Output {
     child.wait_with_output().expect("wait")
 }
 
-/// Every group record's template, as `--explain` reports it.
 fn templates(jsonl: &[u8]) -> BTreeSet<String> {
     String::from_utf8_lossy(jsonl)
         .lines()
@@ -49,9 +45,7 @@ fn templates(jsonl: &[u8]) -> BTreeSet<String> {
         .collect()
 }
 
-/// (group count, lines in groups too small to fold) — the two terms of the
-/// size bound a distillation may not exceed.
-fn group_shape(jsonl: &[u8]) -> (usize, usize) {
+fn group_count_and_unfolded_lines(jsonl: &[u8]) -> (usize, usize) {
     let mut groups = 0;
     let mut unfolded = 0;
     for value in String::from_utf8_lossy(jsonl)
@@ -61,15 +55,13 @@ fn group_shape(jsonl: &[u8]) -> (usize, usize) {
     {
         groups += 1;
         let count = value["count"].as_u64().unwrap_or(0) as usize;
-        if count < 3 {
+        if count < MIN_FOLDED_GROUP_COUNT {
             unfolded += count;
         }
     }
     (groups, unfolded)
 }
 
-/// Sample values of the classes `--anonymize` invents, as the original's
-/// own `--explain` facts report them.
 fn invented_class_samples(jsonl: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     for value in String::from_utf8_lossy(jsonl)
@@ -80,9 +72,7 @@ fn invented_class_samples(jsonl: &[u8]) -> Vec<String> {
         let Some(variation) = value["variation"].as_object() else {
             continue;
         };
-        for kind in [
-            "IPV4", "IPV6", "UUID", "HASH", "FQDN", "HOST", "MAC", "EMAIL",
-        ] {
+        for kind in ANONYMIZE_INVENTED_CLASSES {
             let Some(samples) = variation.get(kind).and_then(|v| v["samples"].as_array()) else {
                 continue;
             };
@@ -105,10 +95,6 @@ fn uuids(text: &str) -> BTreeSet<String> {
     re.find_iter(text).map(|m| m.as_str().to_string()).collect()
 }
 
-// ---- (a) the contract: everything still proved, at a derived size ----
-
-/// The distinct sorted token-type vectors `--explain` reports — the
-/// structures a distillation must still show.
 fn structures(jsonl: &[u8]) -> BTreeSet<Vec<String>> {
     explain_groups(jsonl)
         .iter()
@@ -123,7 +109,6 @@ fn structures(jsonl: &[u8]) -> BTreeSet<Vec<String>> {
         .collect()
 }
 
-/// Every token type that fires anywhere.
 fn token_types(jsonl: &[u8]) -> BTreeSet<String> {
     structures(jsonl).into_iter().flatten().collect()
 }
@@ -180,14 +165,6 @@ fn a_distillation_still_proves_every_structure_and_token_type() {
             "{fixture}: a <VARIES> slot must survive wherever the input had one"
         );
 
-        // The selection rules, added up. A chosen group keeps its founding
-        // member, one member per `<VARIES>` slot it marks, one per distinct
-        // normalized form up to DISTILL_FORMS, one per token type it
-        // carries, and enough to reach --members. The cover chooses at most
-        // three groups per structure, two more for the <VARIES> and folded
-        // top-ups, and one group may carry the capping set. A derived
-        // bound, not a tuned number — it moves when the rules do, never
-        // when a corpus does.
         let varies_max = explain_groups(&original.stdout)
             .iter()
             .map(|g| {
@@ -199,31 +176,36 @@ fn a_distillation_still_proves_every_structure_and_token_type() {
             })
             .max()
             .unwrap_or(0);
-        let per_group =
-            1 + varies_max + lessence::folder::DISTILL_FORMS + want_types.len() + DEFAULT_MEMBERS;
-        let (_, unfolded) = group_shape(&original.stdout);
-        let bound = (3 * want_structures.len() + 2) * per_group
-            + lessence::folder::ROLLUP_DISTINCT_CAP
-            + 1
+        let founding_member = 1;
+        let one_per_varies_slot = varies_max;
+        let one_per_distinct_form = lessence::folder::DISTILL_FORMS;
+        let one_per_token_type = want_types.len();
+        let per_group = founding_member
+            + one_per_varies_slot
+            + one_per_distinct_form
+            + one_per_token_type
+            + DEFAULT_MEMBERS_AS_SRC_CLI_DECLARES;
+        let cover_groups_per_structure = 3;
+        let varies_and_folded_top_up_groups = 2;
+        let capping_set = lessence::folder::ROLLUP_DISTINCT_CAP + 1;
+        let (_, unfolded) = group_count_and_unfolded_lines(&original.stdout);
+        let derived_bound = (cover_groups_per_structure * want_structures.len()
+            + varies_and_folded_top_up_groups)
+            * per_group
+            + capping_set
             + unfolded;
         let emitted = String::from_utf8_lossy(&distilled.stdout).lines().count();
         assert!(
-            emitted <= bound,
-            "{fixture}: {emitted} lines exceeds the derived bound {bound} \
+            emitted <= derived_bound,
+            "{fixture}: {emitted} lines exceeds the derived bound {derived_bound} \
              ({} structures, per_group {per_group}, {unfolded} unfolded)",
             want_structures.len()
         );
     }
 }
 
-// ---- (b) the check is load-bearing: a weaker selection would break it ----
-
 #[test]
 fn members_one_still_proves_every_structure() {
-    // `--members 1` asks for the smallest possible distillation. The
-    // members that built a group's template are kept regardless, so the
-    // contract still holds — a selection that fell back to "the first
-    // line" would report a lost structure here and exit 1.
     let original = run(&["--explain", "-q", KUBELET]);
     let want = structures(&original.stdout);
 
@@ -237,7 +219,7 @@ fn members_one_still_proves_every_structure() {
     let refolded = run_stdin(&["--explain", "-q"], &distilled.stdout);
     assert!(
         want.is_subset(&structures(&refolded.stdout)),
-        "structures lost at --members 1"
+        "structures lost at --members 1: the members that built a group's template are kept regardless"
     );
 
     let full = run(&["--distill", KUBELET]);
@@ -246,8 +228,6 @@ fn members_one_still_proves_every_structure() {
         "--members 1 must never be larger than the default"
     );
 }
-
-// ---- (c) anonymisation: nothing of the original survives, consistently ----
 
 #[test]
 fn anonymize_leaves_no_original_value_of_an_invented_class() {
@@ -282,16 +262,14 @@ fn one_original_maps_to_one_invention_everywhere() {
     assert_eq!(anonymized.status.code(), Some(0));
     let out = String::from_utf8_lossy(&anonymized.stdout).to_string();
 
-    // Consistency and injectivity together: one invention per original and
-    // no two originals sharing one means the distinct count cannot move.
     assert_eq!(
         uuids(&source).len(),
         uuids(&out).len(),
-        "the number of distinct UUIDs must survive the mapping"
+        "the number of distinct UUIDs must survive the mapping: one invention per original, \
+         no two originals sharing one"
     );
     assert!(uuids(&source).is_disjoint(&uuids(&out)), "no UUID survived");
 
-    // Two lines that shared a UUID must share one afterwards.
     let src_lines: Vec<&str> = source.lines().collect();
     let out_lines: Vec<&str> = out.lines().collect();
     assert_eq!(src_lines.len(), out_lines.len());
@@ -329,14 +307,10 @@ fn the_same_seed_invents_the_same_log_and_a_different_seed_does_not() {
     assert_eq!(other.status.code(), Some(0));
 }
 
-// ---- (d) --anonymize-words ----
-
 #[test]
 fn anonymize_words_removes_a_word_the_detectors_never_class() {
-    // The vocabulary word is the fixture's own host name, read from the
-    // fixture so the source never spells it: `Host:<word>` on some line.
     let source = std::fs::read_to_string(KUBELET).expect("fixture");
-    let word = source
+    let host_word_read_from_fixture = source
         .lines()
         .find_map(|l| l.split("Host:").nth(1))
         .map(|rest| {
@@ -346,6 +320,7 @@ fn anonymize_words_removes_a_word_the_detectors_never_class() {
                 .to_lowercase()
         })
         .expect("the fixture must carry a Host: field for this test to mean anything");
+    let word = host_word_read_from_fixture;
     assert!(word.len() >= 3, "host word too short to test: {word:?}");
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -370,13 +345,12 @@ fn anonymize_words_removes_a_word_the_detectors_never_class() {
     let text = String::from_utf8_lossy(&distilled.stdout).to_lowercase();
     assert!(!text.contains(&word), "the vocabulary word survived");
 
-    // The templates still have to match — that is checked inside the run
-    // (exit 0 above), and again here against the original.
     let refolded = run_stdin(&["--explain", "-q"], &distilled.stdout);
-    assert!(!templates(&refolded.stdout).is_empty());
+    assert!(
+        !templates(&refolded.stdout).is_empty(),
+        "the distilled log must still fold into templates"
+    );
 }
-
-// ---- (e) output-mode flags are rejected, not ignored ----
 
 #[test]
 fn distill_with_an_output_mode_flag_is_a_usage_error_naming_both() {
@@ -389,12 +363,14 @@ fn distill_with_an_output_mode_flag_is_a_usage_error_naming_both() {
 
 #[test]
 fn distill_with_stats_json_is_a_usage_error_naming_both() {
-    // --distill writes a log and no statistics: --stats-json would be
-    // silently ignored.
     for mode in ["--distill", "--anonymize"] {
         let out = run(&[mode, "--stats-json", MICRO]);
         let err = String::from_utf8_lossy(&out.stderr);
-        assert_eq!(out.status.code(), Some(2), "{mode}: {err}");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{mode} writes no statistics, so --stats-json must be refused, not ignored: {err}"
+        );
         assert!(out.stdout.is_empty(), "{mode}: no log is written");
         assert!(
             err.contains(mode) && err.contains("--stats-json"),
@@ -402,8 +378,6 @@ fn distill_with_stats_json_is_a_usage_error_naming_both() {
         );
     }
 }
-
-// ---- (f) --anonymize alone rewrites the whole log ----
 
 #[test]
 fn anonymize_without_distill_emits_every_line() {
@@ -417,13 +391,8 @@ fn anonymize_without_distill_emits_every_line() {
     );
 }
 
-// ---- (g) an over-fold across a literal word cannot be distilled away ----
-
 #[test]
 fn a_fold_across_a_literal_word_keeps_both_words() {
-    // Two events the folder merges: nine say `cleanly`, one says `dirty`,
-    // and the odd one is last — exactly where "the first three members"
-    // would lose it.
     let dir = tempfile::tempdir().expect("tempdir");
     let log = dir.path().join("over.log");
     let mut text = String::new();
@@ -432,7 +401,9 @@ fn a_fold_across_a_literal_word_keeps_both_words() {
             "2025-01-20T10:20:0{i}.000Z worker {i} finished cleanly\n"
         ));
     }
-    text.push_str("2025-01-20T10:20:09.000Z worker 9 finished dirty\n");
+    let rare_word_last_where_first_members_would_lose_it =
+        "2025-01-20T10:20:09.000Z worker 9 finished dirty\n";
+    text.push_str(rare_word_last_where_first_members_would_lose_it);
     std::fs::write(&log, &text).expect("write log");
 
     let out = run(&[
@@ -494,7 +465,12 @@ fn the_distilled_log_is_a_subset_of_its_input_and_says_nothing_on_stdout() {
         "diagnostics must stay on stderr"
     );
 
-    // Both events survive: the rare one is the whole reason to distil.
-    assert!(log.contains("housekeeping heartbeat"));
-    assert!(log.contains("database connection failed"));
+    assert!(
+        log.contains("housekeeping heartbeat"),
+        "the common event survives"
+    );
+    assert!(
+        log.contains("database connection failed"),
+        "the rare event survives: it is the reason to distil"
+    );
 }

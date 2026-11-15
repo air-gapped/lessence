@@ -1,10 +1,3 @@
-//! A template with several `<VARIES>` slots reports each slot's values
-//! apart, in template order (lessence-a9l): the reader must be able to
-//! tell which slot a value filled, and a slot with many values must not
-//! crowd a rare value of another slot out of the rollup.
-//!
-//! Every line here is invented.
-
 use std::io::Write;
 use std::process::Stdio;
 
@@ -46,7 +39,6 @@ fn marker(text: &str) -> &str {
         .unwrap_or_else(|| panic!("no marker in:\n{text}"))
 }
 
-/// Four members, two slots: a service and a node.
 const TWO_SLOTS: &str = "\
 failed to start \"db\" on node \"n1\"
 failed to start \"db\" on node \"n2\"
@@ -54,22 +46,19 @@ failed to start \"cache\" on node \"n3\"
 failed to start \"db\" on node \"n4\"
 ";
 
-/// A node name from an index, letters only, so no detector claims it.
-fn node(i: usize) -> String {
+fn untokenised_node_name(i: usize) -> String {
     let a = (b'a' + (i / 26) as u8) as char;
     let b = (b'a' + (i % 26) as u8) as char;
     format!("wk{a}{b}")
 }
 
-/// 301 members: `"db"` ×300 and `"cache"` ×1 in the first slot, 100 node
-/// names in the second.
-fn crowded() -> String {
+fn rare_cache_beside_a_hundred_node_names() -> String {
     let mut out = String::new();
     for i in 0..301 {
         let service = if i == 150 { "cache" } else { "db" };
         out.push_str(&format!(
             "failed to start \"{service}\" on node \"{}\"\n",
-            node(i % 100)
+            untokenised_node_name(i % 100)
         ));
     }
     out
@@ -115,7 +104,11 @@ fn two_slots_are_listed_apart_in_template_order_in_json() {
         let slots = varies["slots"]
             .as_array()
             .expect("slots on a two-slot group");
-        assert_eq!(slots.len(), 2, "{varies}");
+        assert_eq!(
+            slots.len(),
+            2,
+            "lessence-a9l: each <VARIES> slot reports its values apart, in template order: {varies}"
+        );
         assert_eq!(
             sample_counts(&slots[0]),
             vec![("\"db\"".into(), 3), ("\"cache\"".into(), 1)],
@@ -133,8 +126,10 @@ fn two_slots_are_listed_apart_in_template_order_in_json() {
                 .collect::<Vec<_>>(),
             "{flag}: {varies}"
         );
-        // the pooled entry is what it always was
-        assert_eq!(varies["distinct_count"], 6, "{varies}");
+        assert_eq!(
+            varies["distinct_count"], 6,
+            "the pooled entry still counts every slot's values together: {varies}"
+        );
         assert!(slots.iter().all(|s| s.get("slots").is_none()), "{varies}");
     }
 }
@@ -169,12 +164,12 @@ failed to start \"db\" on node \"n1\"
 
 #[test]
 fn a_rare_value_stays_listed_beside_a_crowded_slot() {
-    let input = crowded();
+    let input = rare_cache_beside_a_hundred_node_names();
     let out = run(&["--no-report", "-q", "--threads", "1"], &input);
     let m = marker(&out);
     assert!(
         m.contains("varies×2 {\"db\"×300, \"cache\"×1}, varies×64+ {"),
-        "{m}"
+        "a slot with many values must not crowd a rare value of another slot out: {m}"
     );
     for flag in ["--explain", "--format=json"] {
         let gs = groups(&["--no-report", "--threads", "1", flag], &input);
@@ -187,8 +182,10 @@ fn a_rare_value_stays_listed_beside_a_crowded_slot() {
             "{flag}: {varies}"
         );
         assert_eq!(slots[0]["samples_complete"], true);
-        // the crowded slot declares what it left out
-        assert_eq!(slots[1]["capped"], true, "{varies}");
+        assert_eq!(
+            slots[1]["capped"], true,
+            "the crowded slot declares what it left out: {varies}"
+        );
         assert_eq!(slots[1]["distinct_count_kind"], "lower_bound");
         assert_eq!(slots[1]["samples_complete"], false);
         assert_eq!(slots[1]["omitted_sample_values"]["kind"], "lower_bound");
@@ -198,12 +195,13 @@ fn a_rare_value_stays_listed_beside_a_crowded_slot() {
 
 #[test]
 fn pooled_counts_are_the_sum_over_slots() {
-    for input in [TWO_SLOTS.to_string(), crowded()] {
+    for input in [
+        TWO_SLOTS.to_string(),
+        rare_cache_beside_a_hundred_node_names(),
+    ] {
         let gs = groups(&["--no-report", "--threads", "1", "--format=json"], &input);
         let varies = &gs[0]["variation"]["VARIES"];
         let slots = varies["slots"].as_array().expect("slots");
-        // every value the pooled entry shows counts what the slots count
-        // for it together
         for (value, n) in sample_counts(varies) {
             let in_slots: u64 = slots
                 .iter()
@@ -213,9 +211,15 @@ fn pooled_counts_are_the_sum_over_slots() {
                 .sum();
             let complete = slots.iter().all(|s| s["samples_complete"] == true);
             if complete {
-                assert_eq!(n, in_slots, "{value}: {varies}");
+                assert_eq!(
+                    n, in_slots,
+                    "a pooled value counts what the slots count for it together: {value}: {varies}"
+                );
             } else {
-                assert!(n >= in_slots, "{value}: {varies}");
+                assert!(
+                    n >= in_slots,
+                    "a pooled value counts at least what the slots count for it: {value}: {varies}"
+                );
             }
         }
         let members = gs[0]["count"].as_u64().unwrap();
@@ -225,15 +229,13 @@ fn pooled_counts_are_the_sum_over_slots() {
                 assert_eq!(total, members, "{slot}");
             }
         }
-        // a value pooled from both slots: the pooled distinct count is the
-        // union, never more than the slots hold together
         let sum: u64 = slots
             .iter()
             .map(|s| s["distinct_count"].as_u64().unwrap())
             .sum();
         assert!(
             varies["distinct_count"].as_u64().unwrap() <= sum,
-            "{varies}"
+            "the pooled distinct count is the union, never more than the slots hold together: {varies}"
         );
     }
     let gs = groups(
@@ -255,7 +257,7 @@ fn pooled_counts_are_the_sum_over_slots() {
 
 #[test]
 fn slots_are_the_same_at_every_thread_count() {
-    let input = crowded();
+    let input = rare_cache_beside_a_hundred_node_names();
     let json = |t: &str| {
         groups(&["--no-report", "--threads", t, "--format=json"], &input)
             .into_iter()

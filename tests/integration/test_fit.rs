@@ -7,7 +7,6 @@ fn lessence_bin() -> Command {
 
 #[test]
 fn test_fit_implies_summary() {
-    // --fit should produce summary-style output ([Nx] prefixes) even without --summary
     let input = "error: connection refused\nerror: connection refused\nerror: connection refused\n\
                  warn: timeout reached\nwarn: timeout reached\nwarn: timeout reached\n";
 
@@ -30,7 +29,6 @@ fn test_fit_implies_summary() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Summary mode produces [Nx] prefixed lines
     let group_count = stdout
         .lines()
         .filter(|l| l.starts_with('[') && l.contains("x]"))
@@ -43,7 +41,6 @@ fn test_fit_implies_summary() {
 
 #[test]
 fn test_fit_with_top_n_uses_top_n_mode() {
-    // --fit --top 2 should show exactly 2 groups (top-N takes priority over implied summary)
     let output = lessence_bin()
         .args([
             "--fit",
@@ -70,7 +67,6 @@ fn test_fit_with_top_n_uses_top_n_mode() {
 
 #[test]
 fn test_fit_piped_shows_full_output() {
-    // When piped (not a terminal), --fit budget is ignored — all patterns shown
     let mut lines = String::new();
     for i in 0..50 {
         for _ in 0..3 {
@@ -97,7 +93,6 @@ fn test_fit_piped_shows_full_output() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // No truncation indicator when piped
     assert!(
         !stdout.contains("remove --fit for full output"),
         "Piped output should not be truncated. Got:\n{stdout}"
@@ -106,8 +101,6 @@ fn test_fit_piped_shows_full_output() {
 
 #[test]
 fn test_fit_with_preflight() {
-    // --preflight prints only the briefing, so --fit would be ignored: a
-    // usage error naming it, never a silent choice of one over the other.
     let input = "error: something\nerror: something\nerror: something\n";
 
     let mut child = lessence_bin()
@@ -118,9 +111,8 @@ fn test_fit_with_preflight() {
         .spawn()
         .expect("Failed to start");
 
-    // A usage error exits before stdin is read, so this write can meet a
-    // closed pipe. Either outcome is fine: the assertions below are the test.
-    let _ = child.stdin.take().unwrap().write_all(input.as_bytes());
+    let _write_may_meet_a_closed_pipe_after_a_usage_error =
+        child.stdin.take().unwrap().write_all(input.as_bytes());
 
     let output = child.wait_with_output().expect("Failed to wait");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -128,6 +120,6 @@ fn test_fit_with_preflight() {
     assert!(output.stdout.is_empty());
     assert!(
         stderr.starts_with("lessence: ") && stderr.contains("--fit"),
-        "{stderr}"
+        "--preflight prints only the briefing, so --fit is a usage error naming it: {stderr}"
     );
 }

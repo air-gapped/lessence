@@ -1,8 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// A default run saves a report; keep it under target/ rather than in the
-/// caller's home, which may be unwritable (the cross container's is `/`).
+// cross runs tests with HOME=/, which is unwritable, so reports go under target/.
 fn lessence() -> Command {
     let mut cmd = crate::common::lessence();
     cmd.env("LESSENCE_REPORT_DIR", env!("CARGO_TARGET_TMPDIR"));
@@ -171,9 +170,6 @@ fn test_disable_patterns_accepts_valid_names() {
 
 #[test]
 fn test_min_collapse_rejects_two() {
-    // Floor raised to 3: a 2-line group would expand to 3 output lines
-    // (first/summary/last) and underflow lines_saved (count - 3), so 2 is no
-    // longer a meaningful folding minimum.
     let output = lessence()
         .args(["--min-collapse", "2"])
         .output()
@@ -181,7 +177,7 @@ fn test_min_collapse_rejects_two() {
 
     assert!(
         !output.status.success(),
-        "Should exit with error for --min-collapse 2 (floor is now 3)"
+        "--min-collapse 2 is rejected: a folded group prints first, summary and last, so a 2-line group would save no lines (floor is 3)"
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);

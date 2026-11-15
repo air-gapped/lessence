@@ -1,23 +1,20 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-fn lessence_bin() -> Command {
+fn lessence_streaming_without_report() -> Command {
     let mut cmd = crate::common::lessence();
-    // Every case here asserts the streamed text of a run that saves no
-    // report; the saved-report default is covered by tests/integration/test_report.rs.
     cmd.args(["--no-stats", "--no-report"]);
     cmd
 }
 
 #[test]
 fn test_file_arg_matches_stdin() {
-    // File argument should produce identical output to stdin redirection
-    let file_output = lessence_bin()
+    let file_output = lessence_streaming_without_report()
         .arg("tests/fixtures/nginx_sample.log")
         .output()
         .expect("Failed to run with file arg");
 
-    let mut child = lessence_bin()
+    let mut child = lessence_streaming_without_report()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -41,7 +38,7 @@ fn test_file_arg_matches_stdin() {
 
 #[test]
 fn test_multiple_files_concatenated() {
-    let output = lessence_bin()
+    let output = lessence_streaming_without_report()
         .arg("tests/fixtures/nginx_sample.log")
         .arg("tests/fixtures/microservices.log")
         .output()
@@ -54,7 +51,7 @@ fn test_multiple_files_concatenated() {
 
 #[test]
 fn test_no_args_reads_stdin() {
-    let mut child = lessence_bin()
+    let mut child = lessence_streaming_without_report()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -75,7 +72,7 @@ fn test_no_args_reads_stdin() {
 
 #[test]
 fn test_all_files_invalid_exits_nonzero() {
-    let output = lessence_bin()
+    let output = lessence_streaming_without_report()
         .arg("nonexistent1.log")
         .arg("nonexistent2.log")
         .output()
@@ -89,7 +86,7 @@ fn test_all_files_invalid_exits_nonzero() {
 
 #[test]
 fn test_dash_reads_stdin() {
-    let mut child = lessence_bin()
+    let mut child = lessence_streaming_without_report()
         .arg("-")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -111,7 +108,7 @@ fn test_dash_reads_stdin() {
 
 #[test]
 fn test_missing_file_alone_exits_nonzero() {
-    let output = lessence_bin()
+    let output = lessence_streaming_without_report()
         .arg("tests/fixtures/does_not_exist.log")
         .output()
         .expect("Failed to run");
@@ -123,7 +120,7 @@ fn test_missing_file_alone_exits_nonzero() {
 
 #[test]
 fn test_missing_file_with_valid_file_exits_nonzero_but_processes_valid() {
-    let output = lessence_bin()
+    let output = lessence_streaming_without_report()
         .args([
             "tests/fixtures/nginx_sample.log",
             "tests/fixtures/does_not_exist.log",

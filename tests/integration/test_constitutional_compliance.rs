@@ -7,16 +7,11 @@ use std::sync::LazyLock;
 mod log_generator;
 
 #[test]
-fn test_constitutional_compliance_generated() {
-    // Constitutional compliance test using generated synthetic logs.
-    // Verifies that lessence maintains high compression on repetitive
-    // kubelet-style patterns. This runs on all builds (debug + release)
-    // and doesn't depend on gitignored corpus files.
-    //
-    // The generator produces 1000 lines across 5 patterns exercising
-    // all major token types (UUID, IP, Hash, Path, PodName, Namespace,
-    // PID, Timestamp, Duration, QuotedString).
-    let input = log_generator::generate_log(1000);
+fn generated_kubelet_style_log_folds_to_between_5_and_30_lines() {
+    const GENERATED_LINES_OVER_FIVE_PATTERNS: usize = 1000;
+    const MOST_FOLDED_LINES: usize = 30;
+    const FEWEST_FOLDED_LINES_BEFORE_PATTERNS_MERGE: usize = 5;
+    let input = log_generator::generate_log(GENERATED_LINES_OVER_FIVE_PATTERNS);
     let input_lines = input.lines().count();
 
     let mut child = crate::common::lessence()
@@ -45,10 +40,8 @@ fn test_constitutional_compliance_generated() {
     println!("Constitutional compliance (generated 1000 lines):");
     println!("  Input: {input_lines}, Output: {output_lines}, Ratio: {ratio:.1}%");
 
-    // 1000 lines with 5 repeating patterns should compress to ≤30 lines.
-    // The generator is deterministic so this is a stable assertion.
     assert!(
-        output_lines <= 30,
+        output_lines <= MOST_FOLDED_LINES,
         "Compression regression: {output_lines} > 30 lines from {input_lines} input"
     );
     assert!(
@@ -56,33 +49,19 @@ fn test_constitutional_compliance_generated() {
         "Compression ratio {ratio:.1}% < 95.0% on generated kubelet-style logs"
     );
 
-    // Lower bound: too few output lines means over-aggressive folding
-    // (merging patterns that shouldn't be merged)
     assert!(
-        output_lines >= 5,
+        output_lines >= FEWEST_FOLDED_LINES_BEFORE_PATTERNS_MERGE,
         "Over-compression: {output_lines} < 5 lines — patterns are being merged incorrectly"
     );
 }
 
 #[test]
-fn test_constitutional_compliance_kubelet() {
-    // Bonus test against real kubelet.log when available (gitignored).
-    // Skipped when the file is missing.
+fn kubelet_fold_matches_golden_and_every_near_miss_shape_names_its_bead() {
+    const NEAR_MISS_SCORE_FLOOR_WITH_HEADROOM_BELOW_THRESHOLD_83: f64 = 75.0;
     let Some(file) = crate::common::require_example("examples/distilled/kubelet.log") else {
         return;
     };
 
-    // This used to assert `output_lines <= 700`. A line count is a proxy
-    // for "did the fold get worse" from a time when nothing could say WHAT
-    // got worse. It fails both ways: 98.5% of a log in one group passes it,
-    // and a correct split of one blob into three real events breaks it.
-    //
-    // --explain can say what got worse. A singleton whose nearest group
-    // scores at or above the threshold, with no anchor keeping them apart,
-    // is a line lessence itself reports as "should have joined". Every one
-    // of those is an under-fold with a cause. The gate is therefore: the
-    // set of such near-miss shapes may only shrink, and every shape still
-    // present must name the bead that owns it.
     let output = crate::common::lessence()
         .args(["--explain", "--threads", "1"])
         .stdin(file)
@@ -112,25 +91,19 @@ fn test_constitutional_compliance_kubelet() {
         if count != 1 || nearest.is_null() {
             continue;
         }
-        // Anchors are matched, never scored: that split is on purpose.
-        if nearest["anchor_mismatch"] == true {
+        let anchor_split_is_on_purpose = nearest["anchor_mismatch"] == true;
+        if anchor_split_is_on_purpose {
             continue;
         }
-        // Just under the threshold is the fingerprint of a missing shape
-        // rule, not of a distinct event. 75 leaves headroom below 83 so a
-        // rule that pushes a shape from 80 down to 78 still counts as open.
         let score = nearest["score"].as_f64().unwrap_or(0.0);
-        if score < 75.0 {
+        if score < NEAR_MISS_SCORE_FLOOR_WITH_HEADROOM_BELOW_THRESHOLD_83 {
             continue;
         }
-        // Reduce the differing token to its shape so 98 pod names with
-        // different suffixes count as ONE cause.
         let ours = nearest["first_diff"]["ours"].as_str().unwrap_or("");
-        *near_misses.entry(shape_of(ours)).or_default() += 1;
+        *near_misses
+            .entry(one_cause_shape_of_differing_token(ours))
+            .or_default() += 1;
     }
-    // The golden inventory is the volume property of the corpus: every
-    // template with its count. A line count of the corpus is a
-    // distillation choice, not a test property.
     let golden_text = std::fs::read_to_string("examples/distilled/kubelet.golden")
         .expect("Failed to read examples/distilled/kubelet.golden");
     let mut golden: Vec<String> = golden_text.lines().map(str::to_string).collect();
@@ -166,36 +139,31 @@ fn test_constitutional_compliance_kubelet() {
         println!("  {n:>4}  {shape}");
     }
 
-    // Known under-folds, each owned by a bead. A new shape appearing here
-    // is a regression: name it and its bead, or fix it. A shape vanishing
-    // is progress: delete its line.
     let known: &[(&str, &str)] = &[
-        // `err="Patch` vs `err="Post`, `err="container` vs `err="init`: the
-        // first word of a quoted error sentence differs. Different causes;
-        // correctly apart. Sits here only because the score is high.
-        ("<W>=\"<W>", "distinct error cause, by design"),
-        // `unexpected` (EOF) vs `read` (connection reset): two error tails.
-        ("<W>", "distinct error cause, by design"),
-        // `for \"config\"` vs `for \"litellm\"`: the container named inside
-        // a quoted error sentence. Since lessence-t8q the sentence keeps its
-        // words, so which container crash-looped is visible — distinct
-        // containers, by design.
+        (
+            "<W>=\"<W>",
+            "distinct error cause, by design: first word of a quoted error sentence",
+        ),
+        ("<W>", "distinct error cause, by design: two error tails"),
         (
             "\\\"<W>\\\"",
-            "distinct container, by design (lessence-t8q)",
+            "distinct container named in a quoted error sentence, by design (lessence-t8q)",
         ),
-        // A quoted error sentence whose words differ in two places — the
-        // verb and the cause — no longer folds into a group founded on
-        // another sentence (lessence-a8t): `"<W>` opens one, `<W>"` closes
-        // one, `<W>=[<NAME>],` is a struct field naming a different volume.
-        ("\"<W>", "another sentence, by design (lessence-a8t)"),
-        ("<W>\"", "another sentence, by design (lessence-a8t)"),
-        ("<W>=[<NAME>],", "another volume, by design (lessence-a8t)"),
-        // `err="container &Container{Name:litellm,Image:…}`: a Go struct
-        // dump names its container and image. Distinct, by design (t8q).
+        (
+            "\"<W>",
+            "another sentence opens, verb and cause differ, by design (lessence-a8t)",
+        ),
+        (
+            "<W>\"",
+            "another sentence closes, verb and cause differ, by design (lessence-a8t)",
+        ),
+        (
+            "<W>=[<NAME>],",
+            "struct field naming another volume, by design (lessence-a8t)",
+        ),
         (
             "<W>=\"<NAME>,<W>:<W>{<W>:<W>,<W>:<NAME>,<W>:<NAME>,<W>:<NAME>,<W>:<W>,<W>:<NAME>,<W>:<W>{<NAME>},},<W>:<W>,<W>:<W>",
-            "distinct container and image, by design (lessence-t8q)",
+            "Go struct dump naming a distinct container and image, by design (lessence-t8q)",
         ),
     ];
     let unexplained: Vec<_> = near_misses
@@ -210,21 +178,15 @@ fn test_constitutional_compliance_kubelet() {
     );
 }
 
-/// Collapse a differing token to its shape. A hyphenated name with its
-/// placeholders — `harbor/backup-<NUMBER>-x9k2m`, `vllm/vllm-<HASH>-q1w2e` —
-/// is one shape, `<NAME>`, because the cause of the near-miss is the name
-/// as a whole, not how many hyphens it happens to have. Anything else keeps
-/// its punctuation so `file.go:<LINE>]` and `err="EOF"` stay distinct.
-fn shape_of(token: &str) -> String {
+fn one_cause_shape_of_differing_token(token: &str) -> String {
     let mut out = String::new();
     let mut name = String::new();
     let flush = |name: &mut String, out: &mut String| {
         if name.is_empty() {
             return;
         }
-        // A bare word stays a word; a word containing a hyphen or a
-        // placeholder is a name.
-        if name.contains('-') || name.contains('<') {
+        let hyphenated_or_placeholder_name = name.contains('-') || name.contains('<');
+        if hyphenated_or_placeholder_name {
             out.push_str("<NAME>");
         } else {
             out.push_str("<W>");
@@ -253,7 +215,6 @@ fn shape_of(token: &str) -> String {
 
 #[test]
 fn test_processing_speed_requirement() {
-    // Speed test only makes sense with release binary + real corpus.
     if cfg!(debug_assertions) {
         eprintln!("Skipping speed test: debug build (use --release)");
         return;
@@ -283,36 +244,16 @@ fn test_processing_speed_requirement() {
     );
 }
 
-// An anchor (`normalize::anchor_hash`) is matched, never scored: two lines
-// whose anchor differs are forced into different groups however alike they
-// read otherwise. That split is only honest when it is VISIBLE on the shown
-// line (CLAUDE.local.md principle 1/2/3) — an anchor that separates groups
-// while normalization erases the very field that separated them produces two
-// groups printing the identical template, which reads as one event silently
-// repeated rather than the distinct endpoints/devices it actually is.
-//
-// `nearest.anchor_mismatch == true` on a group whose `normalized` matches
-// another group's `normalized` is exactly that: an anchor split with nothing
-// on the line to show for it. A group re-founded after a flush window
-// legitimately repeats a template with no anchor involved — that case has
-// `anchor_mismatch == false` (or no `nearest` at all) and is not a
-// violation.
-//
-// Runs `lessence --explain` on one corpus and returns every offending
-// template (printed by more than one anchor-mismatched group) as
-// (template, how many groups share it), worst offender first.
-fn anchor_split_offenders(corpus: &std::path::Path) -> Vec<(String, usize)> {
-    offender_groups(corpus)
+fn templates_printed_by_several_anchor_split_groups_worst_first(
+    corpus: &std::path::Path,
+) -> Vec<(String, usize)> {
+    anchor_split_groups_sharing_a_template(corpus)
         .into_iter()
         .map(|(template, lines)| (template, lines.len()))
         .collect()
 }
 
-/// Same offenders, but with each group's sample raw line kept alongside —
-/// `a_route_split_is_visible` needs the raw text to tell a route split from
-/// a status-class split; `anchor_split_offenders` above throws it away for
-/// callers that only want the count.
-fn offender_groups(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
+fn anchor_split_groups_sharing_a_template(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
     let output = crate::common::lessence()
         .args(["--explain", "--threads", "1"])
         .stdin(std::fs::File::open(corpus).expect("corpus just listed by caller"))
@@ -325,9 +266,10 @@ fn offender_groups(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
     );
     let stdout = str::from_utf8(&output.stdout).expect("Invalid UTF-8");
 
-    // normalized -> (sample lines of groups sharing it, saw an anchor_mismatch)
-    let mut by_template: std::collections::HashMap<String, (Vec<String>, bool)> =
-        std::collections::HashMap::new();
+    let mut sample_lines_and_any_anchor_mismatch_by_template: std::collections::HashMap<
+        String,
+        (Vec<String>, bool),
+    > = std::collections::HashMap::new();
     for record in stdout.lines() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(record) else {
             continue;
@@ -338,36 +280,30 @@ fn offender_groups(corpus: &std::path::Path) -> Vec<(String, Vec<String>)> {
         let normalized = v["normalized"].as_str().unwrap_or("").to_string();
         let anchor_mismatch = v["nearest"]["anchor_mismatch"] == true;
         let sample = v["first"]["line"].as_str().unwrap_or("").to_string();
-        let entry = by_template.entry(normalized).or_insert((Vec::new(), false));
+        let entry = sample_lines_and_any_anchor_mismatch_by_template
+            .entry(normalized)
+            .or_insert((Vec::new(), false));
         entry.0.push(sample);
         entry.1 |= anchor_mismatch;
     }
 
-    let mut offenders: Vec<(String, Vec<String>)> = by_template
-        .into_iter()
-        .filter(|(_, (lines, saw_mismatch))| lines.len() > 1 && *saw_mismatch)
-        .map(|(template, (lines, _))| (template, lines))
-        .collect();
+    let mut offenders: Vec<(String, Vec<String>)> =
+        sample_lines_and_any_anchor_mismatch_by_template
+            .into_iter()
+            .filter(|(_, (lines, saw_mismatch))| lines.len() > 1 && *saw_mismatch)
+            .map(|(template, (lines, _))| (template, lines))
+            .collect();
     offenders.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
     offenders
 }
 
-/// Sweeps every distilled corpus and reports invisible-anchor-splits still
-/// open. This is the full-repo picture, not a gate — PCI addresses, klog
-/// call sites, systemd units, program fields and status fields are anchor
-/// classes the route and kubectl-prefix fixes did not touch, and each
-/// becomes a `##CASE` (and moves out of this report) as it is fixed.
-/// `a_route_split_is_visible` and `a_pod_prefix_split_is_visible` below
-/// carry the two classes already fixed.
-///
-///     cargo test --release --test integration invisible_anchor_splits -- --ignored --nocapture
 #[test]
 #[ignore = "documents open invisible-anchor splits; each class becomes a ##CASE as it is fixed"]
 fn invisible_anchor_splits() {
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir); // require_example only proves the directory exists here.
+    drop(distilled_dir_exists);
 
     let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
         .expect("examples/distilled must be readable once require_example confirmed it exists")
@@ -383,7 +319,7 @@ fn invisible_anchor_splits() {
 
     let mut total = 0usize;
     for corpus in &corpora {
-        let offenders = anchor_split_offenders(corpus);
+        let offenders = templates_printed_by_several_anchor_split_groups_worst_first(corpus);
         if offenders.is_empty() {
             continue;
         }
@@ -400,13 +336,9 @@ fn invisible_anchor_splits() {
         "\n{total} invisible anchor split(s) total across {} corpora\n",
         corpora.len()
     );
-    // Deliberately no assert: this test reports, it does not gate.
 }
 
-/// HTTP status identity, in the same order the anchor reads it. A set of
-/// digits would lose the difference between (downstream=2xx, upstream=5xx)
-/// and (downstream=5xx, upstream=2xx).
-fn http_status_signature(line: &str) -> Vec<char> {
+fn http_status_classes_in_anchor_order(line: &str) -> Vec<char> {
     static STATUS_CLASS: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])\d\d\b"#)
             .expect("status-class regex must compile")
@@ -435,10 +367,10 @@ fn http_status_signature(line: &str) -> Vec<char> {
 
 #[test]
 fn an_http_status_class_split_is_visible() {
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir);
+    drop(distilled_dir_exists);
     let mut corpora: Vec<_> = std::fs::read_dir("examples/distilled")
         .expect("distilled corpora must be readable")
         .map(|entry| entry.expect("read corpus entry").path())
@@ -451,17 +383,17 @@ fn an_http_status_class_split_is_visible() {
         let text = std::fs::read_to_string(corpus).expect("read distilled corpus");
         if !text
             .lines()
-            .any(|line| !http_status_signature(line).is_empty())
+            .any(|line| !http_status_classes_in_anchor_order(line).is_empty())
         {
             return;
         }
         checked.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let offenders: Vec<_> = offender_groups(corpus)
+        let offenders: Vec<_> = anchor_split_groups_sharing_a_template(corpus)
             .into_iter()
             .filter(|(_, lines)| {
                 lines
                     .iter()
-                    .map(|line| http_status_signature(line))
+                    .map(|line| http_status_classes_in_anchor_order(line))
                     .collect::<std::collections::BTreeSet<_>>()
                     .len()
                     > 1
@@ -479,8 +411,6 @@ fn an_http_status_class_split_is_visible() {
     );
 }
 
-/// Outcomes can disappear inside one group without producing duplicate
-/// templates. Check the actual syscall corpus, including outcome line totals.
 #[test]
 fn audit_syscall_outcomes_stay_visible_and_separate() {
     use std::collections::BTreeMap;
@@ -544,8 +474,6 @@ fn audit_syscall_outcomes_stay_visible_and_separate() {
     assert_eq!(actual, expected, "each outcome retains every input line");
 }
 
-/// Compare every execution message and Trace command with the input, rather
-/// than merely checking that the previously mixed group gained a split.
 #[test]
 fn execution_commands_preserve_options_operations_and_counts() {
     use std::collections::BTreeMap;
@@ -628,7 +556,6 @@ fn execution_commands_preserve_options_operations_and_counts() {
     assert_eq!(actual, expected, "each command retains every input line");
 }
 
-/// CLI option names are read independently from the input and shown template.
 fn cli_option_signature(line: &str) -> Vec<&str> {
     static OPTION: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"(?:^|[\s"'])(--[A-Za-z][A-Za-z0-9_-]*|-[A-Za-z]\b)"#).unwrap()
@@ -643,10 +570,10 @@ fn cli_option_signature(line: &str) -> Vec<&str> {
 fn cli_option_identities_stay_visible_in_every_corpus() {
     use std::collections::BTreeMap;
 
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir);
+    drop(distilled_dir_exists);
     let checked = std::sync::atomic::AtomicU64::new(0);
     let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
         .expect("read corpora")
@@ -726,15 +653,12 @@ fn cli_option_identities_stay_visible_in_every_corpus() {
     );
 }
 
-/// These corpora exercise klog call sites, Python traceback frames and
-/// structured program fields. Each used to contain distinct anchored
-/// groups whose visible templates were identical. No exceptions remain.
 #[test]
 fn call_site_traceback_and_program_splits_are_visible() {
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir);
+    drop(distilled_dir_exists);
     for name in [
         "apiserver_production.log",
         "k8s_grafana.log",
@@ -743,7 +667,7 @@ fn call_site_traceback_and_program_splits_are_visible() {
     ] {
         let path = std::path::Path::new("examples/distilled").join(name);
         assert!(path.exists(), "missing corpus {}", path.display());
-        let offenders = offender_groups(&path);
+        let offenders = anchor_split_groups_sharing_a_template(&path);
         assert!(
             offenders.is_empty(),
             "{} hides event identities: {offenders:?}",
@@ -754,10 +678,10 @@ fn call_site_traceback_and_program_splits_are_visible() {
 
 #[test]
 fn systemd_unit_splits_are_visible() {
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir);
+    drop(distilled_dir_exists);
     for name in [
         "epyc_7days_journalctl.log",
         "host_fedora_journal.log",
@@ -766,7 +690,7 @@ fn systemd_unit_splits_are_visible() {
     ] {
         let path = std::path::Path::new("examples/distilled").join(name);
         assert!(path.exists(), "missing corpus {}", path.display());
-        let offenders: Vec<_> = offender_groups(&path)
+        let offenders: Vec<_> = anchor_split_groups_sharing_a_template(&path)
             .into_iter()
             .filter(|(_, lines)| lines.iter().any(|line| line.contains("systemd[")))
             .collect();
@@ -778,57 +702,50 @@ fn systemd_unit_splits_are_visible() {
     }
 }
 
-/// The hardware corpora had dozens of different PCI identities hidden
-/// behind the same numeric/path templates. They must all stay visible.
 #[test]
 fn pci_address_splits_are_visible() {
     static PCI: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
             .expect("PCI address regex must compile")
     });
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir);
+    drop(distilled_dir_exists);
     for name in ["epyc_7days_journalctl.log", "nas_dmesg.log"] {
         let path = std::path::Path::new("examples/distilled").join(name);
         assert!(path.exists(), "missing corpus {}", path.display());
-        // Systemd and other open anchor classes share these corpora.
-        // Compare ordered PCI identities rather than exempting templates.
-        let offenders: Vec<_> = offender_groups(&path)
-            .into_iter()
-            .filter(|(_, lines)| {
-                lines
-                    .iter()
-                    .map(|line| PCI.find_iter(line).map(|m| m.as_str()).collect::<Vec<_>>())
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len()
-                    > 1
-            })
-            .collect();
+        let groups_disagreeing_on_ordered_pci_identities: Vec<_> =
+            anchor_split_groups_sharing_a_template(&path)
+                .into_iter()
+                .filter(|(_, lines)| {
+                    lines
+                        .iter()
+                        .map(|line| PCI.find_iter(line).map(|m| m.as_str()).collect::<Vec<_>>())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        > 1
+                })
+                .collect();
         assert!(
-            offenders.is_empty(),
-            "{} hides PCI identities: {offenders:?}",
+            groups_disagreeing_on_ordered_pci_identities.is_empty(),
+            "{} hides PCI identities: {groups_disagreeing_on_ordered_pci_identities:?}",
             path.display()
         );
     }
 }
 
-/// The route-anchor fix's gate: on the HTTP access-log corpora whose
-/// anchor is the request route (`normalize::anchor_hash`'s route-skeleton
-/// arm), an anchor split must never print the same template twice.
-/// `invisible_anchor_splits` above carries other classes. Status-class
-/// visibility is now fixed too, so these corpora need no exclusions.
 #[test]
 fn a_route_split_is_visible() {
     for name in ["k8s_traefik.log", "nginx_sample.log", "k8s_rook_ceph.log"] {
         let path = std::path::Path::new("examples/distilled").join(name);
-        let Some(dir) = crate::common::require_example("examples/distilled") else {
+        let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled")
+        else {
             return;
         };
-        drop(dir);
+        drop(distilled_dir_exists);
         assert!(path.exists(), "missing corpus {}", path.display());
-        let offenders = offender_groups(&path);
+        let offenders = anchor_split_groups_sharing_a_template(&path);
         assert!(
             offenders.is_empty(),
             "{}: {} route-anchor split(s) invisible on the shown line: {:?}",
@@ -847,50 +764,41 @@ fn a_route_split_is_visible() {
     }
 }
 
-/// A `[pod/<pod>/<container>]` kubectl prefix's identity — a small local
-/// reader mirroring `normalize::pod_skeleton`'s stripping heuristic, rather
-/// than exporting internals (the precedent set by `status_class` above).
-/// Two sampled lines with different identities here are two different
-/// workloads or containers, not one event under two names.
-fn pod_identity(line: &str) -> Option<(String, String)> {
+fn pod_and_container_as_pod_skeleton_strips_them(line: &str) -> Option<(String, String)> {
     static PREFIX: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"^\[pod/([^/\]]+)/([^\]]+)\]").expect("prefix regex"));
-    const RAND: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
+    const KUBERNETES_GENERATED_SUFFIX_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
     let caps = PREFIX.captures(line)?;
     let pod = caps.get(1)?.as_str();
     let container = caps.get(2)?.as_str();
-    let generated = |seg: &str| {
+    let kubernetes_generated_segment = |seg: &str| {
         let b = seg.as_bytes();
         (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
             || (b.len() <= 2 && b.iter().all(u8::is_ascii_lowercase))
-            || (b.len() == 5 && b.iter().all(|c| RAND.contains(c)))
+            || (b.len() == 5
+                && b.iter()
+                    .all(|c| KUBERNETES_GENERATED_SUFFIX_ALPHABET.contains(c)))
             || ((8..=10).contains(&b.len())
-                && b.iter().all(|c| RAND.contains(c) || c.is_ascii_digit()))
+                && b.iter().all(|c| {
+                    KUBERNETES_GENERATED_SUFFIX_ALPHABET.contains(c) || c.is_ascii_digit()
+                }))
     };
     let mut keep = pod;
     for _ in 0..3 {
         match keep.rsplit_once('-') {
-            Some((head, tail)) if generated(tail) => keep = head,
+            Some((head, tail)) if kubernetes_generated_segment(tail) => keep = head,
             _ => break,
         }
     }
     Some((keep.to_string(), container.to_string()))
 }
 
-/// The kubectl-prefix-anchor fix's gate: on every `k8s_*` distilled corpus,
-/// an anchor split forced by the `[pod/<pod>/<container>]` prefix must never
-/// print the same template twice for two different pod identities. This is
-/// the second anchor class this fix closed (the first is
-/// `a_route_split_is_visible` above); `invisible_anchor_splits` carries
-/// every class not yet fixed. An offender is kept only when its sampled
-/// lines actually disagree on pod identity — a template repeated for some
-/// other, still-open anchor class is not this test's failure to report.
 #[test]
 fn a_pod_prefix_split_is_visible() {
-    let Some(dir) = crate::common::require_example("examples/distilled") else {
+    let Some(distilled_dir_exists) = crate::common::require_example("examples/distilled") else {
         return;
     };
-    drop(dir);
+    drop(distilled_dir_exists);
 
     let mut corpora: Vec<std::path::PathBuf> = std::fs::read_dir("examples/distilled")
         .expect("examples/distilled must be readable once require_example confirmed it exists")
@@ -909,12 +817,15 @@ fn a_pod_prefix_split_is_visible() {
     );
 
     crate::common::sweep_corpora(&corpora, |path| {
-        let offenders: Vec<(String, Vec<String>)> = offender_groups(path)
+        let offenders: Vec<(String, Vec<String>)> = anchor_split_groups_sharing_a_template(path)
             .into_iter()
             .filter(|(_, lines)| {
-                let identities: std::collections::BTreeSet<(String, String)> =
-                    lines.iter().filter_map(|l| pod_identity(l)).collect();
-                identities.len() > 1
+                let pod_identities_of_sampled_lines: std::collections::BTreeSet<(String, String)> =
+                    lines
+                        .iter()
+                        .filter_map(|l| pod_and_container_as_pod_skeleton_strips_them(l))
+                        .collect();
+                pod_identities_of_sampled_lines.len() > 1
             })
             .collect();
         assert!(
@@ -935,9 +846,6 @@ fn a_pod_prefix_split_is_visible() {
     });
 }
 
-/// Inspect the message schema independently of the production recognizer.
-/// Every request's method/route and its count must survive, including rare
-/// state-changing requests among routine polling.
 #[test]
 fn prose_http_requests_preserve_methods_routes_and_counts() {
     use std::collections::BTreeMap;
@@ -1064,16 +972,16 @@ fn cpu_resources_keep_quantity_values_in_configuration_diffs() {
         .filter(|line| cpu.is_match(&clean(line)))
         .count() as u64;
     let input_quantities = cpu.captures_iter(&clean(&input)).count() as u64;
-    // Check every source line before clustering can legitimately replace a
-    // changing configuration body with <VARIES>. The rollup below must still
-    // expose the exact CPU values even when that happens.
-    let normalizer = lessence::normalize::Normalizer::new(lessence::Config::default());
+    let normalizer_before_clustering =
+        lessence::normalize::Normalizer::new(lessence::Config::default());
     for (index, raw) in input.lines().enumerate() {
         let expected = cpu.captures_iter(&clean(raw)).count();
         if expected == 0 {
             continue;
         }
-        let line = normalizer.normalize_line(raw.to_string()).unwrap();
+        let line = normalizer_before_clustering
+            .normalize_line(raw.to_string())
+            .unwrap();
         let normalized = clean(&line.normalized);
         assert_eq!(
             normalized.matches("cpu:<CPU_QUANTITY>").count(),

@@ -1,13 +1,3 @@
-// Contract Test: IPv6 Pattern ReDoS Resistance
-//
-// Tests that IPv6 pattern detection scales linearly with input size.
-// A vulnerable regex would show quadratic or exponential scaling
-// (ratio >> 4x for 4x input). We assert ratio < 8.0 which catches
-// any super-linear behavior while tolerating normal measurement noise.
-//
-// This approach is immune to CPU contention from parallel test runs
-// because both measurements are slowed proportionally.
-
 use lessence::patterns::network::NetworkDetector;
 
 #[test]

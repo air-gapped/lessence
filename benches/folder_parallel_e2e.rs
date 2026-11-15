@@ -1,27 +1,8 @@
-//! Parallel-mode sanity-check benchmark.
-//!
-//! Same corpus and measurement strategy as `folder_e2e`, but uses the
-//! default `thread_count = None` which lets rayon auto-detect CPU count.
-//! This exercises the parallel batch path at `src/folder/mod.rs` —
-//! `parallel_pattern_detection()` inside the rayon thread pool, followed
-//! by `sequential_clustering()` on the main thread.
-//!
-//! The feature under development has all its new work in the sequential
-//! flush phase, so the parallel branch should remain flat across phases.
-//! This bench is here to catch any inadvertent regression in the parallel
-//! join path, not to celebrate parallel speedups.
-//!
-//! Run with:
-//!   cargo bench --bench folder_parallel_e2e -- --save-baseline main-pre-feature
-
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use lessence::{Config, PatternFolder};
 use std::hint::black_box;
 use std::time::Duration;
 
-/// Same 6-file Tier 1 corpus and slice budget as `folder_e2e` and
-/// `folder_streaming_only`. Identical inputs across bench suites ensure
-/// comparisons are apples-to-apples.
 const TIER1_CORPUS: &[(&str, &str)] = &[
     ("examples/distilled/kubelet.log", "kubelet"),
     (
@@ -62,10 +43,7 @@ fn load_corpus_sliced(relative_path: &str) -> Option<String> {
     Some(out)
 }
 
-/// Parallel config: `thread_count = None` triggers the default rayon
-/// auto-detection path in `process_line()`, which batches lines in
-/// blocks of 10,000 before running `parallel_pattern_detection()`.
-fn parallel_config() -> Config {
+fn rayon_auto_thread_count_config() -> Config {
     Config {
         thread_count: None,
         ..Default::default()
@@ -73,7 +51,7 @@ fn parallel_config() -> Config {
 }
 
 fn run_parallel_e2e(content: &str) -> Vec<String> {
-    let mut folder = PatternFolder::new(parallel_config());
+    let mut folder = PatternFolder::new(rayon_auto_thread_count_config());
     let mut outputs = Vec::new();
     for line in content.lines() {
         let _ = folder.process_line(line);
@@ -105,13 +83,13 @@ fn bench_folder_parallel_e2e(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_criterion() -> Criterion {
+fn criterion_honouring_cli_baseline_flags() -> Criterion {
     Criterion::default().configure_from_args()
 }
 
 criterion_group! {
     name = benches;
-    config = build_criterion();
+    config = criterion_honouring_cli_baseline_flags();
     targets = bench_folder_parallel_e2e
 }
 criterion_main!(benches);

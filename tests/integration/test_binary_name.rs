@@ -1,8 +1,5 @@
 #[test]
 fn test_lessence_binary_exists() {
-    // T005: CLI contract test for binary name
-    // Verifies that the lessence binary exists and executes properly
-
     let output = crate::common::lessence().arg("--version").output();
 
     match output {
@@ -26,7 +23,6 @@ fn test_lessence_binary_exists() {
 
 #[test]
 fn test_lessence_binary_help() {
-    // Verify lessence binary responds to help
     let output = crate::common::lessence()
         .arg("--help")
         .output()

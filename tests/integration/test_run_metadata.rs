@@ -1,4 +1,3 @@
-//! Additive run metadata: raw input identity and explicit input omissions.
 use serde_json::Value;
 use std::io::Write;
 use std::process::{Output, Stdio};

@@ -1,14 +1,9 @@
-// Integration Test: Essence Mode Compatibility
-// Tests integration with essence mode processor
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
 fn test_essence_mode_api_preservation() {
-    // Verify that essence mode functionality is preserved
     let input = "2025-09-29T10:15:30Z Service started";
 
-    // Both standard and essence modes should work identically
     let (standard_result, standard_tokens) = UnifiedTimestampDetector::detect_and_replace(input);
     let (essence_result, essence_tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
@@ -19,12 +14,13 @@ fn test_essence_mode_api_preservation() {
 
 #[test]
 fn test_k8s_timestamp_tokenization() {
-    // Test the K8S timestamp fix from constitutional restoration
     let input = "E0909 13:07:09.181236 3116 kubelet.go:123] test";
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
-    // Should show <TIMESTAMP> not <DECIMAL>
-    assert_eq!(result, "<TIMESTAMP> 3116 kubelet.go:123] test");
+    assert_eq!(
+        result, "<TIMESTAMP> 3116 kubelet.go:123] test",
+        "a klog header is one <TIMESTAMP>, never a <DECIMAL>"
+    );
     assert_eq!(tokens.len(), 1);
 
     if let lessence::patterns::Token::Timestamp(ts) = &tokens[0] {
@@ -36,7 +32,6 @@ fn test_k8s_timestamp_tokenization() {
 
 #[test]
 fn test_temporal_independence() {
-    // Essence mode should achieve temporal independence
     let inputs = vec![
         "2025-09-26T10:15:00Z ERROR: Database connection failed",
         "2025-09-26T10:15:01Z ERROR: Database connection failed",
@@ -49,28 +44,23 @@ fn test_temporal_independence() {
         results.push(result);
     }
 
-    // All results should be identical after timestamp removal
     assert_eq!(results[0], "<TIMESTAMP> ERROR: Database connection failed");
     assert_eq!(results[1], "<TIMESTAMP> ERROR: Database connection failed");
     assert_eq!(results[2], "<TIMESTAMP> ERROR: Database connection failed");
 
-    // Verify temporal independence
     assert_eq!(results[0], results[1]);
     assert_eq!(results[1], results[2]);
 }
 
 #[test]
 fn test_comprehensive_format_support() {
-    // Test that all timestamp formats from both implementations work
     let test_cases = vec![
-        // From original timestamp.rs
         ("2025-09-29T10:15:30.123456Z", "ISO8601 Enhanced"),
         ("2025-W36-7T14:45:38Z", "Week Date"),
         ("2025-250T14:45:38.123Z", "Ordinal Date"),
         ("2025-09-29 10:15:30,123", "Java Timestamp"),
         ("01/20/2025 10:15:30 AM", "US Date"),
         ("[20/Jan/2025:10:15:30 +0000]", "Apache Common"),
-        // From original essence/processor.rs
         ("01/20/2025 10:15:30 PM", "Windows Event"),
         ("Jan 20 2025 10:15:30", "Git Commit Style"),
         ("2025-09-29T10:15:30.123Z", "AWS Format"),
@@ -95,11 +85,9 @@ fn test_comprehensive_format_support() {
 
 #[test]
 fn test_pattern_priority_enforcement() {
-    // Test that overlapping patterns are resolved correctly
     let input = "Event at unix=1727676930 time=2025-09-29T10:15:30Z";
     let result = UnifiedTimestampDetector::detect_with_metadata(input);
 
-    // Should detect the ISO8601 timestamp
     assert!(
         result.normalized_text.contains("<TIMESTAMP>"),
         "Should detect timestamp in: {input}"
@@ -109,7 +97,6 @@ fn test_pattern_priority_enforcement() {
 
 #[test]
 fn test_unix_timestamp_false_positive_prevention() {
-    // Unix timestamps should not match arbitrary numbers
     let no_match_cases = vec![
         "Processed 12345 items",
         "Port 8080 is open",
@@ -130,7 +117,6 @@ fn test_thread_safety_in_essence_mode() {
     let test_input = Arc::new("2025-09-29T10:15:30Z Concurrent processing".to_string());
     let mut handles = vec![];
 
-    // Spawn multiple threads to test concurrent access
     for _ in 0..50 {
         let input_clone = Arc::clone(&test_input);
         let handle =
@@ -138,14 +124,12 @@ fn test_thread_safety_in_essence_mode() {
         handles.push(handle);
     }
 
-    // All threads should produce consistent results
     let mut results = Vec::new();
     for handle in handles {
         let (result, tokens) = handle.join().expect("Thread panicked");
         results.push((result, tokens));
     }
 
-    // Verify all results are identical
     let expected_result = "<TIMESTAMP> Concurrent processing";
     for (result, tokens) in results {
         assert_eq!(result, expected_result);
@@ -155,13 +139,10 @@ fn test_thread_safety_in_essence_mode() {
 
 #[test]
 fn test_memory_efficiency() {
-    // Test that the unified implementation doesn't use excessive memory
     let large_input = "2025-09-29T10:15:30Z ".repeat(10000);
 
-    // This should not cause memory issues
     let (result, tokens) = UnifiedTimestampDetector::detect_and_replace(&large_input);
 
-    // Basic validation
     assert!(!result.is_empty());
     assert_eq!(tokens.len(), 10000);
 }

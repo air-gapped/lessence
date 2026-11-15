@@ -1,8 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// A default run saves a report; keep it under target/ rather than in the
-/// caller's home, which may be unwritable (the cross container's is `/`).
+// cross runs tests with HOME=/, which is unwritable, so reports go under target/.
 fn lessence() -> Command {
     let mut cmd = crate::common::lessence();
     cmd.env("LESSENCE_REPORT_DIR", env!("CARGO_TARGET_TMPDIR"));

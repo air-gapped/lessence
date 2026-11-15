@@ -1,6 +1,3 @@
-// Integration Test: Basic Pattern Replacement Scenarios (T012)
-// Validates fundamental timestamp detection and replacement behavior
-
 use lessence::patterns::timestamp::UnifiedTimestampDetector;
 
 #[test]
@@ -51,14 +48,13 @@ fn test_apache_log_detection() {
 
 #[test]
 fn test_unix_timestamp_detection() {
-    // Unix timestamps require specific context (e.g., "timestamp=" prefix)
-    // to avoid false positives with arbitrary numbers. The detector may
-    // or may not match depending on the pattern registry configuration.
     let input = "Event logged at timestamp=1727676930.123";
     let (result, _tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
-    // Verify no panic — detection result is implementation-dependent
-    assert!(!result.is_empty());
+    assert!(
+        !result.is_empty(),
+        "a prefixed unix timestamp is processed without panicking; whether it matches is up to the registry"
+    );
 }
 
 #[test]
@@ -81,11 +77,9 @@ fn test_no_timestamp_handling() {
 
 #[test]
 fn test_partial_timestamp_rejection() {
-    // Should not match incomplete timestamps
     let input = "Processing item 2025-09-29T10:15 incomplete";
     let (_result, tokens) = UnifiedTimestampDetector::detect_and_replace(input);
 
-    // Should either not match or match what's valid
     assert!(
         tokens.len() <= 1,
         "Should not over-match partial timestamps"
@@ -94,7 +88,6 @@ fn test_partial_timestamp_rejection() {
 
 #[test]
 fn test_api_compatibility() {
-    // Verify new API is compatible with old API
     let input = "2025-09-29T10:15:30Z Compatible test";
 
     let (old_result, old_tokens) = UnifiedTimestampDetector::detect_and_replace(input);

@@ -1,5 +1,3 @@
-// Contract Test: Constitutional Compliance for Unified Timestamp System
-
 use lessence::patterns::timestamp::{UnifiedTimestampDetector, patterns};
 
 #[test]
@@ -45,8 +43,6 @@ fn test_thread_safety_constitutional_requirement() {
 
 #[test]
 fn test_pattern_completeness_constitutional_requirement() {
-    // One representative per family must be present. Names are the stable
-    // identifiers in the pattern table.
     for required in [
         "iso8601-enhanced",
         "unix-timestamp",
@@ -56,15 +52,13 @@ fn test_pattern_completeness_constitutional_requirement() {
     ] {
         assert!(
             patterns().iter().any(|p| p.name == required),
-            "Missing pattern: {required}"
+            "one pattern per timestamp family must be present; missing: {required}"
         );
     }
 }
 
 #[test]
 fn test_priority_ordering_constitutional_requirement() {
-    // Unix epoch patterns must lose every overlap against a real date: a bare
-    // 10-13 digit integer is far more often an id, a size, or a port.
     let unix: Vec<i32> = patterns()
         .iter()
         .filter(|p| p.name.starts_with("unix-"))
@@ -82,7 +76,7 @@ fn test_priority_ordering_constitutional_requirement() {
     for score in unix {
         assert!(
             score > worst_other,
-            "Unix pattern scored {score}, must rank below every other pattern ({worst_other})"
+            "a bare 10-13 digit integer is more often an id, a size or a port, so a unix pattern must lose every overlap with a real date: scored {score}, must rank below every other pattern ({worst_other})"
         );
     }
 }

@@ -1,12 +1,4 @@
-// Comprehensive IPv6 ReDoS Protection Test Suite
-//
-// Tests that all evil IPv6 patterns scale linearly with input size.
-// A vulnerable regex would show quadratic/exponential scaling.
-// Uses scaling-ratio approach: immune to CPU contention.
-
 use lessence::patterns::network::NetworkDetector;
-
-// --- Evil patterns: scaling tests ---
 
 #[test]
 fn test_evil_excessive_hex_repetition_scales_linearly() {
@@ -90,8 +82,6 @@ fn test_evil_ipv4_like_with_colons_scales_linearly() {
     });
 }
 
-// --- Correctness: these don't need timing ---
-
 #[test]
 fn test_evil_short_but_malformed() {
     let (normalized, tokens) = NetworkDetector::detect_and_replace("a:b", true, false, false);
@@ -111,9 +101,10 @@ fn test_evil_alphabetic_only() {
 fn test_evil_hex_with_special_chars() {
     let evil = "2001:0db8:85a3:0000:0000:8a2e:0370:7334<>:\"{}|\\?/";
     let (normalized, tokens) = NetworkDetector::detect_and_replace(evil, true, false, false);
-    // A complete address followed by junk: the address is recognised and
-    // the junk stays verbatim.
-    assert_eq!(normalized, "<IP><>:\"{}|\\?/");
+    assert_eq!(
+        normalized, "<IP><>:\"{}|\\?/",
+        "a complete address is recognised and what follows it stays verbatim"
+    );
     assert_eq!(
         tokens,
         vec![lessence::patterns::Token::IPv6(
@@ -133,8 +124,6 @@ fn test_evil_patterns_in_realistic_log_context() {
 
     for line in log_lines {
         let (_normalized, _tokens) = NetworkDetector::detect_and_replace(line, true, false, false);
-        // No timing assertion — just verify no panic. Scaling tests above
-        // cover the algorithmic complexity; these cover realistic contexts.
     }
 }
 

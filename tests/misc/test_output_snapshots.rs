@@ -5,17 +5,22 @@ fn lessence_bin() -> Command {
     crate::common::lessence()
 }
 
+const FLAGS_WHOSE_RUN_SAVES_NO_REPORT: &[&str] = &[
+    "--format",
+    "--json",
+    "--summary",
+    "--top",
+    "--fit",
+    "--preflight",
+    "--explain",
+];
+
 fn run_lessence(input: &str, args: &[&str]) -> (String, String) {
-    // Only the default text run saves a report, so only it needs
-    // --no-report. These tests assert the streamed text of a run that saves
-    // no report.
     let mut args: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
-    if !args.iter().any(|a| {
-        matches!(
-            a.as_str(),
-            "--format" | "--json" | "--summary" | "--top" | "--fit" | "--preflight" | "--explain"
-        )
-    }) {
+    if !args
+        .iter()
+        .any(|a| FLAGS_WHOSE_RUN_SAVES_NO_REPORT.contains(&a.as_str()))
+    {
         args.push("--no-report".to_string());
     }
     let mut child = lessence_bin()
@@ -68,11 +73,10 @@ fn test_stats_json_format() {
                  INFO all good\n";
 
     let (_, stderr) = run_lessence(input, &["--stats-json", "-q"]);
-    // Parse and re-serialize to normalize field order and remove timing
     let mut json: serde_json::Value =
         serde_json::from_str(&stderr).expect("stats-json should produce valid JSON");
-    // Zero out elapsed_ms since it varies
-    json["elapsed_ms"] = serde_json::Value::Number(0.into());
+    let varies_per_run = "elapsed_ms";
+    json[varies_per_run] = serde_json::Value::Number(0.into());
     let normalized = serde_json::to_string_pretty(&json).unwrap();
     insta::assert_snapshot!("stats_json_format", normalized);
 }

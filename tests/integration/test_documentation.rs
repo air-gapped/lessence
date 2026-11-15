@@ -2,24 +2,18 @@ use std::fs;
 
 #[test]
 fn test_readme_contains_lessence_branding() {
-    // T009: Documentation consistency test
-    // Verifies that README contains proper lessence branding
-
     let readme_content = fs::read_to_string("README.md").expect("README.md should exist");
 
-    // Check for lessence branding in title/header
     assert!(
         readme_content.contains("# lessence") || readme_content.contains("# Lessence"),
         "README should have 'lessence' in main title"
     );
 
-    // Should contain lessence references
     assert!(
         readme_content.to_lowercase().contains("lessence"),
         "README should contain 'lessence' references"
     );
 
-    // Should not contain old logfold references (except name origin section)
     let logfold_lines: Vec<_> = readme_content
         .lines()
         .filter(|line| line.to_lowercase().contains("logfold"))
@@ -39,14 +33,11 @@ fn test_readme_contains_lessence_branding() {
 
 #[test]
 fn test_readme_installation_examples_use_lessence() {
-    // Verify installation examples use correct binary name
     let readme_content = fs::read_to_string("README.md").expect("README.md should exist");
 
-    // Find installation/usage sections
     let installation_section = readme_content.to_lowercase();
 
     if installation_section.contains("install") || installation_section.contains("usage") {
-        // Should show lessence in examples
         assert!(
             readme_content.contains("lessence"),
             "Installation/usage examples should use 'lessence'"
@@ -56,16 +47,13 @@ fn test_readme_installation_examples_use_lessence() {
 
 #[test]
 fn test_claude_md_updated_with_lessence() {
-    // Verify CLAUDE.md project documentation is updated
     let claude_content = fs::read_to_string("CLAUDE.md").expect("CLAUDE.md should exist");
 
-    // Check for lessence references in project documentation
     assert!(
         claude_content.to_lowercase().contains("lessence"),
         "CLAUDE.md should contain 'lessence' references"
     );
 
-    // Title should be updated
     assert!(
         claude_content.contains("# CLAUDE.md - lessence"),
         "CLAUDE.md should have updated project title"
@@ -74,11 +62,9 @@ fn test_claude_md_updated_with_lessence() {
 
 #[test]
 fn test_documentation_consistency() {
-    // Verify consistent branding across all docs
     let readme_content = fs::read_to_string("README.md").expect("README.md should exist");
     let claude_content = fs::read_to_string("CLAUDE.md").expect("CLAUDE.md should exist");
 
-    // Both should use consistent "lessence" branding
     assert!(
         readme_content.to_lowercase().contains("lessence"),
         "README.md should contain lessence branding"
@@ -88,7 +74,6 @@ fn test_documentation_consistency() {
         "CLAUDE.md should contain lessence branding"
     );
 
-    // CLAUDE.md should not reference logfold
     let claude_logfold_count = claude_content.matches("logfold").count();
     assert_eq!(
         claude_logfold_count, 0,

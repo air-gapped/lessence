@@ -16,7 +16,6 @@ mod tests {
         for test_case in test_cases {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
-            // Should detect and replace status codes with class token
             assert!(
                 result.contains("<HTTP_STATUS_2XX>"),
                 "Failed to detect 2xx status in: {test_case}"
@@ -112,7 +111,6 @@ mod tests {
 
     #[test]
     fn test_nginx_access_log_compression() {
-        // Real Nginx log examples that should compress better
         let nginx_lines = vec![
             r#"93.180.71.3 - - [17/May/2015:08:05:32 +0000] "GET /downloads/product_1 HTTP/1.1" 304 0 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)""#,
             r#"93.180.71.3 - - [17/May/2015:08:05:23 +0000] "GET /downloads/product_1 HTTP/1.1" 200 490 "-" "Debian APT-HTTP/1.3 (0.8.16~exp12ubuntu10.21)""#,
@@ -125,17 +123,11 @@ mod tests {
             all_results.push(result);
         }
 
-        // After normalization, these should be more similar
-        // All should have the same pattern structure, just different status classes
         let normalized_patterns: Vec<_> = all_results
             .iter()
-            .map(|line| {
-                // Count unique status class tokens
-                line.matches("<HTTP_STATUS_").count()
-            })
+            .map(|line| line.matches("<HTTP_STATUS_").count())
             .collect();
 
-        // Each line should have exactly one HTTP status token
         for count in normalized_patterns {
             assert_eq!(
                 count, 1,
@@ -150,13 +142,12 @@ mod tests {
             "Processing 200 records successfully",
             "Error code 404 not related to HTTP",
             "Status: 500ms response time",
-            "HTTP 200", // Without proper request format
+            "HTTP 200",
         ];
 
         for test_case in non_http_cases {
             let (result, tokens) = HttpStatusDetector::detect_and_replace(test_case);
 
-            // Should not detect HTTP status classes in non-HTTP contexts
             assert_eq!(
                 result, test_case,
                 "Should not modify non-HTTP status: {test_case}"
@@ -175,7 +166,6 @@ mod tests {
 
         let (result, tokens) = HttpStatusDetector::detect_and_replace(test_line);
 
-        // Should detect both status codes
         assert_eq!(tokens.len(), 2, "Should detect both HTTP status codes");
         assert!(
             result.contains("<HTTP_STATUS_2XX>"),
