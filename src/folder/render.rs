@@ -369,7 +369,7 @@ impl PatternFolder {
         let stdout = io::stdout();
         let mut handle = stdout.lock();
         let mut write_line = |s: String| -> Result<()> {
-            crate::output::write_output(&mut handle, format_args!("{s}\n"))
+            crate::output::write_or_exit_on_closed_pipe(&mut handle, format_args!("{s}\n"))
         };
         for (count, representative) in &display {
             write_line(Self::format_summary_line(*count, representative, max_width))?;
@@ -501,25 +501,14 @@ impl PatternFolder {
             total_lines - stats.continuation_lines_absorbed
         );
 
-        let mut tokens: Vec<crate::briefing::TokenClass> = stats
-            .token_classes()
-            .into_iter()
-            .filter(|(_, _, count)| *count > 0)
-            .map(|(class, bucket, occurrences)| {
-                let (distinct, distinct_exact) = stats.cardinality_for(bucket);
-                crate::briefing::TokenClass {
+        let tokens =
+            crate::briefing::token_classes_by_occurrence(stats.token_classes().into_iter().map(
+                |(class, bucket, occurrences)| crate::briefing::TokenClass {
                     class,
                     occurrences,
-                    distinct,
-                    distinct_exact,
-                }
-            })
-            .collect();
-        tokens.sort_by(|a, b| {
-            b.occurrences
-                .cmp(&a.occurrences)
-                .then_with(|| a.class.cmp(b.class))
-        });
+                    distinct: stats.cardinality_for(bucket),
+                },
+            ));
 
         // Duration/histogram both need the span as epoch seconds; compute
         // once and share.
@@ -635,7 +624,7 @@ impl PatternFolder {
         let compression_ratio = self.stats.compression_ratio();
 
         let mut write_line = |s: String| -> Result<()> {
-            crate::output::write_output(writer, format_args!("{s}\n"))
+            crate::output::write_or_exit_on_closed_pipe(writer, format_args!("{s}\n"))
         };
 
         write_line("# Log Analysis".to_string())?;
@@ -790,7 +779,7 @@ fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
                     entry.samples = vec![format!("<{class}>")];
                 }
             }
-            Some((crate::sanitize::Action::Pseudonym, class)) => {
+            Some((crate::sanitize::Action::KeyedPseudonym, class)) => {
                 for sample in &mut entry.samples {
                     *sample = z.mask_sample(class, sample);
                 }

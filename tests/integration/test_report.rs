@@ -1002,8 +1002,8 @@ fn overview_all_streams_two_hundred_thousand_groups_without_collecting_them() {
 
     let locator = lessence::overview::Locator {
         path: &path,
-        file: "complete".to_string(),
-        input: "complete".to_string(),
+        file: lessence::report::Finished::Durable,
+        input: lessence::overview::InputState::Complete,
         run_id: "run-test",
         size_bytes: std::fs::metadata(&path).unwrap().len(),
     };

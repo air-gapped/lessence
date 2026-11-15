@@ -1,53 +1,52 @@
-//! Input ingestion: the single owner of the reader-to-line contract.
-//!
-//! Every consumer of raw log input (the fold, `--summary`, and `--preflight`
-//! loops) reads through [`Ingestor::run`], which turns a set of
-//! [`InputReader`]s into sanitized, located, limit-checked [`Event`]s:
-//!
-//! 1. `--max-lines` cutoff — one global count across all inputs; hitting it
-//!    stops ingestion with a stderr notice and is reported in [`IngestReport`].
-//! 2. `--max-line-length` skip — overlong lines are dropped (and counted)
-//!    before any other processing; they are never checked against the fail
-//!    pattern and never delivered.
-//! 3. `--fail-on-pattern` — matched against the raw line, before escape
-//!    stripping, so patterns can target escape bytes themselves.
-//! 4. Escape stripping — terminal escape sequences and bare C0 controls are
-//!    removed unless `--preserve-color` was given.
-//! 5. Provenance — each delivered line carries its 1-based line number within
-//!    its input, and every input announces itself (with its filename) before
-//!    its first line.
-
 use crate::config::Config;
 use anyhow::Result;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read};
 use std::path::PathBuf;
 
-/// One opened input: an explicit file, or stdin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    Stdin,
+    File(String),
+}
+
+impl Source {
+    pub fn file_name(&self) -> Option<&str> {
+        match self {
+            Self::Stdin => None,
+            Self::File(name) => Some(name),
+        }
+    }
+
+    fn display_name(&self) -> &str {
+        self.file_name().unwrap_or("<stdin>")
+    }
+}
+
 pub struct InputReader {
-    /// The filename as supplied by the user, or None for stdin.
-    pub source: Option<String>,
+    pub source: Source,
     pub reader: Box<dyn BufRead>,
 }
 
-/// Opens the given input files, falling back to stdin when none are given.
-///
-/// Returns the successfully opened readers plus the number of files that failed to
-/// open — like cat/grep, the remaining files are still processed but the
-/// process must exit non-zero.
-pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, usize) {
+pub struct OpenedInputs {
+    pub readers: Vec<InputReader>,
+    pub failed_opens: usize,
+}
+
+pub fn open_inputs(files: &[PathBuf]) -> OpenedInputs {
     if files.is_empty() {
-        return (
-            vec![InputReader {
-                source: None,
+        return OpenedInputs {
+            readers: vec![InputReader {
+                source: Source::Stdin,
                 reader: Box::new(BufReader::new(io::stdin().lock())),
             }],
-            0,
-        );
+            failed_opens: 0,
+        };
     }
     let mut readers = Vec::new();
-    let mut failed_sources = 0;
+    let mut failed_opens = 0;
     // Stdin can be locked once; a second lock would wait for the first
     // forever, so a repeated `-` is skipped rather than opened.
     let mut stdin_taken = false;
@@ -59,7 +58,7 @@ pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, usize) {
             }
             stdin_taken = true;
             readers.push(InputReader {
-                source: None,
+                source: Source::Stdin,
                 reader: Box::new(BufReader::new(io::stdin().lock())),
             });
         } else {
@@ -73,50 +72,54 @@ pub fn open_inputs(files: &[PathBuf]) -> (Vec<InputReader>, usize) {
                 }
             }) {
                 Ok(f) => readers.push(InputReader {
-                    source: Some(path.to_string_lossy().into_owned()),
+                    source: Source::File(path.to_string_lossy().into_owned()),
                     reader: Box::new(BufReader::new(f)),
                 }),
                 Err(e) => {
                     eprintln!("lessence: {}: {}", path.display(), e);
-                    failed_sources += 1;
+                    failed_opens += 1;
                 }
             }
         }
     }
-    (readers, failed_sources)
+    OpenedInputs {
+        readers,
+        failed_opens,
+    }
 }
 
-/// One step of the ingestion stream, delivered to the sink in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SourceLineNumber(usize);
+
+impl SourceLineNumber {
+    fn of_physical_line_index(line_index: usize) -> Self {
+        Self(line_index + 1)
+    }
+
+    pub fn get(self) -> usize {
+        self.0
+    }
+}
+
 pub enum Event<'a> {
-    /// The next input is about to yield lines. `source` is its filename,
-    /// or None for stdin. Emitted even for inputs that turn out empty.
-    BeginInput { source: Option<&'a str> },
-    /// A sanitized, limit-checked line. `line_number` is 1-based within the
-    /// current input and counts skipped overlong lines, so it always matches
-    /// the line's position in the original file.
-    Line { text: &'a str, line_number: usize },
+    BeginInput {
+        source: &'a Source,
+    },
+    Line {
+        text: &'a str,
+        line_number: SourceLineNumber,
+    },
 }
 
-/// Facts observed while ingesting, for the caller's exit code and JSON notes.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IngestReport {
-    /// The `--fail-on-pattern` regex matched at least one raw line.
     pub fail_pattern_matched: bool,
-    /// Physical lines merged into the record above them by
-    /// `--frame-continuations`. They were delivered, just not as records of
-    /// their own, so line accounting has to add them back or the input size
-    /// and compression ratio under-report.
     pub continuation_lines_absorbed: usize,
-    /// Lines dropped by `--max-line-length`.
     pub overlong_lines_skipped: usize,
-    /// Ingestion stopped early because `--max-lines` was reached.
     pub max_lines_reached: bool,
-    /// Raw ordered-source digest, only after every reader reaches EOF.
     pub input_hash: Option<[u8; 32]>,
 }
 
-/// The configured ingestion contract. Build once per run with
-/// [`Ingestor::from_config`], then drive each mode's sink via [`Ingestor::run`].
 pub struct Ingestor {
     max_lines: Option<usize>,
     max_line_length: Option<usize>,
@@ -127,9 +130,6 @@ pub struct Ingestor {
 }
 
 impl Ingestor {
-    /// Compiles the fail-on-pattern regex and captures the limit and
-    /// sanitization settings. The error message is user-facing; the caller
-    /// decides the exit code (the CLI uses 2, matching other usage errors).
     pub fn from_config(config: &Config) -> Result<Self> {
         let fail_regex = match config.fail_pattern.as_ref() {
             Some(pat) => Some(
@@ -148,114 +148,94 @@ impl Ingestor {
         })
     }
 
-    /// Enable raw-byte identity for a run whose output can publish it.
-    /// Default library ingestion and modes that cannot use a digest skip this cost.
     #[must_use]
-    pub fn with_input_hash(mut self, enabled: bool) -> Self {
-        self.hash_input = enabled;
+    pub fn with_input_hash_if_every_input_opened(
+        mut self,
+        enabled: bool,
+        failed_opens: usize,
+    ) -> Self {
+        self.hash_input = enabled && failed_opens == 0;
         self
     }
 
-    /// Drains the readers through the ingestion contract, delivering each
-    /// surviving line to `sink` and returning the observed facts.
+    fn max_lines_reached_at(&self, lines_seen: usize) -> Option<usize> {
+        self.max_lines.filter(|&max_lines| lines_seen >= max_lines)
+    }
+
+    fn is_overlong(&self, line: &str) -> bool {
+        self.max_line_length
+            .is_some_and(|max_length| line.len() > max_length)
+    }
+
+    fn fail_pattern_matches_raw(&self, raw_line: &str) -> bool {
+        self.fail_regex
+            .as_ref()
+            .is_some_and(|re| re.is_match(raw_line))
+    }
+
+    fn strip_unless_preserving_color(&self, line: String) -> String {
+        if self.strip_escapes
+            && let Cow::Owned(stripped) = strip_terminal_escapes(&line)
+        {
+            stripped
+        } else {
+            line
+        }
+    }
+
     pub fn run<F>(&self, readers: Vec<InputReader>, mut sink: F) -> Result<IngestReport>
     where
         F: FnMut(Event<'_>) -> Result<()>,
     {
-        // These are opened readers. The CLI disables hashing after any open
-        // failure, so a published CLI digest still covers all requested sources.
         let mut aggregate = self
             .hash_input
             .then(|| AggregateHash::new(readers.len()))
             .transpose()?;
         let mut report = IngestReport::default();
         let mut lines_seen = 0usize;
-        // The record being assembled while `--frame-continuations` is on: its
-        // text so far, and the physical line it started at. A record is only
-        // handed to the sink once the next non-continuation line proves it is
-        // finished, so every emit below is one line behind the read cursor.
-        let mut pending: Option<(String, usize)> = None;
-        'inputs: for input in readers {
-            sink(Event::BeginInput {
-                source: input.source.as_deref(),
-            })?;
-            let input_name = input.source.clone();
+        'inputs: for InputReader { source, reader } in readers {
+            sink(Event::BeginInput { source: &source })?;
+            let mut framer = RecordFramer::default();
             let mut source_hash = self.hash_input.then(SourceHash::default);
-            // Hash below the line decoder, so delimiters, skipped lines and
-            // read-ahead are included. Only publish after complete EOF.
-            let mut reader: Box<dyn BufRead + '_> = if let Some(state) = source_hash.as_mut() {
-                Box::new(BufReader::new(HashingReader {
-                    inner: input.reader,
-                    state,
-                }))
-            } else {
-                input.reader
-            };
+            let mut reader = hash_below_line_decoder(reader, source_hash.as_mut());
             for (line_index, line) in reader.by_ref().lines().enumerate() {
-                let mut line = line.map_err(|e| {
-                    anyhow::anyhow!(
-                        "{}: line {}: {e}",
-                        input_name.as_deref().unwrap_or("<stdin>"),
-                        line_index + 1
-                    )
+                let line_number = SourceLineNumber::of_physical_line_index(line_index);
+                let line = line.map_err(|e| {
+                    anyhow::anyhow!("{}: line {}: {e}", source.display_name(), line_number.get())
                 })?;
 
-                if let Some(max_lines) = self.max_lines
-                    && lines_seen >= max_lines
-                {
+                if let Some(max_lines) = self.max_lines_reached_at(lines_seen) {
                     eprintln!("lessence: Line limit of {max_lines} reached, stopping processing");
                     report.max_lines_reached = true;
                     break 'inputs;
                 }
                 lines_seen += 1;
 
-                if let Some(max_length) = self.max_line_length
-                    && line.len() > max_length
-                {
+                if self.is_overlong(&line) {
                     report.overlong_lines_skipped += 1;
                     continue;
                 }
 
-                if let Some(ref re) = self.fail_regex
-                    && re.is_match(&line)
-                {
+                if self.fail_pattern_matches_raw(&line) {
                     report.fail_pattern_matched = true;
                 }
 
-                // Borrowed when nothing was stripped, which is nearly every
-                // line: only a line that changed is copied.
-                if self.strip_escapes
-                    && let std::borrow::Cow::Owned(stripped) = strip_terminal_escapes(&line)
-                {
-                    line = stripped;
-                }
+                let line = self.strip_unless_preserving_color(line);
 
                 if !self.frame_continuations {
                     sink(Event::Line {
                         text: &line,
-                        line_number: line_index + 1,
+                        line_number,
                     })?;
                     continue;
                 }
 
-                // An indented line continues the record above it — a stack
-                // frame, a caret row, a `Caused by:`. Joined with a space
-                // rather than a newline so one record stays one line, which
-                // every downstream mode assumes.
-                if is_continuation(&line)
-                    && let Some((text, _)) = pending.as_mut()
-                {
-                    text.push(' ');
-                    text.push_str(line.trim_start());
-                    report.continuation_lines_absorbed += 1;
-                    continue;
-                }
-
-                if let Some((text, start)) = pending.replace((line, line_index + 1)) {
-                    sink(Event::Line {
-                        text: &text,
-                        line_number: start,
-                    })?;
+                match framer.push(line, line_number) {
+                    Framed::Continued => report.continuation_lines_absorbed += 1,
+                    Framed::Opened {
+                        finished: Some(record),
+                    } => record.emit(&mut sink)?,
+                    Framed::Opened { finished: None } => {}
                 }
             }
 
@@ -264,20 +244,78 @@ impl Ingestor {
                 aggregate.push(source);
             }
 
-            // A record still open at end of input is complete: nothing follows
-            // it. Flushed inside the input loop so its line number is not
-            // reported against the next file.
-            if let Some((text, start)) = pending.take() {
-                sink(Event::Line {
-                    text: &text,
-                    line_number: start,
-                })?;
+            if let Some(record) = framer.finish_at_end_of_input() {
+                record.emit(&mut sink)?;
             }
         }
-        if !report.max_lines_reached {
+        let every_reader_reached_eof = !report.max_lines_reached;
+        if every_reader_reached_eof {
             report.input_hash = aggregate.map(AggregateHash::finish);
         }
         Ok(report)
+    }
+}
+
+const CONTINUATION_JOINER: &str = " ";
+
+struct Record {
+    text: String,
+    first_line: SourceLineNumber,
+}
+
+impl Record {
+    fn emit<F>(self, sink: &mut F) -> Result<()>
+    where
+        F: FnMut(Event<'_>) -> Result<()>,
+    {
+        sink(Event::Line {
+            text: &self.text,
+            line_number: self.first_line,
+        })
+    }
+}
+
+enum Framed {
+    Continued,
+    Opened { finished: Option<Record> },
+}
+
+#[derive(Default)]
+struct RecordFramer {
+    open: Option<Record>,
+}
+
+impl RecordFramer {
+    fn push(&mut self, line: String, line_number: SourceLineNumber) -> Framed {
+        if is_indented_continuation(&line)
+            && let Some(open) = self.open.as_mut()
+        {
+            open.text.push_str(CONTINUATION_JOINER);
+            open.text.push_str(line.trim_start());
+            return Framed::Continued;
+        }
+        let finished = self.open.replace(Record {
+            text: line,
+            first_line: line_number,
+        });
+        Framed::Opened { finished }
+    }
+
+    fn finish_at_end_of_input(self) -> Option<Record> {
+        self.open
+    }
+}
+
+fn hash_below_line_decoder<'a>(
+    reader: Box<dyn BufRead>,
+    state: Option<&'a mut SourceHash>,
+) -> Box<dyn BufRead + 'a> {
+    match state {
+        Some(state) => Box::new(BufReader::new(HashingReader {
+            inner: reader,
+            state,
+        })),
+        None => reader,
     }
 }
 
@@ -323,54 +361,35 @@ impl AggregateHash {
     }
 }
 
-/// Does this line continue the record above it rather than start a new one?
-///
-/// Leading whitespace is the near-universal convention for a continuation:
-/// Python and Java stack frames, `Caused by:` chains, YAML block scalars and
-/// the caret rows under a Rust or Python error are all indented under the line
-/// that introduced them. A blank line is not a continuation — it separates
-/// records rather than extending one.
-fn is_continuation(line: &str) -> bool {
+fn is_indented_continuation(line: &str) -> bool {
     line.starts_with([' ', '\t']) && !line.trim().is_empty()
 }
 
-/// Strip terminal escape sequences and neutralize bare C0 control bytes so that
-/// untrusted log content cannot drive the operator's terminal when written
-/// verbatim to stdout / `--summary` / `--top` / markdown.
-///
-/// The CSI-only predecessor (`\x1b\[[0-9;]*[a-zA-Z]`) let OSC sequences (window
-/// title `\x1b]0;...\x07`, OSC 8 hyperlinks `\x1b]8;;URL\x07text\x1b]8;;\x07`),
-/// DCS/APC/PM/SOS, the lone ESC, and bare C0 controls (CR `\r`, BS `\x08`)
-/// through unchanged. This is the single shared sanitizer; [`Ingestor::run`]
-/// applies it to every delivered line unless `--preserve-color` was given.
-///
+/// OSC: ESC ] ... terminated by BEL or ST (ESC \), or unterminated to EOL.
+const OSC: &str = r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?";
+/// DCS / SOS / PM / APC: ESC P|X|^|_ ... terminated by ST, or unterminated.
+const DCS_SOS_PM_APC: &str = r"\x1b[P_^X][^\x1b]*(?:\x1b\\)?";
+/// CSI: ESC [ params (0x30-0x3f) intermediates (0x20-0x2f) final (0x40-0x7e).
+const CSI: &str = r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]";
+/// Any remaining ESC sequence (two-byte like ESC c) or a lone trailing ESC.
+const ANY_OTHER_ESC_OR_LONE_ESC: &str = r"\x1b.?";
+/// Bare C0 controls that move the cursor / overwrite: CR, BS, VT, FF.
+const CURSOR_MOVING_C0: &str = r"[\r\x08\x0b\x0c]";
+const ESCAPE_ARMS_IN_MATCH_ORDER: [&str; 5] = [
+    OSC,
+    DCS_SOS_PM_APC,
+    CSI,
+    ANY_OTHER_ESC_OR_LONE_ESC,
+    CURSOR_MOVING_C0,
+];
+
 /// 8-bit C1 introducers (0x80-0x9F) cannot arrive here: input is read via
 /// `BufRead::lines`, so any C1 byte would be invalid UTF-8 and never reach a
 /// `String`. Only the 7-bit ESC-introduced forms plus bare C0 controls survive,
 /// and all of those are matched below.
-///
-/// The pattern is a single ordered alternation the linear-time `regex` engine
-/// handles without backtracking (no nested unbounded quantifiers). Order
-/// matters: the OSC and DCS-family arms run before the generic CSI / lone-ESC
-/// arm so a whole `ESC ] ... ST` / `ESC P ... ST` is consumed as one unit.
-///
-/// Returns the input borrowed when there is nothing to strip.
-pub fn strip_terminal_escapes(text: &str) -> std::borrow::Cow<'_, str> {
+pub fn strip_terminal_escapes(text: &str) -> Cow<'_, str> {
     static ESCAPE_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(concat!(
-            // OSC: ESC ] ... terminated by BEL or ST (ESC \), or unterminated to EOL.
-            r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?",
-            // DCS / SOS / PM / APC: ESC P|X|^|_ ... terminated by ST, or unterminated.
-            r"|\x1b[P_^X][^\x1b]*(?:\x1b\\)?",
-            // CSI: ESC [ params (0x30-0x3f) intermediates (0x20-0x2f) final (0x40-0x7e).
-            r"|\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]",
-            // Any remaining ESC sequence (two-byte like ESC c) or a lone trailing ESC.
-            r"|\x1b.?",
-            // Bare C0 controls that move the cursor / overwrite: CR, BS, VT, FF.
-            // Tab (\x09) is intentionally preserved; \n cannot appear (lines split).
-            r"|[\r\x08\x0b\x0c]",
-        ))
-        .unwrap()
+        regex::Regex::new(&ESCAPE_ARMS_IN_MATCH_ORDER.join("|")).unwrap()
     });
     ESCAPE_REGEX.replace_all(text, "")
 }
@@ -381,7 +400,7 @@ mod tests {
 
     fn reader(source: Option<&str>, text: &str) -> InputReader {
         InputReader {
-            source: source.map(str::to_string),
+            source: source.map_or(Source::Stdin, |name| Source::File(name.to_string())),
             reader: Box::new(io::Cursor::new(text.as_bytes().to_vec())),
         }
     }
@@ -397,9 +416,11 @@ mod tests {
         let report = ingestor
             .run(readers, |event| {
                 events.push(match event {
-                    Event::BeginInput { source } => Recorded::Begin(source.map(str::to_string)),
+                    Event::BeginInput { source } => {
+                        Recorded::Begin(source.file_name().map(str::to_string))
+                    }
                     Event::Line { text, line_number } => {
-                        Recorded::Line(text.to_string(), line_number)
+                        Recorded::Line(text.to_string(), line_number.get())
                     }
                 });
                 Ok(())
@@ -411,8 +432,6 @@ mod tests {
     fn ingestor(config: &Config) -> Ingestor {
         Ingestor::from_config(config).unwrap()
     }
-
-    // ---- max-lines cutoff ----
 
     #[test]
     fn max_lines_cuts_across_inputs() {
@@ -447,7 +466,7 @@ mod tests {
             ..Config::default()
         });
         let (events, report) = record(&ing, vec![reader(None, "one\ntwo\n")]);
-        assert_eq!(events.len(), 3); // Begin + 2 lines
+        assert_eq!(events.len(), 3, "BeginInput + 2 lines");
         assert!(!report.max_lines_reached);
     }
 
@@ -463,8 +482,6 @@ mod tests {
         assert!(report.max_lines_reached);
     }
 
-    // ---- overlong skip ----
-
     #[test]
     fn overlong_lines_are_skipped_counted_and_keep_numbering() {
         let ing = ingestor(&Config {
@@ -478,9 +495,9 @@ mod tests {
             vec![
                 Recorded::Begin(None),
                 Recorded::Line("short".into(), 1),
-                // the skipped line still occupies line number 2
                 Recorded::Line("ok".into(), 3),
-            ]
+            ],
+            "the skipped line still occupies line number 2"
         );
         assert_eq!(report.overlong_lines_skipped, 1);
     }
@@ -525,8 +542,6 @@ mod tests {
         assert_eq!(report.overlong_lines_skipped, 1);
     }
 
-    // ---- fail-on-pattern ----
-
     #[test]
     fn fail_pattern_match_is_reported() {
         let ing = ingestor(&Config {
@@ -539,15 +554,16 @@ mod tests {
 
     #[test]
     fn fail_pattern_sees_the_raw_line_before_stripping() {
-        // The pattern targets the escape byte itself, which stripping removes
-        // from the delivered text — so a match proves the raw line was checked.
         let ing = ingestor(&Config {
             fail_pattern: Some("\x1b\\[31m".to_string()),
             preserve_color: false,
             ..Config::default()
         });
         let (events, report) = record(&ing, vec![reader(None, "\x1b[31mred alert\x1b[0m\n")]);
-        assert!(report.fail_pattern_matched);
+        assert!(
+            report.fail_pattern_matched,
+            "the pattern targets the escape byte that stripping removes, so a match proves the raw line was checked"
+        );
         assert_eq!(events[1], Recorded::Line("red alert".into(), 1));
     }
 
@@ -561,8 +577,6 @@ mod tests {
         .expect("invalid regex must not compile");
         assert!(err.to_string().contains("invalid regex '['"), "got: {err}");
     }
-
-    // ---- escape stripping ----
 
     #[test]
     fn preserve_color_keeps_escapes_verbatim() {
@@ -580,8 +594,6 @@ mod tests {
         let (events, _) = record(&ing, vec![reader(None, "\x1b[31mERROR\x1b[0m: failed\n")]);
         assert_eq!(events[1], Recorded::Line("ERROR: failed".into(), 1));
     }
-
-    // ---- provenance ----
 
     #[test]
     fn line_numbers_restart_per_input_and_sources_are_announced() {
@@ -602,13 +614,11 @@ mod tests {
                 Recorded::Line("a2".into(), 2),
                 Recorded::Begin(None),
                 Recorded::Line("s1".into(), 1),
-                // empty inputs still announce themselves
                 Recorded::Begin(Some("empty.log".into())),
-            ]
+            ],
+            "empty inputs still announce themselves"
         );
     }
-
-    // ---- strip_terminal_escapes ----
 
     #[test]
     fn strip_ansi_removes_codes() {
@@ -636,54 +646,56 @@ mod tests {
     }
 
     #[test]
-    fn strip_osc8_hyperlink() {
-        // OSC 8 hyperlink: ESC]8;;URL BEL  visible-text  ESC]8;; BEL
+    fn strip_osc8_hyperlink_keeps_only_the_visible_label() {
         let input = "\x1b]8;;http://evil.example/\x07click here\x1b]8;;\x07";
-        // Both OSC wrappers removed; only the visible label survives.
-        assert_eq!(strip_terminal_escapes(input), "click here");
+        assert_eq!(
+            strip_terminal_escapes(input),
+            "click here",
+            "the OSC arm precedes the lone-ESC arm, so each whole hyperlink wrapper is consumed"
+        );
     }
 
     #[test]
     fn strip_osc8_hyperlink_st_terminated() {
-        // Same hyperlink but terminated by ST (ESC \) instead of BEL.
         let input = "\x1b]8;;http://evil.example/\x1b\\click here\x1b]8;;\x1b\\";
         assert_eq!(strip_terminal_escapes(input), "click here");
     }
 
     #[test]
-    fn strip_osc0_title_set() {
-        // OSC 0 window-title rewrite must not reach the terminal.
+    fn strip_osc0_window_title_never_reaches_the_terminal() {
         let input = "\x1b]0;you have been pwned\x07log message";
         assert_eq!(strip_terminal_escapes(input), "log message");
     }
 
     #[test]
-    fn strip_cr_and_backspace() {
-        // CR + backspace overwrite attack: "SAFE" then \r\b... to repaint "EVIL".
+    fn strip_cr_and_backspace_cannot_repaint_text() {
         let input = "SAFE\rEVIL\x08\x08\x08\x08done";
         assert_eq!(strip_terminal_escapes(input), "SAFEEVILdone");
     }
 
     #[test]
     fn strip_lone_trailing_escape() {
-        // A lone ESC at end of line is removed, not left to swallow the next line.
-        assert_eq!(strip_terminal_escapes("trailing\x1b"), "trailing");
+        assert_eq!(
+            strip_terminal_escapes("trailing\x1b"),
+            "trailing",
+            "a lone ESC is removed, not left to swallow the next line"
+        );
     }
 
     #[test]
     fn strip_preserves_tab() {
-        // Tab is legitimate content and must survive.
-        assert_eq!(strip_terminal_escapes("a\tb"), "a\tb");
+        assert_eq!(
+            strip_terminal_escapes("a\tb"),
+            "a\tb",
+            "tab is legitimate content, outside CURSOR_MOVING_C0"
+        );
     }
 
     #[test]
-    fn strip_dcs_sequence() {
-        // DCS: ESC P ... ST must be removed entirely.
+    fn strip_dcs_sequence_removes_it_entirely() {
         let input = "before\x1bPq#0;1;2evil\x1b\\after";
         assert_eq!(strip_terminal_escapes(input), "beforeafter");
     }
-
-    // ---- continuation framing ----
 
     fn framing() -> Ingestor {
         ingestor(&Config {
@@ -694,8 +706,6 @@ mod tests {
 
     #[test]
     fn framing_is_off_by_default() {
-        // One record per physical line remains the default: framing changes
-        // what a record means, so it must be asked for.
         let ing = ingestor(&Config::default());
         let (events, report) = record(&ing, vec![reader(None, "Traceback:\n  at foo\n")]);
         assert_eq!(
@@ -704,7 +714,8 @@ mod tests {
                 Recorded::Begin(None),
                 Recorded::Line("Traceback:".into(), 1),
                 Recorded::Line("  at foo".into(), 2),
-            ]
+            ],
+            "framing changes what a record means, so it must be asked for"
         );
         assert_eq!(report.continuation_lines_absorbed, 0);
     }
@@ -719,21 +730,19 @@ mod tests {
             events,
             vec![
                 Recorded::Begin(None),
-                // The frames join with a space: one record stays one line,
-                // which every downstream mode assumes.
                 Recorded::Line("Traceback: at foo at bar".into(), 1),
                 Recorded::Line("next event".into(), 4),
-            ]
+            ],
+            "frames join with CONTINUATION_JOINER: one record stays one line"
         );
-        // Both frames were read and are represented — they just are not
-        // records of their own, so accounting has to add them back.
-        assert_eq!(report.continuation_lines_absorbed, 2);
+        assert_eq!(
+            report.continuation_lines_absorbed, 2,
+            "absorbed frames are counted so line accounting can add them back"
+        );
     }
 
     #[test]
     fn framed_record_reports_its_first_physical_line() {
-        // The line number has to point at where the event starts, so a reader
-        // can jump to it in the original file.
         let (events, _) = record(
             &framing(),
             vec![reader(
@@ -745,13 +754,13 @@ Traceback:\n  at foo\n  at bar\n",
         );
         assert_eq!(
             events[3],
-            Recorded::Line("Traceback: at foo at bar".into(), 3)
+            Recorded::Line("Traceback: at foo at bar".into(), 3),
+            "a reader must be able to jump to the event's start in the original file"
         );
     }
 
     #[test]
     fn framing_flushes_a_record_left_open_at_end_of_input() {
-        // Nothing follows the last frame, so the record is complete.
         let (events, _) = record(&framing(), vec![reader(None, "Traceback:\n  at foo\n")]);
         assert_eq!(
             events,
@@ -764,8 +773,6 @@ Traceback:\n  at foo\n  at bar\n",
 
     #[test]
     fn framing_does_not_carry_a_record_across_inputs() {
-        // A record open at the end of one file must not swallow the first
-        // line of the next, nor report its line number against it.
         let (events, _) = record(
             &framing(),
             vec![
@@ -779,16 +786,14 @@ Traceback:\n  at foo\n  at bar\n",
                 Recorded::Begin(Some("a.log".into())),
                 Recorded::Line("Traceback: at foo".into(), 1),
                 Recorded::Begin(Some("b.log".into())),
-                // No record is open, so an indented first line is its own.
                 Recorded::Line("  still indented".into(), 1),
-            ]
+            ],
+            "no record is open at the start of a file, so an indented first line is its own record"
         );
     }
 
     #[test]
     fn framing_treats_a_blank_line_as_a_separator_not_a_continuation() {
-        // A whitespace-only line ends the record rather than extending it;
-        // blank lines separate events in most formats.
         let (events, report) = record(
             &framing(),
             vec![reader(None, "Traceback:\n  at foo\n   \nnext\n")],
@@ -807,7 +812,6 @@ Traceback:\n  at foo\n  at bar\n",
 
     #[test]
     fn framing_leaves_unindented_input_alone() {
-        // A log with no continuations must ingest exactly as it does today.
         let text = "alpha\nbeta\ngamma\n";
         let (framed, framed_report) = record(&framing(), vec![reader(None, text)]);
         let (plain, _) = record(&ingestor(&Config::default()), vec![reader(None, text)]);
@@ -817,8 +821,6 @@ Traceback:\n  at foo\n  at bar\n",
 
     #[test]
     fn framing_still_fail_checks_every_physical_line() {
-        // --fail-on-pattern is a CI gate: a match hiding inside a stack frame
-        // must still trip it, so the check stays on raw physical lines.
         let ing = ingestor(&Config {
             frame_continuations: true,
             fail_pattern: Some("SecretLeak".to_string()),
@@ -827,7 +829,7 @@ Traceback:\n  at foo\n  at bar\n",
         let (_, report) = record(&ing, vec![reader(None, "Traceback:\n  at SecretLeak\n")]);
         assert!(
             report.fail_pattern_matched,
-            "a pattern inside a continuation line must still fail the run"
+            "--fail-on-pattern is a CI gate: a pattern inside a continuation line must still fail the run"
         );
     }
 }
@@ -839,13 +841,13 @@ mod input_hash_tests {
         let readers = parts
             .iter()
             .map(|p| InputReader {
-                source: None,
+                source: Source::Stdin,
                 reader: Box::new(io::Cursor::new(p.to_vec())),
             })
             .collect();
         let report = Ingestor::from_config(&Config::default())
             .unwrap()
-            .with_input_hash(true)
+            .with_input_hash_if_every_input_opened(true, 0)
             .run(readers, |_| Ok(()))
             .unwrap();
         crate::run_metadata::hex(&report.input_hash.unwrap())
@@ -932,7 +934,7 @@ mod input_hash_tests {
         }
         let ing = Ingestor::from_config(&Config::default())
             .unwrap()
-            .with_input_hash(true);
+            .with_input_hash_if_every_input_opened(true, 0);
         for reader in [
             Box::new(io::Cursor::new(vec![0xffu8])) as Box<dyn BufRead>,
             Box::new(BufReader::new(ErrorAfterLine(false))),
@@ -940,7 +942,7 @@ mod input_hash_tests {
             assert!(
                 ing.run(
                     vec![InputReader {
-                        source: None,
+                        source: Source::Stdin,
                         reader
                     }],
                     |_| Ok(())
@@ -956,12 +958,12 @@ mod input_hash_tests {
             ..Config::default()
         })
         .unwrap()
-        .with_input_hash(true);
+        .with_input_hash_if_every_input_opened(true, 0);
         for (bytes, truncated) in [(b"a\n".as_slice(), false), (b"a\nb\n".as_slice(), true)] {
             let report = ing
                 .run(
                     vec![InputReader {
-                        source: None,
+                        source: Source::Stdin,
                         reader: Box::new(io::Cursor::new(bytes.to_vec())),
                     }],
                     |_| Ok(()),
@@ -974,7 +976,7 @@ mod input_hash_tests {
             .unwrap()
             .run(
                 vec![InputReader {
-                    source: None,
+                    source: Source::Stdin,
                     reader: Box::new(io::Cursor::new(b"a\n")),
                 }],
                 |_| Ok(()),
@@ -983,6 +985,24 @@ mod input_hash_tests {
         assert!(
             report.input_hash.is_none(),
             "default library ingestion must not hash"
+        );
+    }
+    #[test]
+    fn a_failed_open_withholds_the_input_hash() {
+        let report = Ingestor::from_config(&Config::default())
+            .unwrap()
+            .with_input_hash_if_every_input_opened(true, 1)
+            .run(
+                vec![InputReader {
+                    source: Source::Stdin,
+                    reader: Box::new(io::Cursor::new(b"a\n")),
+                }],
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(
+            report.input_hash.is_none(),
+            "a published digest must cover every requested source"
         );
     }
 }

@@ -2,39 +2,45 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// Key-value pairs with either separator: key=value, key:value. No unit
-// suffix alternation after the value: the greedy value class already
-// takes `%`, `ms`, `MB`, so the suffix never matched a byte.
-static KEY_VALUE_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*[=:]\s*([^\s,;|]+)").unwrap());
+const KEY: &str = "[a-zA-Z][a-zA-Z0-9_.-]*";
+const VALUE: &str = r"[^\s,;|]+";
 
-// `=`-only pairs; runs before the `[=:]` regex (see detect_and_replace)
-static CONFIG_KV_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([a-zA-Z][a-zA-Z0-9_.-]*)\s*=\s*([^\s,;|]+)").unwrap());
+fn is_key_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')
+}
 
-// A metrics run: three or more `key=number` pairs in a row
-// (`Alloc=25451 TotalAlloc=99852 Sys=81560 NumGC=10 Goroutines=154`). The
-// run is the shape — no single pair says whether its number is a count or an
-// identity, but three consecutive numeric pairs are a measurement dump, and
-// every value in it folds whatever its digit count. The key stays: it is
-// what the template claims about the value.
+static EQUALS_OR_COLON_PAIR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"({KEY})\s*[=:]\s*({VALUE})")).unwrap());
+
+static EQUALS_PAIR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"({KEY})\s*=\s*({VALUE})")).unwrap());
+
+static GENERAL_PASSES_EQUALS_FIRST: [&LazyLock<Regex>; 2] =
+    [&EQUALS_PAIR_REGEX, &EQUALS_OR_COLON_PAIR_REGEX];
+
+const METRICS_RUN_MIN_PAIRS: usize = 3;
+
 static METRICS_RUN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?:\b[A-Za-z_][A-Za-z0-9_]*=-?\d+(?:\.\d+)?\b[ \t]*){3,}").unwrap()
+    Regex::new(&format!(
+        r"(?:\b[A-Za-z_][A-Za-z0-9_]*=-?\d+(?:\.\d+)?\b[ \t]*){{{METRICS_RUN_MIN_PAIRS},}}"
+    ))
+    .unwrap()
 });
 static NUMERIC_PAIR_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)=(-?\d+(?:\.\d+)?)\b").unwrap());
 
-// JSON-style key-value: "key": "value" or "key":123
 static JSON_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""([a-zA-Z][a-zA-Z0-9_.-]*)"\s*:\s*(?:"([^"]+)"|(\d+(?:\.\d+)?)|true|false|null)"#)
-        .unwrap()
+    Regex::new(&format!(
+        r#""(?P<key>{KEY})"\s*:\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>\d+(?:\.\d+)?)|true|false|null)"#
+    ))
+    .unwrap()
 });
 
-// What the general passes accept: a key on this list, a key with one of
-// these suffixes or prefixes, or a value with one of these suffixes.
-// `level` is not on it: a severity is what happened, not a value that
-// varies within one event, and `level=error` beside `level=info` must
-// stay two events.
+const RUN_OPENERS: [char; 5] = ['"', '\'', ':', '[', '('];
+const RUN_CLOSERS: [char; 5] = ['"', '\'', ']', ')', ','];
+
+const URL_SCHEMES: [&str; 3] = ["http://", "https://", "ftp://"];
+
 const VALID_KEYS: [&str; 20] = [
     "timeout",
     "retries",
@@ -60,17 +66,20 @@ const VALID_KEYS: [&str; 20] = [
 const KEY_SUFFIXES: [&str; 6] = ["_timeout", "_limit", "_size", "_count", "_rate", "_usage"];
 const KEY_PREFIXES: [&str; 2] = ["max_", "min_"];
 const VALUE_SUFFIXES: [&str; 5] = ["ms", "%", "MB", "KB", "GB"];
+const PROGRAMMING_KEYWORDS: [&str; 4] = ["if", "for", "while", "switch"];
 
-// An SQL statement: `SELECT … FROM`, `INSERT INTO`, `UPDATE <t> SET`,
-// `DELETE FROM`, in any case. Its `col=value` pairs are a query, not fields.
+const SQL_STATEMENT_SHAPES: [&str; 4] = [
+    r"select\b.*\bfrom",
+    r"insert\s+into",
+    r"update\s+\S+\s+set",
+    r"delete\s+from",
+];
+
 static SQL_STATEMENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(?:select\b.*\bfrom|insert\s+into|update\s+\S+\s+set|delete\s+from)\b")
-        .unwrap()
+    Regex::new(&format!(r"(?i)\b(?:{})\b", SQL_STATEMENT_SHAPES.join("|"))).unwrap()
 });
 
-// Built from the lists above, so it cannot drift from them: a line with
-// none of these substrings has no pair the general passes would accept.
-static ACCEPT_GATE: LazyLock<Regex> = LazyLock::new(|| {
+static ACCEPTABLE_PAIR_PREFILTER: LazyLock<Regex> = LazyLock::new(|| {
     let alternation = VALID_KEYS
         .iter()
         .chain(&KEY_SUFFIXES)
@@ -86,39 +95,22 @@ pub struct KeyValueDetector;
 
 impl KeyValueDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no key-value indicators
-        if !Self::has_key_value_indicators(text) {
+        if !Self::has_pair_chars_and_no_url(text) {
             return (text.to_string(), Vec::new());
         }
 
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Two passes, each deciding on its own match. There used to be two
-        // more — "metrics" and "config" — that ran unrestricted key=value
-        // regexes gated by a whole-line keyword sniff ("config", "cpu",
-        // "settings"...). A word anywhere on the line then changed how an
-        // unrelated field tokenised: the username "config" in an sshd line
-        // turned `sshd[1234]:` into `sshd[<KEY_VALUE>` and split the group
-        // (lessence-moq). The general pass already covers every pair those
-        // two accepted that was worth folding.
         Self::apply_json_pattern(&mut result, &mut tokens);
         Self::apply_metrics_runs(&mut result, &mut tokens);
-        // `=` pairs before `[=:]` pairs: on `config: host=localhost` the
-        // looser regex would otherwise match `config: host` first and eat
-        // the key of the real pair.
-        Self::apply_general_pattern(&mut result, &mut tokens, &CONFIG_KV_REGEX);
-        Self::apply_general_pattern(&mut result, &mut tokens, &KEY_VALUE_REGEX);
+        for pass in GENERAL_PASSES_EQUALS_FIRST {
+            Self::apply_general_pattern(&mut result, &mut tokens, pass);
+        }
 
         (result, tokens)
     }
 
-    // No vetoes on words: `for `, `if ` and `while ` are English, and a
-    // `for ` in "Waiting for caches" switched key-value folding off for
-    // the whole line. A URL veto stays: a bare URL's `?a=b` is not a pair.
-    /// Whether the line carries a `key=value` pair at all: an `=` outside
-    /// every double-quoted span. Without one, the only `=` is inside a
-    /// value, and this detector would rewrite the values of a JSON record.
     pub(crate) fn has_pair_outside_quotes(text: &str) -> bool {
         let mut quoted = false;
         let mut prev = 0u8;
@@ -133,62 +125,56 @@ impl KeyValueDetector {
         false
     }
 
-    fn has_key_value_indicators(text: &str) -> bool {
+    fn has_pair_chars_and_no_url(text: &str) -> bool {
         (text.contains('=') || text.contains(':'))
-            && !text.contains("http://")
-            && !text.contains("https://")
-            && !text.contains("ftp://")
+            && !URL_SCHEMES.iter().any(|scheme| text.contains(scheme))
+    }
+
+    fn is_sentence(quoted_value: &str) -> bool {
+        quoted_value.contains(char::is_whitespace)
+    }
+
+    fn prefix_through_colon_spacing(whole: &str) -> &str {
+        let colon = whole.find(':').unwrap_or(0);
+        let value_start = whole[colon + 1..]
+            .find(|c: char| !c.is_whitespace())
+            .map_or(whole.len(), |i| colon + 1 + i);
+        &whole[..value_start]
     }
 
     fn apply_json_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         super::fold_matches(text, tokens, &JSON_KV_REGEX, |caps| {
-            let key = caps.get(1).unwrap().as_str();
-            // A JSON value arrives in group 2 (quoted) or group 3 (bare);
-            // neither present means an explicit null.
-            let value = caps
-                .get(2)
-                .or_else(|| caps.get(3))
-                .map_or("null", |m| m.as_str());
-            // A quoted value with whitespace in it is a sentence: the
-            // event's own words. It keeps them, as an unquoted sentence
-            // would (lessence-7lj); 13,590 gateway lines of five different
-            // tasks were one `"msg":<KEY_VALUE>` group (lessence-t8q).
-            if caps
-                .get(2)
-                .is_some_and(|m| m.as_str().contains(char::is_whitespace))
-            {
+            let key = caps.name("key").unwrap().as_str();
+            let quoted = caps.name("quoted");
+            if quoted.is_some_and(|m| Self::is_sentence(m.as_str())) {
                 return None;
             }
+            let value = quoted
+                .or_else(|| caps.name("bare"))
+                .map_or("null", |m| m.as_str());
             let token = Self::pair(key, value);
-            // Keep the source's own spacing after the colon — the template
-            // must be a template OF the input, not a reformatting of it.
             let whole = caps.get(0).unwrap().as_str();
-            let colon = whole.find(':').unwrap_or(0);
-            let value_start = whole[colon + 1..]
-                .find(|c: char| !c.is_whitespace())
-                .map_or(whole.len(), |i| colon + 1 + i);
-            Some((token, format!("{}<KEY_VALUE>", &whole[..value_start])))
+            Some((
+                token,
+                format!("{}<KEY_VALUE>", Self::prefix_through_colon_spacing(whole)),
+            ))
         });
     }
 
-    /// Every `key=number` inside a run of three or more folds to
-    /// `key=<KEY_VALUE>` (lessence-ssz: 899 argocd memory-stats lines split
-    /// on `NumGC=10` because the key was not on a list).
+    fn is_bounded_message(text: &str, m: &regex::Match) -> bool {
+        let before = text[..m.start()].trim_end().chars().next_back();
+        let after = text[m.end()..].trim_start().chars().next();
+        let opens = before.is_none_or(|c| RUN_OPENERS.contains(&c));
+        let closes = after.is_none_or(|c| RUN_CLOSERS.contains(&c));
+        opens && closes
+    }
+
     fn apply_metrics_runs(text: &mut String, tokens: &mut Vec<Token>) {
         if !text.contains('=') {
             return;
         }
         let folded = METRICS_RUN_REGEX.replace_all(text, |run: &regex::Captures| {
-            // The run must be the whole message — bounded by a quote, a
-            // bracket, a `:` or the line ends. Three numeric pairs inside a
-            // larger record (`pid=<PID> uid=1000 auid=1000 ses=3 subj=…`,
-            // `endpointID=1680 identity=1 …`) are that record's identities.
-            let m = run.get(0).unwrap();
-            let before = text[..m.start()].trim_end().chars().next_back();
-            let after = text[m.end()..].trim_start().chars().next();
-            let opens = matches!(before, None | Some('"' | '\'' | ':' | '[' | '('));
-            let closes = matches!(after, None | Some('"' | '\'' | ']' | ')' | ','));
-            if !(opens && closes) {
+            if !Self::is_bounded_message(text, &run.get(0).unwrap()) {
                 return run[0].to_string();
             }
             NUMERIC_PAIR_REGEX
@@ -206,35 +192,29 @@ impl KeyValueDetector {
         }
     }
 
+    fn already_folded(value: &str) -> bool {
+        value.starts_with("<KEY_VALUE>")
+    }
+
+    fn owned_by_duration_detector(value: &str) -> bool {
+        Self::classify_value_type(value) == "duration"
+    }
+
     fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
-        // A pair is accepted only by key or value shape (`is_valid_key_value_pair`);
-        // a line carrying none of those shapes anywhere cannot yield one, and
-        // the regex — seven prose colons per kubelet line — is not run on it.
-        if !ACCEPT_GATE.is_match(text) || !Self::line_allows_key_value(text) {
+        if !ACCEPTABLE_PAIR_PREFILTER.is_match(text) || !Self::is_not_sql_statement(text) {
             return;
         }
-        // `find_iter`, not `captures_iter`: the value class is a Unicode
-        // negation, which puts capture extraction on the backtracker at
-        // three times the cost of the search. Key and value are read off
-        // the match span instead (`split_pair`).
         let mut out = String::new();
         let mut last = 0;
         for m in regex.find_iter(text) {
             let (key, value) = Self::split_pair(m.as_str());
-            // A duration is the duration detector's whatever its unit:
-            // `duration=272ms` and `duration=2.9s` must fold alike.
-            // A value an earlier pass already folded (`host=<KEY_VALUE>`
-            // from the `=` pass, `x_count=<KEY_VALUE>"` from a metrics run)
-            // is that pair again, not a new one.
-            if value.starts_with("<KEY_VALUE>")
+            if Self::already_folded(value)
                 || !Self::is_valid_key_value_pair(key, value)
-                || Self::classify_value_type(value) == "duration"
+                || Self::owned_by_duration_detector(value)
             {
                 continue;
             }
             tokens.push(Self::pair(key, value));
-            // The key and its separator stay; only the value folds.
-            // `value` is the tail of the match (`split_pair`).
             out.push_str(&text[last..m.end() - value.len()]);
             out.push_str("<KEY_VALUE>");
             last = m.end();
@@ -245,24 +225,17 @@ impl KeyValueDetector {
         }
     }
 
-    /// The key and value of a `key\s*[=:]\s*value` match. The key is the
-    /// maximal run of key characters at the start — the regex's greedy
-    /// `[a-zA-Z][a-zA-Z0-9_.-]*` can end nowhere else, the separator not
-    /// being a key character — and the value is everything past the
-    /// separator and its whitespace.
     fn split_pair(m: &str) -> (&str, &str) {
-        let key_end = m
-            .bytes()
-            .position(|b| !(b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')))
-            .unwrap_or(m.len());
+        let key_end = m.bytes().position(|b| !is_key_byte(b)).unwrap_or(m.len());
         let rest = m[key_end..].trim_start();
         let value = rest.get(1..).unwrap_or("").trim_start();
+        debug_assert!(
+            m.ends_with(value),
+            "the value is the suffix of its match, so the key and separator before it stay"
+        );
         (&m[..key_end], value)
     }
 
-    /// The token every key-value pass records. Each pass keeps the key in
-    /// front of its `<KEY_VALUE>`: `timeout=30`, `retries=30` and
-    /// `port=8080` used to read as one `<KEY_VALUE>` and fold together.
     fn pair(key: &str, value: &str) -> Token {
         Token::KeyValuePair {
             key: key.to_lowercase(),
@@ -273,12 +246,10 @@ impl KeyValueDetector {
     fn classify_value_type(value: &str) -> String {
         let lower_value = value.to_lowercase();
 
-        // Percentage values
         if value.ends_with('%') {
             return "percentage".to_string();
         }
 
-        // Duration values
         if value.ends_with("ms") || value.ends_with("us") || value.ends_with("ns") {
             return "duration".to_string();
         }
@@ -292,7 +263,6 @@ impl KeyValueDetector {
             return "duration".to_string();
         }
 
-        // Size values
         if value.ends_with("MB")
             || value.ends_with("GB")
             || value.ends_with("KB")
@@ -302,7 +272,6 @@ impl KeyValueDetector {
             return "size".to_string();
         }
 
-        // Rate values
         if value.ends_with("rps")
             || value.ends_with("qps")
             || value.ends_with("/s")
@@ -312,7 +281,6 @@ impl KeyValueDetector {
             return "rate".to_string();
         }
 
-        // Boolean values
         if matches!(
             lower_value.as_str(),
             "true" | "false" | "enabled" | "disabled" | "on" | "off"
@@ -320,54 +288,27 @@ impl KeyValueDetector {
             return "boolean".to_string();
         }
 
-        // Numeric values
         if value.chars().all(|c| c.is_ascii_digit() || c == '.') {
             return "number".to_string();
         }
 
-        // IP addresses
         if Self::is_ip_address(value) {
             return "ip".to_string();
         }
 
-        // URLs
-        if value.starts_with("http://")
-            || value.starts_with("https://")
-            || value.starts_with("ftp://")
-        {
+        if URL_SCHEMES.iter().any(|scheme| value.starts_with(scheme)) {
             return "url".to_string();
         }
 
-        // Default to string
         "string".to_string()
     }
 
-    /// Thin composition kept for unit tests; production code hoists
-    /// `line_allows_key_value` out of the per-match closure.
-    #[cfg(test)]
-    fn is_valid_key_value_context(key: &str, value: &str, text: &str) -> bool {
-        Self::line_allows_key_value(text) && Self::is_valid_key_value_pair(key, value)
-    }
-
-    /// Line-level exclusion (an SQL statement) — computed once per pass,
-    /// not per match.
-    fn line_allows_key_value(text: &str) -> bool {
-        // Exclude SQL statements, recognised by their grammar: a verb with
-        // the word it needs after it. The words alone (`update `,
-        // `delete `) are English, and "Failed to update lock" used to switch
-        // key-value folding off for its whole line while "Failed to release
-        // lock" kept it (lessence-enl). The arithmetic guard that used to
-        // live here (" - ", " + "...) vetoed every logback/log4j line, whose
-        // fixed `Logger - message` separator is a dash, so `attempt_count=1`
-        // never folded on any Java log (lessence-moq). A `k=v` next to a
-        // minus sign is still a `k=v`; the per-pair allowlist decides.
+    fn is_not_sql_statement(text: &str) -> bool {
         !SQL_STATEMENT.is_match(text)
     }
 
-    #[cfg_attr(test, mutants::skip)] // "if"/"for"/"while"/"switch" not in VALID_KEYS — exclusion is redundant with the positive check
     fn is_valid_key_value_pair(key: &str, value: &str) -> bool {
-        // Exclude programming constructs
-        if key == "if" || key == "for" || key == "while" || key == "switch" {
+        if PROGRAMMING_KEYWORDS.contains(&key) {
             return false;
         }
 
@@ -389,15 +330,40 @@ impl KeyValueDetector {
 mod tests {
     use super::*;
 
+    fn accepted(key: &str, value: &str, line: &str) -> bool {
+        KeyValueDetector::is_not_sql_statement(line)
+            && KeyValueDetector::is_valid_key_value_pair(key, value)
+    }
+
     #[test]
-    fn test_metrics_detection() {
+    fn a_programming_keyword_is_never_a_key_even_with_a_config_shaped_value() {
+        for keyword in PROGRAMMING_KEYWORDS {
+            let line = format!("progress {keyword}: 10%");
+            let (r, t) = KeyValueDetector::detect_and_replace(&line);
+            assert_eq!(r, line, "a % value alone would accept {keyword} as a key");
+            assert!(t.is_empty(), "{line}: {t:?}");
+        }
+        let (r, _) = KeyValueDetector::detect_and_replace("progress done: 10%");
+        assert_eq!(r, "progress done: <KEY_VALUE>");
+    }
+
+    #[test]
+    fn an_ipv6_value_classifies_as_an_ip() {
+        assert_eq!(KeyValueDetector::classify_value_type("2001:db8::1"), "ip");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("::ffff:192.0.2.1"),
+            "ip"
+        );
+    }
+
+    #[test]
+    fn percentage_values_fold_as_percentage() {
         let metrics_line = "Performance metrics: cpu=75%, memory=60%, disk=45%";
         let (result, tokens) = KeyValueDetector::detect_and_replace(metrics_line);
 
         assert!(!tokens.is_empty());
         assert!(result.contains("<KEY_VALUE>"));
 
-        // Check percentage classification
         let has_percentage = tokens.iter().any(|token| {
             if let Token::KeyValuePair { key: _, value_type } = token {
                 value_type == "percentage"
@@ -409,19 +375,19 @@ mod tests {
     }
 
     #[test]
-    fn test_config_detection() {
-        // `host`, `port` and `ssl` are all on the general allowlist, so they
-        // fold on their own merits — the word "config" elsewhere on the line
-        // is not what decides it (lessence-moq).
+    fn allowlisted_keys_fold_whatever_word_precedes_them() {
         let config_line = "Database config: host=localhost, port=5432, ssl=true";
         let (result, tokens) = KeyValueDetector::detect_and_replace(config_line);
-        assert_eq!(tokens.len(), 3, "{result}");
+        assert_eq!(
+            tokens.len(),
+            3,
+            "host, port and ssl fold on the allowlist, not because config is on the line: {result}"
+        );
         assert_eq!(
             result,
             "Database config: host=<KEY_VALUE>, port=<KEY_VALUE>, ssl=<KEY_VALUE>"
         );
 
-        // And the same pairs fold identically on a line with no such word.
         let plain = "Database ready: host=localhost, port=5432, ssl=true";
         let (plain_result, plain_tokens) = KeyValueDetector::detect_and_replace(plain);
         assert_eq!(plain_tokens.len(), 3);
@@ -431,8 +397,6 @@ mod tests {
         );
     }
 
-    /// The key names the setting: `timeout=30`, `retries=30` and
-    /// `port=8080` are three fields, and each keeps its name.
     #[test]
     fn a_pair_keeps_its_key() {
         for (line, folded) in [
@@ -447,8 +411,6 @@ mod tests {
         }
     }
 
-    /// A level is not a foldable value: `level=error` and `level=info`
-    /// are two events, so the general passes leave it literal.
     #[test]
     fn a_level_field_is_not_folded() {
         for line in ["pool ready level=error", "pool ready level=info"] {
@@ -460,8 +422,6 @@ mod tests {
         assert_eq!(r, "level=warn timeout=<KEY_VALUE>");
     }
 
-    /// A value an earlier pass already folded is not folded again: one
-    /// token per pair, and nothing after the placeholder is eaten.
     #[test]
     fn a_folded_value_is_not_folded_twice() {
         let (r, t) = KeyValueDetector::detect_and_replace("cfg host=db1 x_count: 4");
@@ -478,32 +438,29 @@ mod tests {
 
     #[test]
     fn a_keyword_elsewhere_on_the_line_does_not_change_a_field() {
-        // lessence-moq: the username "config" used to flip sshd[1234]: into
-        // sshd[<KEY_VALUE> and split an 11,318-line group.
         let a = "sshd[3581664]: Invalid user config from 171.251.29.253 port 46400";
         let b = "sshd[3581664]: Invalid user sammy from 171.251.29.253 port 46400";
         let (ra, _) = KeyValueDetector::detect_and_replace(a);
         let (rb, _) = KeyValueDetector::detect_and_replace(b);
-        assert_eq!(ra.replace("config", "sammy"), rb);
+        assert_eq!(
+            ra.replace("config", "sammy"),
+            rb,
+            "the username config must not turn sshd[...]: into a pair"
+        );
     }
 
     #[test]
     fn a_dash_separator_does_not_veto_the_line() {
-        // logback's `Logger - message` has a dash on every line.
         let line =
             "WARN CircuitBreaker - Circuit breaker is HALF_OPEN, attempt_count=1, failure_rate=65%";
         let (result, tokens) = KeyValueDetector::detect_and_replace(line);
         assert!(
             result.contains("<KEY_VALUE>"),
-            "attempt_count is on the allowlist and must fold: {result}"
+            "attempt_count is on the allowlist and must fold; logback's Logger - message has a dash on every line: {result}"
         );
         assert!(!tokens.is_empty());
     }
 
-    /// Three or more `key=number` pairs in a row are a measurement dump:
-    /// every value folds, whatever its digits, and the key stays. Two
-    /// pairs, or a run broken by a placeholder, are left to the other
-    /// passes.
     #[test]
     fn a_run_of_numeric_pairs_is_a_metrics_dump() {
         let (r, t) = KeyValueDetector::detect_and_replace(
@@ -519,7 +476,6 @@ mod tests {
                 .count(),
             7
         );
-        // The numeric pairs of a run inside a larger record stay literal.
         for line in [
             "type=CRED_ACQ pid=<PID> uid=1000 auid=1000 ses=3 subj=x",
             "level=info endpointID=1680 identity=1 datapathPolicyRevision=22 desiredPolicyRevision=22 subsys=endpoint",
@@ -527,7 +483,10 @@ mod tests {
             "took ms=12 count=3 items=4x",
         ] {
             let (r, _) = KeyValueDetector::detect_and_replace(line);
-            assert_eq!(r, line);
+            assert_eq!(
+                r, line,
+                "the numeric pairs of a run inside a larger record stay literal"
+            );
         }
         let (r, _) =
             KeyValueDetector::detect_and_replace("stats: Alloc=25451 TotalAlloc=99852 NumGC=10");
@@ -537,8 +496,6 @@ mod tests {
         );
     }
 
-    /// A JSON string value that is a sentence keeps its words; a one-word
-    /// value and a number still fold.
     #[test]
     fn json_sentence_value_keeps_its_words() {
         let (r, _) = KeyValueDetector::detect_and_replace(
@@ -552,28 +509,28 @@ mod tests {
 
     #[test]
     fn json_pass_keeps_the_source_spacing() {
-        // The template is a template OF the input; it must not reformat it.
         let (compact, _) = KeyValueDetector::detect_and_replace(r#"{"level":"info","n":5}"#);
         assert_eq!(compact, r#"{"level":<KEY_VALUE>,"n":<KEY_VALUE>}"#);
         let (spaced, _) = KeyValueDetector::detect_and_replace(r#"{"level": "info", "n": 5}"#);
-        assert_eq!(spaced, r#"{"level": <KEY_VALUE>, "n": <KEY_VALUE>}"#);
+        assert_eq!(
+            spaced, r#"{"level": <KEY_VALUE>, "n": <KEY_VALUE>}"#,
+            "the template is of the input; it must not reformat it"
+        );
     }
 
     #[test]
-    fn test_value_type_classification() {
+    fn a_dotted_quad_classifies_as_a_number_before_an_ip() {
         assert_eq!(KeyValueDetector::classify_value_type("75%"), "percentage");
         assert_eq!(KeyValueDetector::classify_value_type("250ms"), "duration");
         assert_eq!(KeyValueDetector::classify_value_type("1GB"), "size");
         assert_eq!(KeyValueDetector::classify_value_type("true"), "boolean");
         assert_eq!(KeyValueDetector::classify_value_type("12345"), "number");
-        // "192.168.1.1" matches the numeric check (all digits and '.') before the IP check
         assert_eq!(
             KeyValueDetector::classify_value_type("192.168.1.1"),
-            "number"
+            "number",
+            "a dotted quad hits the numeric check before the IP check"
         );
     }
-
-    // --- classify_value_type edge cases ---
 
     #[test]
     fn classify_duration_single_digit_s() {
@@ -591,8 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_empty_is_number() {
-        // Empty string: chars().all(digit_or_dot) is vacuously true → "number"
+    fn an_empty_value_is_vacuously_a_number() {
         assert_eq!(KeyValueDetector::classify_value_type(""), "number");
     }
 
@@ -601,49 +557,36 @@ mod tests {
         assert_eq!(KeyValueDetector::classify_value_type("100rps"), "rate");
     }
 
-    // --- has_key_value_indicators ---
-
     #[test]
     fn kv_indicators_equals() {
-        assert!(KeyValueDetector::has_key_value_indicators("key=value"));
+        assert!(KeyValueDetector::has_pair_chars_and_no_url("key=value"));
     }
 
     #[test]
     fn kv_indicators_no_equals_or_colon() {
-        assert!(!KeyValueDetector::has_key_value_indicators("no kv here"));
+        assert!(!KeyValueDetector::has_pair_chars_and_no_url("no kv here"));
     }
 
     #[test]
     fn kv_indicators_url_excluded() {
-        assert!(!KeyValueDetector::has_key_value_indicators(
+        assert!(!KeyValueDetector::has_pair_chars_and_no_url(
             "visit https://example.com"
         ));
     }
 
     #[test]
-    fn test_no_false_positives() {
-        let non_kv_cases = vec![
+    fn programming_constructs_and_sql_yield_no_pair() {
+        for test_case in [
             "if variable = value then",
             "for i = 1 to 10",
             "SELECT * FROM table WHERE id = 123",
             "Mathematical equation: x=y+z",
-        ];
-
-        for test_case in non_kv_cases {
+        ] {
             let (result, tokens) = KeyValueDetector::detect_and_replace(test_case);
-
-            // Should not detect key-value pairs in programming constructs
-            if test_case.contains("if ")
-                || test_case.contains("for ")
-                || test_case.contains("SELECT ")
-            {
-                assert_eq!(tokens.len(), 0);
-                assert_eq!(result, test_case);
-            }
+            assert_eq!(tokens.len(), 0, "{test_case}: {tokens:?}");
+            assert_eq!(result, test_case);
         }
     }
-
-    // ---- classify_value_type: per-branch tests ----
 
     #[test]
     fn classify_percentage() {
@@ -756,9 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn classify_ip_via_is_ip_address() {
-        // Note: pure IPv4 (digits + dots) classifies as "number" first,
-        // so test is_ip_address directly
+    fn is_ip_address_accepts_a_dotted_quad() {
         assert!(KeyValueDetector::is_ip_address("192.168.1.1"));
     }
 
@@ -790,8 +731,6 @@ mod tests {
     fn classify_string_default() {
         assert_eq!(KeyValueDetector::classify_value_type("hello"), "string");
     }
-
-    // ---- is_common_config_pattern: per-branch tests ----
 
     #[test]
     fn config_pattern_timeout_suffix() {
@@ -890,135 +829,75 @@ mod tests {
         assert!(!KeyValueDetector::is_common_config_pattern("foo", "bar"));
     }
 
-    // ---- is_valid_key_value_context: per-branch tests ----
-
     #[test]
     fn kv_ctx_excludes_if() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "if",
-            "true",
-            "if x=true then"
-        ));
+        assert!(!accepted("if", "true", "if x=true then"));
     }
 
     #[test]
     fn kv_ctx_excludes_for() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "for",
-            "x",
-            "for i=0; i<n"
-        ));
+        assert!(!accepted("for", "x", "for i=0; i<n"));
     }
 
     #[test]
     fn kv_ctx_excludes_while() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "while",
-            "x",
-            "while x=true"
-        ));
+        assert!(!accepted("while", "x", "while x=true"));
     }
 
     #[test]
     fn kv_ctx_excludes_switch() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "switch",
-            "x",
-            "switch x=val"
-        ));
+        assert!(!accepted("switch", "x", "switch x=val"));
     }
 
     #[test]
-    fn kv_ctx_excludes_math_plus() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "x",
-            "1",
-            "x + y = 1"
-        ));
+    fn an_unlisted_key_is_rejected_beside_a_plus() {
+        assert!(!accepted("x", "1", "x + y = 1"));
     }
 
     #[test]
-    fn kv_ctx_excludes_math_minus() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "x",
-            "1",
-            "x - y = 1"
-        ));
+    fn an_unlisted_key_is_rejected_beside_a_minus() {
+        assert!(!accepted("x", "1", "x - y = 1"));
     }
 
     #[test]
-    fn kv_ctx_excludes_math_mul() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "x",
-            "1",
-            "x * y = 1"
-        ));
+    fn an_unlisted_key_is_rejected_beside_a_star() {
+        assert!(!accepted("x", "1", "x * y = 1"));
     }
 
     #[test]
-    fn kv_ctx_excludes_math_div() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "x",
-            "1",
-            "x / y = 1"
-        ));
+    fn an_unlisted_key_is_rejected_beside_a_slash() {
+        assert!(!accepted("x", "1", "x / y = 1"));
     }
 
     #[test]
     fn kv_ctx_excludes_select() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "col",
-            "v",
-            "SELECT col FROM t"
-        ));
+        assert!(!accepted("col", "v", "SELECT col FROM t"));
     }
 
     #[test]
     fn kv_ctx_excludes_insert() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "col",
-            "v",
-            "INSERT INTO t"
-        ));
+        assert!(!accepted("col", "v", "INSERT INTO t"));
     }
 
     #[test]
     fn kv_ctx_excludes_update() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "col",
-            "v",
-            "UPDATE t SET col=v"
-        ));
+        assert!(!accepted("col", "v", "UPDATE t SET col=v"));
     }
 
     #[test]
     fn kv_ctx_excludes_delete_sql() {
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "col",
-            "v",
-            "DELETE FROM t"
-        ));
+        assert!(!accepted("col", "v", "DELETE FROM t"));
     }
 
     #[test]
     fn kv_ctx_valid_key() {
-        assert!(KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "timeout=30"
-        ));
+        assert!(accepted("timeout", "30", "timeout=30"));
     }
 
     #[test]
-    fn kv_ctx_config_pattern() {
-        assert!(KeyValueDetector::is_valid_key_value_context(
-            "read_timeout",
-            "100ms",
-            "read_timeout=100ms"
-        ));
+    fn a_suffix_shaped_key_is_accepted_off_the_list() {
+        assert!(accepted("read_timeout", "100ms", "read_timeout=100ms"));
     }
-
-    // ---- is_ip_address: per-branch tests ----
 
     #[test]
     fn ip_addr_valid_ipv4() {
@@ -1048,20 +927,16 @@ mod tests {
         assert!(!KeyValueDetector::is_ip_address("192.168.1"));
     }
 
-    // ---- Mutant-killing: apply_* patterns must modify text ----
-
     #[test]
-    fn apply_metrics_pattern_modifies_text() {
-        // Input that triggers metrics detection: has metrics context + metrics KV
+    fn a_percentage_value_folds_by_value_suffix() {
         let input = "Performance metrics: cpu=75%";
         let (result, tokens) = KeyValueDetector::detect_and_replace(input);
-        assert_ne!(result, input, "metrics pattern should modify text");
-        assert!(!tokens.is_empty(), "metrics pattern should produce tokens");
+        assert_ne!(result, input, "cpu=75% folds on its % suffix");
+        assert!(!tokens.is_empty(), "cpu=75% yields a pair");
     }
 
     #[test]
-    fn apply_json_pattern_modifies_text() {
-        // Input that triggers JSON detection: has logging JSON indicators + JSON KV
+    fn a_json_record_folds_its_one_word_values() {
         let input = r#"{"level": "info", "message": "hello", "component": "web"}"#;
         let (result, tokens) = KeyValueDetector::detect_and_replace(input);
         assert_ne!(result, input, "JSON pattern should modify text");
@@ -1069,146 +944,68 @@ mod tests {
     }
 
     #[test]
-    fn apply_general_pattern_modifies_text() {
-        // Input that triggers general KV with a valid key from the valid_keys list
+    fn a_listed_key_folds() {
         let input = "timeout=30";
         let (result, tokens) = KeyValueDetector::detect_and_replace(input);
         assert_ne!(result, input, "general pattern should modify text");
         assert!(!tokens.is_empty(), "general pattern should produce tokens");
     }
 
-    // ---- Mutant-killing: is_config_context false negative ----
-
-    // ---- Mutant-killing: is_valid_key_value_context SQL exclusion per-keyword ----
-
     #[test]
-    fn kv_ctx_excludes_select_only() {
-        // Has SELECT but not INSERT, UPDATE, DELETE
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "SELECT id FROM users"
-        ));
+    fn an_allowed_key_inside_a_select_statement_is_rejected() {
+        assert!(!accepted("timeout", "30", "SELECT id FROM users"));
     }
 
     #[test]
-    fn kv_ctx_excludes_insert_only() {
-        // Has INSERT but not SELECT, UPDATE, DELETE
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "INSERT INTO users VALUES (1)"
-        ));
+    fn an_allowed_key_inside_a_insert_statement_is_rejected() {
+        assert!(!accepted("timeout", "30", "INSERT INTO users VALUES (1)"));
     }
 
     #[test]
-    fn kv_ctx_excludes_update_only() {
-        // Has UPDATE but not SELECT, INSERT, DELETE
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "UPDATE users SET name='x'"
-        ));
+    fn an_allowed_key_inside_a_update_statement_is_rejected() {
+        assert!(!accepted("timeout", "30", "UPDATE users SET name='x'"));
     }
 
     #[test]
-    fn kv_ctx_excludes_delete_only() {
-        // Has DELETE but not SELECT, INSERT, UPDATE
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "DELETE FROM users WHERE id=1"
-        ));
-    }
-
-    // ---- Mutant-killing: is_valid_key_value_context math exclusion per-operator ----
-
-    // ---- Mutant-killing: is_valid_key_value_context valid_keys per-group ----
-
-    #[test]
-    fn kv_ctx_valid_key_from_list_timeout() {
-        // "timeout" is in valid_keys list, not a config pattern key
-        assert!(KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "setting timeout=30"
-        ));
-    }
-
-    #[test]
-    fn kv_ctx_valid_via_config_pattern() {
-        // "read_timeout" matches is_common_config_pattern (ends_with "_timeout")
-        // but is NOT in the valid_keys list directly
-        assert!(KeyValueDetector::is_valid_key_value_context(
-            "read_timeout",
-            "100ms",
-            "read_timeout=100ms"
-        ));
+    fn an_allowed_key_inside_a_delete_statement_is_rejected() {
+        assert!(!accepted("timeout", "30", "DELETE FROM users WHERE id=1"));
     }
 
     #[test]
     fn kv_ctx_invalid_key_not_in_list_or_pattern() {
-        // Key is not in valid_keys and doesn't match config pattern -> false
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "foo", "bar", "foo=bar"
-        ));
+        assert!(!accepted("foo", "bar", "foo=bar"));
     }
 
-    // ---- is_metrics_context: per-branch test ----
-
-    // ---- is_logging_json: per-branch test ----
-
-    // ---- Mutant-killing: apply_metrics_pattern (replace with ()) ----
-
     #[test]
-    fn metrics_only_input() {
-        // Kills mutant: `apply_metrics_pattern` body replaced with `()`
-        // Input that triggers ONLY metrics detection (has metrics context keywords)
-        // and uses the metrics KV regex format (key=number%)
+    fn a_percentage_value_folds_after_any_prefix() {
         let input = "System stats: cpu=85%";
         let (result, tokens) = KeyValueDetector::detect_and_replace(input);
-        assert!(
-            !tokens.is_empty(),
-            "metrics-only input should produce tokens: {result}"
-        );
+        assert!(!tokens.is_empty(), "cpu=85% yields a pair: {result}");
         assert!(
             result.contains("<KEY_VALUE>"),
-            "metrics pattern should modify text: {result}"
+            "cpu=85% folds on its % suffix: {result}"
         );
     }
 
-    // ---- Mutant-killing: is_valid_key_value_context || conditions ----
-
     #[test]
-    fn kv_ctx_config_pattern_not_in_valid_keys() {
-        // Kills mutant: `|| with &&` on valid_keys.contains vs is_common_config_pattern (line 332)
-        // Key "max_retries" is NOT in valid_keys array but IS a config pattern (starts_with "max_")
-        assert!(KeyValueDetector::is_valid_key_value_context(
-            "max_retries",
-            "5",
-            "max_retries=5"
-        ));
-        // Verify it's not in the valid_keys list
-        assert!(!KeyValueDetector::is_valid_key_value_context(
-            "max_retries",
-            "5",
-            "SELECT max_retries FROM t"
-        ));
+    fn a_prefix_shaped_key_is_accepted_and_sql_still_vetoes_it() {
+        assert!(
+            accepted("max_retries", "5", "max_retries=5"),
+            "a prefix-shaped key is accepted though it is not on the list"
+        );
+        assert!(
+            !accepted("max_retries", "5", "SELECT max_retries FROM t"),
+            "the SQL veto holds for a prefix-shaped key"
+        );
     }
 
     #[test]
-    fn kv_ctx_valid_key_not_config_pattern() {
-        // "timeout" IS in valid_keys but "timeout" does NOT match config pattern
-        // (no _timeout suffix, no max_/min_ prefix, value "30" has no unit suffix)
-        assert!(KeyValueDetector::is_valid_key_value_context(
-            "timeout",
-            "30",
-            "timeout=30"
-        ));
+    fn a_listed_key_is_accepted_without_a_config_shape() {
+        for line in ["timeout=30", "setting timeout=30"] {
+            assert!(accepted("timeout", "30", line), "{line}");
+        }
     }
 
-    /// A duration-shaped value belongs to the duration detector whatever
-    /// its key, so `latency=5ms` and `latency=2.9s` fold alike.
     #[test]
     fn a_duration_value_is_left_to_the_duration_detector() {
         let (r, _) = KeyValueDetector::detect_and_replace("latency=5ms timeout=30");
@@ -1229,7 +1026,7 @@ mod gate_2026_08_29 {
             .chain(KEY_PREFIXES.iter().map(|p| format!("{p}x=1")))
             .chain(VALUE_SUFFIXES.iter().map(|s| format!("k=1{s}")));
         for line in lines {
-            assert!(ACCEPT_GATE.is_match(&line), "{line}");
+            assert!(ACCEPTABLE_PAIR_PREFILTER.is_match(&line), "{line}");
             let (r, t) = KeyValueDetector::detect_and_replace(&line);
             assert!(
                 r.contains("<KEY_VALUE>") || line.ends_with("ms"),
@@ -1238,7 +1035,7 @@ mod gate_2026_08_29 {
             assert_eq!(t.is_empty(), line.ends_with("ms"), "{line}");
         }
         let prose = r#"Operation for "{volumeName:a podName:b}" failed. Error: timed out"#;
-        assert!(!ACCEPT_GATE.is_match(prose));
+        assert!(!ACCEPTABLE_PAIR_PREFILTER.is_match(prose));
         assert_eq!(KeyValueDetector::detect_and_replace(prose).0, prose);
     }
 
@@ -1255,10 +1052,8 @@ mod gate_2026_08_29 {
     }
 }
 
-/// The metrics-run bounds, the two-sided gate and the no-pair path of the
-/// general pattern (lessence-e8v survivors 165, 187, 211).
 #[cfg(test)]
-mod e8v_gates_2026_09_18 {
+mod general_pass_gates {
     use super::*;
 
     #[test]
@@ -1271,8 +1066,6 @@ mod e8v_gates_2026_09_18 {
         assert!(open.contains("NumGC=10"), "{open}");
     }
 
-    /// The SQL verbs are English too: a prose `update`, `delete`, `select`
-    /// or `insert` does not switch the line's pairs off; a statement does.
     #[test]
     fn an_sql_word_in_prose_is_not_a_statement() {
         for (line, folded) in [
@@ -1315,9 +1108,10 @@ mod e8v_gates_2026_09_18 {
 
     #[test]
     fn a_line_whose_only_pair_is_a_duration_is_returned_intact() {
-        // `cpu` opens the gate; the only pair is a duration, which the
-        // duration detector owns, so nothing folds and the line stays whole.
         let (out, _) = KeyValueDetector::detect_and_replace("cpu duration=272ms");
-        assert_eq!(out, "cpu duration=272ms");
+        assert_eq!(
+            out, "cpu duration=272ms",
+            "cpu opens the gate; the only pair is a duration, owned by the duration detector"
+        );
     }
 }

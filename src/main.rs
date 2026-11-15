@@ -19,7 +19,7 @@ use lessence::cli::{self, Cli};
 use lessence::config::{self, Config};
 use lessence::folder::PatternFolder;
 use lessence::ingest::{self, Event, Ingestor};
-use lessence::output::{self, write_output};
+use lessence::output::{self, write_or_exit_on_closed_pipe};
 
 fn main() -> Result<()> {
     let matches = cli::command().get_matches();
@@ -246,7 +246,10 @@ fn main() -> Result<()> {
 
     let use_json_output = config.output_format == "json";
 
-    let (readers, failed_sources) = ingest::open_inputs(&cli.files);
+    let ingest::OpenedInputs {
+        readers,
+        failed_opens: failed_sources,
+    } = ingest::open_inputs(&cli.files);
     if readers.is_empty() {
         eprintln!("lessence: no valid input");
         std::process::exit(1);
@@ -257,25 +260,28 @@ fn main() -> Result<()> {
         output::record_failure();
     }
 
-    let ingestor = ingestor.with_input_hash(
+    let ingestor = ingestor.with_input_hash_if_every_input_opened(
         (use_json_output || config.preflight)
             && !distilling
             && !config.sanitize_pii
-            && config.sanitize.is_none()
-            && failed_sources == 0,
+            && config.sanitize.is_none(),
+        failed_sources,
     );
 
     if distilling {
-        let opts = lessence::distill::Options {
-            distill: cli.distill,
-            // A vocabulary with nothing to anonymise would be a no-op the
-            // caller could not see; asking for words asks for anonymisation.
-            anonymize: cli.anonymize || cli.anonymize_words.is_some(),
-            words_file: cli.anonymize_words.clone(),
-            seed: cli.seed,
-        };
-        let code = lessence::distill::run(&config, &ingestor, readers, &opts)?;
-        std::process::exit(if failed_sources != 0 { 1 } else { code });
+        let opts = lessence::distill::Options::from_flags(
+            cli.distill,
+            cli.anonymize,
+            cli.anonymize_words.clone(),
+            cli.seed,
+        );
+        let outcome =
+            lessence::distill::distill_and_self_check(&config, &ingestor, readers, &opts)?;
+        std::process::exit(if failed_sources != 0 {
+            1
+        } else {
+            outcome.exit_code()
+        });
     }
 
     // Handle preflight mode: process logs but only output JSON analysis
@@ -287,7 +293,7 @@ fn main() -> Result<()> {
         let ingest_report = ingestor.run(readers, |event| {
             match event {
                 Event::BeginInput { source } => {
-                    if let Some(source) = source {
+                    if let Some(source) = source.file_name() {
                         folder.register_source(source.to_string());
                     }
                 }
@@ -310,7 +316,7 @@ fn main() -> Result<()> {
         // Output JSON analysis only
         let mut preflight = Vec::new();
         folder.print_preflight_json(&mut preflight)?;
-        write_output(
+        write_or_exit_on_closed_pipe(
             &mut io::stdout(),
             format_args!("{}", String::from_utf8(preflight)?),
         )?;
@@ -379,12 +385,14 @@ fn main() -> Result<()> {
                 // briefing's `source` field (text footer, --preflight,
                 // --explain) needs the filename too. `current_source_id`
                 // itself is only consumed by `process_line_at` below.
-                current_source_id = source.map(|source| folder.register_source(source.to_string()));
+                current_source_id = source
+                    .file_name()
+                    .map(|source| folder.register_source(source.to_string()));
             }
             Event::Line { text, line_number } => {
-                lines_proved = line_number;
+                lines_proved = line_number.get();
                 if use_json_output {
-                    folder.process_line_at(text, current_source_id, line_number)?;
+                    folder.process_line_at(text, current_source_id, line_number.get())?;
                 } else {
                     folder.process_line(text)?;
                 }
@@ -399,7 +407,7 @@ fn main() -> Result<()> {
             // report can never be completed and the briefing must say the
             // input is incomplete.
             if let Some(spool) = spool.as_mut() {
-                spool.discard();
+                spool.discard_partial();
                 eprintln!("lessence: report: not written ({e})");
                 // No template statistics: the ingest stopped before EOF, so
                 // the counts a briefing rests on were never established.
@@ -429,9 +437,12 @@ fn main() -> Result<()> {
 
         for (count, formatted) in &groups_to_show {
             if json_output {
-                write_output(&mut stdout, format_args!("{formatted}\n"))?;
+                write_or_exit_on_closed_pipe(&mut stdout, format_args!("{formatted}\n"))?;
             } else {
-                write_output(&mut stdout, format_args!("[{count}x] {formatted}\n"))?;
+                write_or_exit_on_closed_pipe(
+                    &mut stdout,
+                    format_args!("[{count}x] {formatted}\n"),
+                )?;
             }
         }
         if fit_truncated > 0 {
@@ -474,7 +485,7 @@ fn main() -> Result<()> {
     // Flush any remaining buffered lines (markdown mode buffers them in
     // the folder instead and emits one assembled document below)
     for output in folder.finish()? {
-        write_output(&mut stdout, format_args!("{output}\n"))?;
+        write_or_exit_on_closed_pipe(&mut stdout, format_args!("{output}\n"))?;
     }
 
     // Markdown: emit one assembled document from the buffered entries
@@ -498,14 +509,16 @@ fn main() -> Result<()> {
 /// Resolve the report directory, apply the filesystem policy, and open the
 /// spool. Every failure here happens before any input is read.
 fn open_spool(settings: &cli::ReportSettings) -> Result<lessence::report::Spool> {
-    use lessence::report::{self, DEFAULT_MAX_BYTES};
+    use lessence::report::{self, DEFAULT_PER_RUN_MAX_BYTES};
 
     let (dir, placement) = report::resolve_dir(settings.dir.as_deref())?;
     // The bounded, acknowledged exception: an explicit directory together
     // with an explicit positive quota accepts any filesystem.
-    let bounded = settings.max_bytes.is_some_and(|n| n > 0);
-    report::check_filesystem(&dir, placement, bounded)?;
-    let max_bytes = settings.max_bytes.map_or(DEFAULT_MAX_BYTES, |n| n as u64);
+    let positive_quota_given = settings.max_bytes.is_some_and(|n| n > 0);
+    report::check_filesystem(&dir, placement.policy(positive_quota_given))?;
+    let max_bytes = settings
+        .max_bytes
+        .map_or(DEFAULT_PER_RUN_MAX_BYTES, |n| n as u64);
     let mut spool = report::Spool::create(&dir, max_bytes)?;
     if let lessence::overview::Entries::Count(n) = settings.entries {
         spool.index_for_overview(n);
@@ -528,7 +541,7 @@ fn finish_report(
     elapsed: Duration,
     already_failing: bool,
 ) -> Result<()> {
-    let mut complete = || -> Result<Option<String>> {
+    let mut complete = || -> Result<lessence::report::Finished> {
         for output in folder.finish()? {
             spool.write_record(&output)?;
         }
@@ -542,16 +555,11 @@ fn finish_report(
         Ok(durability) => durability,
         Err(e) => {
             // Nothing was renamed, so nothing on disk is a report.
-            spool.discard();
+            spool.discard_partial();
             eprintln!("lessence: report: not written ({e})");
-            let codes = folder.input_degraded_codes();
             eprintln!(
                 "lessence: briefing: input {}",
-                if codes.is_empty() {
-                    "complete".to_string()
-                } else {
-                    format!("degraded({})", codes.join(","))
-                }
+                lessence::overview::InputState::from_degraded_codes(folder.input_degraded_codes())
             );
             if config.stats && !config.stats_json {
                 folder.print_stats(&mut io::stderr())?;
@@ -561,18 +569,11 @@ fn finish_report(
     };
 
     let index = spool.take_index();
-    let codes = folder.input_degraded_codes();
+    let failed = already_failing || durability.is_durability_unconfirmed();
     let locator = lessence::overview::Locator {
         path: spool.final_path(),
-        file: durability.as_ref().map_or_else(
-            || "complete".to_string(),
-            |e| format!("complete, durability unconfirmed ({e})"),
-        ),
-        input: if codes.is_empty() {
-            "complete".to_string()
-        } else {
-            format!("degraded({})", codes.join(","))
-        },
+        file: durability,
+        input: lessence::overview::InputState::from_degraded_codes(folder.input_degraded_codes()),
         run_id: spool.run_id(),
         size_bytes: spool.bytes_written(),
     };
@@ -608,8 +609,7 @@ fn finish_report(
     // A consumer closing stdout is an early stop, never a verdict: the
     // report is already on disk, and an exit code this run has already
     // determined survives the broken pipe.
-    let mut stdout = lessence::output::PipeTolerant::new(io::stdout());
-    let failed = already_failing || durability.is_some();
+    let mut stdout = lessence::output::ClosedPipeIsEarlyStop::new(io::stdout());
     let result = lessence::overview::render(
         &mut stdout,
         spool.final_path(),
@@ -649,7 +649,7 @@ fn print_report_stats(
     if json_output {
         let mut record = Vec::new();
         folder.print_summary_json(&mut record, elapsed)?;
-        write_output(
+        write_or_exit_on_closed_pipe(
             &mut io::stdout(),
             format_args!("{}", String::from_utf8(record)?),
         )?;

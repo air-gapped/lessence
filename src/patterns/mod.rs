@@ -1,32 +1,28 @@
+pub mod bracket_context;
 pub mod duration;
 pub mod email;
 pub mod hash;
+pub mod http_status;
 pub mod json;
+pub mod key_value;
 pub mod kubernetes;
+pub mod log_module;
 pub mod names;
 pub mod network;
 pub mod path;
 pub mod process;
 pub mod quoted;
+pub mod structured;
 pub mod timestamp;
 pub mod uuid;
-// New patterns from 001-read-the-current
-pub mod bracket_context;
-pub mod http_status;
-pub mod key_value;
-pub mod log_module;
-pub mod structured;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Timestamp(String),
     IPv4(String),
     IPv6(String),
-    /// A hardware address, six hex pairs: one atom, whatever its bytes look like.
     Mac(String),
     Fqdn(String),
-    /// A syslog/journal positional host — the field between a normalized
-    /// timestamp and the program tag.
     Host(String),
     Port(u16),
     Hash(HashType, String),
@@ -34,7 +30,7 @@ pub enum Token {
     Pid(u32),
     ThreadID(String),
     Path(String),
-    Json(String),
+    EmbeddedJson(String),
     Duration(String),
     CpuQuantity(String),
     Size(String),
@@ -46,23 +42,12 @@ pub enum Token {
     VolumeName(String),
     PluginType(String),
     PodName(String),
-    // New patterns from 001-read-the-current
     HttpStatusClass(String),
     BracketContext(Vec<String>),
-    KeyValuePair {
-        key: String,
-        value_type: String,
-    },
-    LogWithModule {
-        level: String,
-        module: String,
-    },
-    StructuredMessage {
-        component: String,
-        level: String,
-    },
+    KeyValuePair { key: String, value_type: String },
+    LogWithModule { level: String, module: String },
+    StructuredMessage { component: String, level: String },
 
-    // Email pattern
     Email(String),
 }
 
@@ -72,13 +57,9 @@ pub enum HashType {
     SHA1,
     SHA256,
     SHA512,
-    Generic(usize), // Length for generic hex strings
+    Generic { len: usize },
 }
 
-/// Which `FoldingStats` counter a token kind counts into. Several kinds
-/// share a bucket (IPv4+IPv6, Pid+ThreadID, HttpStatus+HttpStatusClass,
-/// the four kubernetes kinds); the mapping is a per-kind fact here, and
-/// `FoldingStats::bump` in the folder is its one consumer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum StatsBucket {
     Timestamps,
@@ -106,25 +87,6 @@ pub(crate) enum StatsBucket {
     Emails,
 }
 
-/// Per-token-kind facts. One taxonomy owns them all; the consumers in the
-/// folder and renderer are projections of this table:
-///
-/// 1. `machine_name` — discriminant name for JSON output
-///    (`GroupRecord.token_types`, the `variation` map keys). Stable across
-///    runs because it is `&'static str`.
-/// 2. `display_label` — the text compact marker's "varying: X" label.
-/// 3. `stats_bucket` — which `FoldingStats` counter the kind counts into.
-/// 4. `sample_worthy` — rollup sampling policy: identity types (UUID, IP,
-///    Path, Email, Hash, kubernetes objects, HTTP status, quoted strings,
-///    names, bracket context, JSON) surface sample values an agent can use
-///    to identify the entities involved; measurement types (Timestamp,
-///    Port, Pid, ThreadID, Duration, Size, Number, KeyValuePair,
-///    LogWithModule, StructuredMessage) are count-only — distinct counts
-///    are useful, specific values are noise.
-/// 5. `variation_compares_values` — whether the compact-marker variation
-///    check compares token values: LogWithModule and StructuredMessage
-///    vary by presence, not by value, so their values are excluded from
-///    that comparison (but still feed the rollup distinct counts).
 pub(crate) struct KindFacts {
     pub machine_name: &'static str,
     pub display_label: &'static str,
@@ -134,9 +96,6 @@ pub(crate) struct KindFacts {
 }
 
 impl Token {
-    /// THE single exhaustive match over token variants. Adding a variant
-    /// forces a new `KindFacts` row here (every field required), so no
-    /// projection can silently miss the new kind.
     pub(crate) fn facts(&self) -> KindFacts {
         const fn facts(
             machine_name: &'static str,
@@ -165,7 +124,7 @@ impl Token {
             Token::Pid(_) => facts("PID", "PID", StatsBucket::Pids, false),
             Token::ThreadID(_) => facts("THREAD_ID", "thread", StatsBucket::Pids, false),
             Token::Path(_) => facts("PATH", "path", StatsBucket::Paths, true),
-            Token::Json(_) => facts("JSON", "json", StatsBucket::Json, true),
+            Token::EmbeddedJson(_) => facts("JSON", "json", StatsBucket::Json, true),
             Token::Duration(_) => facts("DURATION", "duration", StatsBucket::Durations, false),
             Token::CpuQuantity(_) => facts(
                 "CPU_QUANTITY",
@@ -224,11 +183,6 @@ impl Token {
         }
     }
 
-    /// Value stringification — the one payload-touching projection, kept
-    /// beside `facts()` so a new variant updates both under one roof. Used
-    /// for rollup samples (sample-worthy kinds), rollup distinct-count
-    /// hashing (count-only kinds), and the compact-marker variation check
-    /// (kinds with `variation_compares_values`).
     pub(crate) fn value_string(&self) -> String {
         match self {
             Token::Timestamp(s)
@@ -239,7 +193,7 @@ impl Token {
             | Token::Host(s)
             | Token::Uuid(s)
             | Token::Path(s)
-            | Token::Json(s)
+            | Token::EmbeddedJson(s)
             | Token::Duration(s)
             | Token::CpuQuantity(s)
             | Token::Size(s)
@@ -265,45 +219,12 @@ impl Token {
     }
 }
 
-/// Maximum whitespace tokens per line that the LCS similarity comparison
-/// handles. 64 covers virtually all real log lines while bounding the DP at
-/// 64×64 token comparisons on the stack with zero allocation.
 pub(crate) const MAX_SIMILARITY_TOKENS: usize = 64;
 
-/// Leading tokens an overflow line keeps in order, as message identity.
-///
-/// The multiset comparison is order-insensitive, which is fine for a record's
-/// payload but not for the words that say what the record IS. On a real
-/// Rancher log, "Active TLS secret ..." and "Updating TLS secret for ..." share
-/// a several-hundred-token `map[...]` payload that swamps the four words
-/// telling them apart, so multiset similarity alone merged 18 "Updating" lines
-/// into an "Active" group. Requiring the head to match in order keeps distinct
-/// messages apart while still folding records that differ only in their body.
-///
-/// Four, because that is the conventional log-line prefix — timestamp, level,
-/// component, first word of the message — so it reaches the first word that
-/// carries meaning without extending into the payload. Raising it to 8 was
-/// measured as strictly worse: it pulls JSON field values into the identity
-/// and cost 25 extra groups on the k8s fixture (165 vs 140) for no additional
-/// separation. A discriminator sitting deeper than the fourth token would be
-/// missed; the principled successor is an order-sensitive LCS over the first
-/// `MAX_SIMILARITY_TOKENS` tokens, which is strictly more work than the
-/// evidence so far justifies.
 pub(crate) const MULTISET_LEAD: usize = 4;
 
-/// Maximum tokens for which the multiset fallback keeps hashes.
-///
-/// Above [`MAX_SIMILARITY_TOKENS`] the LCS DP is too expensive, but a token
-/// multiset is still O(n) and — unlike a positional byte comparison — is not
-/// defeated by one value changing length. Keeping the hashes costs 8 bytes per
-/// token, so the count is bounded: 4096 tokens is 32 KB per line, and a
-/// structured record big enough to exceed it is well past the point where
-/// order-insensitive matching would still be meaningful.
-pub(crate) const MAX_MULTISET_TOKENS: usize = 4096;
+pub(crate) const MAX_HASHED_TOKENS: usize = 4096;
 
-/// One whitespace token of a normalized line: its ahash plus the byte range
-/// into `LogLine::normalized`. Hash inequality proves token inequality, so
-/// similarity comparisons only touch the bytes on a hash match.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SimTok {
     pub hash: u64,
@@ -311,72 +232,48 @@ pub(crate) struct SimTok {
     pub end: u32,
 }
 
-/// Cached whitespace-token view of `LogLine::normalized`, computed once at
-/// construction so the clustering buffer scan never re-tokenizes a line.
 #[derive(Debug, Clone)]
 pub(crate) enum SimTokens {
-    /// At most [`MAX_SIMILARITY_TOKENS`] tokens: in line order, plus the
-    /// same token hashes sorted ascending. The sorted view gives an O(n)
-    /// upper bound on the LCS (multiset intersection) that rejects most
-    /// dissimilar pairs before any DP.
-    Tokens {
+    Lcs {
         toks: Vec<SimTok>,
         sorted_hashes: Vec<u64>,
     },
-    /// Between [`MAX_SIMILARITY_TOKENS`] and [`MAX_MULTISET_TOKENS`] tokens:
-    /// too many for the LCS DP, but the sorted hashes are kept so similarity
-    /// can compare token multisets instead of byte positions, plus the first
-    /// [`MULTISET_LEAD`] hashes in order as message identity.
-    Overflow {
+    Multiset {
         lead: [u64; MULTISET_LEAD],
         sorted_hashes: Vec<u64>,
     },
-    /// Past [`MAX_MULTISET_TOKENS`], or a line too long to index with u32.
-    /// Similarity falls back to positional byte overlap. Truncating the hash
-    /// set instead would let two records that agree only on their first few
-    /// thousand tokens score as identical, which is a worse failure than the
-    /// one the multiset path fixes.
-    Unbounded,
+    ByteOverlap,
 }
 
 impl SimTokens {
-    /// Token hashes in ascending order, for the multiset comparison. Empty
-    /// when the line carries none.
     pub(crate) fn sorted_hashes(&self) -> &[u64] {
         match self {
-            SimTokens::Tokens { sorted_hashes, .. } | SimTokens::Overflow { sorted_hashes, .. } => {
+            SimTokens::Lcs { sorted_hashes, .. } | SimTokens::Multiset { sorted_hashes, .. } => {
                 sorted_hashes
             }
-            SimTokens::Unbounded => &[],
+            SimTokens::ByteOverlap => &[],
         }
     }
 
-    /// The first [`MULTISET_LEAD`] token hashes in line order, for overflow
-    /// lines only. `None` elsewhere: the LCS path already respects order, and
-    /// an unbounded line has no hashes at all.
     pub(crate) fn lead(&self) -> Option<&[u64; MULTISET_LEAD]> {
         match self {
-            SimTokens::Overflow { lead, .. } => Some(lead),
-            SimTokens::Tokens { .. } | SimTokens::Unbounded => None,
+            SimTokens::Multiset { lead, .. } => Some(lead),
+            SimTokens::Lcs { .. } | SimTokens::ByteOverlap => None,
         }
     }
 }
 
-/// A word separator as every reader of a normalized line sees it: the
-/// similarity metric, the group template and the rollup all split here.
-/// Whitespace, plus `,` `{` `}` so a compact JSON record (`{"a":1,"b":"x"}`)
-/// is its fields rather than one word — one differing value in a spaceless
-/// record used to make the whole line one unmatched token.
+const JSON_FIELD_SEPARATORS: &[u8] = b",{}";
+
 #[inline]
 pub(crate) fn is_word_sep(b: u8) -> bool {
-    b.is_ascii_whitespace() || matches!(b, b',' | b'{' | b'}')
+    b.is_ascii_whitespace() || JSON_FIELD_SEPARATORS.contains(&b)
 }
 
-/// Byte spans `(start, len)` of the words of `s`, in order. Separators are
-/// ASCII, so every span starts and ends on a char boundary. Inside a quoted
-/// string only whitespace separates: a JSON `msg` sentence that names
-/// `task[x] with args=&{Threshold:80}` keeps the words it had before, and
-/// only the record around it is split at its fields.
+fn toggles_quote(b: &[u8], i: usize) -> bool {
+    b[i] == b'"' && (i == 0 || b[i - 1] != b'\\')
+}
+
 pub(crate) fn word_spans(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
     let b = s.as_bytes();
     let mut i = 0;
@@ -392,7 +289,7 @@ pub(crate) fn word_spans(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
         }
         let start = i;
         while i < b.len() && !sep(i, quoted) {
-            if b[i] == b'"' && (i == 0 || b[i - 1] != b'\\') {
+            if toggles_quote(b, i) {
                 quoted = !quoted;
             }
             i += 1;
@@ -401,21 +298,19 @@ pub(crate) fn word_spans(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
     })
 }
 
-/// A small integer left literal by design (`Port 5`, `GPS mode 3 -> 2`,
-/// `rc=3`): one or two digits and nothing else.
+const SMALL_INT_MAX_DIGITS: usize = 2;
+const SMALL_INT_TAIL_CLOSERS: &[u8] = b"])";
+const SMALL_INT_SIM_SENTINEL: &str = "<d>";
+
 #[inline]
 pub(crate) fn is_small_int(tok: &str) -> bool {
-    (1..=2).contains(&tok.len()) && tok.bytes().all(|b| b.is_ascii_digit())
+    (1..=SMALL_INT_MAX_DIGITS).contains(&tok.len()) && tok.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// A token that ends in a small integer — `id=1`, `rc=3`, `slot[2]`,
-/// `on[2]`, `#2`, `wifi0ap1`, `eth0` — split into what surrounds the
-/// digits: `("slot[", "]")`. Two such tokens with the same surroundings are
-/// one shape to the similarity metric; the digits stay on the line.
 pub(crate) fn small_int_tail(tok: &str) -> Option<(&str, &str)> {
     let b = tok.as_bytes();
     let mut end = b.len();
-    if end > 0 && matches!(b[end - 1], b']' | b')') {
+    if end > 0 && SMALL_INT_TAIL_CLOSERS.contains(&b[end - 1]) {
         end -= 1;
     }
     let mut start = end;
@@ -423,27 +318,21 @@ pub(crate) fn small_int_tail(tok: &str) -> Option<(&str, &str)> {
         start -= 1;
     }
     let digits = end - start;
-    if digits == 0 || digits > 2 || start == 0 {
+    if digits == 0 || digits > SMALL_INT_MAX_DIGITS || start == 0 {
         return None;
     }
     Some((&tok[..start], &tok[end..]))
 }
 
-/// Hash a token the way the similarity metric sees it. Two small integers
-/// hash alike, and so do two tokens that differ only in a small integer at
-/// their end: `Port 5 link up` and `Port 6 link up` are one shape, `id=1`
-/// and `id=2` too, `slot[1]` and `slot[2]`, and the shown line says so
-/// with `<VARIES>` and the counts of each — the digits stay literal on the
-/// line, they just do not keep it from folding.
 #[inline]
 fn hash_sim_token(tok: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = ahash::AHasher::default();
     if is_small_int(tok) {
-        "<d>".hash(&mut hasher);
+        SMALL_INT_SIM_SENTINEL.hash(&mut hasher);
     } else if let Some((before, after)) = small_int_tail(tok) {
         before.hash(&mut hasher);
-        "<d>".hash(&mut hasher);
+        SMALL_INT_SIM_SENTINEL.hash(&mut hasher);
         after.hash(&mut hasher);
     } else {
         tok.hash(&mut hasher);
@@ -451,7 +340,6 @@ fn hash_sim_token(tok: &str) -> u64 {
     hasher.finish()
 }
 
-/// The words of `s`.
 pub(crate) fn words(s: &str) -> impl Iterator<Item = &str> + '_ {
     word_spans(s).map(move |(at, len)| &s[at..at + len])
 }
@@ -459,7 +347,7 @@ pub(crate) fn words(s: &str) -> impl Iterator<Item = &str> + '_ {
 impl SimTokens {
     fn from_normalized(s: &str) -> Self {
         if s.len() > u32::MAX as usize {
-            return SimTokens::Unbounded;
+            return SimTokens::ByteOverlap;
         }
         let mut toks = Vec::with_capacity(16);
         for (start, len) in word_spans(s) {
@@ -475,21 +363,18 @@ impl SimTokens {
         }
         let mut sorted_hashes: Vec<u64> = toks.iter().map(|t| t.hash).collect();
         sorted_hashes.sort_unstable();
-        SimTokens::Tokens {
+        SimTokens::Lcs {
             toks,
             sorted_hashes,
         }
     }
 
-    /// Hash every token of a line that overran the LCS bound, keeping only the
-    /// sorted hashes. Positions are dropped: the multiset comparison does not
-    /// use them, and at these sizes they are the bulk of the memory.
     fn overflow_from(s: &str) -> Self {
         let mut sorted_hashes: Vec<u64> = Vec::with_capacity(MAX_SIMILARITY_TOKENS * 2);
         let mut lead = [0u64; MULTISET_LEAD];
         for tok in words(s) {
-            if sorted_hashes.len() == MAX_MULTISET_TOKENS {
-                return SimTokens::Unbounded;
+            if sorted_hashes.len() == MAX_HASHED_TOKENS {
+                return SimTokens::ByteOverlap;
             }
             let h = hash_sim_token(tok);
             if sorted_hashes.len() < MULTISET_LEAD {
@@ -498,7 +383,7 @@ impl SimTokens {
             sorted_hashes.push(h);
         }
         sorted_hashes.sort_unstable();
-        SimTokens::Overflow {
+        SimTokens::Multiset {
             lead,
             sorted_hashes,
         }
@@ -511,18 +396,7 @@ pub struct LogLine {
     pub normalized: String,
     pub tokens: Vec<Token>,
     pub hash: u64,
-    /// Hash of this line's anchor values — the fields that must match exactly
-    /// for two lines to fold together (see `normalize::anchor_hash`). Zero
-    /// when the line carries no anchor, which is most lines.
-    ///
-    /// Already folded into `hash`, so the folder's exact-hash group index
-    /// cannot attach a line to a group with a different anchor. Kept
-    /// separately because the similarity path needs to reject on it.
     pub(crate) anchor: u64,
-    /// Lazily computed similarity-token cache. Most lines in fold-heavy
-    /// logs resolve through the folder's exact-hash group index and never
-    /// enter a similarity comparison, so the tokenization cost is only
-    /// paid by lines that actually need it — and then exactly once.
     sim_cache: std::sync::OnceLock<SimTokens>,
 }
 
@@ -538,8 +412,6 @@ impl LogLine {
         }
     }
 
-    /// Attach anchor values. Chained onto `new` so the many test call sites
-    /// that build anchor-free lines stay as they are.
     pub(crate) fn anchored(mut self, anchor: u64) -> Self {
         self.anchor = anchor;
         self
@@ -551,31 +423,22 @@ impl LogLine {
     }
 }
 
-/// Source-file extensions, without the dot. `handler.go:123` is a file and a
-/// line wherever it stands: the port, the host-name and the call-site passes
-/// read this one list. Three copies had drifted, so `handler.ts:123` was a
-/// port and `handler.go:123` a line number.
 pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
     "go", "rs", "py", "js", "ts", "tsx", "jsx", "java", "c", "cc", "cpp", "h", "hpp", "rb", "php",
     "kt", "swift", "cs", "ex", "exs", "erl", "hrl", "scala", "clj", "lua", "pl", "sh", "m", "mm",
 ];
 
-/// The placeholder the normalizer puts over an anchored span while the
-/// detectors run, so none of them can consume it: `\0<kind><index>\0`.
-/// `ProcessDetector` reads a klog call-site placeholder as the
-/// `file.go:<LINE>` it stands for, so the pid column in front of it still
-/// folds; every other anchor is opaque to every detector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AnchorSentinel {
-    KlogCallSite,
-    Opaque,
+    KlogCallSiteVisibleToPid,
+    OpaqueToDetectors,
 }
 
 impl AnchorSentinel {
     pub(crate) const fn start(self) -> &'static str {
         match self {
-            Self::KlogCallSite => "\0K",
-            Self::Opaque => "\0A",
+            Self::KlogCallSiteVisibleToPid => "\0K",
+            Self::OpaqueToDetectors => "\0A",
         }
     }
 
@@ -584,28 +447,17 @@ impl AnchorSentinel {
     }
 }
 
-/// Does `name` end in `.<ext>` for a source extension?
 pub(crate) fn is_source_file_name(name: &str) -> bool {
     name.rsplit_once('.')
         .is_some_and(|(_, ext)| SOURCE_EXTENSIONS.contains(&ext))
 }
 
-/// Fold every match of `regex` that `recognise` accepts, pushing one token per
-/// fold and leaving unrecognised matches in the text verbatim.
-///
-/// Detectors that scan a line for one shape and rewrite it in place all had the
-/// same body: `replace_all` with a closure that either pushes a token and
-/// returns a placeholder, or returns `caps[0]` unchanged. The second half is
-/// the easy one to get wrong when copied, so it lives here once.
 pub(crate) fn fold_matches(
     text: &mut String,
     tokens: &mut Vec<Token>,
     regex: &regex::Regex,
     recognise: impl Fn(&regex::Captures) -> Option<(Token, String)>,
 ) {
-    // A `Replacer` rather than a closure: a match the recogniser declines
-    // is appended straight from the haystack, not copied into a String
-    // first — on a kubelet line seven prose colons in eight are declined.
     struct Fold<'t, F> {
         tokens: &'t mut Vec<Token>,
         recognise: F,
@@ -622,20 +474,15 @@ pub(crate) fn fold_matches(
         }
     }
     let folded = regex.replace_all(text, Fold { tokens, recognise });
-    // a line nothing matched in is left as it is, uncopied
     if let std::borrow::Cow::Owned(s) = folded {
         *text = s;
     }
 }
 
-/// Token helpers of the similarity metric, at their boundaries
-/// (lessence-e8v): small integers and small-int tails, quoted word spans,
-/// and the overflow path of `SimTokens`.
 #[cfg(test)]
-mod e8v_tokens_2026_09_17 {
+mod similarity_token_boundaries {
     use super::*;
 
-    /// is_small_int (408): one or two digits, nothing else.
     #[test]
     fn a_small_int_is_one_or_two_digits() {
         assert!(is_small_int("7"));
@@ -645,9 +492,6 @@ mod e8v_tokens_2026_09_17 {
         }
     }
 
-    /// small_int_tail (416-426): a token ending in one or two digits, an
-    /// optional `]`/`)` after them, and something before them; the split
-    /// keeps the surroundings.
     #[test]
     fn a_small_int_tail_splits_the_surroundings_at_every_boundary() {
         assert_eq!(small_int_tail("slot[2]"), Some(("slot[", "]")));
@@ -660,10 +504,6 @@ mod e8v_tokens_2026_09_17 {
         }
     }
 
-    /// word_spans / words (395-396, 456): inside a quoted string only
-    /// whitespace separates, so a comma or brace stays inside the word; an
-    /// escaped quote does not close the string; the iterator yields every
-    /// word.
     #[test]
     fn quoted_values_keep_their_commas_and_escaped_quotes_do_not_close_them() {
         let plain: Vec<&str> = words("a b  c").collect();
@@ -672,14 +512,14 @@ mod e8v_tokens_2026_09_17 {
         assert_eq!(record, vec![r#""a":1"#, r#""b":"x,y""#]);
         let escaped: Vec<&str> = words(r#"k="a,\"b\",c" w"#).collect();
         assert_eq!(escaped, vec![r#"k="a,\"b\",c""#, "w"]);
-        // an odd escaped quote: still one string, the comma stays inside
         let odd: Vec<&str> = words(r#"k="a,\"b,c" w"#).collect();
-        assert_eq!(odd, vec![r#"k="a,\"b,c""#, "w"]);
+        assert_eq!(
+            odd,
+            vec![r#"k="a,\"b,c""#, "w"],
+            "an odd escaped quote is still one string; the comma stays inside"
+        );
     }
 
-    /// overflow_from (491): a line past the LCS bound but under the
-    /// multiset cap keeps a sorted-hash view; only the cap itself yields
-    /// Unbounded.
     #[test]
     fn a_long_line_overflows_to_a_multiset_and_only_the_cap_is_unbounded() {
         let over: String = (0..(MAX_SIMILARITY_TOKENS + 5))
@@ -687,26 +527,26 @@ mod e8v_tokens_2026_09_17 {
             .collect::<Vec<_>>()
             .join(" ");
         match SimTokens::from_normalized(&over) {
-            SimTokens::Overflow { sorted_hashes, .. } => {
+            SimTokens::Multiset { sorted_hashes, .. } => {
                 assert_eq!(sorted_hashes.len(), MAX_SIMILARITY_TOKENS + 5);
                 assert!(sorted_hashes.windows(2).all(|w| w[0] <= w[1]));
             }
             other => panic!(
                 "expected Overflow, got {}",
                 match other {
-                    SimTokens::Tokens { .. } => "Tokens",
-                    SimTokens::Unbounded => "Unbounded",
-                    SimTokens::Overflow { .. } => unreachable!(),
+                    SimTokens::Lcs { .. } => "Tokens",
+                    SimTokens::ByteOverlap => "Unbounded",
+                    SimTokens::Multiset { .. } => unreachable!(),
                 }
             ),
         }
-        let capped: String = (0..=MAX_MULTISET_TOKENS)
+        let capped: String = (0..=MAX_HASHED_TOKENS)
             .map(|i| format!("w{i}"))
             .collect::<Vec<_>>()
             .join(" ");
         assert!(matches!(
             SimTokens::from_normalized(&capped),
-            SimTokens::Unbounded
+            SimTokens::ByteOverlap
         ));
     }
 }

@@ -47,10 +47,10 @@ fn test_redos_protection_ipv6() {
 
 /// Run text through the real ingestion path and collect the delivered lines.
 fn ingest_lines(config: &Config, text: String) -> (Vec<String>, lessence::ingest::IngestReport) {
-    use lessence::ingest::{Event, Ingestor, InputReader};
+    use lessence::ingest::{Event, Ingestor, InputReader, Source};
     let ingestor = Ingestor::from_config(config).expect("valid config");
     let readers = vec![InputReader {
-        source: None,
+        source: Source::Stdin,
         reader: Box::new(std::io::Cursor::new(text.into_bytes())),
     }];
     let mut delivered = Vec::new();

@@ -19,7 +19,7 @@ impl JsonDetector {
         result = EVENT_OBJECT
             .replace_all(&result, |caps: &regex::Captures| {
                 let event = caps.get(0).unwrap().as_str();
-                tokens.push(Token::Json(event.to_string()));
+                tokens.push(Token::EmbeddedJson(event.to_string()));
                 "<EVENT_OBJECT>".to_string()
             })
             .to_string();

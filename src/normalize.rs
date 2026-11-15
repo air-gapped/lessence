@@ -920,8 +920,8 @@ impl AnchorRender<'_> {
 
     fn sentinel(&self) -> AnchorSentinel {
         match self {
-            Self::KlogCallSite => AnchorSentinel::KlogCallSite,
-            _ => AnchorSentinel::Opaque,
+            Self::KlogCallSite => AnchorSentinel::KlogCallSiteVisibleToPid,
+            _ => AnchorSentinel::OpaqueToDetectors,
         }
     }
 
@@ -1405,7 +1405,7 @@ impl Normalizer {
             return length_ratio * 100.0;
         }
 
-        if let (SimTokens::Tokens { toks: a, .. }, SimTokens::Tokens { toks: b, .. }) =
+        if let (SimTokens::Lcs { toks: a, .. }, SimTokens::Lcs { toks: b, .. }) =
             (line1.sim(), line2.sim())
             && !a.is_empty()
             && !b.is_empty()
@@ -1531,11 +1531,11 @@ impl Normalizer {
         let threshold = f64::from(self.config.threshold);
 
         if let (
-            SimTokens::Tokens {
+            SimTokens::Lcs {
                 toks: a,
                 sorted_hashes: ha,
             },
-            SimTokens::Tokens {
+            SimTokens::Lcs {
                 toks: b,
                 sorted_hashes: hb,
             },
@@ -2596,7 +2596,7 @@ mod tests {
         );
     }
 
-    const BYTE_FALLBACK_TOKENS: usize = crate::patterns::MAX_MULTISET_TOKENS + 1;
+    const BYTE_FALLBACK_TOKENS: usize = crate::patterns::MAX_HASHED_TOKENS + 1;
 
     #[test]
     fn test_similarity_score_byte_fallback_division_direction() {
@@ -2761,7 +2761,10 @@ mod tests {
         let n = Normalizer::new(config);
         let line = n.normalize_line(r"&Event{Type: Warning}".into()).unwrap();
         assert!(
-            !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
+            !line
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::EmbeddedJson(_))),
             "JSON detection should be disabled"
         );
     }
@@ -2845,7 +2848,9 @@ mod tests {
             "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
         );
         assert!(
-            direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
+            direct_tokens
+                .iter()
+                .any(|t| matches!(t, Token::EmbeddedJson(_))),
             "JsonDetector should detect Event objects: {direct_tokens:?}"
         );
     }
@@ -2862,9 +2867,19 @@ mod tests {
             input,
         );
         assert_eq!(json_on.normalized, "<EVENT_OBJECT>,Reason:Pulled}");
-        assert!(json_on.tokens.iter().any(|t| matches!(t, Token::Json(_))));
+        assert!(
+            json_on
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::EmbeddedJson(_)))
+        );
         assert_eq!(json_off.normalized, input);
-        assert!(!json_off.tokens.iter().any(|t| matches!(t, Token::Json(_))));
+        assert!(
+            !json_off
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::EmbeddedJson(_)))
+        );
     }
 
     fn run(config_mut: impl FnOnce(&mut Config), input: &str) -> LogLine {
@@ -3680,7 +3695,7 @@ mod tests {
 
     #[test]
     fn lines_past_the_multiset_bound_keep_the_byte_fallback() {
-        let huge = crate::patterns::MAX_MULTISET_TOKENS + 10;
+        let huge = crate::patterns::MAX_HASHED_TOKENS + 10;
         let normalizer = Normalizer::new(Config::default());
         let line = normalizer.normalize_line(wide_line("up", huge)).unwrap();
         assert!(

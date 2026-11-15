@@ -1,4 +1,3 @@
-//! Additive run metadata for JSON summaries and preflight documents.
 use crate::ingest::IngestReport;
 use serde::Serialize;
 
@@ -42,42 +41,106 @@ pub(crate) struct InputCompleteness {
     failed_sources: Count,
 }
 
-/// One owner for both completeness and actionable input-omission notes.
+#[derive(Default, Clone, Copy)]
+enum IngestDigest {
+    #[default]
+    NoReport,
+    OneReport(Option<[u8; 32]>),
+    SeveralReportsHaveNoRawByteDigest,
+}
+impl IngestDigest {
+    fn after_another_report(self, report: &IngestReport) -> Self {
+        match self {
+            Self::NoReport => Self::OneReport(report.input_hash),
+            Self::OneReport(_) | Self::SeveralReportsHaveNoRawByteDigest => {
+                Self::SeveralReportsHaveNoRawByteDigest
+            }
+        }
+    }
+    fn hash(self) -> Option<[u8; 32]> {
+        match self {
+            Self::OneReport(hash) => hash,
+            Self::NoReport | Self::SeveralReportsHaveNoRawByteDigest => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Omission {
+    OverlongLinesSkipped,
+    MaxLinesReached,
+    FailedSources,
+}
+impl Omission {
+    const IN_SUMMARY_ORDER: [Self; 3] = [
+        Self::OverlongLinesSkipped,
+        Self::MaxLinesReached,
+        Self::FailedSources,
+    ];
+    const fn code(self) -> &'static str {
+        match self {
+            Self::OverlongLinesSkipped => "input.overlong_lines_skipped",
+            Self::MaxLinesReached => "input.max_lines_reached",
+            Self::FailedSources => "input.failed_sources",
+        }
+    }
+    const fn message(self) -> &'static str {
+        match self {
+            Self::OverlongLinesSkipped => "Input lines exceeding --max-line-length were skipped.",
+            Self::MaxLinesReached => "The line limit stopped input processing before EOF.",
+            Self::FailedSources => "One or more requested input sources could not be opened.",
+        }
+    }
+    const fn repair(self) -> &'static str {
+        match self {
+            Self::OverlongLinesSkipped => {
+                "Rerun the same sources with a larger --max-line-length to analyze those lines."
+            }
+            Self::MaxLinesReached => {
+                "Rerun the same sources without --max-lines to analyze the remaining input."
+            }
+            Self::FailedSources => {
+                "Correct the input paths or access reported on stderr and rerun all requested sources."
+            }
+        }
+    }
+    const fn count(self, completeness: &InputCompleteness) -> Count {
+        match self {
+            Self::OverlongLinesSkipped => completeness.skipped_overlong_lines,
+            Self::MaxLinesReached => completeness.unprocessed_after_max_lines,
+            Self::FailedSources => completeness.failed_sources,
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct InputFacts {
     skipped: usize,
     limited: bool,
     failed: usize,
-    hash: Option<[u8; 32]>,
-    recorded: bool,
+    digest: IngestDigest,
 }
 impl InputFacts {
     pub(crate) fn absorb(&mut self, report: &IngestReport, failed: usize) {
         self.skipped += report.overlong_lines_skipped;
         self.limited |= report.max_lines_reached;
         self.failed += failed;
-        // A digest describes one whole ingest run. Combining reports cannot
-        // combine their aggregate digests into that run's raw-byte identity;
-        // absent a higher-priority omission, a second report is not_recorded.
-        self.hash = if self.recorded {
-            None
-        } else {
-            report.input_hash
-        };
-        self.recorded = true;
+        self.digest = self.digest.after_another_report(report);
     }
-    /// The degraded codes this run proved, in the same order and spelling
-    /// the summary record's `degraded` array uses. The report locator names
-    /// them so stdout and the file agree on what the input was.
+    const fn has(&self, omission: Omission) -> bool {
+        match omission {
+            Omission::OverlongLinesSkipped => self.skipped != 0,
+            Omission::MaxLinesReached => self.limited,
+            Omission::FailedSources => self.failed != 0,
+        }
+    }
+    fn omissions(&self) -> impl Iterator<Item = Omission> + '_ {
+        Omission::IN_SUMMARY_ORDER
+            .into_iter()
+            .filter(|&omission| self.has(omission))
+    }
     pub(crate) fn degraded_codes(&self) -> Vec<&'static str> {
-        [
-            (self.skipped != 0, "input.overlong_lines_skipped"),
-            (self.limited, "input.max_lines_reached"),
-            (self.failed != 0, "input.failed_sources"),
-        ]
-        .into_iter()
-        .filter_map(|(yes, code)| yes.then_some(code))
-        .collect()
+        self.omissions().map(Omission::code).collect()
     }
 
     pub(crate) fn completeness(&self, processed_lines: usize) -> InputCompleteness {
@@ -106,7 +169,27 @@ struct InputHash {
     algorithm: &'static str,
     scope: &'static str,
     value: Option<String>,
-    unavailable_reason: Option<&'static str>,
+    unavailable_reason: Option<UnavailableReason>,
+}
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum UnavailableReason {
+    Sanitized,
+    FailedSources,
+    MaxLines,
+    NotRecorded,
+}
+impl UnavailableReason {
+    fn highest_precedence(input: &InputFacts, sanitized: bool) -> Option<Self> {
+        [
+            (sanitized, Self::Sanitized),
+            (input.failed != 0, Self::FailedSources),
+            (input.limited, Self::MaxLines),
+            (input.digest.hash().is_none(), Self::NotRecorded),
+        ]
+        .into_iter()
+        .find_map(|(applies, reason)| applies.then_some(reason))
+    }
 }
 #[derive(Serialize)]
 struct Degraded {
@@ -126,42 +209,16 @@ pub(crate) struct RunMetadata {
 impl RunMetadata {
     pub(crate) fn new(input: &InputFacts, sanitized: bool) -> Self {
         let completeness = input.completeness(0);
-        let mut degraded = Vec::new();
-        if input.skipped != 0 {
-            degraded.push(Degraded {
-                code: "input.overlong_lines_skipped",
-                count: completeness.skipped_overlong_lines,
-                message: "Input lines exceeding --max-line-length were skipped.",
-                repair: "Rerun the same sources with a larger --max-line-length to analyze those lines.",
-            });
-        }
-        if input.limited {
-            degraded.push(Degraded {
-                code: "input.max_lines_reached",
-                count: completeness.unprocessed_after_max_lines,
-                message: "The line limit stopped input processing before EOF.",
-                repair: "Rerun the same sources without --max-lines to analyze the remaining input.",
-            });
-        }
-        if input.failed != 0 {
-            degraded.push(Degraded {
-                code: "input.failed_sources",
-                count: completeness.failed_sources,
-                message: "One or more requested input sources could not be opened.",
-                repair: "Correct the input paths or access reported on stderr and rerun all requested sources.",
-            });
-        }
-        let reason = if sanitized {
-            Some("sanitized")
-        } else if input.failed != 0 {
-            Some("failed_sources")
-        } else if input.limited {
-            Some("max_lines")
-        } else if input.hash.is_none() {
-            Some("not_recorded")
-        } else {
-            None
-        };
+        let degraded = input
+            .omissions()
+            .map(|omission| Degraded {
+                code: omission.code(),
+                count: omission.count(&completeness),
+                message: omission.message(),
+                repair: omission.repair(),
+            })
+            .collect();
+        let reason = UnavailableReason::highest_precedence(input, sanitized);
         Self {
             schema_version: 1,
             version: Version {
@@ -173,7 +230,7 @@ impl RunMetadata {
                 algorithm: "sha256",
                 scope: "ordered-source-bytes-v1",
                 value: if reason.is_none() {
-                    input.hash.map(|h| hex(&h))
+                    input.digest.hash().map(|h| hex(&h))
                 } else {
                     None
                 },
@@ -184,7 +241,6 @@ impl RunMetadata {
     }
 }
 
-/// Lowercase hex, two digits a byte: how `input_hash` is written.
 pub(crate) fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
@@ -205,7 +261,8 @@ mod tests {
             RunMetadata::new(&input, false)
                 .input_hash
                 .unavailable_reason,
-            Some("not_recorded")
+            Some(UnavailableReason::NotRecorded),
+            "no ingestion has no digest to claim"
         );
         let report = IngestReport {
             input_hash: Some([0x42; 32]),
@@ -215,7 +272,11 @@ mod tests {
         assert!(RunMetadata::new(&input, false).input_hash.value.is_some());
         input.absorb(&report, 0);
         let metadata = RunMetadata::new(&input, false);
-        assert_eq!(metadata.input_hash.unavailable_reason, Some("not_recorded"));
+        assert_eq!(
+            metadata.input_hash.unavailable_reason,
+            Some(UnavailableReason::NotRecorded),
+            "a second report has no raw-byte digest of the whole run"
+        );
         assert!(metadata.input_hash.value.is_none());
         assert!(metadata.degraded.is_empty());
     }

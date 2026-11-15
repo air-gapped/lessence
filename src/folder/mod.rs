@@ -13,12 +13,12 @@ use crate::normalize::Normalizer;
 use crate::patterns::{LogLine, StatsBucket, Token, word_spans};
 
 pub fn apply_pii_masking(original: &str, tokens: &[Token]) -> String {
-    Sanitizer::legacy().mask_line(original, tokens)
+    Sanitizer::pii_alias().mask_line(original, tokens)
 }
 
 use crate::sanitize::{CREDENTIAL_ASSIGNMENT, JWT, PROVIDER_KEY, Sanitizer};
 
-const MIN_CREDENTIAL_VALUE: usize = 6;
+pub(crate) const MIN_CREDENTIAL_VALUE: usize = 6;
 
 fn is_credential_value(text: &str, match_start: usize, value: &str) -> bool {
     let bare = value
@@ -50,7 +50,7 @@ pub(crate) fn credential_spans(text: &str) -> Vec<std::ops::Range<usize>> {
 
 #[cfg(test)]
 fn mask_credentials(text: &str) -> String {
-    Sanitizer::legacy().mask_text(text)
+    Sanitizer::pii_alias().mask_text(text)
 }
 
 #[derive(Debug)]
@@ -137,9 +137,13 @@ fn first_diff(line: &LogLine, rep: &LogLine, sanitizer: Option<&Sanitizer>) -> O
             theirs: rep.normalized[theirs].to_string(),
         },
         Some(z) => {
-            let (ours, at) = z.mask_range(&line.normalized, &line.tokens, ours);
-            let (theirs, _) = z.mask_range(&rep.normalized, &rep.tokens, theirs);
-            FirstDiff { ours, theirs, at }
+            let ours = z.mask_range(&line.normalized, &line.tokens, ours);
+            let theirs = z.mask_range(&rep.normalized, &rep.tokens, theirs);
+            FirstDiff {
+                at: ours.offset,
+                ours: ours.text,
+                theirs: theirs.text,
+            }
         }
     })
 }
@@ -421,7 +425,7 @@ pub struct FoldingStats {
     pub template_counts: crate::briefing::TemplateCounts,
     pub histogram: crate::briefing::HistogramBuilder,
     pub(crate) timeline_grid: Option<crate::briefing::Grid>,
-    pub(crate) cardinality: ahash::AHashMap<StatsBucket, crate::briefing::CardinalityEstimator>,
+    pub(crate) cardinality: ahash::AHashMap<StatsBucket, crate::briefing::ExactThenHll>,
 }
 
 impl FoldingStats {
@@ -503,10 +507,11 @@ impl FoldingStats {
         ]
     }
 
-    fn cardinality_for(&self, bucket: StatsBucket) -> (u64, bool) {
-        self.cardinality
-            .get(&bucket)
-            .map_or((0, true), |c| (c.distinct(), c.is_exact()))
+    fn cardinality_for(&self, bucket: StatsBucket) -> crate::briefing::Distinct {
+        self.cardinality.get(&bucket).map_or(
+            crate::briefing::Distinct::Exact(0),
+            crate::briefing::ExactThenHll::distinct_count,
+        )
     }
     fn bump(&mut self, bucket: StatsBucket) {
         match bucket {
@@ -820,7 +825,7 @@ fn hash_token_value(token: &Token) -> u64 {
         | Token::Host(s)
         | Token::Uuid(s)
         | Token::Path(s)
-        | Token::Json(s)
+        | Token::EmbeddedJson(s)
         | Token::Duration(s)
         | Token::CpuQuantity(s)
         | Token::Size(s)

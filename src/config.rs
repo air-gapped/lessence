@@ -195,9 +195,10 @@ impl Config {
     /// The sanitizer this run masks with: the explicit `--sanitize` set, or
     /// the legacy email + credential set when only `--sanitize-pii` is on.
     pub fn sanitizer(&self) -> Option<crate::sanitize::Sanitizer> {
-        self.sanitize
-            .clone()
-            .or_else(|| self.sanitize_pii.then(crate::sanitize::Sanitizer::legacy))
+        self.sanitize.clone().or_else(|| {
+            self.sanitize_pii
+                .then(crate::sanitize::Sanitizer::pii_alias)
+        })
     }
 
     /// Turn back on the detectors that find an entity `--sanitize` names,

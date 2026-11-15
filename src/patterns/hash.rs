@@ -127,12 +127,12 @@ impl HashDetector {
             (&*MD5_COLON_REGEX, HashType::MD5),
             (&*SHA512_REGEX, HashType::SHA512),
             (&*SHA256_REGEX, HashType::SHA256),
-            (&*HEX_56_REGEX, HashType::Generic(56)),
-            (&*HEX_48_REGEX, HashType::Generic(48)),
+            (&*HEX_56_REGEX, HashType::Generic { len: 56 }),
+            (&*HEX_48_REGEX, HashType::Generic { len: 48 }),
             (&*SHA1_REGEX, HashType::SHA1),
             (&*MD5_REGEX, HashType::MD5),
-            (&*HEX_24_REGEX, HashType::Generic(24)),
-            (&*HEX_16_REGEX, HashType::Generic(16)),
+            (&*HEX_24_REGEX, HashType::Generic { len: 24 }),
+            (&*HEX_16_REGEX, HashType::Generic { len: 16 }),
         ] {
             // A run of the right width made of digits alone is a number —
             // `time_micros: 1787969018585092` is an epoch, not a hash.
@@ -168,7 +168,9 @@ impl HashDetector {
             let hash_str = cap.as_str();
             if Self::looks_like_hash(hash_str) {
                 tokens.push(Token::Hash(
-                    HashType::Generic(hash_str.len()),
+                    HashType::Generic {
+                        len: hash_str.len(),
+                    },
                     hash_str.to_string(),
                 ));
             }
@@ -278,7 +280,10 @@ mod tests {
         let text = format!("hash: {hash}");
         let (result, tokens) = HashDetector::detect_and_replace(&text);
         assert!(result.contains("<HASH>"), "56-char hash: {result}");
-        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(56), _)));
+        assert!(matches!(
+            &tokens[0],
+            Token::Hash(HashType::Generic { len: 56 }, _)
+        ));
     }
 
     #[test]
@@ -287,7 +292,10 @@ mod tests {
         let text = format!("hash: {hash}");
         let (result, tokens) = HashDetector::detect_and_replace(&text);
         assert!(result.contains("<HASH>"), "48-char hash: {result}");
-        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(48), _)));
+        assert!(matches!(
+            &tokens[0],
+            Token::Hash(HashType::Generic { len: 48 }, _)
+        ));
     }
 
     #[test]
@@ -296,7 +304,10 @@ mod tests {
         let text = format!("hash: {hash}");
         let (result, tokens) = HashDetector::detect_and_replace(&text);
         assert!(result.contains("<HASH>"), "24-char hash: {result}");
-        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(24), _)));
+        assert!(matches!(
+            &tokens[0],
+            Token::Hash(HashType::Generic { len: 24 }, _)
+        ));
     }
 
     #[test]
@@ -305,7 +316,10 @@ mod tests {
         let text = format!("hash: {hash}");
         let (result, tokens) = HashDetector::detect_and_replace(&text);
         assert!(result.contains("<HASH>"), "16-char hash: {result}");
-        assert!(matches!(&tokens[0], Token::Hash(HashType::Generic(16), _)));
+        assert!(matches!(
+            &tokens[0],
+            Token::Hash(HashType::Generic { len: 16 }, _)
+        ));
     }
 
     // ---- has_hex_run: boundary tests ----

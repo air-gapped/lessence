@@ -1,76 +1,138 @@
 use super::Token;
+use super::timestamp::detector::TIMESTAMP_PLACEHOLDER;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// IPv4 address
-static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
-    ).unwrap()
-});
+const OCTET: &str = "(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)";
 
-// IPv6 candidate: hex groups and colons, greedy, with an optional zone. The
-// candidate is then parsed by `std::net::Ipv6Addr`, which knows every
-// compression form; a regex alternation cannot, because the regex engine
-// takes the first alternative that matches, not the longest, and
-// `2001:db8::1` used to come out as `<IP>1`.
-static IPV6_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
+static IPV4_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"\b(?:{OCTET}\.){{3}}{OCTET}\b")).unwrap());
+
+static IPV6_LOOSE_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:%[a-z0-9]+)?").unwrap()
 });
 
-// Port numbers - only after hostnames, not in time formats or source file:line patterns
-// Matches hostname:port but avoids HH:MM:SS patterns and file.go:1234] patterns
-// Note: We'll filter out file:line patterns in the detection logic
-// `host:port` where the host is a dotted name or `localhost`. A bare word
-// before a colon and a number is a field — `count:26`, `size:107`,
-// `Threshold:80`, `vid:1044` — and read as a port it became a false claim
-// on every line that carried one; `harbor-core:80` pays for that by staying
-// literal, which loses nothing an agent needs.
-static PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"((?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+|localhost):([1-9]\d{1,4})\b").unwrap()
+const DOTTED_HOST: &str = r"(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+";
+const LOCALHOST: &str = "localhost";
+
+static DOTTED_HOST_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"({DOTTED_HOST}|{LOCALHOST}):([1-9]\d{{1,4}})\b")).unwrap()
 });
 
-// IPv4:Port combinations
-static IPV4_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?):(\d{1,5})\b"
-    ).unwrap()
-});
+static IPV4_PORT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"\b(?:{OCTET}\.){{3}}{OCTET}:(\d{{1,5}})\b")).unwrap());
 
-// IPv6:Port combinations in brackets: [2001:db8::1]:8080, [::ffff:10.0.0.1]:8080
-static IPV6_PORT_REGEX: LazyLock<Regex> =
+static RFC3986_IPV6_LITERAL_PORT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:.]+(?:%\w+)?)\]:(\d{1,5})\b").unwrap());
 
-// An IPv4-mapped IPv6 address is one address; matched before the IPv4 pass
-// would take its tail.
 static IPV4_MAPPED_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)::ffff:(?:\d{1,3}\.){3}\d{1,3}\b").unwrap());
 
-// A MAC address: six hex pairs joined by `:`. One atom — its last
-// byte read as a port (`8a:83` → `8a:<PORT>`) or a size (`8B`) cut it in
-// two, which is why this runs before the port and size passes. A pair that
-// continues as `:hh` on either side is part of a longer chain (an ssh
-// fingerprint, an IPv6 address) and is left to those detectors.
 static MAC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b").unwrap());
 
-// FQDN (experimental, be careful not to match code like module.function.method)
-static FQDN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+static DOTTED_NAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\b"
     ).unwrap()
 });
 
+const UNSPECIFIED_V4: &str = "0.0.0.0";
+const NAME_GLUE_BEFORE: &[u8] = b"-./\\~";
+const NAME_GLUE_AFTER: &[u8] = b"-/~";
+const MAC_SEPARATORS: usize = 5;
+const MAC_STRIDE: usize = 3;
+const MIN_IPV6_LEN: usize = 2;
+const MAX_IPV6_LEN: usize = 100;
+
+const SYSLOG_FACILITIES: [&str; 20] = [
+    "kern", "user", "mail", "daemon", "auth", "syslog", "lpr", "news", "uucp", "cron", "authpriv",
+    "ftp", "local0", "local1", "local2", "local3", "local4", "local5", "local6", "local7",
+];
+const SYSLOG_SEVERITIES: [&str; 10] = [
+    "emerg", "alert", "crit", "err", "error", "warning", "warn", "notice", "info", "debug",
+];
+
+const DNS_ONLY_SUFFIXES: [&str; 7] = [
+    "arpa",
+    "local",
+    "localdomain",
+    "internal",
+    "lan",
+    "home",
+    "svc",
+];
+
+const HOST_KEYS: [&str; 17] = [
+    "host",
+    "hostname",
+    "hosts",
+    "server",
+    "servername",
+    "addr",
+    "address",
+    "fqdn",
+    "domain",
+    "endpoint",
+    "peer",
+    "remote",
+    "upstream",
+    "origin",
+    "target",
+    "url",
+    "uri",
+];
+
+const SCRUB_TLDS: &[&str] = &[
+    "com",
+    "net",
+    "org",
+    "io",
+    "dev",
+    "edu",
+    "gov",
+    "mil",
+    "int",
+    "info",
+    "biz",
+    "app",
+    "ai",
+    "cloud",
+    "tech",
+    "co",
+    "us",
+    "uk",
+    "de",
+    "fr",
+    "nl",
+    "se",
+    "no",
+    "fi",
+    "dk",
+    "eu",
+    "ca",
+    "au",
+    "jp",
+    "cn",
+    "in",
+    "br",
+    "arpa",
+    "local",
+    "internal",
+    "localdomain",
+    "lan",
+    "corp",
+    "home",
+    "svc",
+];
+
 pub struct NetworkDetector;
 
 impl NetworkDetector {
     fn is_version_not_address(ip: &str) -> bool {
-        ip.starts_with("0.") && ip != "0.0.0.0"
+        ip.starts_with("0.") && ip != UNSPECIFIED_V4
     }
 
-    /// `216.160.83.61` in `pool-216.160.83.61.washdc.fios.verizon.net` or in
-    /// `61.83.160.216.in-addr.arpa` is a run of hostname labels, not an
-    /// address: the dotted name continues past it.
     fn in_dotted_name(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
         let before =
@@ -84,59 +146,55 @@ impl NetworkDetector {
         !Self::is_version_not_address(m.as_str()) && !Self::in_dotted_name(haystack, m)
     }
 
-    /// A hostname stands on its own. Glued to `-`, `/`, `\` or `~` it is a
-    /// fragment of a longer name — a label key `kubernetes.io/cpu-cpuid.X87`,
-    /// an image `docker.io/library/nginx`, a mount unit
-    /// `…-volumes-kubernetes.io\x7eprojected` — and after a `.` it is the
-    /// tail of a name whose head was already tokenised.
+    fn is_systemd_escape(b: &[u8], at: usize) -> bool {
+        b[at] == b'\\' && b.get(at + 1) == Some(&b'x')
+    }
+
     fn fqdn_stands_alone(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
-        let before = m.start() > 0 && matches!(b[m.start() - 1], b'-' | b'.' | b'/' | b'\\' | b'~');
-        // `\x2d` is a systemd escape inside a unit name; `\"` closes a quote.
+        let before = m.start() > 0 && NAME_GLUE_BEFORE.contains(&b[m.start() - 1]);
         let after = m.end() < b.len()
-            && (matches!(b[m.end()], b'-' | b'/' | b'~')
-                || (b[m.end()] == b'\\' && b.get(m.end() + 1) == Some(&b'x')));
+            && (NAME_GLUE_AFTER.contains(&b[m.end()]) || Self::is_systemd_escape(b, m.end()));
         !(before || after)
     }
 
-    /// How many bytes of a candidate are an IPv6 address: all of it, all
-    /// but a trailing `:` that belongs to the sentence (`... 2001:db8::1:
-    /// failed`), or none. A candidate glued to a letter (`std::io`) or cut
-    /// out of a longer colon-hex chain (an ssh fingerprint) is not one.
-    fn ipv6_len(haystack: &str, m: &regex::Match) -> Option<usize> {
+    fn ipv6_rejected_by_context(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
-        let glued = (m.start() > 0 && b[m.start() - 1].is_ascii_alphanumeric())
+        let glued_to_letter = (m.start() > 0 && b[m.start() - 1].is_ascii_alphanumeric())
             || (m.end() < b.len() && b[m.end()].is_ascii_alphanumeric());
-        if glued || Self::in_longer_colon_chain(haystack, m) {
+        glued_to_letter || Self::in_longer_colon_chain(haystack, m)
+    }
+
+    fn parses_as_ipv6(candidate: &str) -> bool {
+        let without_zone = candidate.split('%').next().unwrap_or("");
+        Self::is_plausible_ipv6(without_zone) && without_zone.parse::<std::net::Ipv6Addr>().is_ok()
+    }
+
+    fn ipv6_len(haystack: &str, m: &regex::Match) -> Option<usize> {
+        if Self::ipv6_rejected_by_context(haystack, m) {
             return None;
         }
         let text = m.as_str();
-        let parses = |s: &str| {
-            let core = s.split('%').next().unwrap_or("");
-            Self::is_plausible_ipv6(core) && core.parse::<std::net::Ipv6Addr>().is_ok()
-        };
-        if parses(text) {
+        if Self::parses_as_ipv6(text) {
             Some(text.len())
-        } else if let Some(shorter) = text.strip_suffix(':')
-            && parses(shorter)
+        } else if let Some(without_sentence_colon) = text.strip_suffix(':')
+            && Self::parses_as_ipv6(without_sentence_colon)
         {
-            Some(shorter.len())
+            Some(without_sentence_colon.len())
         } else {
             None
         }
     }
 
-    /// Five colons exactly three bytes apart: cheap enough to run on
-    /// every line so the regex only sees candidates.
     fn has_mac_shape(text: &str) -> bool {
         let b = text.as_bytes();
         let mut seps = 0;
         let mut last = usize::MAX;
         for (i, c) in b.iter().enumerate() {
             if *c == b':' {
-                if last != usize::MAX && i == last + 3 {
+                if last != usize::MAX && i == last + MAC_STRIDE {
                     seps += 1;
-                    if seps >= 5 {
+                    if seps >= MAC_SEPARATORS {
                         return true;
                     }
                 } else {
@@ -148,19 +206,22 @@ impl NetworkDetector {
         false
     }
 
-    /// A `word:port` match that starts inside a longer word
-    /// (`utm_cloud_is_alive:46` matched from `alive`) or whose number is
-    /// followed by another colon (`alive:46:` is a source line reference)
-    /// is not a host and port.
-    fn port_stands_alone(haystack: &str, m: &regex::Match) -> bool {
-        let b = haystack.as_bytes();
-        let glued =
-            m.start() > 0 && (b[m.start() - 1].is_ascii_alphanumeric() || b[m.start() - 1] == b'_');
-        let line_ref = m.end() < b.len() && b[m.end()] == b':';
-        !glued && !line_ref
+    fn port_match_glued_to_a_word(b: &[u8], m: &regex::Match) -> bool {
+        m.start() > 0 && (b[m.start() - 1].is_ascii_alphanumeric() || b[m.start() - 1] == b'_')
     }
 
-    /// The match continues as `:hh` on either side: part of a longer chain.
+    fn is_source_line_reference(b: &[u8], m: &regex::Match) -> bool {
+        m.end() < b.len() && b[m.end()] == b':'
+    }
+
+    fn port_rejected(haystack: &str, m: &regex::Match, hostname: &str) -> bool {
+        let b = haystack.as_bytes();
+        Self::in_longer_colon_chain(haystack, m)
+            || Self::port_match_glued_to_a_word(b, m)
+            || Self::is_source_line_reference(b, m)
+            || Self::is_source_file(hostname)
+    }
+
     fn in_longer_colon_chain(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
         let before =
@@ -168,6 +229,12 @@ impl NetworkDetector {
         let after =
             m.end() + 1 < b.len() && b[m.end()] == b':' && b[m.end() + 1].is_ascii_hexdigit();
         before || after
+    }
+
+    fn is_endpoint_fqdn(haystack: &str, m: &regex::Match) -> bool {
+        Self::is_fqdn_candidate(m.as_str())
+            && Self::fqdn_stands_alone(haystack, m)
+            && Self::fqdn_has_endpoint_evidence(haystack, m)
     }
 }
 
@@ -178,7 +245,6 @@ impl NetworkDetector {
         normalize_ports: bool,
         normalize_fqdns: bool,
     ) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no network indicators
         if !Self::has_network_indicators(text, normalize_ips, normalize_ports, normalize_fqdns) {
             return (text.to_string(), Vec::new());
         }
@@ -186,262 +252,189 @@ impl NetworkDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        if normalize_ips && Self::has_mac_shape(text) {
-            let folded = MAC_REGEX.replace_all(&result, |caps: &regex::Captures| {
-                let m = caps.get(0).unwrap();
-                if Self::in_longer_colon_chain(&result, &m) {
-                    m.as_str().to_string()
-                } else {
-                    tokens.push(Token::Mac(m.as_str().to_string()));
-                    "<MAC>".to_string()
-                }
-            });
-            if let std::borrow::Cow::Owned(s) = folded {
-                result = s;
-            }
+        if normalize_ips {
+            Self::fold_macs_before_ports_and_sizes_can_split_them(text, &mut result, &mut tokens);
+            Self::fold_ipv4_with_port(text, &mut result, &mut tokens, normalize_ports);
+            Self::fold_ipv6_literal_with_port(&mut result, &mut tokens, normalize_ports);
+            Self::fold_ipv4_mapped_before_ipv4_takes_its_tail(&mut result, &mut tokens);
+            Self::fold_ipv4(&mut result, &mut tokens);
+            Self::fold_ipv6(&mut result, &mut tokens);
+        }
+        if normalize_ports {
+            Self::fold_host_ports(&mut result, &mut tokens);
+        }
+        if normalize_fqdns {
+            Self::fold_endpoint_names(&mut result, &mut tokens);
         }
 
-        if normalize_ips {
-            // Handle IPv4:Port combinations first. The address is a token
-            // whatever follows it; the number is folded as a port only when
-            // it is one.
-            for cap in IPV4_PORT_REGEX.captures_iter(text) {
-                let full_match = cap.get(0).unwrap().as_str();
-                let port_str = cap.get(1).unwrap().as_str();
-                let ip = &full_match[..full_match.len() - port_str.len() - 1];
-                tokens.push(Token::IPv4(ip.to_string()));
-                if normalize_ports && let Ok(port) = port_str.parse::<u16>() {
-                    tokens.push(Token::Port(port));
-                }
-            }
-            result = IPV4_PORT_REGEX
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let port = caps.get(1).unwrap().as_str();
-                    if port.parse::<u16>().is_ok() {
-                        "<IP>:<PORT>".to_string()
-                    } else {
-                        format!("<IP>:{port}")
-                    }
-                })
-                .to_string();
+        (result, tokens)
+    }
 
-            // Handle IPv6:Port combinations: [2001:db8::1]:8080
-            for cap in IPV6_PORT_REGEX.captures_iter(&result) {
-                let ipv6_str = cap.get(1).unwrap().as_str();
-                let port_str = cap.get(2).unwrap().as_str();
+    fn fold_macs_before_ports_and_sizes_can_split_them(
+        text: &str,
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+    ) {
+        if !Self::has_mac_shape(text) {
+            return;
+        }
+        let folded = MAC_REGEX.replace_all(result, |caps: &regex::Captures| {
+            let m = caps.get(0).unwrap();
+            if Self::in_longer_colon_chain(result, &m) {
+                m.as_str().to_string()
+            } else {
+                tokens.push(Token::Mac(m.as_str().to_string()));
+                "<MAC>".to_string()
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
+    }
+
+    fn fold_ipv4_with_port(
+        text: &str,
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        normalize_ports: bool,
+    ) {
+        for cap in IPV4_PORT_REGEX.captures_iter(text) {
+            let full_match = cap.get(0).unwrap().as_str();
+            let port_str = cap.get(1).unwrap().as_str();
+            let ip = &full_match[..full_match.len() - port_str.len() - 1];
+            tokens.push(Token::IPv4(ip.to_string()));
+            if normalize_ports && let Ok(port) = port_str.parse::<u16>() {
+                tokens.push(Token::Port(port));
+            }
+        }
+        *result = IPV4_PORT_REGEX
+            .replace_all(result, |caps: &regex::Captures| {
+                let port = caps.get(1).unwrap().as_str();
+                if port.parse::<u16>().is_ok() {
+                    "<IP>:<PORT>".to_string()
+                } else {
+                    format!("<IP>:{port}")
+                }
+            })
+            .to_string();
+    }
+
+    fn fold_ipv6_literal_with_port(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        normalize_ports: bool,
+    ) {
+        *result = RFC3986_IPV6_LITERAL_PORT_REGEX
+            .replace_all(result, |caps: &regex::Captures| {
+                let ipv6_str = caps.get(1).unwrap().as_str();
+                let port = caps.get(2).unwrap().as_str();
                 tokens.push(Token::IPv6(ipv6_str.to_string()));
-                if normalize_ports && let Ok(port) = port_str.parse::<u16>() {
+                let parsed = port.parse::<u16>();
+                if normalize_ports && let Ok(port) = parsed {
                     tokens.push(Token::Port(port));
                 }
-            }
-            result = IPV6_PORT_REGEX
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let port = caps.get(2).unwrap().as_str();
-                    if port.parse::<u16>().is_ok() {
-                        "[<IP>]:<PORT>".to_string()
-                    } else {
-                        format!("[<IP>]:{port}")
-                    }
-                })
-                .to_string();
-
-            for cap in IPV4_MAPPED_REGEX.find_iter(&result) {
-                tokens.push(Token::IPv6(cap.as_str().to_string()));
-            }
-            result = IPV4_MAPPED_REGEX.replace_all(&result, "<IP>").to_string();
-
-            // Handle standalone IPv4 addresses. `0.x.y.z` is never a host —
-            // `(0.8.10.3)` is a package version — except `0.0.0.0` itself,
-            // and four octets inside a longer dotted name are its labels.
-            for cap in IPV4_REGEX.find_iter(&result) {
-                let ip_str = cap.as_str();
-                if !Self::is_ipv4_address(&result, &cap) {
-                    continue;
+                if parsed.is_ok() {
+                    "[<IP>]:<PORT>".to_string()
+                } else {
+                    format!("[<IP>]:{port}")
                 }
+            })
+            .to_string();
+    }
+
+    fn fold_ipv4_mapped_before_ipv4_takes_its_tail(result: &mut String, tokens: &mut Vec<Token>) {
+        *result = IPV4_MAPPED_REGEX
+            .replace_all(result, |caps: &regex::Captures| {
+                tokens.push(Token::IPv6(caps[0].to_string()));
+                "<IP>"
+            })
+            .to_string();
+    }
+
+    fn fold_ipv4(result: &mut String, tokens: &mut Vec<Token>) {
+        *result = IPV4_REGEX
+            .replace_all(result, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap();
+                if !Self::is_ipv4_address(result, &m) {
+                    return m.as_str().to_string();
+                }
+                let ip_str = m.as_str();
                 if !tokens
                     .iter()
                     .any(|t| matches!(t, Token::IPv4(s) if s == ip_str))
                 {
                     tokens.push(Token::IPv4(ip_str.to_string()));
                 }
-            }
-            result = IPV4_REGEX
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap();
-                    if Self::is_ipv4_address(&result, &m) {
-                        "<IP>".to_string()
-                    } else {
-                        m.as_str().to_string()
+                "<IP>".to_string()
+            })
+            .to_string();
+    }
+
+    fn fold_ipv6(result: &mut String, tokens: &mut Vec<Token>) {
+        *result = IPV6_LOOSE_CANDIDATE
+            .replace_all(result, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap();
+                match Self::ipv6_len(result, &m) {
+                    Some(len) => {
+                        tokens.push(Token::IPv6(m.as_str()[..len].to_string()));
+                        format!("<IP>{}", &m.as_str()[len..])
                     }
-                })
-                .to_string();
-
-            // Handle IPv6 addresses: a candidate is an address only if it
-            // parses as one and stands alone.
-            for m in IPV6_CANDIDATE.find_iter(&result) {
-                if let Some(len) = Self::ipv6_len(&result, &m) {
-                    tokens.push(Token::IPv6(m.as_str()[..len].to_string()));
+                    None => m.as_str().to_string(),
                 }
-            }
-            result = IPV6_CANDIDATE
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap();
-                    match Self::ipv6_len(&result, &m) {
-                        Some(len) => format!("<IP>{}", &m.as_str()[len..]),
-                        None => m.as_str().to_string(),
-                    }
-                })
-                .to_string();
-        }
+            })
+            .to_string();
+    }
 
-        if normalize_ports {
-            // Handle remaining standalone port numbers (but skip file:line patterns)
-            for cap in PORT_REGEX.captures_iter(&result) {
-                let full_match = cap.get(0).unwrap().as_str();
-                let hostname = cap.get(1).unwrap().as_str();
-                let port_str = cap.get(2).unwrap().as_str();
-
-                // Skip if this looks like a source file:line pattern (ends with ])
-                // or two groups of a colon-hex chain (`b3:20` in a fingerprint)
-                if Self::in_longer_colon_chain(&result, &cap.get(0).unwrap())
-                    || !Self::port_stands_alone(&result, &cap.get(0).unwrap())
-                    || full_match.ends_with(']')
-                    || Self::is_source_file(hostname)
-                {
-                    continue;
+    fn fold_host_ports(result: &mut String, tokens: &mut Vec<Token>) {
+        *result = DOTTED_HOST_PORT_REGEX
+            .replace_all(result, |caps: &regex::Captures| {
+                let whole = caps.get(0).unwrap();
+                let hostname = caps.get(1).unwrap().as_str();
+                if Self::port_rejected(result, &whole, hostname) {
+                    return whole.as_str().to_string();
                 }
-
-                if let Ok(port) = port_str.parse::<u16>()
+                if let Ok(port) = caps.get(2).unwrap().as_str().parse::<u16>()
                     && !tokens
                         .iter()
                         .any(|t| matches!(t, Token::Port(p) if *p == port))
                 {
                     tokens.push(Token::Port(port));
                 }
-            }
+                format!("{hostname}:<PORT>")
+            })
+            .to_string();
+    }
 
-            // Replace ports but skip file:line patterns
-            result = PORT_REGEX
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let full_match = caps.get(0).unwrap().as_str();
-                    let hostname = caps.get(1).unwrap().as_str();
-
-                    // Skip if this looks like a source file:line pattern
-                    if Self::in_longer_colon_chain(&result, &caps.get(0).unwrap())
-                        || !Self::port_stands_alone(&result, &caps.get(0).unwrap())
-                        || full_match.ends_with(']')
-                        || Self::is_source_file(hostname)
-                    {
-                        return full_match.to_string();
-                    }
-
-                    format!("{hostname}:<PORT>")
-                })
-                .to_string();
-        }
-
-        if normalize_fqdns {
-            // FQDN detection. The token gate and the text replacement share
-            // the same evidence test so a rejected match is left untouched.
-            for cap in FQDN_REGEX.find_iter(&result) {
-                let fqdn_str = cap.as_str();
-                if Self::is_likely_fqdn(fqdn_str)
-                    && Self::fqdn_stands_alone(&result, &cap)
-                    && Self::fqdn_has_endpoint_evidence(&result, &cap)
-                {
-                    tokens.push(Token::Fqdn(fqdn_str.to_string()));
+    fn fold_endpoint_names(result: &mut String, tokens: &mut Vec<Token>) {
+        *result = DOTTED_NAME_REGEX
+            .replace_all(result, |caps: &regex::Captures| {
+                let m = caps.get(0).unwrap();
+                if Self::is_endpoint_fqdn(result, &m) {
+                    tokens.push(Token::Fqdn(m.as_str().to_string()));
+                    "<FQDN>".to_string()
+                } else {
+                    m.as_str().to_string()
                 }
-            }
-            result = FQDN_REGEX
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap();
-                    if Self::is_likely_fqdn(m.as_str())
-                        && Self::fqdn_stands_alone(&result, &m)
-                        && Self::fqdn_has_endpoint_evidence(&result, &m)
-                    {
-                        "<FQDN>".to_string()
-                    } else {
-                        m.as_str().to_string()
-                    }
-                })
-                .to_string();
-        }
-
-        (result, tokens)
+            })
+            .to_string();
     }
 
-    /// Heuristic separating real domain names from dotted code identifiers
-    /// (hibernate.SQL, scope.go, module.function). Any dotted name is a
-    /// candidate except a syslog `facility.level` pair; whether a candidate
-    /// is a host is decided by evidence on the line
-    /// (`fqdn_has_endpoint_evidence`), not by its last label.
-    fn is_likely_fqdn(s: &str) -> bool {
-        // `daemon.info`, `kern.warn`, `authpriv.notice`: the syslog
-        // facility.level field, a closed set on both sides (RFC 5424), on
-        // every line a BusyBox or macOS syslogd writes.
-        if let Some((facility, level)) = s.split_once('.')
-            && !level.contains('.')
-            && matches!(
-                facility,
-                "kern"
-                    | "user"
-                    | "mail"
-                    | "daemon"
-                    | "auth"
-                    | "syslog"
-                    | "lpr"
-                    | "news"
-                    | "uucp"
-                    | "cron"
-                    | "authpriv"
-                    | "ftp"
-                    | "local0"
-                    | "local1"
-                    | "local2"
-                    | "local3"
-                    | "local4"
-                    | "local5"
-                    | "local6"
-                    | "local7"
-            )
-            && matches!(
-                level,
-                "emerg"
-                    | "alert"
-                    | "crit"
-                    | "err"
-                    | "error"
-                    | "warning"
-                    | "warn"
-                    | "notice"
-                    | "info"
-                    | "debug"
-            )
-        {
-            return false;
-        }
-        // Anything else dotted is a candidate; whether it is a host is
-        // decided by evidence on the line (`fqdn_has_endpoint_evidence`),
-        // not by its last label. `cephclusters.ceph.rook.io` and
-        // `postgresqls.acid.zalan.do` are the same kind of name, and a
-        // TLD list said one was a host and the other was not (lessence-c2f).
-        s.contains('.')
+    fn is_syslog_facility_level(s: &str) -> bool {
+        s.split_once('.').is_some_and(|(facility, level)| {
+            !level.contains('.')
+                && SYSLOG_FACILITIES.contains(&facility)
+                && SYSLOG_SEVERITIES.contains(&level)
+        })
     }
 
-    /// `checkpoint.go`, `main.rs`, `app.py`: a source file, whose `:123`
-    /// is a line number and never a port, and which is never a host name.
+    fn is_fqdn_candidate(s: &str) -> bool {
+        !Self::is_syslog_facility_level(s) && s.contains('.')
+    }
+
     fn is_source_file(name: &str) -> bool {
         super::is_source_file_name(name)
     }
 
-    /// Every DNS-shaped name on a line, for the anonymizer (`--anonymize`)
-    /// to learn regardless of whether the normalizer erased it. The fold
-    /// erases a dotted name only on evidence it is a host
-    /// (`fqdn_has_endpoint_evidence`); the scrub must err the other way,
-    /// since a real hostname in prose with no evidence around it is still a
-    /// real hostname. A name qualifies when its last label is a known TLD
-    /// or it has three labels or more — an API group, a Java package and a
-    /// hostname all read alike, and all are safe to invent.
     pub fn dns_shaped_names(text: &str) -> Vec<&str> {
         Self::dns_shaped_spans(text)
             .into_iter()
@@ -449,71 +442,30 @@ impl NetworkDetector {
             .collect()
     }
 
-    /// `dns_shaped_names` as byte spans, for a caller that rewrites.
+    fn is_scrub_worthy_name(name: &str) -> bool {
+        name.matches('.').count() >= 2
+            || name
+                .rsplit_once('.')
+                .is_some_and(|(_, tld)| SCRUB_TLDS.contains(&tld))
+    }
+
     pub fn dns_shaped_spans(text: &str) -> Vec<(usize, usize)> {
-        const SCRUB_TLDS: &[&str] = &[
-            "com",
-            "net",
-            "org",
-            "io",
-            "dev",
-            "edu",
-            "gov",
-            "mil",
-            "int",
-            "info",
-            "biz",
-            "app",
-            "ai",
-            "cloud",
-            "tech",
-            "co",
-            "us",
-            "uk",
-            "de",
-            "fr",
-            "nl",
-            "se",
-            "no",
-            "fi",
-            "dk",
-            "eu",
-            "ca",
-            "au",
-            "jp",
-            "cn",
-            "in",
-            "br",
-            "arpa",
-            "local",
-            "internal",
-            "localdomain",
-            "lan",
-            "corp",
-            "home",
-            "svc",
-        ];
         if !text.contains('.') {
             return Vec::new();
         }
-        FQDN_REGEX
+        DOTTED_NAME_REGEX
             .find_iter(text)
             .filter(|m| {
                 let name = m.as_str();
-                Self::is_likely_fqdn(name)
+                Self::is_fqdn_candidate(name)
                     && Self::fqdn_stands_alone(text, m)
                     && !Self::is_source_file(name)
-                    && (name.matches('.').count() >= 2
-                        || name
-                            .rsplit_once('.')
-                            .is_some_and(|(_, tld)| SCRUB_TLDS.contains(&tld)))
+                    && Self::is_scrub_worthy_name(name)
             })
             .map(|m| (m.start(), m.end()))
             .collect()
     }
 
-    /// Every IPv4 address on a line as byte spans, with the same rejections
-    /// the normalizer applies (a version number, labels inside a hostname).
     pub fn ipv4_spans(text: &str) -> Vec<(usize, usize)> {
         if !text.contains('.') {
             return Vec::new();
@@ -525,150 +477,68 @@ impl NetworkDetector {
             .collect()
     }
 
-    /// Evidence that a dotted name is a network endpoint and not a
-    /// reverse-DNS resource name, a Java package, a plugin id or a label
-    /// key (lessence-c2f). A name is erased to `<FQDN>` only when the line
-    /// itself says it is a host:
-    ///
-    /// - a port follows it (`host:443`) or a URL scheme precedes it;
-    /// - it is the value of a host-shaped field (`host=`, `hostname=`,
-    ///   `server=`, `addr=`, `endpoint=`, `peer=`, `upstream=`, …);
-    /// - it sits in the positional syslog host slot, right after the
-    ///   timestamp;
-    /// - its last label is DNS-only (`.arpa`, `.local`, `.svc`,
-    ///   `.internal`, `.lan`, `.localdomain`, `.home`), a suffix no API
-    ///   group or package uses.
-    ///
-    /// A dotted name in prose with none of these stays literal. Two lines
-    /// that differ only in such a name still fold — one plain word apart —
-    /// and the name shows in the rollup as a `<VARIES>` value, which is
-    /// what an agent needs when the names are the four resources a role is
-    /// denied.
-    fn fqdn_has_endpoint_evidence(haystack: &str, m: &regex::Match) -> bool {
-        let b = haystack.as_bytes();
-        let name = m.as_str();
+    fn has_dns_only_suffix(name: &str) -> bool {
+        name.rsplit_once('.')
+            .is_some_and(|(_, last)| DNS_ONLY_SUFFIXES.contains(&last))
+    }
 
-        // A DNS-only suffix.
-        if let Some((_, last)) = name.rsplit_once('.')
-            && matches!(
-                last,
-                "arpa" | "local" | "localdomain" | "internal" | "lan" | "home" | "svc"
-            )
-        {
-            return true;
-        }
-
-        // A port after the name — unless the name is a source file and the
-        // number is its line (`caller=checkpoint.go:123`).
-        if m.end() + 1 < b.len()
+    fn has_port_after(b: &[u8], m: &regex::Match) -> bool {
+        m.end() + 1 < b.len()
             && b[m.end()] == b':'
             && b[m.end() + 1].is_ascii_digit()
-            && !Self::is_source_file(name)
-        {
-            return true;
-        }
+            && !Self::is_source_file(m.as_str())
+    }
 
-        // A URL scheme before the name.
-        if haystack[..m.start()].ends_with("://") {
-            return true;
-        }
+    fn has_scheme_before(haystack: &str, m: &regex::Match) -> bool {
+        haystack[..m.start()].ends_with("://")
+    }
 
-        // The positional syslog host slot: the word right after the
-        // timestamp on a syslog-shaped line.
-        const TS: &str = "<TIMESTAMP> ";
-        if m.start() == TS.len() && haystack.starts_with(TS) {
-            return true;
-        }
+    fn in_syslog_host_slot(haystack: &str, m: &regex::Match) -> bool {
+        m.start() == TIMESTAMP_PLACEHOLDER.len() + 1
+            && haystack.starts_with(TIMESTAMP_PLACEHOLDER)
+            && haystack.as_bytes()[TIMESTAMP_PLACEHOLDER.len()] == b' '
+    }
 
-        // The value of a host-shaped field: `host=`, `hostname: `,
-        // `"server":"`, `addr=`. Walk back over the separator and any
-        // quote to the key, and judge the key by its last word.
+    fn is_value_of_a_host_key(haystack: &str, m: &regex::Match) -> bool {
+        let b = haystack.as_bytes();
         let mut i = m.start();
         while i > 0 && matches!(b[i - 1], b'"' | b'\'' | b' ') {
             i -= 1;
         }
-        if i > 0 && matches!(b[i - 1], b'=' | b':') {
-            i -= 1;
-            while i > 0 && matches!(b[i - 1], b'"' | b'\'') {
-                i -= 1;
-            }
-            let key_end = i;
-            while i > 0
-                && (b[i - 1].is_ascii_alphanumeric() || matches!(b[i - 1], b'_' | b'-' | b'.'))
-            {
-                i -= 1;
-            }
-            let key = haystack[i..key_end].to_ascii_lowercase();
-            let last = key.rsplit(['_', '-', '.']).next().unwrap_or("");
-            if matches!(
-                last,
-                "host"
-                    | "hostname"
-                    | "hosts"
-                    | "server"
-                    | "servername"
-                    | "addr"
-                    | "address"
-                    | "fqdn"
-                    | "domain"
-                    | "endpoint"
-                    | "peer"
-                    | "remote"
-                    | "upstream"
-                    | "origin"
-                    | "target"
-                    | "url"
-                    | "uri"
-            ) {
-                return true;
-            }
+        if !(i > 0 && matches!(b[i - 1], b'=' | b':')) {
+            return false;
         }
-        false
+        i -= 1;
+        while i > 0 && matches!(b[i - 1], b'"' | b'\'') {
+            i -= 1;
+        }
+        let key_end = i;
+        while i > 0 && (b[i - 1].is_ascii_alphanumeric() || matches!(b[i - 1], b'_' | b'-' | b'.'))
+        {
+            i -= 1;
+        }
+        let key = haystack[i..key_end].to_ascii_lowercase();
+        let last_word = key.rsplit(['_', '-', '.']).next().unwrap_or("");
+        HOST_KEYS.contains(&last_word)
     }
 
-    /// Lightweight pre-filter to validate IPv6 structural plausibility before regex execution
-    ///
-    /// This function is a cheap guard that rejects obviously malformed candidates before the
-    /// IPv6 regex scans them. It performs O(n) validation with minimal overhead (<1% for
-    /// valid inputs). (The `regex` crate does not backtrack; the cost avoided is a long scan.)
-    ///
-    /// # Validation Rules
-    /// - Length: 2-100 characters (allows "::" up to zone identifiers)
-    /// - Character set: hex digits (0-9, a-f, A-F), colons (:), dots (.) for IPv4-mapped
-    /// - Must contain at least one colon (all IPv6 formats have colons)
-    /// - Must contain at least one hex digit (except "::" which is valid)
-    ///
-    /// # Arguments
-    /// * `input` - The string to validate as a potential IPv6 address
-    ///
-    /// # Returns
-    /// `true` when the input should proceed to full IPv6 validation.
-    ///
-    /// # Performance
-    /// - Rejects malformed patterns in <10ms
-    /// - Adds <1% overhead for valid IPv6 addresses
-    /// - Thread-safe for parallel processing
-    ///
-    /// # Examples
+    fn fqdn_has_endpoint_evidence(haystack: &str, m: &regex::Match) -> bool {
+        Self::has_dns_only_suffix(m.as_str())
+            || Self::has_port_after(haystack.as_bytes(), m)
+            || Self::has_scheme_before(haystack, m)
+            || Self::in_syslog_host_slot(haystack, m)
+            || Self::is_value_of_a_host_key(haystack, m)
+    }
+
     /// ```
     /// use lessence::patterns::network::NetworkDetector;
-    ///
-    /// // Valid IPv6 - passes pre-filter
     /// let check = NetworkDetector::is_plausible_ipv6("2001:db8::1");
     /// assert!(check);
-    ///
-    /// // Invalid - too short
     /// let check = NetworkDetector::is_plausible_ipv6(":");
     /// assert!(!check);
     /// ```
     pub fn is_plausible_ipv6(input: &str) -> bool {
-        let len = input.len();
-
-        if len < 2 {
-            return false;
-        }
-
-        if len > 100 {
+        if !(MIN_IPV6_LEN..=MAX_IPV6_LEN).contains(&input.len()) {
             return false;
         }
 
@@ -684,15 +554,7 @@ impl NetworkDetector {
             }
         }
 
-        if !has_colon {
-            return false;
-        }
-
-        if !has_hex && input != "::" {
-            return false;
-        }
-
-        true
+        has_colon && (has_hex || input == "::")
     }
 
     #[inline]
@@ -702,19 +564,10 @@ impl NetworkDetector {
         normalize_ports: bool,
         normalize_fqdns: bool,
     ) -> bool {
-        if normalize_ips && (text.contains('.') || text.contains(':')) {
-            return true; // Potential IPv4 or IPv6
-        }
-        if normalize_ports && text.contains(':') {
-            return true; // Potential port number
-        }
-        // Any dotted text is a potential FQDN — precision comes from the
-        // endpoint-evidence check, not from this prefilter. (With
-        // normalize_ips on, dotted lines already pass the check above.)
-        if normalize_fqdns && text.contains('.') {
-            return true;
-        }
-        false
+        let may_have_address = normalize_ips && (text.contains('.') || text.contains(':'));
+        let may_have_port = normalize_ports && text.contains(':');
+        let may_have_name = normalize_fqdns && text.contains('.');
+        may_have_address || may_have_port || may_have_name
     }
 }
 
@@ -723,7 +576,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ipv4_detection() {
+    fn an_ipv4_address_folds_to_ip() {
         let text = "Connection failed to 192.168.1.100 (timeout)";
         let (result, tokens) = NetworkDetector::detect_and_replace(text, true, false, false);
         assert_eq!(result, "Connection failed to <IP> (timeout)");
@@ -732,7 +585,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ipv4_port_detection() {
+    fn an_ipv4_with_port_folds_both() {
         let text = "Connection failed to 192.168.1.100:8080 (timeout)";
         let (result, tokens) = NetworkDetector::detect_and_replace(text, true, true, false);
         assert_eq!(result, "Connection failed to <IP>:<PORT> (timeout)");
@@ -742,25 +595,24 @@ mod tests {
     }
 
     #[test]
-    fn test_port_only_detection() {
-        // PORT_REGEX requires a hostname prefix ([a-zA-Z]...) before the colon,
-        // so standalone ":8080" without a hostname is not detected
+    fn a_port_without_a_host_stays_literal() {
         let text = "Listening on port :8080";
         let (result, tokens) = NetworkDetector::detect_and_replace(text, false, true, false);
-        assert_eq!(result, "Listening on port :8080");
+        assert_eq!(
+            result, "Listening on port :8080",
+            "a port needs a dotted host or localhost before the colon"
+        );
         assert_eq!(tokens.len(), 0);
     }
 
     #[test]
-    fn test_ipv6_detection() {
+    fn a_full_ipv6_address_folds_to_ip() {
         let text = "Connected to 2001:0db8:85a3:0000:0000:8a2e:0370:7334";
         let (result, tokens) = NetworkDetector::detect_and_replace(text, true, false, false);
         assert_eq!(result, "Connected to <IP>");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::IPv6(_)));
     }
-
-    // --- is_plausible_ipv6 ---
 
     #[test]
     fn plausible_ipv6_empty_rejected() {
@@ -787,8 +639,6 @@ mod tests {
     fn plausible_ipv6_valid() {
         assert!(NetworkDetector::is_plausible_ipv6("2001:db8::1"));
     }
-
-    // ---- has_network_indicators: per-condition tests ----
 
     #[test]
     fn net_ind_ip_dot() {
@@ -821,33 +671,13 @@ mod tests {
     }
 
     #[test]
-    fn net_ind_fqdn_com() {
-        assert!(NetworkDetector::has_network_indicators(
-            "example.com",
-            false,
-            false,
-            true
-        ));
-    }
-
-    #[test]
-    fn net_ind_fqdn_org() {
-        assert!(NetworkDetector::has_network_indicators(
-            "example.org",
-            false,
-            false,
-            true
-        ));
-    }
-
-    #[test]
-    fn net_ind_fqdn_net() {
-        assert!(NetworkDetector::has_network_indicators(
-            "example.net",
-            false,
-            false,
-            true
-        ));
+    fn any_dotted_text_passes_the_name_prefilter() {
+        for name in ["example.com", "example.org", "example.net"] {
+            assert!(
+                NetworkDetector::has_network_indicators(name, false, false, true),
+                "{name}"
+            );
+        }
     }
 
     #[test]
@@ -870,63 +700,26 @@ mod tests {
         ));
     }
 
-    // ---- detect_and_replace: file extension exclusions ----
-
     #[test]
-    fn port_skip_go_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("server.go:1234", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .go file: {result}");
+    fn a_source_file_and_line_is_never_a_port() {
+        for line in [
+            "server.go:1234",
+            "main.rs:42",
+            "app.py:100",
+            "index.js:55",
+            "App.java:200",
+            "main.c:30",
+            "main.cpp:30",
+            "header.h:10",
+        ] {
+            let (result, tokens) = NetworkDetector::detect_and_replace(line, false, true, false);
+            assert!(!result.contains("<PORT>"), "{line}: {result}");
+            assert!(
+                !tokens.iter().any(|t| matches!(t, Token::Port(_))),
+                "{line}: {tokens:?}"
+            );
+        }
     }
-
-    #[test]
-    fn port_skip_rs_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("main.rs:42", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .rs file: {result}");
-    }
-
-    #[test]
-    fn port_skip_py_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("app.py:100", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .py file: {result}");
-    }
-
-    #[test]
-    fn port_skip_js_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("index.js:55", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .js file: {result}");
-    }
-
-    #[test]
-    fn port_skip_java_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("App.java:200", false, true, false);
-        assert!(
-            !result.contains("<PORT>"),
-            "should skip .java file: {result}"
-        );
-    }
-
-    #[test]
-    fn port_skip_c_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("main.c:30", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .c file: {result}");
-    }
-
-    #[test]
-    fn port_skip_cpp_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("main.cpp:30", false, true, false);
-        assert!(
-            !result.contains("<PORT>"),
-            "should skip .cpp file: {result}"
-        );
-    }
-
-    #[test]
-    fn port_skip_h_file() {
-        let (result, _) = NetworkDetector::detect_and_replace("header.h:10", false, true, false);
-        assert!(!result.contains("<PORT>"), "should skip .h file: {result}");
-    }
-
-    // ---- detect_and_replace: IPv4:port split ----
 
     #[test]
     fn ipv4_port_split() {
@@ -938,92 +731,16 @@ mod tests {
         assert!(tokens.iter().any(|t| matches!(t, Token::Port(8080))));
     }
 
-    // ---- detect_and_replace: flag combos ----
-
     #[test]
-    fn detect_ips_only() {
+    fn ports_stay_untokenised_when_port_folding_is_off() {
         let (result, tokens) =
             NetworkDetector::detect_and_replace("host 10.0.0.1:8080", true, false, false);
         assert!(result.contains("<IP>"));
-        // Port should not be replaced when normalize_ports=false
-        assert!(!tokens.iter().any(|t| matches!(t, Token::Port(_))));
-    }
-
-    // ---- file extension exclusions: verify NO Port token is emitted (kills token-loop mutants) ----
-
-    #[test]
-    fn port_skip_go_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("server.go:1234", false, true, false);
         assert!(
             !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .go file: {tokens:?}"
+            "a port must not tokenise when port folding is off"
         );
     }
-
-    #[test]
-    fn port_skip_rs_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("main.rs:42", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .rs file: {tokens:?}"
-        );
-    }
-
-    #[test]
-    fn port_skip_py_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("app.py:100", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .py file: {tokens:?}"
-        );
-    }
-
-    #[test]
-    fn port_skip_js_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("index.js:55", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .js file: {tokens:?}"
-        );
-    }
-
-    #[test]
-    fn port_skip_java_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("App.java:200", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .java file: {tokens:?}"
-        );
-    }
-
-    #[test]
-    fn port_skip_c_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("main.c:30", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .c file: {tokens:?}"
-        );
-    }
-
-    #[test]
-    fn port_skip_cpp_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("main.cpp:30", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .cpp file: {tokens:?}"
-        );
-    }
-
-    #[test]
-    fn port_skip_h_file_no_token() {
-        let (_, tokens) = NetworkDetector::detect_and_replace("header.h:10", false, true, false);
-        assert!(
-            !tokens.iter().any(|t| matches!(t, Token::Port(_))),
-            "should not emit Port token for .h file: {tokens:?}"
-        );
-    }
-
-    // ---- detect_and_replace: verify extracted IP from IPv4:Port (line 94 arithmetic) ----
 
     #[test]
     fn ipv4_port_extracts_correct_ip() {
@@ -1042,15 +759,14 @@ mod tests {
     }
 
     #[test]
-    fn ipv4_port_extracts_correct_ip_long_port() {
-        // Use a 5-digit port to stress the arithmetic: len - port_str.len() - 1
+    fn a_five_digit_port_splits_off_the_exact_address() {
         let (_, tokens) =
             NetworkDetector::detect_and_replace("host 10.0.0.99:65535", true, true, false);
         assert!(
             tokens
                 .iter()
                 .any(|t| matches!(t, Token::IPv4(s) if s == "10.0.0.99")),
-            "should extract exact IP '10.0.0.99', got: {tokens:?}"
+            "a five-digit port must split off exactly the address, got: {tokens:?}"
         );
         assert!(
             tokens.iter().any(|t| matches!(t, Token::Port(65535))),
@@ -1059,8 +775,7 @@ mod tests {
     }
 
     #[test]
-    fn ipv4_port_extracts_correct_ip_short_port() {
-        // Single-digit port number (smallest valid port_str length)
+    fn a_one_digit_port_splits_off_the_exact_address() {
         let (_, tokens) =
             NetworkDetector::detect_and_replace("addr 192.168.0.1:8", true, true, false);
         assert!(
@@ -1075,11 +790,8 @@ mod tests {
         );
     }
 
-    // ---- detect_and_replace: dedup check (line 207, FQDN/IPv4 dedup) ----
-
     #[test]
     fn no_duplicate_ipv4_tokens() {
-        // Two occurrences of the same IP should produce only one IPv4 token
         let (_, tokens) =
             NetworkDetector::detect_and_replace("from 10.0.0.1 to 10.0.0.1", true, false, false);
         let ip_count = tokens
@@ -1094,7 +806,6 @@ mod tests {
 
     #[test]
     fn no_duplicate_port_tokens() {
-        // Two hostnames with the same port should produce only one Port token
         let (_, tokens) = NetworkDetector::detect_and_replace(
             "server1.example.com:8080 server2.example.net:8080",
             false,
@@ -1111,26 +822,19 @@ mod tests {
         );
     }
 
-    // ---- is_plausible_ipv6: boundary tests ----
-
     #[test]
-    fn plausible_ipv6_len_exactly_2() {
-        // len == 2 is the minimum accepted length; "::" is 2 chars and valid
+    fn the_shortest_plausible_ipv6_is_two_colons() {
         assert!(NetworkDetector::is_plausible_ipv6("::"));
     }
 
     #[test]
-    fn plausible_ipv6_len_exactly_1() {
-        // len == 1 is below the boundary, must be rejected
+    fn one_char_is_too_short_for_ipv6() {
         assert!(!NetworkDetector::is_plausible_ipv6(":"));
     }
 
     #[test]
-    fn plausible_ipv6_len_exactly_100() {
-        // len == 100 is the maximum accepted length
-        // Build a 100-char string: "a:" repeated to fill, ending with valid hex
+    fn a_hundred_chars_is_the_longest_plausible_ipv6() {
         let mut s = String::new();
-        // "a:" is 2 chars, repeat 49 times = 98 chars, then "a:" = 100
         for _ in 0..50 {
             s.push_str("a:");
         }
@@ -1142,8 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn plausible_ipv6_len_exactly_101() {
-        // len == 101 is above the boundary, must be rejected
+    fn a_hundred_and_one_chars_is_too_long_for_ipv6() {
         let mut s = String::new();
         for _ in 0..50 {
             s.push_str("a:");
@@ -1156,31 +859,24 @@ mod tests {
         );
     }
 
-    // ---- is_plausible_ipv6: IPv4-mapped address (dot handling, line 270) ----
-
     #[test]
     fn plausible_ipv6_ipv4_mapped() {
-        // IPv4-mapped IPv6 address contains dots — the '.' match arm must accept them
         assert!(
             NetworkDetector::is_plausible_ipv6("::ffff:192.168.1.1"),
-            "IPv4-mapped IPv6 should be plausible"
+            "IPv4-mapped IPv6 should be plausible: dots are allowed"
         );
     }
 
     #[test]
-    fn plausible_ipv6_dots_only_with_colon() {
-        // Dots + colons but no hex digits and not "::" — should be rejected (no hex)
+    fn dots_and_colons_without_hex_are_not_ipv6() {
         assert!(
             !NetworkDetector::is_plausible_ipv6(":..:.."),
             "dots and colons without hex digits should be rejected"
         );
     }
 
-    // ---- is_plausible_ipv6: no hex digits (line 280, != vs ==) ----
-
     #[test]
     fn plausible_ipv6_double_colon_special_case() {
-        // "::" has no hex digits but IS the special case — must be accepted
         assert!(
             NetworkDetector::is_plausible_ipv6("::"),
             ":: should be accepted even without hex digits"
@@ -1189,7 +885,6 @@ mod tests {
 
     #[test]
     fn plausible_ipv6_colons_only_not_double_colon() {
-        // ":::" has colons and no hex but is NOT "::" — should be rejected
         assert!(
             !NetworkDetector::is_plausible_ipv6(":::"),
             "::: should be rejected: has no hex and is not ::"
@@ -1204,48 +899,37 @@ mod tests {
         );
     }
 
-    // ---- has_network_indicators: inner && conditions (lines 297, 302) ----
-
     #[test]
-    fn net_ind_ports_no_colon() {
-        // normalize_ports=true but text has no colon => should be false
-        // kills: `&& with ||` on line 297
-        assert!(!NetworkDetector::has_network_indicators(
-            "no-colon-here",
-            false,
-            true,
-            false
-        ));
+    fn ports_need_a_colon() {
+        assert!(
+            !NetworkDetector::has_network_indicators("no-colon-here", false, true, false),
+            "port folding on, but no colon"
+        );
     }
 
     #[test]
     fn net_ind_fqdn_any_dot_passes() {
-        // The fqdn prefilter arm is dot-only; precision lives in the
-        // endpoint-evidence check, so "file.txt" passes the prefilter
-        // but produces no token or rewrite downstream.
         assert!(NetworkDetector::has_network_indicators(
             "file.txt", false, false, true
         ));
         let (result, tokens) =
             NetworkDetector::detect_and_replace("open file.txt ok", false, false, true);
-        assert_eq!(result, "open file.txt ok");
+        assert_eq!(
+            result, "open file.txt ok",
+            "the prefilter passes any dot; precision is endpoint evidence"
+        );
         assert!(tokens.is_empty());
     }
 
     #[test]
-    fn net_ind_fqdn_tld_keyword_but_no_dot() {
-        // normalize_fqdns=true, text has "com" but no dot => should be false
-        // kills: `&& with ||` on the outer part of line 302
+    fn a_tld_word_without_a_dot_is_no_name() {
         assert!(!NetworkDetector::has_network_indicators(
             "dotcom", false, false, true
         ));
     }
 
-    // ---- detect_and_replace: legitimate hostname:port IS detected ----
-
     #[test]
     fn port_detected_for_non_source_file_hostname() {
-        // A hostname that does NOT match any file extension should have its port detected
         let (result, tokens) =
             NetworkDetector::detect_and_replace("myserver.local:9090", false, true, false);
         assert!(
@@ -1257,8 +941,6 @@ mod tests {
             "Port token should be emitted: {tokens:?}"
         );
     }
-
-    // ---- IPv6 port detection ----
 
     #[test]
     fn ipv6_port_detection_tokens() {
@@ -1280,11 +962,8 @@ mod tests {
         );
     }
 
-    // ---- FQDN detection: dot/start/end checks (line 207) ----
-
     #[test]
-    fn fqdn_valid_produces_token() {
-        // A name with a port after it is a host.
+    fn a_name_before_a_port_is_a_host() {
         let (r, tokens) =
             NetworkDetector::detect_and_replace("connect example.com:443 ok", false, false, true);
         assert_eq!(r, "connect <FQDN>:443 ok");
@@ -1296,53 +975,80 @@ mod tests {
         );
     }
 
-    /// A dotted name is erased only on evidence that it is an endpoint
-    /// (lessence-c2f): a port, a scheme, a host-shaped key, the syslog
-    /// host slot, or a DNS-only suffix. Bare in prose it stays literal —
-    /// an API group, a package, a plugin id and a hostname all read alike.
     #[test]
     fn a_dotted_name_is_a_host_only_on_evidence() {
-        for (line, want) in [
-            ("connect example.com ok", "connect example.com ok"),
+        for (line, want, evidence) in [
+            ("connect example.com ok", "connect example.com ok", "none"),
             (
                 "denied cephclusters.ceph.rook.io",
                 "denied cephclusters.ceph.rook.io",
+                "none",
             ),
             (
                 "denied postgresqls.acid.zalan.do",
                 "denied postgresqls.acid.zalan.do",
+                "none",
             ),
             (
                 "GroupVersion apiextensions.k8s.io v1",
                 "GroupVersion apiextensions.k8s.io v1",
+                "none",
             ),
-            ("connect example.com:443 ok", "connect <FQDN>:443 ok"),
-            ("host=db-01.example.com up", "host=<FQDN> up"),
-            ("remote_addr=db-01.example.com", "remote_addr=<FQDN>"),
-            (r#""server":"db-01.example.com""#, r#""server":"<FQDN>""#),
-            ("upstream: db-01.example.com", "upstream: <FQDN>"),
+            (
+                "connect example.com:443 ok",
+                "connect <FQDN>:443 ok",
+                "port",
+            ),
+            ("host=db-01.example.com up", "host=<FQDN> up", "host key"),
+            (
+                "remote_addr=db-01.example.com",
+                "remote_addr=<FQDN>",
+                "host key",
+            ),
+            (
+                r#""server":"db-01.example.com""#,
+                r#""server":"<FQDN>""#,
+                "host key",
+            ),
+            (
+                "upstream: db-01.example.com",
+                "upstream: <FQDN>",
+                "host key",
+            ),
             (
                 "<TIMESTAMP> gw.example.com kernel: up",
                 "<TIMESTAMP> <FQDN> kernel: up",
+                "syslog host slot",
             ),
-            ("PTR 77.100.51.198.in-addr.arpa", "PTR <FQDN>"),
-            ("dial postgres.staging.svc ok", "dial <FQDN> ok"),
-            ("class=hibernate.SQL", "class=hibernate.SQL"),
-            ("caller=checkpoint.go:123 ok", "caller=checkpoint.go:123 ok"),
+            (
+                "PTR 77.100.51.198.in-addr.arpa",
+                "PTR <FQDN>",
+                "DNS-only suffix",
+            ),
+            (
+                "dial postgres.staging.svc ok",
+                "dial <FQDN> ok",
+                "DNS-only suffix",
+            ),
+            ("class=hibernate.SQL", "class=hibernate.SQL", "none"),
+            (
+                "caller=checkpoint.go:123 ok",
+                "caller=checkpoint.go:123 ok",
+                "none: a source file's number is its line",
+            ),
             (
                 "resource=cephclusters.ceph.rook.io",
                 "resource=cephclusters.ceph.rook.io",
+                "none",
             ),
         ] {
             let (r, _) = NetworkDetector::detect_and_replace(line, false, false, true);
-            assert_eq!(r, want, "{line}");
+            assert_eq!(r, want, "{line}: evidence {evidence}");
         }
     }
 
     #[test]
     fn fqdn_rejects_dotted_code_identifiers() {
-        // hibernate.SQL / scope.go style identifiers must neither tokenize
-        // nor be rewritten in the text.
         for line in ["loading hibernate.SQL config", "file scope.go ok"] {
             let (result, tokens) = NetworkDetector::detect_and_replace(line, false, false, true);
             assert_eq!(result, line, "code identifier must stay intact");
@@ -1366,33 +1072,27 @@ mod tests {
     }
 
     #[test]
-    fn fqdn_leading_dot_no_token() {
-        // Kills: delete ! on `!starts_with('.')`
-        // Kills: && with || (leading dot should prevent token, not allow it)
+    fn a_leading_dot_never_enters_a_name_token() {
         let (_, tokens) = NetworkDetector::detect_and_replace(".example.com", false, false, true);
-        // Leading dot → token should NOT be produced (text still replaced by regex)
         assert!(
             !tokens
                 .iter()
-                .any(|t| matches!(t, Token::IPv4(s) if s.starts_with('.'))),
+                .any(|t| matches!(t, Token::IPv4(s) | Token::Fqdn(s) if s.starts_with('.'))),
             "leading dot FQDN should not produce token: {tokens:?}"
         );
     }
 
     #[test]
-    fn fqdn_trailing_dot_no_token() {
-        // Kills: delete ! on `!ends_with('.')`
+    fn a_trailing_dot_never_enters_a_name_token() {
         let (_, tokens) = NetworkDetector::detect_and_replace("example.com.", false, false, true);
         assert!(
             !tokens
                 .iter()
-                .any(|t| matches!(t, Token::IPv4(s) if s.ends_with('.'))),
+                .any(|t| matches!(t, Token::IPv4(s) | Token::Fqdn(s) if s.ends_with('.'))),
             "trailing dot FQDN should not produce token: {tokens:?}"
         );
     }
 
-    /// A port sits after a whole word; a number after a word fragment or
-    /// before another colon is something else.
     #[test]
     fn a_bare_word_before_a_colon_is_a_field_not_a_host() {
         for (input, expected) in [
@@ -1433,8 +1133,6 @@ mod tests {
         }
     }
 
-    /// A MAC is one atom whatever its bytes look like; a longer colon chain
-    /// (a fingerprint, an IPv6 address) is not six MACs.
     #[test]
     fn a_mac_is_one_atom() {
         for (input, expected) in [
@@ -1469,8 +1167,6 @@ mod tests {
         ));
     }
 
-    /// An IPv4 run inside a dotted hostname is a run of labels, not an
-    /// address; the whole name is the host. An address range stays two.
     #[test]
     fn ipv4_inside_a_hostname_is_part_of_the_name() {
         let (r, t) = NetworkDetector::detect_and_replace(
@@ -1484,9 +1180,6 @@ mod tests {
         assert_eq!(t.iter().filter(|t| matches!(t, Token::Fqdn(_))).count(), 2);
     }
 
-    /// A dotted name glued to `/`, `\`, `~` or `-`, or continuing a name to
-    /// its left, is a fragment of a longer identifier, not a host. Standing
-    /// alone it is a host whatever its role.
     #[test]
     fn fqdn_glued_to_a_longer_name_stays_literal() {
         for line in [
@@ -1503,27 +1196,28 @@ mod tests {
                 "{line}: {t:?}"
             );
         }
-        // A dotted name standing alone in prose is not erased either: an
-        // API group reads exactly like a host (lessence-c2f).
         let (r, _) = NetworkDetector::detect_and_replace(
             "GroupVersion apiextensions.k8s.io v1",
             true,
             true,
             true,
         );
-        assert_eq!(r, "GroupVersion apiextensions.k8s.io v1");
-        // an escaped quote after the name is not glue
+        assert_eq!(
+            r, "GroupVersion apiextensions.k8s.io v1",
+            "a standalone API group reads like a host and stays literal"
+        );
         let (r, _) = NetworkDetector::detect_and_replace(
             r#"msg="loading \"io.containerd.store.v1.local\"...""#,
             true,
             true,
             true,
         );
-        assert_eq!(r, r#"msg="loading \"<FQDN>\"...""#);
+        assert_eq!(
+            r, r#"msg="loading \"<FQDN>\"...""#,
+            "an escaped quote after the name is not glue"
+        );
     }
 
-    /// The scrub scan learns every DNS-shaped name, evidence or not, and
-    /// still leaves source files and facility.level pairs alone.
     #[test]
     fn dns_shaped_names_err_toward_scrubbing() {
         let names = NetworkDetector::dns_shaped_names(
@@ -1540,8 +1234,6 @@ mod tests {
         assert!(NetworkDetector::dns_shaped_names("no dots here").is_empty());
     }
 
-    /// Every IPv6 compression form is one address; what does not parse as
-    /// one — a Rust path, a MAC, a fingerprint — is left alone.
     #[test]
     fn ipv6_forms_are_whole_addresses() {
         for (input, expected) in [
@@ -1564,7 +1256,6 @@ mod tests {
         }
     }
 
-    /// `0.x.y.z` is never a host; `(0.8.10.3)` is a package version.
     #[test]
     fn a_zero_led_dotted_quad_is_a_version() {
         let (r, t) = NetworkDetector::detect_and_replace(
@@ -1582,8 +1273,6 @@ mod tests {
 mod shapes_2026_08_29 {
     use super::*;
 
-    /// Every source extension reads the same: `file.<ext>:123` is a line
-    /// number, never a port, and a `file.<ext>:123]` call site keeps its file.
     #[test]
     fn every_source_extension_is_a_file_and_a_line() {
         for ext in crate::patterns::SOURCE_EXTENSIONS {
@@ -1611,24 +1300,21 @@ mod shapes_2026_08_29 {
             assert_eq!(r, line, "{line}");
             assert!(t.is_empty(), "{line}");
         }
-        // `system.info` is not a facility.level pair, but it is not a host
-        // either: nothing on the line says so (lessence-c2f).
         let (r, _) = NetworkDetector::detect_and_replace(
             "creating proc entry for system.info",
             true,
             true,
             true,
         );
-        assert_eq!(r, "creating proc entry for system.info");
+        assert_eq!(
+            r, "creating proc entry for system.info",
+            "system.info is not facility.level, and still no host: no evidence"
+        );
     }
 }
 
-/// Boundary and glue rules of the network detector, written against the
-/// survivors of the 2026-09-16 release mutation sweep (lessence-e8v). Each
-/// test names the candidates it is meant to kill; that is a hypothesis
-/// until the mutants are re-run against it.
 #[cfg(test)]
-mod e8v_2026_09_17 {
+mod network_boundaries {
     use super::*;
 
     fn net(line: &str) -> (String, Vec<Token>) {
@@ -1644,8 +1330,6 @@ mod e8v_2026_09_17 {
         t.iter().any(|t| matches!(t, Token::Port(_)))
     }
 
-    /// in_dotted_name, `before` branch (77:43, 77:71): a dotted name that
-    /// ENDS in four octets keeps them as labels.
     #[test]
     fn four_octets_ending_a_dotted_name_are_labels() {
         let (r, t) = net("a.12.51.100.77 done");
@@ -1653,8 +1337,6 @@ mod e8v_2026_09_17 {
         assert!(!has_ip(&t), "{t:?}");
     }
 
-    /// in_dotted_name, `after` branch (79:70): an address followed by a
-    /// sentence dot is an address; the dot belongs to the sentence.
     #[test]
     fn an_address_before_a_sentence_dot_is_an_address() {
         let (r, t) = net("peer 10.0.0.1. retry");
@@ -1662,8 +1344,6 @@ mod e8v_2026_09_17 {
         assert!(has_ip(&t), "{t:?}");
     }
 
-    /// in_dotted_name bound (79:25): an address followed by a dot at the
-    /// very end of the input must not read past the buffer.
     #[test]
     fn an_address_with_a_trailing_dot_at_end_of_input_does_not_panic() {
         let (r, t) = net("peer 10.0.0.1.");
@@ -1671,8 +1351,6 @@ mod e8v_2026_09_17 {
         assert!(has_ip(&t), "{t:?}");
     }
 
-    /// fqdn_stands_alone, `after` glue (96:29, 98:17): a name glued to a
-    /// path stays literal even with host= evidence in front of it.
     #[test]
     fn a_keyed_name_glued_to_a_path_stays_literal() {
         let (r, t) = net("host=docker.io/library/nginx up");
@@ -1680,8 +1358,6 @@ mod e8v_2026_09_17 {
         assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
     }
 
-    /// fqdn_stands_alone, `\x` escape glue (98:32, 98:58): a name continued
-    /// by a systemd escape stays literal even with host= evidence.
     #[test]
     fn a_keyed_name_continued_by_a_systemd_escape_stays_literal() {
         let (r, t) = net(r"host=kubernetes.io\x2dfoo up");
@@ -1689,8 +1365,6 @@ mod e8v_2026_09_17 {
         assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
     }
 
-    /// ipv6_len glue (108:32, 109:13, 109:25): an IPv6-shaped run glued to
-    /// a letter on either side is not an address.
     #[test]
     fn an_ipv6_run_glued_to_letters_on_one_side_stays_literal() {
         for line in ["x2001:db8::1 up", "2001:db8::1x up"] {
@@ -1698,36 +1372,27 @@ mod e8v_2026_09_17 {
             assert_eq!(r, line);
             assert!(!has_ip(&t), "{line}: {t:?}");
         }
-        // and the same run standing alone is one
         let (r, t) = net("2001:db8::1 up");
-        assert_eq!(r, "<IP> up");
+        assert_eq!(r, "<IP> up", "the same run standing alone is one");
         assert!(has_ip(&t), "{t:?}");
     }
 
-    /// port_stands_alone (156:9, 158:23, 158:72, 158:87 ×2, 159:32, 160:16)
-    /// and the port-skip chains in detect_and_replace (298:21, 299:21,
-    /// 322:25, 323:25): each rejection alone must keep a `host:NN` shape
-    /// literal. Ports only, so FQDN folding cannot mask the assertion.
-    /// `xlocalhost:80` — glued by a letter (PORT_REGEX's `localhost`
-    /// alternative, so the letter is outside the match); `x_a.b:80` — glued
-    /// by `_`; `a.b:12:zz` — followed by `:` with no hex after it, so only
-    /// the line-ref guard fires; `ab:db.local:80` — a hex pair and colon
-    /// before the host, so only the colon-chain guard fires;
-    /// `main.go:12` — only the source-file guard fires.
     #[test]
     fn a_port_shape_is_kept_literal_by_each_rejection_alone() {
-        for line in [
-            "xlocalhost:80 ok",
-            "x_a.b:80 ok",
-            "a.b:12:zz ok",
-            "ab:db.local:80 ok",
-            "main.go:12 ok",
+        for (line, rejection) in [
+            ("xlocalhost:80 ok", "glued to a letter before the match"),
+            ("x_a.b:80 ok", "glued to an underscore"),
+            (
+                "a.b:12:zz ok",
+                "a trailing colon makes a source line reference",
+            ),
+            ("ab:db.local:80 ok", "a hex pair before it is a colon chain"),
+            ("main.go:12 ok", "a source file"),
         ] {
             let (r, t) = NetworkDetector::detect_and_replace(line, false, true, false);
-            assert_eq!(r, line);
+            assert_eq!(r, line, "{rejection}");
             assert!(!has_port(&t), "{line}: {t:?}");
         }
-        // and the plain shapes are ports
         for (line, want) in [
             ("foo.bar:80 ok", "foo.bar:<PORT> ok"),
             ("localhost:80 ok", "localhost:<PORT> ok"),
@@ -1738,14 +1403,14 @@ mod e8v_2026_09_17 {
         }
     }
 
-    /// detect_and_replace 189:26: with addresses disabled, a MAC stays
-    /// literal even though it has the shape.
     #[test]
     fn a_mac_stays_literal_when_addresses_are_disabled() {
-        // Dotted text passes the FQDN prefilter even with address detection disabled.
         let line = "link aa:bb:cc:dd:ee:ff example.com";
         let (r, t) = NetworkDetector::detect_and_replace(line, false, false, true);
-        assert_eq!(r, line);
+        assert_eq!(
+            r, line,
+            "dotted text passes the name prefilter with addresses off"
+        );
         assert!(!t.iter().any(|t| matches!(t, Token::Mac(_))), "{t:?}");
     }
 
@@ -1767,9 +1432,6 @@ mod e8v_2026_09_17 {
         }
     }
 
-    /// fqdn_has_endpoint_evidence bounds (563:24, 563:20): a name followed
-    /// by a lone `:` at the end of the input must not read past the buffer
-    /// and is not a host.
     #[test]
     fn a_name_before_a_lone_colon_at_end_of_input_does_not_panic() {
         let (r, t) =
@@ -1778,8 +1440,6 @@ mod e8v_2026_09_17 {
         assert!(!t.iter().any(|t| matches!(t, Token::Fqdn(_))), "{t:?}");
     }
 
-    /// fqdn_has_endpoint_evidence key walk-back (592:21): a name at column
-    /// 0 has nothing before it, and must not underflow looking for a key.
     #[test]
     fn a_name_with_no_preceding_key_stays_literal() {
         for line in ["example.com up", "=example.com up"] {

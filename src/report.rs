@@ -1,45 +1,16 @@
-//! The saved report: where a default run puts the complete folded JSON of
-//! the run, and how that file is brought to a durable, named state.
-//!
-//! The default text run streams the same schema-1 JSON records `--format
-//! json` emits into `report.jsonl.partial` inside a fresh run directory,
-//! writes the summary record at input EOF, then flushes, fsyncs, closes,
-//! renames to `report.jsonl` and fsyncs the directory. Only the renamed
-//! file is complete: a `.partial` left behind by SIGKILL or power loss is
-//! incomplete by definition and recognizable by its name. Nothing beyond
-//! that is promised.
-//!
-//! Filesystem policy: for automatic placement (no `--report-dir`) the
-//! directory must sit on a filesystem whose statfs magic is in the
-//! documented list below. tmpfs and ramfs are rejected; anything unknown
-//! (fuse, a magic we do not know) is rejected as unknown backing,
-//! never described as tmpfs. The classification is conservative — it is
-//! never proof of physical storage. An explicit `--report-dir` together
-//! with an explicit positive `--report-max-bytes` is the bounded,
-//! acknowledged exception and accepts any filesystem.
-
 use anyhow::{Context, Result, anyhow, bail};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-/// Per-run quota when `--report-max-bytes` is not given. Nothing bounds
-/// accumulated disk use across runs; the directory grows until deleted.
-pub const DEFAULT_MAX_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_PER_RUN_MAX_BYTES: u64 = 1024 * 1024 * 1024;
 
-/// statfs magics accepted for automatic placement. Local-backing types
-/// first, then remote-backing ones, which are accepted as "remote backing"
-/// and not as proven disk.
 const LOCAL_BACKING: &[(u64, &str)] = &[
     (0xEF53, "ext2/3/4"),
     (0x5846_5342, "xfs"),
     (0x9123_683E, "btrfs"),
     (0xF2F5_2010, "f2fs"),
     (0x2FC1_2FC1, "zfs"),
-    // The root filesystem of every Docker and Podman container, where an
-    // agent's default run lands. Its writable layer lives on the host's
-    // disk (/var/lib/docker, /var/lib/containers); refusing it made every
-    // default run inside a container fail.
     (0x794C_7630, "overlayfs"),
 ];
 const REMOTE_BACKING: &[(u64, &str)] = &[
@@ -47,27 +18,37 @@ const REMOTE_BACKING: &[(u64, &str)] = &[
     (0xFF53_4D42, "cifs"),
     (0xFE53_4D42, "smb2"),
 ];
-/// Explicitly named so the rejection message can say "tmpfs", which is the
-/// one case where naming the filesystem helps the caller fix it.
-const MEMORY_BACKED: &[(u64, &str)] = &[(0x0102_1994, "tmpfs"), (0x8584_58F6, "ramfs")];
+const NAMED_MEMORY_BACKED_REJECTS: &[(u64, &str)] =
+    &[(0x0102_1994, "tmpfs"), (0x8584_58F6, "ramfs")];
 
-/// How the report directory was chosen, which decides whether the
-/// filesystem policy applies.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Placement {
-    /// `--report-dir` was given.
-    Explicit,
-    /// `$LESSENCE_REPORT_DIR` or the XDG state default.
-    Automatic,
+    FromFlag,
+    FromEnvOrXdg,
 }
 
-/// Where the report goes, before the run directory exists.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FilesystemPolicy {
+    Applies,
+    WaivedForExplicitDirAndPositiveQuota,
+}
+
+impl Placement {
+    pub fn policy(self, positive_quota_given: bool) -> FilesystemPolicy {
+        if self == Self::FromFlag && positive_quota_given {
+            FilesystemPolicy::WaivedForExplicitDirAndPositiveQuota
+        } else {
+            FilesystemPolicy::Applies
+        }
+    }
+}
+
 pub fn resolve_dir(explicit: Option<&Path>) -> Result<(PathBuf, Placement)> {
     if let Some(dir) = explicit {
-        return Ok((dir.to_path_buf(), Placement::Explicit));
+        return Ok((dir.to_path_buf(), Placement::FromFlag));
     }
     if let Some(dir) = std::env::var_os("LESSENCE_REPORT_DIR").filter(|d| !d.is_empty()) {
-        return Ok((PathBuf::from(dir), Placement::Automatic));
+        return Ok((PathBuf::from(dir), Placement::FromEnvOrXdg));
     }
     let state = if let Some(state) = std::env::var_os("XDG_STATE_HOME").filter(|d| !d.is_empty()) {
         PathBuf::from(state)
@@ -79,17 +60,11 @@ pub fn resolve_dir(explicit: Option<&Path>) -> Result<(PathBuf, Placement)> {
             })?;
         PathBuf::from(home).join(".local/state")
     };
-    Ok((state.join("lessence/reports"), Placement::Automatic))
+    Ok((state.join("lessence/reports"), Placement::FromEnvOrXdg))
 }
 
-/// Classify the backing filesystem of the nearest existing ancestor of
-/// `dir`. The ancestor rather than `dir` itself so a rejected filesystem is
-/// never written to, not even an empty directory.
-///
-/// Linux and Android only: `statfs` magic numbers are a Linux interface, and
-/// every constant above is one. Elsewhere the policy does not apply.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn classify(dir: &Path) -> Result<(u64, &'static str)> {
+fn classify_nearest_existing_ancestor(dir: &Path) -> Result<(u64, &'static str)> {
     let mut probe = dir;
     loop {
         if probe.exists() {
@@ -111,7 +86,7 @@ fn classify(dir: &Path) -> Result<(u64, &'static str)> {
             return Ok((magic, name));
         }
     }
-    for (m, name) in MEMORY_BACKED {
+    for (m, name) in NAMED_MEMORY_BACKED_REJECTS {
         if *m == magic {
             return Ok((magic, name));
         }
@@ -120,18 +95,12 @@ fn classify(dir: &Path) -> Result<(u64, &'static str)> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn classify(_dir: &Path) -> Result<(u64, &'static str)> {
+fn classify_nearest_existing_ancestor(_dir: &Path) -> Result<(u64, &'static str)> {
     Ok((0, "unchecked"))
 }
 
-/// Make a rename inside `dir` durable. POSIX only: Windows cannot open a
-/// directory as a file, so this failed on every Windows run and turned
-/// every default run into exit 1 ("durability unconfirmed").
-// ponytail: on Windows the rename is std::fs::rename (MoveFileExW without
-// MOVEFILE_WRITE_THROUGH), durable as far as NTFS journals it. Call
-// MoveFileExW with write-through, as the atomicwrites crate does, if a
-// Windows report ever needs the same guarantee as a Unix one.
-fn sync_dir(dir: &Path) -> std::io::Result<()> {
+/// POSIX only: Windows cannot open a directory as a file.
+fn make_rename_durable(dir: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     return File::open(dir).and_then(|d| d.sync_all());
     #[cfg(not(unix))]
@@ -141,16 +110,18 @@ fn sync_dir(dir: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Apply the filesystem policy. `bounded_exception` is true only when both
-/// `--report-dir` and a positive `--report-max-bytes` were given.
-pub fn check_filesystem(dir: &Path, placement: Placement, bounded_exception: bool) -> Result<()> {
-    if placement == Placement::Explicit && bounded_exception {
+pub fn check_filesystem(dir: &Path, policy: FilesystemPolicy) -> Result<()> {
+    if policy == FilesystemPolicy::WaivedForExplicitDirAndPositiveQuota {
         return Ok(());
     }
     if cfg!(not(any(target_os = "linux", target_os = "android"))) {
         return Ok(());
     }
-    let (magic, name) = classify(dir)?;
+    let (magic, name) = classify_nearest_existing_ancestor(dir)?;
+    accept_backing(dir, magic, name)
+}
+
+fn accept_backing(dir: &Path, magic: u64, name: &str) -> Result<()> {
     if LOCAL_BACKING
         .iter()
         .chain(REMOTE_BACKING)
@@ -158,7 +129,7 @@ pub fn check_filesystem(dir: &Path, placement: Placement, bounded_exception: boo
     {
         return Ok(());
     }
-    if MEMORY_BACKED.iter().any(|(m, _)| *m == magic) {
+    if NAMED_MEMORY_BACKED_REJECTS.iter().any(|(m, _)| *m == magic) {
         bail!(
             "{} is on {name}, which is memory, not storage; pass --report-dir DIR on a disk-backed \
              filesystem, or --report-dir DIR --report-max-bytes N to accept it, or --no-report",
@@ -173,8 +144,6 @@ pub fn check_filesystem(dir: &Path, placement: Placement, bounded_exception: boo
     );
 }
 
-/// The open spool for one run: `report.jsonl.partial` in a freshly created
-/// run directory, with the per-run quota applied to every write.
 pub struct Spool {
     dir: PathBuf,
     partial: PathBuf,
@@ -183,20 +152,59 @@ pub struct Spool {
     writer: Option<BufWriter<File>>,
     written: u64,
     max_bytes: u64,
-    /// The overview's pass 1, filled as records are written. Dropped if a
-    /// record cannot be indexed; the overview then reads the file instead.
-    index: Option<crate::overview::Index>,
-    /// Failure-injection seam, compiled in only under the `test-hooks`
-    /// feature (see Cargo.toml): `LESSENCE_TEST_FAIL_WRITE=n` makes the
-    /// n-th record write fail and `LESSENCE_TEST_FAIL_DIR_FSYNC` fails the
-    /// directory fsync, so the contract's failure paths can be exercised
-    /// with a controlled fixture instead of `/dev/full`. A distributed
-    /// build has neither the fields nor the environment reads.
-    #[cfg(feature = "test-hooks")]
-    fail_at_write: Option<u64>,
+    index: OverviewIndex,
     writes: u64,
     #[cfg(feature = "test-hooks")]
+    faults: FaultInjection,
+}
+
+enum OverviewIndex {
+    NotRequested,
+    Indexing(crate::overview::Index),
+    AbandonedOverviewRereadsTheFile,
+}
+
+#[cfg(feature = "test-hooks")]
+struct FaultInjection {
+    fail_at_write: Option<u64>,
     fail_dir_fsync: bool,
+}
+
+#[cfg(feature = "test-hooks")]
+impl FaultInjection {
+    fn from_env() -> Self {
+        Self {
+            fail_at_write: std::env::var("LESSENCE_TEST_FAIL_WRITE")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            fail_dir_fsync: std::env::var_os("LESSENCE_TEST_FAIL_DIR_FSYNC").is_some(),
+        }
+    }
+}
+
+const PARTIAL_NAME: &str = "report.jsonl.partial";
+const COMPLETE_NAME: &str = "report.jsonl";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+pub enum Finished {
+    Durable,
+    DurabilityUnconfirmed(String),
+}
+
+impl Finished {
+    pub fn is_durability_unconfirmed(&self) -> bool {
+        matches!(self, Self::DurabilityUnconfirmed(_))
+    }
+}
+
+impl std::fmt::Display for Finished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Durable => f.write_str("complete"),
+            Self::DurabilityUnconfirmed(e) => write!(f, "complete, durability unconfirmed ({e})"),
+        }
+    }
 }
 
 fn random_suffix() -> Result<String> {
@@ -211,28 +219,26 @@ fn random_suffix() -> Result<String> {
 }
 
 #[cfg(unix)]
-fn create_dir_0700(path: &Path) -> std::io::Result<()> {
+fn create_exclusive_dir_0700(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::DirBuilderExt;
     fs::DirBuilder::new().mode(0o700).create(path)
 }
 
 #[cfg(not(unix))]
-fn create_dir_0700(path: &Path) -> std::io::Result<()> {
+fn create_exclusive_dir_0700(path: &Path) -> std::io::Result<()> {
     fs::DirBuilder::new().create(path)
 }
 
-/// Create missing parents 0700. Existing directories keep their
-/// permissions: an already-present parent is never chmod'ed.
-fn create_parents(dir: &Path) -> Result<()> {
+fn create_missing_parents_0700(dir: &Path) -> Result<()> {
     if dir.is_dir() {
         return Ok(());
     }
     if let Some(parent) = dir.parent()
         && !parent.as_os_str().is_empty()
     {
-        create_parents(parent)?;
+        create_missing_parents_0700(parent)?;
     }
-    match create_dir_0700(dir) {
+    match create_exclusive_dir_0700(dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(anyhow!("cannot create {}: {e}", dir.display())),
@@ -258,39 +264,32 @@ fn open_0600(path: &Path) -> std::io::Result<File> {
 }
 
 impl Spool {
-    /// Create the run directory exclusively and open the partial file.
-    /// Any failure here happens before a single input line is read.
     pub fn create(base: &Path, max_bytes: u64) -> Result<Self> {
-        create_parents(base)?;
+        create_missing_parents_0700(base)?;
         let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
         let mut last_err = None;
         for _ in 0..8 {
             let run_id = format!("run-{stamp}-{}", random_suffix()?);
             let dir = base.join(&run_id);
-            // create_dir, not create_dir_all: the leaf must be ours alone.
-            match create_dir_0700(&dir) {
+            match create_exclusive_dir_0700(&dir) {
                 Ok(()) => {
-                    let partial = dir.join("report.jsonl.partial");
+                    let partial = dir.join(PARTIAL_NAME);
                     let file = open_0600(&partial).map_err(|e| {
                         let _ = fs::remove_dir(&dir);
                         anyhow!("cannot create {}: {e}", partial.display())
                     })?;
                     return Ok(Self {
-                        final_path: dir.join("report.jsonl"),
+                        final_path: dir.join(COMPLETE_NAME),
                         dir,
                         partial,
                         run_id,
                         writer: Some(BufWriter::new(file)),
                         written: 0,
-                        index: None,
+                        index: OverviewIndex::NotRequested,
                         max_bytes,
-                        #[cfg(feature = "test-hooks")]
-                        fail_at_write: std::env::var("LESSENCE_TEST_FAIL_WRITE")
-                            .ok()
-                            .and_then(|v| v.parse().ok()),
                         writes: 0,
                         #[cfg(feature = "test-hooks")]
-                        fail_dir_fsync: std::env::var_os("LESSENCE_TEST_FAIL_DIR_FSYNC").is_some(),
+                        faults: FaultInjection::from_env(),
                     });
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => last_err = Some(e),
@@ -316,22 +315,21 @@ impl Spool {
         self.written
     }
 
-    /// Index every record written from here on for an overview of `want`
-    /// entries.
     pub fn index_for_overview(&mut self, want: usize) {
-        self.index = Some(crate::overview::Index::new(want));
+        self.index = OverviewIndex::Indexing(crate::overview::Index::new(want));
     }
 
     pub fn take_index(&mut self) -> Option<crate::overview::Index> {
-        self.index.take()
+        match std::mem::replace(&mut self.index, OverviewIndex::NotRequested) {
+            OverviewIndex::Indexing(index) => Some(index),
+            OverviewIndex::NotRequested | OverviewIndex::AbandonedOverviewRereadsTheFile => None,
+        }
     }
 
-    /// Append one JSON record and its newline. Returns an error on quota
-    /// exhaustion or any write failure; the caller then removes the partial.
     pub fn write_record(&mut self, record: &str) -> Result<()> {
         self.writes += 1;
         #[cfg(feature = "test-hooks")]
-        if self.fail_at_write == Some(self.writes) {
+        if self.faults.fail_at_write == Some(self.writes) {
             bail!(
                 "injected write failure at record {} (LESSENCE_TEST_FAIL_WRITE)",
                 self.writes
@@ -354,23 +352,29 @@ impl Spool {
             .write_all(record.as_bytes())
             .and_then(|()| writer.write_all(b"\n"))
             .with_context(|| format!("writing {}", self.partial.display()))?;
-        if let Some(index) = self.index.as_mut()
+        if let OverviewIndex::Indexing(index) = &mut self.index
             && index.record(record, self.written).is_err()
         {
-            self.index = None;
+            self.index = OverviewIndex::AbandonedOverviewRereadsTheFile;
         }
         self.written += len;
         Ok(())
     }
 
-    /// Flush, fsync, close, rename, fsync the directory. On success the
-    /// report is complete; `Ok(Some(error))` means the content is complete
-    /// and renamed but its durability could not be confirmed.
-    pub fn finish(&mut self) -> Result<Option<String>> {
-        let mut writer = self
+    pub fn finish(&mut self) -> Result<Finished> {
+        let writer = self
             .writer
             .take()
             .ok_or_else(|| anyhow!("report spool already closed"))?;
+        self.flush_fsync_and_close(writer)?;
+        self.rename_partial_to_complete()?;
+        Ok(match self.fsync_dir_to_make_rename_durable() {
+            Ok(()) => Finished::Durable,
+            Err(e) => Finished::DurabilityUnconfirmed(e.to_string()),
+        })
+    }
+
+    fn flush_fsync_and_close(&self, mut writer: BufWriter<File>) -> Result<()> {
         writer
             .flush()
             .with_context(|| format!("flushing {}", self.partial.display()))?;
@@ -380,31 +384,36 @@ impl Spool {
         file.sync_all()
             .with_context(|| format!("fsync {}", self.partial.display()))?;
         drop(file);
+        Ok(())
+    }
+
+    fn rename_partial_to_complete(&self) -> Result<()> {
         fs::rename(&self.partial, &self.final_path).with_context(|| {
             format!(
                 "renaming {} to {}",
                 self.partial.display(),
                 self.final_path.display()
             )
-        })?;
-        // Directory fsync: the rename is what makes the report complete,
-        // and only this makes the rename itself durable.
-        #[cfg(not(feature = "test-hooks"))]
-        let dir_fsync = sync_dir(&self.dir);
-        #[cfg(feature = "test-hooks")]
-        let dir_fsync = if self.fail_dir_fsync {
+        })
+    }
+
+    #[cfg(not(feature = "test-hooks"))]
+    fn fsync_dir_to_make_rename_durable(&self) -> std::io::Result<()> {
+        make_rename_durable(&self.dir)
+    }
+
+    #[cfg(feature = "test-hooks")]
+    fn fsync_dir_to_make_rename_durable(&self) -> std::io::Result<()> {
+        if self.faults.fail_dir_fsync {
             Err(std::io::Error::other(
                 "injected directory fsync failure (LESSENCE_TEST_FAIL_DIR_FSYNC)",
             ))
         } else {
-            sync_dir(&self.dir)
-        };
-        Ok(dir_fsync.err().map(|e| e.to_string()))
+            make_rename_durable(&self.dir)
+        }
     }
 
-    /// Remove the partial and the run directory, best effort. Called on
-    /// every handled failure; never touches a renamed `report.jsonl`.
-    pub fn discard(&mut self) {
+    pub fn discard_partial(&mut self) {
         self.writer.take();
         let _ = fs::remove_file(&self.partial);
         let _ = fs::remove_dir(&self.dir);
@@ -419,7 +428,7 @@ mod tests {
     fn explicit_dir_wins_over_environment_and_default() {
         let (dir, placement) = resolve_dir(Some(Path::new("/tmp/x"))).unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/x"));
-        assert_eq!(placement, Placement::Explicit);
+        assert_eq!(placement, Placement::FromFlag);
     }
 
     #[test]
@@ -440,7 +449,7 @@ mod tests {
         let base = tmp.path().join("locked");
         fs::create_dir(&base).unwrap();
         fs::set_permissions(&base, fs::Permissions::from_mode(0o500)).unwrap();
-        let err = Spool::create(&base, DEFAULT_MAX_BYTES);
+        let err = Spool::create(&base, DEFAULT_PER_RUN_MAX_BYTES);
         fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
         let Err(err) = err else {
             eprintln!("skipping: this user can write into a 0500 directory");
@@ -461,11 +470,11 @@ mod tests {
     #[test]
     fn an_unknown_backing_filesystem_is_not_described_as_memory() {
         let probe = Path::new("/proc");
-        let Ok((_magic, "unknown")) = classify(probe) else {
+        let Ok((_magic, "unknown")) = classify_nearest_existing_ancestor(probe) else {
             eprintln!("skipping: /proc is not an unknown-magic filesystem here");
             return;
         };
-        let err = check_filesystem(probe, Placement::Automatic, false)
+        let err = check_filesystem(probe, FilesystemPolicy::Applies)
             .expect_err("an unknown backing filesystem is rejected");
         assert!(
             err.to_string().contains("backing filesystem unknown"),
@@ -502,11 +511,11 @@ mod tests {
     #[test]
     fn finish_renames_the_partial_and_leaves_nothing_behind() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut spool = Spool::create(tmp.path(), DEFAULT_MAX_BYTES).unwrap();
+        let mut spool = Spool::create(tmp.path(), DEFAULT_PER_RUN_MAX_BYTES).unwrap();
         spool.write_record("{}").unwrap();
         let partial = spool.partial.clone();
         let final_path = spool.final_path().to_path_buf();
-        assert_eq!(spool.finish().unwrap(), None);
+        assert_eq!(spool.finish().unwrap(), Finished::Durable);
         assert!(!partial.exists(), "the partial must be gone");
         assert_eq!(fs::read_to_string(&final_path).unwrap(), "{}\n");
     }
@@ -514,10 +523,10 @@ mod tests {
     #[test]
     fn discard_removes_the_partial_and_the_run_directory() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut spool = Spool::create(tmp.path(), DEFAULT_MAX_BYTES).unwrap();
+        let mut spool = Spool::create(tmp.path(), DEFAULT_PER_RUN_MAX_BYTES).unwrap();
         spool.write_record("{}").unwrap();
         let dir = spool.dir.clone();
-        spool.discard();
+        spool.discard_partial();
         assert!(!dir.exists(), "{} must be gone", dir.display());
     }
 
@@ -526,7 +535,7 @@ mod tests {
     fn the_run_directory_is_0700_and_the_file_0600() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
-        let mut spool = Spool::create(tmp.path(), DEFAULT_MAX_BYTES).unwrap();
+        let mut spool = Spool::create(tmp.path(), DEFAULT_PER_RUN_MAX_BYTES).unwrap();
         spool.write_record("{}").unwrap();
         assert_eq!(
             fs::metadata(&spool.dir).unwrap().permissions().mode() & 0o777,
@@ -546,26 +555,37 @@ mod tests {
             eprintln!("skipping: no /dev/shm on this machine");
             return;
         }
-        let err = check_filesystem(shm, Placement::Automatic, false)
+        let err = check_filesystem(shm, Placement::FromEnvOrXdg.policy(false))
             .expect_err("tmpfs must be rejected for automatic placement");
         assert!(err.to_string().contains("tmpfs"), "{err}");
-        check_filesystem(shm, Placement::Explicit, true)
+        check_filesystem(shm, Placement::FromFlag.policy(true))
             .expect("the explicit dir + explicit quota pair accepts any filesystem");
         assert!(
-            check_filesystem(shm, Placement::Explicit, false).is_err(),
+            check_filesystem(shm, Placement::FromFlag.policy(false)).is_err(),
             "an explicit dir alone is not the exception"
         );
+    }
+
+    #[test]
+    fn overlayfs_is_accepted_because_it_is_the_root_of_every_container() {
+        let (magic, name) = LOCAL_BACKING
+            .iter()
+            .copied()
+            .find(|&(_, name)| name == "overlayfs")
+            .expect("overlayfs is a local backing");
+        accept_backing(Path::new("/"), magic, name)
+            .expect("rejecting overlayfs fails every default run inside Docker or Podman");
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn a_known_disk_backed_directory_passes_the_policy() {
         let tmp = tempfile::tempdir().unwrap();
-        let (_magic, name) = classify(tmp.path()).unwrap();
+        let (_magic, name) = classify_nearest_existing_ancestor(tmp.path()).unwrap();
         if name == "tmpfs" || name == "unknown" {
             eprintln!("skipping: TMPDIR is on {name}, not a disk-backed filesystem");
             return;
         }
-        check_filesystem(tmp.path(), Placement::Automatic, false).expect("{name} must be accepted");
+        check_filesystem(tmp.path(), FilesystemPolicy::Applies).expect("{name} must be accepted");
     }
 }

@@ -1,34 +1,13 @@
-//! The orientation briefing: what replaces the old "Compression Report".
-//!
-//! `lessence app.log` used to print a per-token occurrence table plus five
-//! lines of fixed prose to stderr. Neither told an agent what it actually
-//! needed before reading the fold: how big the input is, what time span it
-//! covers, what shape the lines are in, how bad things got, and which
-//! templates dominate. [`Briefing`] is that fact set, rendered three ways —
-//! the text footer (`render_text`), `--preflight` JSON, and the `briefing`
-//! field of `--explain`'s summary record — from one struct so the three
-//! views can never drift apart.
-
 use ahash::{AHashMap, AHashSet};
 use serde::Serialize;
 
 use crate::patterns::Token;
 
-/// Cap on distinct templates tracked for the top-templates report. Once
-/// full, existing templates keep accumulating counts but a new template is
-/// dropped and [`TopTemplates::truncated`] is set. Bounds the memory cost
-/// of a corpus with unbounded template diversity.
-const TEMPLATE_CAP: usize = 8192;
+const TOP_TEMPLATES_TRACKED_CAP: usize = 8192;
 
-/// How many bytes of a line are examined by the `scan_level` byte-scan
-/// fallback. Format is no longer scanned at all — it is read off the
-/// tokens the pipeline already produced (`format_from_line`). Level is
-/// mostly free too (`level_from_tokens` reads it off a token when one is
-/// present); this window only bounds the cost of the minority of lines
-/// that carry a level in none of the free shapes. 64, not 200: a level
-/// that appears past byte 64 is vanishingly rare in practice, and every
-/// byte of window is cost paid on every line that reaches the fallback.
-const LEVEL_SCAN_WINDOW: usize = 64;
+const LEVEL_FALLBACK_SCAN_BYTES: usize = 64;
+
+const TOP_TEMPLATES_SHOWN: usize = 10;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Briefing {
@@ -39,8 +18,6 @@ pub struct Briefing {
     pub levels: Levels,
     pub templates: TopTemplates,
     pub tokens: Vec<TokenClass>,
-    /// Absent when `span.duration_seconds` is `None` — a histogram needs a
-    /// clock to place buckets on.
     pub histogram: Option<Histogram>,
 }
 
@@ -49,18 +26,11 @@ pub struct Span {
     pub first: Option<String>,
     pub last: Option<String>,
     pub duration_seconds: Option<u64>,
-    /// `lines / duration_seconds`. `None` when the duration is `None` or 0.
     pub lines_per_second: Option<f64>,
-    /// `true` when the span's timestamps carry no year of their own (klog,
-    /// BSD syslog) and the epochs were placed on the current UTC year.
-    /// Absent when the span has no timestamps at all.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub year_inferred: Option<bool>,
 }
 
-/// A run-length time histogram, bucketed adaptively so its footprint stays
-/// bounded regardless of how many distinct instants a corpus spans — see
-/// `HistogramBuilder`. `buckets` runs oldest-first across `first..=last`.
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct Histogram {
     pub bucket_seconds: u64,
@@ -70,13 +40,6 @@ pub struct Histogram {
     pub busiest_pct: f64,
 }
 
-/// Bounded-memory collector of one epoch second per timestamped input line.
-/// Starts at 1-second resolution; once the number of distinct buckets
-/// exceeds 4096 it doubles the bucket width and merges the map into itself
-/// (`key -> key / 2`) so the footprint never grows past that regardless of
-/// how long a run's span is. Stdin can't be re-read, so this has to get the
-/// resolution right in one forward pass rather than picking a bucket width
-/// up front from a span it doesn't know yet.
 #[derive(Debug, Default)]
 pub struct HistogramBuilder {
     bucket_seconds: u64,
@@ -86,7 +49,6 @@ pub struct HistogramBuilder {
 pub(crate) const HISTOGRAM_BUCKET_CAP: usize = 4096;
 
 impl HistogramBuilder {
-    /// Record one line's epoch second.
     pub fn record(&mut self, epoch: i64) {
         if self.bucket_seconds == 0 {
             self.bucket_seconds = 1;
@@ -102,11 +64,6 @@ impl HistogramBuilder {
         }
     }
 
-    /// The display grid `build` places buckets on, for the span
-    /// `first_epoch..=last_epoch`. `None` when nothing was ever recorded.
-    /// Per-group timelines (`folder::timeline`) are re-binned onto this same
-    /// grid, so a group's buckets and the log-wide ones compare index by
-    /// index.
     pub(crate) fn grid(&self, first_epoch: i64, last_epoch: i64) -> Option<Grid> {
         if self.buckets.is_empty() {
             return None;
@@ -123,9 +80,6 @@ impl HistogramBuilder {
         })
     }
 
-    /// Aggregate the collected buckets into at most 24 display buckets
-    /// spanning `first_epoch..=last_epoch`. `None` when nothing was ever
-    /// recorded.
     pub fn build(&self, first_epoch: i64, last_epoch: i64) -> Option<Histogram> {
         let grid = self.grid(first_epoch, last_epoch)?;
         let display_bucket_seconds = grid.bucket_seconds;
@@ -151,11 +105,6 @@ impl HistogramBuilder {
     }
 }
 
-/// The log-wide histogram's display grid: `len` buckets of
-/// `bucket_seconds` from `origin`, filled from collected buckets of
-/// `collected_seconds` (the builder's final width). A collected bucket is
-/// placed by its start, and anything outside the grid is clamped to its
-/// first or last bucket, exactly as `HistogramBuilder::build` does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Grid {
     pub origin: i64,
@@ -165,21 +114,16 @@ pub(crate) struct Grid {
 }
 
 impl Grid {
-    /// The display index of a collected bucket key (at `collected_seconds`).
     pub(crate) fn index(&self, key: i64) -> usize {
         self.index_at(key * self.collected_seconds as i64)
     }
 
-    /// The display index of a bucket starting at epoch second `start`.
     pub(crate) fn index_at(&self, start: i64) -> usize {
         let offset = (start - self.origin).max(0);
         ((offset / self.bucket_seconds) as usize).min(self.len - 1)
     }
 }
 
-/// The text clause a bunched group carries between its time range and its
-/// rollup, in both the folded text marker and the overview: `98% in
-/// 16:55–16:58`. One function, so the two renderings cannot drift.
 pub(crate) fn bunched_clause(pct: u64, from: &str, to: &str) -> String {
     format!("{pct}% in {from}\u{2013}{to}")
 }
@@ -210,9 +154,6 @@ pub struct TopTemplates {
     pub shown: Vec<TemplateEntry>,
     pub shown_share_pct: f64,
     pub truncated: bool,
-    /// Templates whose count is exactly 1 — principle 4 in
-    /// CLAUDE.local.md, "rare is signal": the top-N table alone points at
-    /// the noise floor, not the tail.
     pub singletons: usize,
     pub singleton_pct: f64,
 }
@@ -224,29 +165,57 @@ pub struct TemplateEntry {
     pub template: String,
     pub first_epoch: Option<i64>,
     pub last_epoch: Option<i64>,
-    /// `last_epoch - first_epoch`. `None` when no member carried a
-    /// parseable timestamp.
     pub span_seconds: Option<u64>,
 }
 
-#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TokenClass {
     pub class: &'static str,
     pub occurrences: usize,
-    /// Distinct values observed for this class — exact below
-    /// `CARDINALITY_EXACT_CAP`, HLL-estimated above it (see
-    /// `distinct_exact`). Distinguishes a small facet (a worker set worth
-    /// filtering on) from a per-request correlation key (grep one value
-    /// and the investigation is over) — `occurrences` alone cannot.
-    pub distinct: u64,
-    /// `true` while `distinct` is the exact count; `false` once the class
-    /// crossed `CARDINALITY_EXACT_CAP` and `distinct` is an HLL estimate.
-    pub distinct_exact: bool,
+    pub distinct: Distinct,
 }
 
-// -------------------------------------------------------------------------
-// Format classification — per-line, no allocation, no regex.
-// -------------------------------------------------------------------------
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Distinct {
+    Exact(u64),
+    Estimated(u64),
+}
+
+impl Distinct {
+    pub fn value(self) -> u64 {
+        match self {
+            Self::Exact(n) | Self::Estimated(n) => n,
+        }
+    }
+
+    pub fn is_exact(self) -> bool {
+        matches!(self, Self::Exact(_))
+    }
+}
+
+impl Serialize for TokenClass {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut record = serializer.serialize_struct("TokenClass", 4)?;
+        record.serialize_field("class", self.class)?;
+        record.serialize_field("occurrences", &self.occurrences)?;
+        record.serialize_field("distinct", &self.distinct.value())?;
+        record.serialize_field("distinct_exact", &self.distinct.is_exact())?;
+        record.end()
+    }
+}
+
+pub(crate) fn token_classes_by_occurrence(
+    classes: impl IntoIterator<Item = TokenClass>,
+) -> Vec<TokenClass> {
+    let mut tokens: Vec<TokenClass> = classes.into_iter().filter(|t| t.occurrences > 0).collect();
+    tokens.sort_by(|a, b| {
+        b.occurrences
+            .cmp(&a.occurrences)
+            .then_with(|| a.class.cmp(b.class))
+    });
+    tokens
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatClass {
@@ -255,19 +224,6 @@ pub enum FormatClass {
     Plain,
 }
 
-/// True when the line is one top-level JSON value: first non-space byte is
-/// `{` or `[` and last non-space byte is the matching close. Two byte
-/// lookups after trimming, no scan — the cost of the old 200-byte walk is
-/// what the token-derived classifier exists to avoid, and this does not
-/// reintroduce it.
-///
-/// This test is needed because `Token::Json` does NOT mean "this line is
-/// JSON": the detector recognises *embedded* JSON blobs (`&Event{...}`, a
-/// quoted `\"{...}\"` payload), and a well-formed top-level record like
-/// `{"level":"info","msg":"..."}` tokenises as its fields and never
-/// produces one. Without this, a 27,760-line all-JSON argocd log reported
-/// `plain 100%`, which is the opposite of the one thing the sniff is for:
-/// deciding whether the next command is `jq` or `awk`.
 fn is_json_line(line: &str) -> bool {
     let t = line.trim();
     let b = t.as_bytes();
@@ -277,70 +233,54 @@ fn is_json_line(line: &str) -> bool {
     )
 }
 
-/// Classify one raw input line's surface format. `Json` when the line is one
-/// top-level JSON value or carries an embedded `Token::Json`; `Logfmt` when
-/// at least two `Token::KeyValuePair`s are present (kept as tokens, not a raw
-/// `=` count: a `key="a=b"` value is a `QuotedString`, not a pair, so this
-/// agrees with what the fold actually recognises); otherwise `Plain`.
 pub(crate) fn format_from_line(tokens: &[Token], line: &str) -> FormatClass {
-    if is_json_line(line) || tokens.iter().any(|t| matches!(t, Token::Json(_))) {
+    if is_json_line(line) || tokens.iter().any(|t| matches!(t, Token::EmbeddedJson(_))) {
         return FormatClass::Json;
     }
+    const LOGFMT_MIN_KEY_VALUE_TOKENS: usize = 2;
     let kv_pairs = tokens
         .iter()
         .filter(|t| matches!(t, Token::KeyValuePair { .. }))
         .count();
-    if kv_pairs >= 2 {
+    if kv_pairs >= LOGFMT_MIN_KEY_VALUE_TOKENS {
         FormatClass::Logfmt
     } else {
         FormatClass::Plain
     }
 }
 
-/// Classify one raw input line's severity, preferring the free cases the
-/// token pipeline already paid for over a raw byte scan:
-///
-/// 1. a `Token::Timestamp` starting with a klog/glog level letter
-///    (`E0909`, ...) — the letter is already inside the token.
-/// 2. a `Token::LogWithModule` or `Token::StructuredMessage`, which carry
-///    their own `level` field.
-/// 3. a `Token::BracketContext` containing a level word.
-/// 4. only then, `classify_level`'s bounded byte scan of the raw line.
 pub(crate) fn level_from_tokens(tokens: &[Token], line: &str) -> Option<Level> {
-    for token in tokens {
-        if let Token::Timestamp(s) = token
-            && let Some(level) = klog_header_level(s.as_bytes())
-        {
-            return Some(level);
-        }
-    }
-    for token in tokens {
-        match token {
-            Token::LogWithModule { level, .. } | Token::StructuredMessage { level, .. } => {
-                if let Some(level) = word_to_level(level.as_bytes()) {
-                    return Some(level);
-                }
-            }
-            _ => {}
-        }
-    }
-    for token in tokens {
-        if let Token::BracketContext(parts) = token {
-            for part in parts {
-                if let Some(level) = word_to_level(part.as_bytes()) {
-                    return Some(level);
-                }
-            }
-        }
-    }
-    classify_level(line)
+    klog_letter_in_a_timestamp_token(tokens)
+        .or_else(|| level_field_of_a_module_or_structured_token(tokens))
+        .or_else(|| level_word_in_a_bracket_context(tokens))
+        .or_else(|| classify_level(line))
 }
 
-/// The four level candidates a window walk can find, each the *first*
-/// match for its own shape — exactly what the shape's original standalone
-/// scan would have found. Priority order (`level()`) matches the old
-/// sequential checks: bracket, then `level=`, then `severity=`, then
-/// `"level":`, then a standalone caps word.
+fn klog_letter_in_a_timestamp_token(tokens: &[Token]) -> Option<Level> {
+    tokens.iter().find_map(|token| match token {
+        Token::Timestamp(s) => klog_header_level(s.as_bytes()),
+        _ => None,
+    })
+}
+
+fn level_field_of_a_module_or_structured_token(tokens: &[Token]) -> Option<Level> {
+    tokens.iter().find_map(|token| match token {
+        Token::LogWithModule { level, .. } | Token::StructuredMessage { level, .. } => {
+            word_to_level(level.as_bytes())
+        }
+        _ => None,
+    })
+}
+
+fn level_word_in_a_bracket_context(tokens: &[Token]) -> Option<Level> {
+    tokens.iter().find_map(|token| match token {
+        Token::BracketContext(parts) => {
+            parts.iter().find_map(|part| word_to_level(part.as_bytes()))
+        }
+        _ => None,
+    })
+}
+
 #[derive(Default)]
 struct LevelScan {
     bracket_level: Option<Level>,
@@ -351,27 +291,26 @@ struct LevelScan {
 }
 
 impl LevelScan {
+    fn in_priority_order(&self) -> [Option<Level>; 5] {
+        [
+            self.bracket_level,
+            self.level_eq,
+            self.severity_eq,
+            self.level_key,
+            self.caps_level,
+        ]
+    }
+
     fn found(&self) -> bool {
-        self.bracket_level.is_some()
-            || self.level_eq.is_some()
-            || self.severity_eq.is_some()
-            || self.level_key.is_some()
-            || self.caps_level.is_some()
+        self.in_priority_order().iter().any(Option::is_some)
     }
 
     fn level(&self) -> Option<Level> {
-        self.bracket_level
-            .or(self.level_eq)
-            .or(self.severity_eq)
-            .or(self.level_key)
-            .or(self.caps_level)
+        self.in_priority_order().into_iter().flatten().next()
     }
 }
 
-/// One byte position's worth of the four level-shape checks, folded into
-/// `scan`. Called by `scan_level`, which owns the loop over the line.
 fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
-    // -- bracketed level: `[LEVEL]` --
     if scan.bracket_level.is_none()
         && b == b'['
         && let Some(close) = window[i + 1..].iter().position(|&c| c == b']')
@@ -380,7 +319,6 @@ fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
         scan.bracket_level = word_to_level(inner);
     }
 
-    // -- field level: level=, severity=, "level": --
     if scan.level_eq.is_none() {
         let key = b"level=";
         if i + key.len() <= window.len()
@@ -412,11 +350,6 @@ fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
         }
     }
 
-    // -- standalone ALL-CAPS level word --
-    // `start_ok` (the byte before this run is whitespace or the start of
-    // the window) is false for every position inside a run except its true
-    // first byte, so re-checking at each uppercase byte of a rejected run
-    // is redundant work, never a spurious match.
     if scan.caps_level.is_none() && b.is_ascii_uppercase() {
         let start = i;
         let mut j = i;
@@ -435,9 +368,6 @@ fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
     }
 }
 
-/// Level only: bracket + field + caps in one loop instead of the original
-/// three separate ones. Used for JSON lines, where format is already
-/// decided and only the level still needs finding.
 fn scan_level(window: &[u8]) -> Option<Level> {
     let mut scan = LevelScan::default();
     let mut i = 0usize;
@@ -447,10 +377,6 @@ fn scan_level(window: &[u8]) -> Option<Level> {
     }
     scan.level()
 }
-
-// -------------------------------------------------------------------------
-// Level classification — per-line, no allocation, no regex.
-// -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Level {
@@ -462,20 +388,12 @@ pub enum Level {
     Trace,
 }
 
-/// Byte-scan fallback for one raw input line's severity: klog header first
-/// (free, O(5)), else the bracket/field/caps scan bounded to
-/// `LEVEL_SCAN_WINDOW` bytes. This is the path `level_from_tokens` falls
-/// back to once none of the free token-shaped cases matched — kept as a
-/// standalone, string-only function because that is what every existing
-/// test here exercises directly.
 pub fn classify_level(line: &str) -> Option<Level> {
     let bytes = line.as_bytes();
-    let window = &bytes[..bytes.len().min(LEVEL_SCAN_WINDOW)];
+    let window = &bytes[..bytes.len().min(LEVEL_FALLBACK_SCAN_BYTES)];
     klog_header_level(window).or_else(|| scan_level(window))
 }
 
-/// klog/glog header: the line's first byte is one of E/W/I/F, immediately
-/// followed by 4 digits (`E0909`, `W0920`, ...).
 fn klog_header_level(window: &[u8]) -> Option<Level> {
     if window.len() < 5 {
         return None;
@@ -493,7 +411,6 @@ fn klog_header_level(window: &[u8]) -> Option<Level> {
     }
 }
 
-/// A level word starting at `rest`, tolerating one leading `"`.
 fn word_at(rest: &[u8]) -> Option<Level> {
     let rest = if rest.first() == Some(&b'"') {
         &rest[1..]
@@ -510,9 +427,6 @@ fn word_at(rest: &[u8]) -> Option<Level> {
     word_to_level(&rest[..end])
 }
 
-/// Exact, case-insensitive match of one level word against its bucket.
-/// The one level vocabulary: the bracket detector asks it too, so what
-/// the briefing counts as a level is what stays literal on the line.
 pub(crate) fn word_to_level(word: &[u8]) -> Option<Level> {
     const FATAL: &[&[u8]] = &[
         b"FATAL",
@@ -546,21 +460,8 @@ pub(crate) fn word_to_level(word: &[u8]) -> Option<Level> {
     }
 }
 
-// -------------------------------------------------------------------------
-// Distinct-value cardinality per token class (lessence-nn3).
-//
-// A HyperLogLog++ shape in its simplest correct form: exact below
-// `CARDINALITY_EXACT_CAP` (plain HLL is inaccurate at low cardinality,
-// which is exactly the facet case — reporting 12 distinct pods as 9 or 15
-// is worse than reporting nothing), a dense HLL estimator above it, where
-// a few percent of error changes no decision.
-// -------------------------------------------------------------------------
-
-/// Below this many distinct values, [`CardinalityEstimator`] keeps an
-/// exact set; at and above it, a dense HLL estimate.
 const CARDINALITY_EXACT_CAP: usize = 2048;
 
-/// `p` for the dense HLL: `2^10 = 1024` registers.
 const HLL_P: u32 = 10;
 const HLL_M: usize = 1 << HLL_P;
 
@@ -570,14 +471,12 @@ enum CardinalityState {
     Hll(Box<[u8; HLL_M]>),
 }
 
-/// Per-token-class distinct-value counter. Insert pre-hashed `u64`s (see
-/// `hash_token_value`); read back with `distinct()`/`is_exact()`.
 #[derive(Debug, Clone)]
-pub struct CardinalityEstimator {
+pub struct ExactThenHll {
     state: CardinalityState,
 }
 
-impl Default for CardinalityEstimator {
+impl Default for ExactThenHll {
     fn default() -> Self {
         Self {
             state: CardinalityState::Exact(AHashSet::new()),
@@ -585,8 +484,7 @@ impl Default for CardinalityEstimator {
     }
 }
 
-impl CardinalityEstimator {
-    /// Record one (already-hashed) value.
+impl ExactThenHll {
     pub fn insert(&mut self, hash: u64) {
         match &mut self.state {
             CardinalityState::Exact(set) => {
@@ -596,8 +494,6 @@ impl CardinalityEstimator {
                 if set.len() < CARDINALITY_EXACT_CAP {
                     set.insert(hash);
                 } else {
-                    // The insert that would exceed the cap: convert once,
-                    // replaying the retained exact hashes into a dense HLL.
                     let mut registers = Box::new([0u8; HLL_M]);
                     for &h in set.iter() {
                         hll_add(&mut registers, h);
@@ -610,22 +506,22 @@ impl CardinalityEstimator {
         }
     }
 
-    /// `true` while the exact set is still in use.
     pub fn is_exact(&self) -> bool {
         matches!(self.state, CardinalityState::Exact(_))
     }
 
-    /// The distinct count: exact below the cap, an HLL estimate above it.
     pub fn distinct(&self) -> u64 {
+        self.distinct_count().value()
+    }
+
+    pub fn distinct_count(&self) -> Distinct {
         match &self.state {
-            CardinalityState::Exact(set) => set.len() as u64,
-            CardinalityState::Hll(registers) => hll_estimate(registers),
+            CardinalityState::Exact(set) => Distinct::Exact(set.len() as u64),
+            CardinalityState::Hll(registers) => Distinct::Estimated(hll_estimate(registers)),
         }
     }
 }
 
-/// One HLL insert: `register[top 10 bits] = max(register, leading zeros of
-/// the remaining 54 bits + 1)`.
 fn hll_add(registers: &mut [u8; HLL_M], hash: u64) {
     let idx = (hash >> (64 - HLL_P)) as usize;
     let rest = hash << HLL_P;
@@ -635,13 +531,15 @@ fn hll_add(registers: &mut [u8; HLL_M], hash: u64) {
     }
 }
 
-/// Standard HLL estimator with the small-range linear-counting correction.
-/// Only ever read above `CARDINALITY_EXACT_CAP`, so the result is clamped
-/// to at least `CARDINALITY_EXACT_CAP + 1` — the conversion to HLL only
-/// ever happens once that many distinct values were already confirmed.
+const _: () = assert!(HLL_M >= 128, "hll_alpha's formula holds only for m >= 128");
+
+fn hll_alpha(m: f64) -> f64 {
+    0.7213 / (1.0 + 1.079 / m)
+}
+
 fn hll_estimate(registers: &[u8; HLL_M]) -> u64 {
     let m = HLL_M as f64;
-    let alpha = 0.7213 / (1.0 + 1.079 / m); // alpha_m, valid for m >= 128
+    let alpha = hll_alpha(m);
     let sum: f64 = registers.iter().map(|&r| 2f64.powi(-(i32::from(r)))).sum();
     let raw = alpha * m * m / sum;
 
@@ -657,24 +555,16 @@ fn hll_estimate(registers: &[u8; HLL_M]) -> u64 {
     (estimate.round() as u64).max(CARDINALITY_EXACT_CAP as u64 + 1)
 }
 
-// -------------------------------------------------------------------------
-// Epoch extraction — per-line, no allocation, no regex, byte position only.
-// -------------------------------------------------------------------------
+fn bare_epoch_units_per_second(digits: usize) -> Option<i64> {
+    match digits {
+        10 => Some(1),
+        13 => Some(1_000),
+        16 => Some(1_000_000),
+        19 => Some(1_000_000_000),
+        _ => None,
+    }
+}
 
-/// Epoch seconds for a raw timestamp string, or `None` when the shape isn't
-/// one we can place on a clock. Tries, in order: a bare all-digit epoch (10
-/// seconds / 13 millis / 16 micros / 19 nanos); klog/glog (`E0909
-/// 13:07:09`); ISO 8601 / space-separated (`2025-09-09T13:07:09` or
-/// `2025-09-09 13:07:09`); slash-date (`2025/09/09 13:07:09`); Apache CLF
-/// (`09/Sep/2025:13:07:09`); syslog BSD / ANSI C asctime (`Sep  9
-/// 13:07:09`, optionally with a leading weekday and/or trailing year); and
-/// compact (`20250909T130709`). Anything else is `None`.
-///
-/// klog and syslog BSD carry no year, so this stamps them with the current
-/// UTC year — a year-less log spanning more than a year is unrepresentable
-/// by a single raw string and this function does not pretend otherwise. The
-/// span/histogram code that consumes this handles a Dec→Jan wrap across two
-/// same-year-stamped timestamps by rolling the later one forward a year.
 pub(crate) fn epoch_seconds(ts: &str) -> Option<i64> {
     let trimmed = ts.trim();
     let bytes = trimmed.as_bytes();
@@ -684,13 +574,7 @@ pub(crate) fn epoch_seconds(ts: &str) -> Option<i64> {
 
     if bytes.iter().all(u8::is_ascii_digit) {
         let n: i64 = trimmed.parse().ok()?;
-        return match bytes.len() {
-            10 => Some(n),
-            13 => Some(n / 1_000),
-            16 => Some(n / 1_000_000),
-            19 => Some(n / 1_000_000_000),
-            _ => None,
-        };
+        return bare_epoch_units_per_second(bytes.len()).map(|units| n / units);
     }
 
     parse_klog_epoch(bytes)
@@ -701,7 +585,6 @@ pub(crate) fn epoch_seconds(ts: &str) -> Option<i64> {
         .or_else(|| parse_syslog_or_asctime_epoch(trimmed))
 }
 
-/// Two ASCII digits as a number, or `None` if either byte isn't a digit.
 fn d2(b: &[u8]) -> Option<u32> {
     if b.len() == 2 && b[0].is_ascii_digit() && b[1].is_ascii_digit() {
         Some(u32::from(b[0] - b'0') * 10 + u32::from(b[1] - b'0'))
@@ -710,7 +593,6 @@ fn d2(b: &[u8]) -> Option<u32> {
     }
 }
 
-/// Four ASCII digits as a number, or `None` if any byte isn't a digit.
 fn d4(b: &[u8]) -> Option<i32> {
     if b.len() == 4 && b.iter().all(u8::is_ascii_digit) {
         Some(
@@ -722,7 +604,6 @@ fn d4(b: &[u8]) -> Option<i32> {
     }
 }
 
-/// `Jan`..`Dec`, case-insensitive, as a 1-based month number.
 fn month_abbrev(w: &[u8]) -> Option<u32> {
     const NAMES: [&[u8]; 12] = [
         b"Jan", b"Feb", b"Mar", b"Apr", b"May", b"Jun", b"Jul", b"Aug", b"Sep", b"Oct", b"Nov",
@@ -737,23 +618,12 @@ fn month_abbrev(w: &[u8]) -> Option<u32> {
         .map(|i| i as u32 + 1)
 }
 
-/// The current UTC year — used to stamp the two year-less shapes (klog,
-/// syslog BSD).
-/// The current UTC year, computed once per process — `epoch_seconds` can
-/// run on every input line, and a syscall-backed `Utc::now()` on every
-/// klog/syslog-BSD line measurably regressed the perf gate before this
-/// cache. The year cannot change mid-run in any way that matters here.
-fn current_utc_year() -> i32 {
+fn process_utc_year() -> i32 {
     use chrono::Datelike;
     static YEAR: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
     *YEAR.get_or_init(|| chrono::Utc::now().year())
 }
 
-// Midnight-epoch of the most recently converted (year, month, day), so a
-// run of consecutive lines sharing a calendar date (the overwhelmingly
-// common case — a date changes at most a few times a run, a clock changes
-// every line) pays for `NaiveDate::from_ymd_opt`'s validation once per
-// date instead of once per line.
 thread_local! {
     static LAST_DATE_MIDNIGHT: std::cell::Cell<Option<(i32, u32, u32, i64)>> =
         const { std::cell::Cell::new(None) };
@@ -774,7 +644,6 @@ fn ymd_hms_to_epoch(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u
     Some(midnight + i64::from(hour) * 3600 + i64::from(min) * 60 + i64::from(sec))
 }
 
-/// klog/glog: `E0909 13:07:09.181236` — no year, current UTC year assumed.
 fn parse_klog_epoch(b: &[u8]) -> Option<i64> {
     if b.len() < 14 || !matches!(b[0], b'E' | b'W' | b'I' | b'F') {
         return None;
@@ -793,11 +662,9 @@ fn parse_klog_epoch(b: &[u8]) -> Option<i64> {
         return None;
     }
     let sec = d2(&b[12..14])?;
-    ymd_hms_to_epoch(current_utc_year(), month, day, hour, min, sec)
+    ymd_hms_to_epoch(process_utc_year(), month, day, hour, min, sec)
 }
 
-/// ISO 8601 / space-separated: `2025-09-09T13:07:09` or `2025-09-09
-/// 13:07:09`.
 fn parse_iso_epoch(b: &[u8]) -> Option<i64> {
     if b.len() < 19 {
         return None;
@@ -826,7 +693,6 @@ fn parse_iso_epoch(b: &[u8]) -> Option<i64> {
     ymd_hms_to_epoch(year, month, day, hour, min, sec)
 }
 
-/// glog/rancher slash-date: `2025/09/09 13:07:09`.
 fn parse_slash_date_epoch(b: &[u8]) -> Option<i64> {
     if b.len() < 19 {
         return None;
@@ -855,7 +721,6 @@ fn parse_slash_date_epoch(b: &[u8]) -> Option<i64> {
     ymd_hms_to_epoch(year, month, day, hour, min, sec)
 }
 
-/// Apache CLF: `09/Sep/2025:13:07:09`.
 fn parse_clf_epoch(b: &[u8]) -> Option<i64> {
     if b.len() < 20 {
         return None;
@@ -884,7 +749,6 @@ fn parse_clf_epoch(b: &[u8]) -> Option<i64> {
     ymd_hms_to_epoch(year, month, day, hour, min, sec)
 }
 
-/// Compact: `20250909T130709`.
 fn parse_compact_epoch(b: &[u8]) -> Option<i64> {
     if b.len() != 15 {
         return None;
@@ -901,17 +765,12 @@ fn parse_compact_epoch(b: &[u8]) -> Option<i64> {
     ymd_hms_to_epoch(year, month, day, hour, min, sec)
 }
 
-/// syslog BSD (`Sep  9 13:07:09`, no year) or ANSI C asctime (`Sat Sep 9
-/// 13:07:09 2025`, weekday and year both present). Word-split rather than
-/// byte-position, since the day field is 1 or 2 digits and may be
-/// space-padded.
 fn parse_syslog_or_asctime_epoch(s: &str) -> Option<i64> {
     let mut fields = s.split_ascii_whitespace();
     let mut first = fields.next()?;
     let month = if let Some(m) = month_abbrev(first.as_bytes()) {
         m
     } else {
-        // Leading weekday name — the month is the next field.
         first = fields.next()?;
         month_abbrev(first.as_bytes())?
     };
@@ -926,16 +785,11 @@ fn parse_syslog_or_asctime_epoch(s: &str) -> Option<i64> {
     let sec = d2(&tb[6..8])?;
     let year = match fields.next() {
         Some(y) if y.len() == 4 && y.bytes().all(|c| c.is_ascii_digit()) => y.parse().ok()?,
-        _ => current_utc_year(),
+        _ => process_utc_year(),
     };
     ymd_hms_to_epoch(year, month, day, hour, min, sec)
 }
 
-/// Roll `epoch` forward exactly one calendar year (UTC), for the case where
-/// a year-less span's `last` epoch landed before its `first` because both
-/// were stamped with the same assumed year but the log actually crossed
-/// New Year's. `None` on the Feb-29-into-non-leap-year edge case, which the
-/// caller falls back on rather than mis-date.
 fn add_one_year_utc(epoch: i64) -> Option<i64> {
     use chrono::Datelike;
     let dt = chrono::DateTime::from_timestamp(epoch, 0)?;
@@ -944,10 +798,6 @@ fn add_one_year_utc(epoch: i64) -> Option<i64> {
     Some(bumped_date.and_time(naive.time()).and_utc().timestamp())
 }
 
-/// Duration in seconds between two raw timestamp strings, handling the
-/// year-less New Year wrap (see `epoch_seconds`'s doc comment): if the
-/// computed `last` epoch is before `first`, roll `last` forward a year and
-/// use that instead. `None` when either string doesn't parse.
 pub(crate) fn span_epochs(first: &str, last: &str) -> Option<(i64, i64)> {
     let first_epoch = epoch_seconds(first)?;
     let mut last_epoch = epoch_seconds(last)?;
@@ -957,8 +807,6 @@ pub(crate) fn span_epochs(first: &str, last: &str) -> Option<(i64, i64)> {
     Some((first_epoch, last_epoch))
 }
 
-/// Whether a span's epochs rest on an assumed year: true when either endpoint
-/// is a year-less stamp. `None` when there is no span endpoint to judge.
 pub(crate) fn span_year_inferred(first: Option<&str>, last: Option<&str>) -> Option<bool> {
     match (first, last) {
         (None, None) => None,
@@ -970,13 +818,6 @@ pub(crate) fn span_duration_seconds(first: &str, last: &str) -> Option<u64> {
     let (first_epoch, last_epoch) = span_epochs(first, last)?;
     u64::try_from(last_epoch - first_epoch).ok()
 }
-
-// -------------------------------------------------------------------------
-// Template counts — accumulated across groups (a template can be recorded
-// more than once: two groups may share a template under different anchors,
-// or their masked templates may coincide), so this map accumulates rather
-// than overwrites.
-// -------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
 struct TemplateAcc {
@@ -992,12 +833,6 @@ pub struct TemplateCounts {
 }
 
 impl TemplateCounts {
-    /// Record one flushed group's template, member count, and the earliest
-    /// / latest parseable epoch among its members (`None` when none of the
-    /// flushed members carried one). Once the map hits `TEMPLATE_CAP`
-    /// distinct templates, an existing key keeps accumulating but a new one
-    /// is dropped and `truncated` is set. Repeated records of the same
-    /// template widen the epoch range rather than overwrite it.
     pub fn record(
         &mut self,
         template: &str,
@@ -1009,7 +844,7 @@ impl TemplateCounts {
             existing.count += count;
             existing.first_epoch = min_opt(existing.first_epoch, first_epoch);
             existing.last_epoch = max_opt(existing.last_epoch, last_epoch);
-        } else if self.map.len() < TEMPLATE_CAP {
+        } else if self.map.len() < TOP_TEMPLATES_TRACKED_CAP {
             self.map.insert(
                 template.to_string(),
                 TemplateAcc {
@@ -1023,8 +858,6 @@ impl TemplateCounts {
         }
     }
 
-    /// Sum of every recorded member count — used by the debug-only
-    /// completeness check in `PatternFolder::build_briefing` and by tests.
     pub fn total_members(&self) -> usize {
         self.map.values().map(|a| a.count).sum()
     }
@@ -1033,15 +866,13 @@ impl TemplateCounts {
         self.truncated
     }
 
-    /// Build the top-10-by-count report. Ties break by template string
-    /// ascending, so the shown set is deterministic across runs.
     pub fn build(&self, total_lines: usize) -> TopTemplates {
         let mut entries: Vec<(&String, &TemplateAcc)> = self.map.iter().collect();
         entries.sort_by(|a, b| b.1.count.cmp(&a.1.count).then_with(|| a.0.cmp(b.0)));
 
         let shown: Vec<TemplateEntry> = entries
             .into_iter()
-            .take(10)
+            .take(TOP_TEMPLATES_SHOWN)
             .map(|(template, acc)| TemplateEntry {
                 count: acc.count,
                 pct: pct(acc.count, total_lines),
@@ -1095,11 +926,6 @@ fn pct(part: usize, total: usize) -> f64 {
     }
 }
 
-// -------------------------------------------------------------------------
-// Text rendering — the stderr briefing footer.
-// -------------------------------------------------------------------------
-
-/// Thousands-grouped decimal: `3951` -> `"3,951"`.
 fn fmt_count(n: usize) -> String {
     let digits = n.to_string();
     let bytes = digits.as_bytes();
@@ -1113,16 +939,12 @@ fn fmt_count(n: usize) -> String {
     out
 }
 
-/// One decimal place, with a trailing `.0` stripped (`100.0%` -> `100%`,
-/// `55.4%` stays `55.4%`).
 fn fmt_pct(value: f64) -> String {
     let s = format!("{value:.1}%");
     s.strip_suffix(".0%")
         .map_or(s.clone(), |head| format!("{head}%"))
 }
 
-/// Truncate to `max_chars` characters (char-safe), appending `…` when the
-/// string was actually cut.
 fn truncate_chars(s: &str, max_chars: usize) -> String {
     let mut it = s.chars();
     let head: String = it.by_ref().take(max_chars).collect();
@@ -1150,9 +972,8 @@ fn render_span_line(span: &Span) -> String {
     }
 }
 
-/// The largest two non-zero units of a duration (`11d 1h`, `5h 51m`,
-/// `47s`). Never more than two, so a multi-year span still reads at a
-/// glance rather than spelling out every unit down to the second.
+const HUMANIZED_LARGEST_UNITS: usize = 2;
+
 fn humanize_duration(mut seconds: u64) -> String {
     const UNITS: [(&str, u64); 4] = [("d", 86_400), ("h", 3_600), ("m", 60), ("s", 1)];
     let mut parts = Vec::new();
@@ -1161,7 +982,7 @@ fn humanize_duration(mut seconds: u64) -> String {
             parts.push(format!("{}{name}", seconds / unit_seconds));
             seconds %= unit_seconds;
         }
-        if parts.len() == 2 {
+        if parts.len() == HUMANIZED_LARGEST_UNITS {
             break;
         }
     }
@@ -1172,10 +993,6 @@ fn humanize_duration(mut seconds: u64) -> String {
     }
 }
 
-/// The `shape:` sparkline line under `span:` — one of the eight block
-/// glyphs per display bucket, scaled linearly against the busiest bucket;
-/// an empty bucket renders as a plain space so a gap in traffic is visible
-/// as a gap, not a false floor.
 fn render_shape_line(hist: &Histogram, span_first_epoch: i64, dated: bool) -> String {
     const BLOCKS: [char; 8] = [
         '\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}',
@@ -1206,18 +1023,7 @@ fn render_shape_line(hist: &Histogram, span_first_epoch: i64, dated: bool) -> St
     )
 }
 
-/// True when a raw timestamp string states its own year. klog (`E0909
-/// 13:07:09`) and syslog BSD (`Sep  9 13:07:09`) do not, so `epoch_seconds`
-/// supplies the current year to place them on a clock.
-///
-/// That inference is fine for measuring a span — the arithmetic is unaffected
-/// — but printing the inferred year as part of a date states something the
-/// log never said. A 2025 kubelet dump read in 2026 rendered `busiest
-/// 2026-09-14`, which is simply a wrong date. Where the year is inferred we
-/// print `MM-DD HH:MM` and claim only what the file carries.
 pub(crate) fn carries_year(ts: &str) -> bool {
-    // Maximal digit runs only. A sliding window finds "1812" inside klog's
-    // ".181236" microseconds and would call a year-less stamp dated.
     let b = ts.as_bytes();
     let mut i = 0;
     while i < b.len() {
@@ -1231,23 +1037,22 @@ pub(crate) fn carries_year(ts: &str) -> bool {
         }
         let run = &ts[start..i];
         match run.len() {
-            // A bare 4-digit field is a year only if it reads as one; klog's
-            // MMDD (`0909`) does not.
             4 => {
-                if matches!(run.parse::<u32>(), Ok(1900..=2100)) {
+                if is_plausible_year(run) {
                     return true;
                 }
             }
-            // An epoch is absolute, so its year is real rather than inferred.
-            10 | 13 | 16 | 19 => return true,
+            digits if bare_epoch_units_per_second(digits).is_some() => return true,
             _ => {}
         }
     }
     false
 }
 
-/// `YYYY-MM-DD HH:MM` in UTC, for the busiest-bucket label — or `MM-DD HH:MM`
-/// when the source timestamps carry no year of their own.
+fn is_plausible_year(four_digits: &str) -> bool {
+    matches!(four_digits.parse::<u32>(), Ok(1900..=2100))
+}
+
 fn epoch_to_display(epoch: i64, dated: bool) -> String {
     let fmt = if dated {
         "%Y-%m-%d %H:%M"
@@ -1285,8 +1090,6 @@ fn render_format_line(f: &FormatSniff) -> String {
     line
 }
 
-/// Whole-number percent (`100%`, not `100.0%`) — the format line's summary
-/// stat is coarser than the per-item numbers elsewhere in the briefing.
 fn fmt_pct_whole(value: f64) -> String {
     format!("{value:.0}%")
 }
@@ -1317,11 +1120,6 @@ fn render_levels_line(levels: &Levels, total_lines: usize) -> String {
     )
 }
 
-/// The count-over-span middle column: `in <1s` when every member landed in
-/// the same second, `over 5h51m` when they didn't, nothing when no member
-/// carried a parseable timestamp. Never a derived rate — a mean interval is
-/// a false claim for a group that bursts and goes quiet, so this prints the
-/// two honest facts (count, span) and leaves the division to the reader.
 fn render_template_span(span_seconds: Option<u64>) -> String {
     match span_seconds {
         Some(0) => "in <1s".to_string(),
@@ -1360,8 +1158,6 @@ fn render_templates_block(t: &TopTemplates) -> String {
     out
 }
 
-/// The `rare:` line after the top-templates block — principle 4, "rare is
-/// signal": omitted entirely when nothing occurs exactly once.
 fn render_rare_line(t: &TopTemplates) -> Option<String> {
     if t.singletons == 0 {
         return None;
@@ -1381,12 +1177,12 @@ fn render_tokens_line(tokens: &[TokenClass]) -> String {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            let tilde = if t.distinct_exact { "" } else { "~" };
+            let tilde = if t.distinct.is_exact() { "" } else { "~" };
             let core = format!(
                 "{} {}/{tilde}{}",
                 t.class,
                 fmt_count(t.occurrences),
-                fmt_count(t.distinct as usize)
+                fmt_count(t.distinct.value() as usize)
             );
             if i + 1 < n { format!("{core},") } else { core }
         })
@@ -1417,8 +1213,6 @@ fn render_tokens_line(tokens: &[TokenClass]) -> String {
     lines.join("\n")
 }
 
-/// Render the whole stderr briefing footer, including the leading blank
-/// line and both `---` delimiters.
 pub fn render_text(b: &Briefing) -> String {
     let mut out = String::new();
     out.push('\n');
@@ -1461,10 +1255,12 @@ mod tests {
 
     #[test]
     fn format_from_line_top_level_json_object_without_json_token() {
-        // The regression this rule exists for: a well-formed JSON record
-        // produces no Token::Json, and used to sniff as plain.
         let line = r#"{"level":"info","msg":"Loading TLS configuration"}"#;
-        assert_eq!(format_from_line(&[], line), FormatClass::Json);
+        assert_eq!(
+            format_from_line(&[], line),
+            FormatClass::Json,
+            "a well-formed JSON record yields no Token::EmbeddedJson and used to sniff as plain"
+        );
     }
 
     #[test]
@@ -1479,7 +1275,6 @@ mod tests {
 
     #[test]
     fn format_from_line_open_brace_without_close_is_not_json() {
-        // A prose line that merely starts with a brace is not a JSON record.
         assert_eq!(format_from_line(&[], "{ unterminated"), FormatClass::Plain);
     }
 
@@ -1499,8 +1294,7 @@ mod tests {
     }
 
     #[test]
-    fn carries_year_false_for_klog() {
-        // `E0909 13:07:09.181236` — 0909 starts with 0, not a year.
+    fn carries_year_false_for_klog_mmdd_starting_with_zero() {
         assert!(!carries_year("E0909 13:07:09.181236"));
     }
 
@@ -1511,14 +1305,14 @@ mod tests {
 
     #[test]
     fn carries_year_false_for_klog_microseconds() {
-        // A sliding window finds "1812" inside ".181236"; only maximal runs
-        // may be read as a year.
-        assert!(!carries_year("E0909 13:07:09.181236"));
+        assert!(
+            !carries_year("E0909 13:07:09.181236"),
+            "a sliding window finds 1812 inside .181236"
+        );
     }
 
     #[test]
     fn carries_year_false_for_four_digit_mmdd() {
-        // klog's 0909 is four digits but not a plausible year.
         assert!(!carries_year("0909 13:07:09"));
     }
 
@@ -1541,32 +1335,23 @@ mod tests {
         assert!(dated.ends_with(&undated), "{dated} should extend {undated}");
     }
 
-    // -- format_from_line ---------------------------------------------
-    //
-    // Format used to be sniffed by re-scanning the raw line; it is now
-    // read off the tokens the pipeline already produced. These tests
-    // exercise `format_from_line` directly with constructed token
-    // slices rather than raw strings.
-
     #[test]
     fn format_from_line_json_object() {
-        let tokens = vec![Token::Json(r#"{"level":"error"}"#.to_string())];
+        let tokens = vec![Token::EmbeddedJson(r#"{"level":"error"}"#.to_string())];
         assert_eq!(format_from_line(&tokens, ""), FormatClass::Json);
     }
 
     #[test]
     fn format_from_line_json_array() {
-        let tokens = vec![Token::Json("[1, 2, 3]".to_string())];
+        let tokens = vec![Token::EmbeddedJson("[1, 2, 3]".to_string())];
         assert_eq!(format_from_line(&tokens, ""), FormatClass::Json);
     }
 
     #[test]
     fn format_from_line_json_wins_regardless_of_token_order() {
-        // Unlike the old leading-byte scan, a `Token::Json` decides the
-        // format no matter where it sits among the line's other tokens.
         let tokens = vec![
             Token::Number("1".to_string()),
-            Token::Json(r#"{"a":1}"#.to_string()),
+            Token::EmbeddedJson(r#"{"a":1}"#.to_string()),
         ];
         assert_eq!(format_from_line(&tokens, ""), FormatClass::Json);
     }
@@ -1597,9 +1382,6 @@ mod tests {
 
     #[test]
     fn format_from_line_quoted_equals_not_counted_as_pairs() {
-        // `msg="x=y z=w"` is a single `QuotedString`, not `KeyValuePair`s —
-        // the detector already keeps the quoted `=` signs out of the
-        // pair count, so there is nothing left here to re-derive.
         let tokens = vec![Token::QuotedString("x=y z=w".to_string())];
         assert_eq!(format_from_line(&tokens, ""), FormatClass::Plain);
     }
@@ -1614,8 +1396,6 @@ mod tests {
     fn format_from_line_no_tokens_is_plain() {
         assert_eq!(format_from_line(&[], "plain prose"), FormatClass::Plain);
     }
-
-    // -- classify_level -------------------------------------------------
 
     #[test]
     fn classify_level_klog_error() {
@@ -1684,7 +1464,6 @@ mod tests {
 
     #[test]
     fn classify_level_standalone_caps_rejects_mixed_case() {
-        // "Error" is not ALL-CAPS, and matches none of the other shapes.
         assert_eq!(classify_level("an Error occurred here today"), None);
     }
 
@@ -1716,19 +1495,13 @@ mod tests {
         assert_eq!(classify_level("[TRACE]"), Some(Level::Trace));
     }
 
-    // -- level_from_tokens ------------------------------------------------
-    //
-    // The free cases: a level read off a token rather than scanned from
-    // raw bytes. Each test's raw `line` argument deliberately carries no
-    // scannable level of its own, so a `Some` result proves the token
-    // path — not the `classify_level` fallback — supplied it.
-
     #[test]
     fn level_from_tokens_klog_letter_in_timestamp_token() {
         let tokens = vec![Token::Timestamp("E0909 13:07:09.181236".to_string())];
         assert_eq!(
             level_from_tokens(&tokens, "1 pod_workers.go:1301]"),
-            Some(Level::Error)
+            Some(Level::Error),
+            "the raw line carries no scannable level, so Some proves the token path"
         );
     }
 
@@ -1742,7 +1515,11 @@ mod tests {
         ] {
             let ts = format!("{letter}0920 14:52:55.728948");
             let tokens = vec![Token::Timestamp(ts)];
-            assert_eq!(level_from_tokens(&tokens, "no level here"), Some(level));
+            assert_eq!(
+                level_from_tokens(&tokens, "no level here"),
+                Some(level),
+                "the raw line carries no scannable level, so Some proves the token path"
+            );
         }
     }
 
@@ -1754,7 +1531,8 @@ mod tests {
         }];
         assert_eq!(
             level_from_tokens(&tokens, "no scannable level"),
-            Some(Level::Warn)
+            Some(Level::Warn),
+            "the raw line carries no scannable level, so Some proves the token path"
         );
     }
 
@@ -1766,7 +1544,8 @@ mod tests {
         }];
         assert_eq!(
             level_from_tokens(&tokens, "no scannable level"),
-            Some(Level::Debug)
+            Some(Level::Debug),
+            "the raw line carries no scannable level, so Some proves the token path"
         );
     }
 
@@ -1778,13 +1557,13 @@ mod tests {
         ])];
         assert_eq!(
             level_from_tokens(&tokens, "no scannable level"),
-            Some(Level::Fatal)
+            Some(Level::Fatal),
+            "the raw line carries no scannable level, so Some proves the token path"
         );
     }
 
     #[test]
     fn level_from_tokens_falls_back_to_byte_scan() {
-        // No token carries a level; the raw line does, via `classify_level`.
         let tokens = vec![Token::Path("/var/log/app.log".to_string())];
         assert_eq!(
             level_from_tokens(&tokens, "[ERROR] connection refused"),
@@ -1801,11 +1580,9 @@ mod tests {
         );
     }
 
-    // -- CardinalityEstimator (lessence-nn3) -------------------------------
-
     #[test]
     fn cardinality_exact_below_boundary() {
-        let mut est = CardinalityEstimator::default();
+        let mut est = ExactThenHll::default();
         for i in 0..500u64 {
             est.insert(i);
         }
@@ -1815,7 +1592,7 @@ mod tests {
 
     #[test]
     fn cardinality_duplicates_do_not_inflate_exact_count() {
-        let mut est = CardinalityEstimator::default();
+        let mut est = ExactThenHll::default();
         for _ in 0..10 {
             est.insert(42);
         }
@@ -1825,29 +1602,27 @@ mod tests {
 
     #[test]
     fn cardinality_conversion_at_boundary_preserves_count() {
-        let mut est = CardinalityEstimator::default();
+        let mut est = ExactThenHll::default();
         for i in 0..CARDINALITY_EXACT_CAP as u64 {
             est.insert(i);
         }
         assert!(est.is_exact());
         assert_eq!(est.distinct(), CARDINALITY_EXACT_CAP as u64);
 
-        // The insert that pushes past the cap converts to HLL.
         est.insert(CARDINALITY_EXACT_CAP as u64);
         assert!(!est.is_exact());
-        // The true count (cap + 1) is known exactly at conversion time; the
-        // clamp in `hll_estimate` guarantees the estimate never reports
-        // below that, so this exact value is not a coincidence.
-        assert_eq!(est.distinct(), CARDINALITY_EXACT_CAP as u64 + 1);
+        assert_eq!(
+            est.distinct(),
+            CARDINALITY_EXACT_CAP as u64 + 1,
+            "the hll_estimate clamp guarantees cap+1 exactly"
+        );
     }
 
     #[test]
     fn cardinality_large_set_estimates_within_a_few_percent() {
-        let mut est = CardinalityEstimator::default();
+        let mut est = ExactThenHll::default();
         let true_count = 100_000u64;
         for i in 0..true_count {
-            // Spread inputs across the u64 space the way a real hash would,
-            // rather than feeding the estimator small sequential integers.
             est.insert(splitmix64(i));
         }
         assert!(!est.is_exact());
@@ -1862,7 +1637,7 @@ mod tests {
     #[test]
     fn cardinality_deterministic_across_runs() {
         let make = || {
-            let mut est = CardinalityEstimator::default();
+            let mut est = ExactThenHll::default();
             for i in 0..10_000u64 {
                 est.insert(splitmix64(i));
             }
@@ -1871,9 +1646,6 @@ mod tests {
         assert_eq!(make(), make());
     }
 
-    /// splitmix64: a well-mixed, fully deterministic 64-bit hash from a
-    /// sequential seed, used only to feed the cardinality estimator tests
-    /// realistic-looking hash inputs instead of small sequential integers.
     fn splitmix64(seed: u64) -> u64 {
         let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -1881,44 +1653,53 @@ mod tests {
         z ^ (z >> 31)
     }
 
-    // -- TemplateCounts ---------------------------------------------------
-
     #[test]
     fn template_counts_sums_a_template_recorded_twice() {
-        // Two groups can share a template under different anchors.
-        // Recording it twice must sum, not overwrite or duplicate as two
-        // entries.
         let mut tc = TemplateCounts::default();
         tc.record("connection <VARIES>", 5, None, None);
         tc.record("connection <VARIES>", 7, None, None);
         let top = tc.build(12);
         assert_eq!(top.total_groups, 1);
-        assert_eq!(top.shown[0].count, 12);
+        assert_eq!(
+            top.shown[0].count, 12,
+            "two groups sharing a template under different anchors must sum"
+        );
         assert_eq!(tc.total_members(), 12);
     }
 
     #[test]
     fn template_counts_cap_truncates_new_templates() {
         let mut tc = TemplateCounts::default();
-        for i in 0..TEMPLATE_CAP {
+        for i in 0..TOP_TEMPLATES_TRACKED_CAP {
             tc.record(&format!("template-{i}"), 1, None, None);
         }
         assert!(!tc.is_truncated());
         tc.record("one-too-many", 1, None, None);
-        assert!(tc.is_truncated());
-        assert_eq!(tc.build(TEMPLATE_CAP + 1).total_groups, TEMPLATE_CAP);
+        assert!(tc.is_truncated(), "new template dropped, sets truncated");
+        assert_eq!(
+            tc.build(TOP_TEMPLATES_TRACKED_CAP + 1).total_groups,
+            TOP_TEMPLATES_TRACKED_CAP
+        );
     }
 
     #[test]
     fn template_counts_cap_keeps_updating_existing_keys() {
         let mut tc = TemplateCounts::default();
-        for i in 0..TEMPLATE_CAP {
+        for i in 0..TOP_TEMPLATES_TRACKED_CAP {
             tc.record(&format!("template-{i}"), 1, None, None);
         }
-        tc.record("one-too-many", 1, None, None); // dropped, sets truncated
-        tc.record("template-0", 41, None, None); // existing key still accumulates
-        assert_eq!(tc.build(TEMPLATE_CAP + 42).total_groups, TEMPLATE_CAP);
-        assert_eq!(tc.total_members(), TEMPLATE_CAP + 41);
+        tc.record("one-too-many", 1, None, None);
+        tc.record("template-0", 41, None, None);
+        assert_eq!(
+            tc.build(TOP_TEMPLATES_TRACKED_CAP + 42).total_groups,
+            TOP_TEMPLATES_TRACKED_CAP,
+            "new template dropped"
+        );
+        assert_eq!(
+            tc.total_members(),
+            TOP_TEMPLATES_TRACKED_CAP + 41,
+            "existing key still accumulates"
+        );
     }
 
     #[test]
@@ -1930,8 +1711,6 @@ mod tests {
         assert_eq!(top.shown[0].template, "aaa");
         assert_eq!(top.shown[1].template, "zzz");
     }
-
-    // -- render_text --------------------------------------------------
 
     fn fixture_briefing() -> Briefing {
         Briefing {
@@ -1989,14 +1768,12 @@ mod tests {
                 TokenClass {
                     class: "timestamps",
                     occurrences: 6063,
-                    distinct: 3940,
-                    distinct_exact: true,
+                    distinct: Distinct::Exact(3940),
                 },
                 TokenClass {
                     class: "uuids",
                     occurrences: 5352,
-                    distinct: 3000,
-                    distinct_exact: false,
+                    distinct: Distinct::Estimated(3000),
                 },
             ],
             histogram: None,
@@ -2087,12 +1864,13 @@ mod tests {
         assert_eq!(fmt_pct(55.44), "55.4%");
     }
 
-    // -- epoch_seconds ------------------------------------------------
-
     #[test]
     fn epoch_seconds_bare_10_digit_is_seconds() {
-        // 2025-09-09T13:07:09Z
-        assert_eq!(epoch_seconds("1757423229"), Some(1_757_423_229));
+        assert_eq!(
+            epoch_seconds("1757423229"),
+            Some(1_757_423_229),
+            "2025-09-09T13:07:09Z"
+        );
     }
 
     #[test]
@@ -2111,9 +1889,9 @@ mod tests {
     }
 
     #[test]
-    fn epoch_seconds_klog_uses_current_utc_year() {
+    fn epoch_seconds_klog_uses_process_utc_year() {
         let got = epoch_seconds("E0909 13:07:09.181236").unwrap();
-        let expected = ymd_hms_to_epoch(current_utc_year(), 9, 9, 13, 7, 9).unwrap();
+        let expected = ymd_hms_to_epoch(process_utc_year(), 9, 9, 13, 7, 9).unwrap();
         assert_eq!(got, expected);
     }
 
@@ -2150,9 +1928,9 @@ mod tests {
     }
 
     #[test]
-    fn epoch_seconds_syslog_bsd_no_year_uses_current_utc_year() {
+    fn epoch_seconds_syslog_bsd_no_year_uses_process_utc_year() {
         let got = epoch_seconds("Sep  9 13:07:09").unwrap();
-        let expected = ymd_hms_to_epoch(current_utc_year(), 9, 9, 13, 7, 9).unwrap();
+        let expected = ymd_hms_to_epoch(process_utc_year(), 9, 9, 13, 7, 9).unwrap();
         assert_eq!(got, expected);
     }
 
@@ -2184,14 +1962,16 @@ mod tests {
 
     #[test]
     fn epoch_seconds_rejects_bad_all_digit_length() {
-        // 11 digits matches none of the four accepted widths.
-        assert_eq!(epoch_seconds("12345678901"), None);
+        assert_eq!(
+            epoch_seconds("12345678901"),
+            None,
+            "11 digits matches none of 10/13/16/19"
+        );
     }
 
     #[test]
     fn epoch_seconds_rejects_invalid_calendar_date() {
-        // Month 13 is not a real month.
-        assert_eq!(epoch_seconds("2025-13-09T13:07:09"), None);
+        assert_eq!(epoch_seconds("2025-13-09T13:07:09"), None, "month 13");
     }
 
     #[test]
@@ -2204,9 +1984,6 @@ mod tests {
 
     #[test]
     fn span_duration_seconds_year_less_new_year_wrap_rolls_last_forward() {
-        // Both stamped with the current year; "first" in late December and
-        // "last" in early January reads as last < first unless the wrap
-        // rule rolls last forward a year.
         let duration = span_duration_seconds("Dec 31 23:00:00", "Jan  1 01:00:00").unwrap();
         assert_eq!(duration, 2 * 3600);
     }
@@ -2219,8 +1996,6 @@ mod tests {
         );
     }
 
-    // -- humanize_duration ---------------------------------------------
-
     #[test]
     fn humanize_duration_two_largest_units() {
         assert_eq!(humanize_duration(11 * 86_400 + 3_600), "11d 1h");
@@ -2228,37 +2003,18 @@ mod tests {
         assert_eq!(humanize_duration(0), "0s");
     }
 
-    // -- TopTemplates: tokens filter and ordering (step 7) --------------
-    //
-    // The actual filter+sort lives in `folder::render::build_briefing`
-    // (it needs `FoldingStats::token_classes`, not reachable from this
-    // module); `filter_and_sort_tokens` here is the exact same two-line
-    // shape so the invariant is proven independently of that call site.
-
-    fn filter_and_sort_tokens(mut tokens: Vec<TokenClass>) -> Vec<TokenClass> {
-        tokens.retain(|t| t.occurrences > 0);
-        tokens.sort_by(|a, b| {
-            b.occurrences
-                .cmp(&a.occurrences)
-                .then_with(|| a.class.cmp(b.class))
-        });
-        tokens
-    }
-
     #[test]
     fn tokens_zero_count_class_is_absent() {
-        let tokens = filter_and_sort_tokens(vec![
+        let tokens = token_classes_by_occurrence(vec![
             TokenClass {
                 class: "timestamps",
                 occurrences: 5,
-                distinct: 5,
-                distinct_exact: true,
+                distinct: Distinct::Exact(5),
             },
             TokenClass {
                 class: "uuids",
                 occurrences: 0,
-                distinct: 0,
-                distinct_exact: true,
+                distinct: Distinct::Exact(0),
             },
         ]);
         assert!(tokens.iter().all(|t| t.class != "uuids"));
@@ -2267,24 +2023,21 @@ mod tests {
 
     #[test]
     fn tokens_ordered_by_occurrences_descending_then_class_ascending() {
-        let tokens = filter_and_sort_tokens(vec![
+        let tokens = token_classes_by_occurrence(vec![
             TokenClass {
                 class: "uuids",
                 occurrences: 5,
-                distinct: 5,
-                distinct_exact: true,
+                distinct: Distinct::Exact(5),
             },
             TokenClass {
                 class: "paths",
                 occurrences: 5,
-                distinct: 5,
-                distinct_exact: true,
+                distinct: Distinct::Exact(5),
             },
             TokenClass {
                 class: "timestamps",
                 occurrences: 10,
-                distinct: 10,
-                distinct_exact: true,
+                distinct: Distinct::Exact(10),
             },
         ]);
         assert_eq!(
@@ -2292,8 +2045,6 @@ mod tests {
             vec!["timestamps", "paths", "uuids"]
         );
     }
-
-    // -- TopTemplates: singletons ("rare is signal") --------------------
 
     #[test]
     fn template_counts_singletons_counted_and_percented() {

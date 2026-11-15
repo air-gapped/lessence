@@ -1,88 +1,90 @@
-//! `--anonymize`: replace every recognised value with an invented one of the
-//! same class and shape.
-//!
-//! The point is not redaction — `<REDACTED>` would destroy the very thing a
-//! distilled corpus exists to preserve. A hostname becomes another hostname
-//! of the same label count, a 64-hex digest becomes another 64-hex digest, an
-//! address becomes another address whose /24 co-members are still co-members.
-//! The folder therefore sees the same shapes it saw in the original, and the
-//! distilled file folds the way the log it came from did.
-//!
-//! Two invariants hold across a run: the same original always maps to the
-//! same invention (consistency), and two originals never map to one
-//! invention (injectivity). The map lives in memory and is never written.
-
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
-use crate::folder::credential_spans;
+use crate::folder::{MIN_CREDENTIAL_VALUE, credential_spans};
 use crate::patterns::Token;
 use crate::patterns::names::K8S_RAND_ALPHABET;
+use crate::sanitize::{authorization_credential_spans, userinfo_password_spans};
 
-/// Crockford base32, the ULID alphabet: no I, L, O or U.
 const CROCKFORD: &[u8] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
-/// How many draws to make before accepting a colliding invention. Only
-/// reachable for very short values (a one-letter hostname label has 26
-/// candidates), where the alternative — changing the length — would break
-/// the shape the invention exists to preserve.
-// ponytail: bounded redraw, not a perfect bijection; a length-preserving
-// permutation would be the upgrade if short labels ever collide in practice.
-const REDRAW_ATTEMPTS: usize = 64;
+const ULID_LEN: usize = 26;
 
-/// Shortest `Authorization` / `Bearer` credential that is invented rather
-/// than read as prose: the assignment locator's floor.
-const MIN_HEADER_CREDENTIAL: usize = 6;
+const COLLISION_TOLERATED_AFTER: usize = 64;
 
-/// What a recognised value is, and therefore how it is invented.
+const MIN_NAME_WORDS_KEPT: usize = 1;
+
+const MAX_GENERATED_SEGMENT_LEN: usize = 12;
+
+const POD_SUFFIX_LEN: usize = 5;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     Ipv4,
     Ipv6,
     Mac,
-    /// A UUID or a ULID — told apart by shape when inventing.
     Uuid,
-    /// Hash, hex id, `sha256:` digest.
+    Ulid,
     Hex,
     Email,
-    /// FQDN, syslog `<HOST>`, bare hostname label.
     Host,
-    /// A Kubernetes object name whose generated suffixes are invented.
     K8s,
-    /// A credential value located by the `--sanitize-pii` patterns.
     Credential,
-    /// A word from `--anonymize-words`.
     Word,
 }
 
-/// The class a token's value belongs to, or `None` for the kinds the table
-/// in `docs/distill.md` leaves alone: timestamps, paths, ports, pids,
-/// numbers, sizes, durations, levels, prose.
+impl Class {
+    fn reuses_mapped_words(self) -> bool {
+        self == Class::K8s
+    }
+}
+
 fn class_of(token: &Token) -> Option<(Class, &str)> {
     match token {
         Token::IPv4(v) => Some((Class::Ipv4, v)),
-        // The loopback and the unspecified address are not identities and
-        // the table keeps their prefix class, so there is nothing to invent
-        // and nothing to check for afterwards.
-        Token::IPv6(v) if v == "::1" || v == "::" => None,
+        Token::IPv6(v) if is_non_identity_ipv6(v) => None,
         Token::IPv6(v) => Some((Class::Ipv6, v)),
         Token::Mac(v) => Some((Class::Mac, v)),
+        Token::Uuid(v) if is_ulid_shaped(v) => Some((Class::Ulid, v)),
         Token::Uuid(v) => Some((Class::Uuid, v)),
         Token::Hash(_, v) => Some((Class::Hex, v)),
         Token::Email(v) => Some((Class::Email, v)),
         Token::Fqdn(v) | Token::Host(v) => Some((Class::Host, v)),
         Token::PodName(v) | Token::VolumeName(v) => Some((Class::K8s, v)),
-        _ => None,
+        Token::Timestamp(_)
+        | Token::Port(_)
+        | Token::Pid(_)
+        | Token::ThreadID(_)
+        | Token::Path(_)
+        | Token::EmbeddedJson(_)
+        | Token::Duration(_)
+        | Token::CpuQuantity(_)
+        | Token::Size(_)
+        | Token::Number(_)
+        | Token::HttpStatus(_)
+        | Token::QuotedString(_)
+        | Token::Name(_)
+        | Token::KubernetesNamespace(_)
+        | Token::PluginType(_)
+        | Token::HttpStatusClass(_)
+        | Token::BracketContext(_)
+        | Token::KeyValuePair { .. }
+        | Token::LogWithModule { .. }
+        | Token::StructuredMessage { .. } => None,
     }
 }
 
-/// The hyphen-separated segments at the end of a Kubernetes name that a
-/// controller generated rather than a human named. Walking from the end and
-/// stopping at the first segment that reads like a word is what keeps
-/// `gpu-operator-node-feature-discovery-worker` intact while `-xhfsf` goes.
-fn generated_segments(value: &str) -> Vec<&str> {
+fn is_non_identity_ipv6(value: &str) -> bool {
+    value == "::1" || value == "::"
+}
+
+fn is_ulid_shaped(value: &str) -> bool {
+    value.len() == ULID_LEN && !value.contains('-')
+}
+
+fn generated_tail_segments(value: &str) -> Vec<&str> {
     let parts: Vec<&str> = value.split('-').collect();
     let last = parts.len().saturating_sub(1);
     let mut cut = parts.len();
@@ -92,207 +94,184 @@ fn generated_segments(value: &str) -> Vec<&str> {
         }
         cut = i;
     }
-    // The whole name generated would mean no name at all; keep the first
-    // segment so something still says what the object is.
-    parts[cut.max(1).min(parts.len())..].to_vec()
+    let first_generated = cut.max(MIN_NAME_WORDS_KEPT).min(parts.len());
+    parts[first_generated..].to_vec()
 }
 
-pub struct Anonymizer {
-    rng: ChaCha8Rng,
-    /// original value → invented value, for the detector classes. Applied
-    /// everywhere the value appears, not only where a detector saw it: a
-    /// hostname inside a URL and a pod name inside a quoted string are the
-    /// same identity as the ones the detectors named.
-    values: HashMap<String, String>,
-    /// First byte → the lengths of the values starting with it. Turns the
-    /// "does a known value start here?" question into one lookup per
-    /// position instead of one per known value.
-    index: HashMap<u8, BTreeSet<usize>>,
-    /// Credential values, keyed by text but matched only where the
-    /// credential patterns find them — `token: Post` is a credential, the word
-    /// `Post` elsewhere on the line is prose.
-    creds: HashMap<String, String>,
-    /// Vocabulary words, keyed lowercased.
-    word_map: HashMap<String, String>,
-    /// Values learned but not yet drawn, in first-appearance order. Nothing
-    /// is drawn until every value is known, so no invention can collide with
-    /// an original that had not been seen yet.
-    pending: Vec<(String, Class)>,
-    /// Every invention handed out, so no two originals share one.
-    used: HashSet<String>,
-    /// input /24 → invented second and third octet under `10.0.0.0/8`.
-    subnets: HashMap<[u8; 3], (u8, u8)>,
-    /// `--anonymize-words`, lowercased, longest first.
-    words: Vec<String>,
-    /// The same words as a set: no invention may contain one as a segment,
-    /// or the word the run exists to remove would come back invented.
-    word_set: HashSet<String>,
-}
+pub struct Vocabulary(Vec<String>);
 
-impl Anonymizer {
-    /// `seed` fixes the invention sequence; `words` is the `--anonymize-words`
-    /// vocabulary (any case — it is lowercased and matched case-insensitively).
-    pub fn new(seed: u64, mut words: Vec<String>) -> Self {
+impl Vocabulary {
+    pub fn new(mut words: Vec<String>) -> Self {
         for w in &mut words {
             *w = w.to_lowercase();
         }
         words.retain(|w| !w.is_empty());
         words.sort_by(|a, b| b.len().cmp(&a.len()).then_with(|| a.cmp(b)));
         words.dedup();
-        let word_set: HashSet<String> = words.iter().cloned().collect();
+        Self(words)
+    }
+
+    pub fn lowercased_longest_first(&self) -> &[String] {
+        &self.0
+    }
+}
+
+impl From<Vec<String>> for Vocabulary {
+    fn from(words: Vec<String>) -> Self {
+        Self::new(words)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct Slash24([u8; 3]);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Invented10Net {
+    second: u8,
+    third: u8,
+}
+
+type Edit = (usize, usize, String);
+
+pub struct Anonymizer {
+    rng: ChaCha8Rng,
+    global_values: HashMap<String, String>,
+    lengths_by_first_byte: HashMap<u8, BTreeSet<usize>>,
+    positional_creds: HashMap<String, String>,
+    inventions_by_lowercased_word: HashMap<String, String>,
+    learned_in_input_order: Vec<(String, Class)>,
+    reserved_originals: HashSet<String>,
+    issued_inventions: HashSet<String>,
+    invented_subnets: HashMap<Slash24, Invented10Net>,
+    vocabulary: Vocabulary,
+    forbidden_segments: HashSet<String>,
+}
+
+pub struct SealedAnonymizer(Anonymizer);
+
+impl Anonymizer {
+    pub fn new(seed: u64, vocabulary: impl Into<Vocabulary>) -> Self {
+        let vocabulary = vocabulary.into();
+        let forbidden_segments: HashSet<String> = vocabulary
+            .lowercased_longest_first()
+            .iter()
+            .cloned()
+            .collect();
         Self {
             rng: ChaCha8Rng::seed_from_u64(seed),
-            word_set,
-            values: HashMap::new(),
-            index: HashMap::new(),
-            creds: HashMap::new(),
-            word_map: HashMap::new(),
-            pending: Vec::new(),
-            used: HashSet::new(),
-            subnets: HashMap::new(),
-            words,
+            forbidden_segments,
+            global_values: HashMap::new(),
+            lengths_by_first_byte: HashMap::new(),
+            positional_creds: HashMap::new(),
+            inventions_by_lowercased_word: HashMap::new(),
+            learned_in_input_order: Vec::new(),
+            reserved_originals: HashSet::new(),
+            issued_inventions: HashSet::new(),
+            invented_subnets: HashMap::new(),
+            vocabulary,
         }
     }
 
-    /// A seed nobody chose: the wall clock. `--seed N` is the reproducible
-    /// path; this one exists so an unseeded run is not silently deterministic.
-    pub fn random_seed() -> u64 {
+    pub fn clock_seed() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0x5eed, |d| d.as_nanos() as u64)
     }
 
-    pub fn vocabulary(&self) -> &[String] {
-        &self.words
+    pub fn learn_line(&mut self, tokens: &[Token], text: &str) {
+        self.learn(tokens);
+        self.learn_text(text);
     }
 
-    /// Learn the values on one line: every token of an invented class gets
-    /// its invention drawn now, in input order, so the mapping is a function
-    /// of the seed and the log — not of which lines survive selection.
     pub fn learn(&mut self, tokens: &[Token]) {
         for token in tokens {
-            if let Some((class, value)) = class_of(token) {
-                // `used` doubles as the set of strings an invention may not
-                // be: every original is reserved before anything is drawn,
-                // so no rewrite can hand out a value that is somebody else's
-                // real one.
-                if !value.is_empty() && self.used.insert(value.to_string()) {
-                    self.pending.push((value.to_string(), class));
-                }
+            if let Some((class, value)) = class_of(token)
+                && !value.is_empty()
+            {
+                self.reserve_original(value, class);
             }
         }
     }
 
-    /// Learn the DNS-shaped names on a line's text, whether or not the
-    /// normalizer erased them (lessence-c2f): the fold keeps a dotted name
-    /// literal unless the line says it is a host, but the scrub cannot
-    /// afford that doubt. Learned in text order after the line's tokens.
-    ///
-    /// Emails and addresses are also learned from the text by their own
-    /// detectors.
     pub fn learn_text(&mut self, text: &str) {
-        self.learn(&crate::sanitize::scanned_entities(text, true, true, false));
+        self.learn(&crate::sanitize::scanned_entities_without_syslog_host(
+            text, true, true, false,
+        ));
+        self.learn_dns_names_from_text(text);
+    }
+
+    fn learn_dns_names_from_text(&mut self, text: &str) {
         for name in crate::patterns::network::NetworkDetector::dns_shaped_names(text) {
-            if self.used.insert(name.to_string()) {
-                self.pending.push((name.to_string(), Class::Host));
-            }
+            self.reserve_original(name, Class::Host);
         }
     }
 
-    /// Draw an invention for everything learned. Call once, after the last
-    /// `learn`, before the first `rewrite`.
-    ///
-    /// Kubernetes names are drawn last, because they are the one class whose
-    /// invention keeps original text — the component words — and those words
-    /// are mapped through everything else. A hostname first seen on the last
-    /// line must already have its invention when the name that contains it
-    /// is drawn.
-    pub fn seal(&mut self) {
-        let pending = std::mem::take(&mut self.pending);
-        for (value, class) in pending.iter().filter(|(_, c)| *c != Class::K8s) {
+    fn reserve_original(&mut self, value: &str, class: Class) {
+        if self.reserved_originals.insert(value.to_string()) {
+            self.learned_in_input_order.push((value.to_string(), class));
+        }
+    }
+
+    pub fn seal(mut self) -> SealedAnonymizer {
+        let learned = std::mem::take(&mut self.learned_in_input_order);
+        let (word_reusing, standalone): (Vec<_>, Vec<_>) = learned
+            .into_iter()
+            .partition(|(_, class)| class.reuses_mapped_words());
+        for (value, class) in standalone.iter().chain(&word_reusing) {
             self.invent_value(*class, value);
         }
-        for (value, class) in pending.iter().filter(|(_, c)| *c == Class::K8s) {
-            self.invent_value(*class, value);
-        }
+        SealedAnonymizer(self)
     }
 
-    /// Every original whose invention differs from it. A value the table
-    /// leaves unchanged — `::1`, a bare `fe80::` route prefix, a Kubernetes
-    /// name of pure words that holds nothing else mapped — was never
-    /// replaced, so demanding it be gone from the output would fail a check
-    /// the rewriter never claimed to pass.
-    pub fn replaced_originals(&self) -> HashSet<String> {
-        self.values.keys().cloned().collect()
+    fn is_taken(&self, candidate: &str) -> bool {
+        self.reserved_originals.contains(candidate) || self.issued_inventions.contains(candidate)
     }
 
-    /// Rewrite one line against everything learned: credential values where
-    /// the credential patterns find them, then every known value at token
-    /// boundaries (longest match first, so a hostname inside an FQDN does not
-    /// undo the FQDN and `db` never touches `dbus`), then the vocabulary.
-    pub fn rewrite(&mut self, text: &str) -> String {
-        let mut edits: Vec<(usize, usize, String)> = Vec::new();
-
-        // Credentials are positional: the locator knows the value is a
-        // secret, the detectors only see a string. Taking them first also
-        // keeps the over-match the locator is documented to accept
-        // (`invalid token: expected`) from leaking into every other line the
-        // same word appears on.
+    fn positional_credential_edits(&mut self, text: &str, edits: &mut Vec<Edit>) {
         for span in credential_spans(text) {
             if span.is_empty() || !text.is_char_boundary(span.start) {
                 continue;
             }
-            let value = text[span.clone()].to_string();
-            let invention = match self.values.get(&value) {
-                Some(existing) => existing.clone(),
-                None => self.invent(Class::Credential, &value),
-            };
+            let invention = self.credential_invention(&text[span.clone()]);
             edits.push((span.start, span.end, invention));
         }
-        // The header and URL credential forms `--sanitize credential` masks.
-        // A header credential shorter than an assignment's floor is prose
-        // (`Bearer token missing`); a URL password is a password at any
-        // length.
-        let forms = crate::sanitize::authorization_spans(text)
+    }
+
+    fn header_and_url_credential_edits(&mut self, text: &str, edits: &mut Vec<Edit>) {
+        let header_credentials = authorization_credential_spans(text)
             .into_iter()
-            .filter(|span| span.len() >= MIN_HEADER_CREDENTIAL)
-            .chain(crate::sanitize::userinfo_spans(text));
-        for span in forms {
-            if span.is_empty() || overlaps(&edits, span.start, span.end) {
+            .filter(|span| header_credential_is_secret(span.len()));
+        let url_passwords = userinfo_password_spans(text);
+        for span in header_credentials.chain(url_passwords) {
+            if span.is_empty() || overlaps(edits, span.start, span.end) {
                 continue;
             }
-            let value = text[span.clone()].to_string();
-            let invention = match self.values.get(&value) {
-                Some(existing) => existing.clone(),
-                None => self.invent(Class::Credential, &value),
-            };
+            let invention = self.credential_invention(&text[span.clone()]);
             edits.push((span.start, span.end, invention));
         }
-
-        self.value_edits(text, &mut edits);
-        self.word_edits(text, &mut edits);
-        apply(text, edits)
     }
 
-    /// Every mapped value and vocabulary word in `text`, replaced at token
-    /// boundaries. `rewrite` for text that is not a whole input line: the
-    /// component words a Kubernetes invention keeps are original text, and
-    /// an original is replaced wherever it occurs — inside a compound token
-    /// as much as standing alone.
-    fn map_text(&mut self, text: &str) -> String {
-        let mut edits: Vec<(usize, usize, String)> = Vec::new();
-        self.value_edits(text, &mut edits);
-        self.word_edits(text, &mut edits);
-        apply(text, edits)
+    fn credential_invention(&mut self, value: &str) -> String {
+        match self.global_values.get(value) {
+            Some(existing) => existing.clone(),
+            None => self.invent_credential(value),
+        }
     }
 
-    fn value_edits(&self, text: &str, edits: &mut Vec<(usize, usize, String)>) {
+    fn map_fragment(&mut self, text: &str) -> String {
+        let mut edits: Vec<Edit> = Vec::new();
+        self.value_edits(text, &mut edits);
+        self.word_edits(text, &mut edits);
+        apply_edits_back_to_front(text, edits)
+    }
+
+    fn value_edits(&self, text: &str, edits: &mut Vec<Edit>) {
         let b = text.as_bytes();
         for start in 0..b.len() {
             if !text.is_char_boundary(start) {
                 continue;
             }
-            let Some(lengths) = self.index.get(&b[start]) else {
+            let Some(lengths) = self.lengths_by_first_byte.get(&b[start]) else {
                 continue;
             };
             let hit = lengths.iter().rev().find_map(|&len| {
@@ -303,7 +282,7 @@ impl Anonymizer {
                 {
                     return None;
                 }
-                self.values
+                self.global_values
                     .get(&text[start..end])
                     .map(|inv| (end, inv.clone()))
             });
@@ -315,8 +294,8 @@ impl Anonymizer {
         }
     }
 
-    fn word_edits(&mut self, text: &str, edits: &mut Vec<(usize, usize, String)>) {
-        if self.words.is_empty() {
+    fn word_edits(&mut self, text: &str, edits: &mut Vec<Edit>) {
+        if self.vocabulary.lowercased_longest_first().is_empty() {
             return;
         }
         let lowered = text.to_lowercase();
@@ -327,8 +306,8 @@ impl Anonymizer {
         } else {
             text.to_string()
         };
-        for i in 0..self.words.len() {
-            let word = self.words[i].clone();
+        for i in 0..self.vocabulary.lowercased_longest_first().len() {
+            let word = self.vocabulary.lowercased_longest_first()[i].clone();
             let mut from = 0;
             while let Some(rel) = haystack[from..].find(&word) {
                 let start = from + rel;
@@ -341,139 +320,133 @@ impl Anonymizer {
                 {
                     continue;
                 }
-                let invention = self.invent(Class::Word, &text[start..end]);
+                let invention = self.invent_word(&text[start..end]);
                 edits.push((start, end, invention));
             }
         }
     }
 
-    /// A detector-class value's invention, drawn once and indexed for the
-    /// whole-line scan.
     fn invent_value(&mut self, class: Class, value: &str) -> String {
-        if let Some(existing) = self.values.get(value) {
+        if let Some(existing) = self.global_values.get(value) {
             return existing.clone();
         }
-        self.used.insert(value.to_string());
+        self.reserved_originals.insert(value.to_string());
         let invention = self.draw_unique(class, value);
-        // An invention identical to its original is no replacement at all.
-        // Registering it would put a whole-token match in front of every
-        // shorter value inside it — `cebo` inside `cebo-model-cache` — and
-        // that value would then never be replaced anywhere the compound
-        // token appears.
-        if invention != value {
-            self.index
+        if is_real_replacement(&invention, value) {
+            self.lengths_by_first_byte
                 .entry(value.as_bytes()[0])
                 .or_default()
                 .insert(value.len());
-            self.values.insert(value.to_string(), invention.clone());
+            self.global_values
+                .insert(value.to_string(), invention.clone());
         }
         invention
     }
 
-    /// The invention for a credential or a vocabulary word. Words are keyed
-    /// lowercased so `ACME` and `acme` share one invention.
-    fn invent(&mut self, class: Class, value: &str) -> String {
-        let key = if class == Class::Word {
-            value.to_lowercase()
-        } else {
-            value.to_string()
-        };
-        let table = if class == Class::Word {
-            &self.word_map
-        } else {
-            &self.creds
-        };
-        if let Some(existing) = table.get(&key) {
+    fn invent_credential(&mut self, value: &str) -> String {
+        if let Some(existing) = self.positional_creds.get(value) {
             return existing.clone();
         }
-        let invention = self.draw_unique(class, value);
-        if class == Class::Word {
-            self.word_map.insert(key, invention.clone());
-        } else {
-            self.creds.insert(key, invention.clone());
-        }
+        let invention = self.draw_unique(Class::Credential, value);
+        self.positional_creds
+            .insert(value.to_string(), invention.clone());
         invention
     }
 
-    /// Draw until the invention is one no other original already holds.
+    fn invent_word(&mut self, word: &str) -> String {
+        let key = word.to_lowercase();
+        if let Some(existing) = self.inventions_by_lowercased_word.get(&key) {
+            return existing.clone();
+        }
+        let invention = self.draw_unique(Class::Word, word);
+        self.inventions_by_lowercased_word
+            .insert(key, invention.clone());
+        invention
+    }
+
     fn draw_unique(&mut self, class: Class, value: &str) -> String {
         let mut invention = String::new();
-        for _ in 0..REDRAW_ATTEMPTS {
+        for _ in 0..COLLISION_TOLERATED_AFTER {
             invention = self.draw(class, value);
-            // Its own original is not a collision: a class the table leaves
-            // unchanged draws itself every time, and redrawing 64 times to
-            // escape it would only burn the seed.
-            if invention == value
-                || (!self.used.contains(&invention) && !self.contains_vocabulary(&invention))
-            {
+            let drew_its_own_original = !is_real_replacement(&invention, value);
+            if drew_its_own_original || self.is_free_invention(&invention) {
                 break;
             }
         }
-        self.used.insert(invention.clone());
+        self.issued_inventions.insert(invention.clone());
         invention
     }
 
-    /// Does an invention carry a vocabulary word as one of its segments?
-    /// `invent_like` draws each label of a hostname from the alphabet by
-    /// length class, and a two-letter label lands on a two-letter word
-    /// often enough that one run in a few hundred would fail its own
-    /// survived-word check on an invented `g8`.
-    fn contains_vocabulary(&self, invention: &str) -> bool {
-        if self.word_set.is_empty() {
+    fn is_free_invention(&self, invention: &str) -> bool {
+        !self.is_taken(invention) && !self.carries_vocabulary_segment(invention)
+    }
+
+    fn carries_vocabulary_segment(&self, invention: &str) -> bool {
+        if self.forbidden_segments.is_empty() {
             return false;
         }
         invention
             .split(|c: char| !c.is_ascii_alphanumeric())
-            .any(|seg| !seg.is_empty() && self.word_set.contains(&seg.to_ascii_lowercase()))
+            .any(|seg| {
+                !seg.is_empty() && self.forbidden_segments.contains(&seg.to_ascii_lowercase())
+            })
     }
 
     fn draw(&mut self, class: Class, value: &str) -> String {
         match class {
-            Class::Ipv4 => self.draw_ipv4(value),
-            Class::Ipv6 => self.draw_ipv6(value),
+            Class::Ipv4 => self.draw_ipv4_keeping_subnet_membership(value),
+            Class::Ipv6 => self.draw_ipv6_keeping_prefix_class(value),
             Class::Mac => self.draw_mac(value),
             Class::Uuid => self.draw_uuid(value),
+            Class::Ulid => self.draw_ulid(value),
             Class::Hex => self.draw_hex(value),
             Class::Email => self.draw_email(value),
-            Class::Host => self.draw_host(value),
+            Class::Host => self.draw_host_keeping_tld(value),
             Class::K8s => self.draw_k8s(value),
-            Class::Credential | Class::Word => invent_like(&mut self.rng, value),
+            Class::Credential | Class::Word => invent_same_char_classes(&mut self.rng, value),
         }
     }
 
-    /// A random address in `10.0.0.0/8`. Two inputs that shared a /24 share
-    /// one in the output, because co-membership of a subnet is a fact about
-    /// the log — "these are all hosts on the storage VLAN" — and inventing it
-    /// away would lose a shape the reader is entitled to see.
-    fn draw_ipv4(&mut self, value: &str) -> String {
+    fn draw_ipv4_keeping_subnet_membership(&mut self, value: &str) -> String {
         let octets: Vec<u8> = value
             .split('.')
             .filter_map(|p| p.parse::<u8>().ok())
             .collect();
         if octets.len() != 4 {
-            return invent_like(&mut self.rng, value);
+            return invent_same_char_classes(&mut self.rng, value);
         }
-        let key = [octets[0], octets[1], octets[2]];
-        let net = if let Some(net) = self.subnets.get(&key) {
-            *net
-        } else {
-            let mut net = (self.rng.random::<u8>(), self.rng.random::<u8>());
-            for _ in 0..REDRAW_ATTEMPTS {
-                if !self.subnets.values().any(|v| *v == net) {
-                    break;
-                }
-                net = (self.rng.random::<u8>(), self.rng.random::<u8>());
-            }
-            self.subnets.insert(key, net);
-            net
-        };
-        // Probe forward from a random host octet: with only 254 of them a
-        // redraw loop would spin once a /24 fills up.
+        let net = self.invented_subnet(Slash24([octets[0], octets[1], octets[2]]));
         let start = self.rng.random_range(1..=254u8);
+        self.probe_free_host_octet(net, start)
+    }
+
+    fn invented_subnet(&mut self, input: Slash24) -> Invented10Net {
+        if let Some(net) = self.invented_subnets.get(&input) {
+            return *net;
+        }
+        let mut net = self.draw_10_net();
+        for _ in 0..COLLISION_TOLERATED_AFTER {
+            if !self.invented_subnets.values().any(|v| *v == net) {
+                break;
+            }
+            net = self.draw_10_net();
+        }
+        self.invented_subnets.insert(input, net);
+        net
+    }
+
+    fn draw_10_net(&mut self) -> Invented10Net {
+        Invented10Net {
+            second: self.rng.random::<u8>(),
+            third: self.rng.random::<u8>(),
+        }
+    }
+
+    fn probe_free_host_octet(&self, net: Invented10Net, start: u8) -> String {
         let mut host = start;
         loop {
-            let candidate = format!("10.{}.{}.{host}", net.0, net.1);
-            if !self.used.contains(&candidate) {
+            let candidate = format!("10.{}.{}.{host}", net.second, net.third);
+            if !self.is_taken(&candidate) {
                 return candidate;
             }
             host = if host >= 254 { 1 } else { host + 1 };
@@ -483,11 +456,8 @@ impl Anonymizer {
         }
     }
 
-    /// Keep the prefix class — `fe80::` link-local, `fd`/`fc` unique-local,
-    /// the `::1` loopback — and invent the rest. A link-local address that
-    /// stopped being link-local would be a different fact.
-    fn draw_ipv6(&mut self, value: &str) -> String {
-        if value == "::1" || value == "::" {
+    fn draw_ipv6_keeping_prefix_class(&mut self, value: &str) -> String {
+        if is_non_identity_ipv6(value) {
             return value.to_string();
         }
         let mut groups: Vec<String> = Vec::new();
@@ -501,9 +471,12 @@ impl Anonymizer {
                 groups.push(group.to_string());
             } else if i == 0 && (lower.starts_with("fd") || lower.starts_with("fc")) {
                 let kept = &group[..2];
-                groups.push(format!("{kept}{}", invent_hex(&mut self.rng, &group[2..])));
+                groups.push(format!(
+                    "{kept}{}",
+                    invent_hex_same_case(&mut self.rng, &group[2..])
+                ));
             } else {
-                groups.push(invent_hex(&mut self.rng, group));
+                groups.push(invent_hex_same_case(&mut self.rng, group));
             }
         }
         groups.join(":")
@@ -524,16 +497,15 @@ impl Anonymizer {
         if upper { joined.to_uppercase() } else { joined }
     }
 
-    /// Same kind: a ULID stays 26 Crockford characters, a UUID keeps its
-    /// dashes and its version nibble.
+    fn draw_ulid(&mut self, value: &str) -> String {
+        let upper = !value.chars().any(|c| c.is_ascii_lowercase());
+        let s: String = (0..ULID_LEN)
+            .map(|_| CROCKFORD[self.rng.random_range(0..CROCKFORD.len())] as char)
+            .collect();
+        if upper { s } else { s.to_lowercase() }
+    }
+
     fn draw_uuid(&mut self, value: &str) -> String {
-        if value.len() == 26 && !value.contains('-') {
-            let upper = !value.chars().any(|c| c.is_ascii_lowercase());
-            let s: String = (0..26)
-                .map(|_| CROCKFORD[self.rng.random_range(0..CROCKFORD.len())] as char)
-                .collect();
-            return if upper { s } else { s.to_lowercase() };
-        }
         let mut out = String::with_capacity(value.len());
         for (i, c) in value.chars().enumerate() {
             // Byte 6's high nibble is the version and byte 8's high nibble
@@ -548,28 +520,26 @@ impl Anonymizer {
         out
     }
 
-    /// Same length, same case. An algorithm prefix (`sha256:`) is kept: it
-    /// names the shape, it is not part of the value.
     fn draw_hex(&mut self, value: &str) -> String {
-        let split = value.rfind(':').map_or(0, |i| i + 1);
-        let (prefix, tail) = value.split_at(split);
-        format!("{prefix}{}", invent_hex(&mut self.rng, tail))
+        let (algorithm_prefix, digest) = split_algorithm_prefix(value);
+        format!(
+            "{algorithm_prefix}{}",
+            invent_hex_same_case(&mut self.rng, digest)
+        )
     }
 
     fn draw_email(&mut self, value: &str) -> String {
         let Some((local, domain)) = value.split_once('@') else {
-            return invent_like(&mut self.rng, value);
+            return invent_same_char_classes(&mut self.rng, value);
         };
         format!(
             "{}@{}",
-            invent_like(&mut self.rng, local),
-            self.draw_host(domain)
+            invent_same_char_classes(&mut self.rng, local),
+            self.draw_host_keeping_tld(domain)
         )
     }
 
-    /// Invented labels, same count and same length; the TLD is kept because
-    /// it is a shape, not an identity, and the detectors read it.
-    fn draw_host(&mut self, value: &str) -> String {
+    fn draw_host_keeping_tld(&mut self, value: &str) -> String {
         let labels: Vec<&str> = value.split('.').collect();
         let keep_tld = labels.len() >= 2
             && labels
@@ -583,33 +553,24 @@ impl Anonymizer {
                 if keep_tld && i == last {
                     (*label).to_string()
                 } else {
-                    invent_like(&mut self.rng, label)
+                    invent_same_char_classes(&mut self.rng, label)
                 }
             })
             .collect::<Vec<_>>()
             .join(".")
     }
 
-    /// Only the generated tail of a Kubernetes name is invented — the
-    /// replicaset hash, the pod suffix, the ordinal. The component words in
-    /// front are what the name says it is, so they stay — but a component
-    /// word that is itself mapped (a hostname elsewhere in the log, a
-    /// vocabulary entry) is still that identity, and it is replaced here
-    /// exactly as it would be anywhere else. A segment drawn entirely from
-    /// the Kubernetes generator alphabet is invented from that same
-    /// alphabet, so it still folds to `<SUFFIX>` exactly as the original did.
     fn draw_k8s(&mut self, value: &str) -> String {
         let parts: Vec<&str> = value.split('-').collect();
-        let keep = parts.len() - generated_segments(value).len();
-        // Mapped across the joined prefix, not per segment: a vocabulary
-        // entry can span the hyphens (`acme-stage`).
-        let mut out = self.map_text(&parts[..keep].join("-"));
-        for part in &parts[keep..] {
+        let words_kept = parts.len() - generated_tail_segments(value).len();
+        let joined_component_words = parts[..words_kept].join("-");
+        let mut out = self.map_fragment(&joined_component_words);
+        for segment in &parts[words_kept..] {
             out.push('-');
-            let invented = if part.bytes().all(|b| K8S_RAND_ALPHABET.contains(&b)) {
-                invent_k8s_rand(&mut self.rng, part)
+            let invented = if is_in_k8s_generator_alphabet(segment) {
+                invent_in_k8s_generator_alphabet(&mut self.rng, segment)
             } else {
-                invent_like(&mut self.rng, part)
+                invent_same_char_classes(&mut self.rng, segment)
             };
             out.push_str(&invented);
         }
@@ -617,21 +578,52 @@ impl Anonymizer {
     }
 }
 
-/// A hyphen-separated segment that a controller generated rather than a
-/// human named: alphanumeric, short, and either carrying a digit or being
-/// the five-character tail Kubernetes appends to a pod name — `-xhfsf` has
-/// no digit and is no less generated for it.
-fn is_generated_segment(segment: &str, is_last: bool) -> bool {
-    !segment.is_empty()
-        && segment.len() <= 12
-        && segment.chars().all(|c| c.is_ascii_alphanumeric())
-        && (segment.chars().any(|c| c.is_ascii_digit()) || (is_last && segment.len() == 5))
+impl SealedAnonymizer {
+    pub fn vocabulary(&self) -> &[String] {
+        self.0.vocabulary.lowercased_longest_first()
+    }
+
+    pub fn replaced_originals(&self) -> HashSet<String> {
+        self.0.global_values.keys().cloned().collect()
+    }
+
+    pub fn rewrite(&mut self, text: &str) -> String {
+        let mut edits: Vec<Edit> = Vec::new();
+        self.0.positional_credential_edits(text, &mut edits);
+        self.0.header_and_url_credential_edits(text, &mut edits);
+        self.0.value_edits(text, &mut edits);
+        self.0.word_edits(text, &mut edits);
+        apply_edits_back_to_front(text, edits)
+    }
 }
 
-/// A segment drawn from the Kubernetes generator alphabet is invented from
-/// that alphabet — a digit stays a digit, a letter a letter — so the
-/// invented name folds to `<SUFFIX>` exactly as the original did.
-fn invent_k8s_rand(rng: &mut ChaCha8Rng, s: &str) -> String {
+fn header_credential_is_secret(len: usize) -> bool {
+    len >= MIN_CREDENTIAL_VALUE
+}
+
+fn is_real_replacement(invention: &str, original: &str) -> bool {
+    invention != original
+}
+
+fn split_algorithm_prefix(value: &str) -> (&str, &str) {
+    let split = value.rfind(':').map_or(0, |i| i + 1);
+    value.split_at(split)
+}
+
+fn is_generated_segment(segment: &str, is_last: bool) -> bool {
+    let short_alphanumeric = !segment.is_empty()
+        && segment.len() <= MAX_GENERATED_SEGMENT_LEN
+        && segment.chars().all(|c| c.is_ascii_alphanumeric());
+    let has_digit = segment.chars().any(|c| c.is_ascii_digit());
+    let is_pod_suffix = is_last && segment.len() == POD_SUFFIX_LEN;
+    short_alphanumeric && (has_digit || is_pod_suffix)
+}
+
+fn is_in_k8s_generator_alphabet(segment: &str) -> bool {
+    segment.bytes().all(|b| K8S_RAND_ALPHABET.contains(&b))
+}
+
+fn invent_in_k8s_generator_alphabet(rng: &mut ChaCha8Rng, s: &str) -> String {
     let letters: Vec<u8> = K8S_RAND_ALPHABET
         .iter()
         .copied()
@@ -654,9 +646,7 @@ fn invent_k8s_rand(rng: &mut ChaCha8Rng, s: &str) -> String {
         .collect()
 }
 
-/// Same length, same character classes: a digit stays a digit, a letter
-/// stays a letter of the same case, everything else is kept verbatim.
-fn invent_like(rng: &mut ChaCha8Rng, s: &str) -> String {
+fn invent_same_char_classes(rng: &mut ChaCha8Rng, s: &str) -> String {
     s.chars()
         .map(|c| {
             if c.is_ascii_digit() {
@@ -672,8 +662,7 @@ fn invent_like(rng: &mut ChaCha8Rng, s: &str) -> String {
         .collect()
 }
 
-/// Same length, same case, still hex. Non-hex characters are kept.
-fn invent_hex(rng: &mut ChaCha8Rng, s: &str) -> String {
+fn invent_hex_same_case(rng: &mut ChaCha8Rng, s: &str) -> String {
     let upper = s.chars().any(|c| c.is_ascii_uppercase());
     s.chars()
         .map(|c| {
@@ -692,33 +681,32 @@ fn hex_digit(rng: &mut ChaCha8Rng, upper: bool) -> char {
     if upper { c.to_ascii_uppercase() } else { c }
 }
 
-/// Does `[start, end)` sit at token boundaries in `text`? A neighbouring
-/// alphanumeric means the match is part of a longer token — the hostname
-/// `db` inside `dbus` — and is left alone. A `%XX` escape on either side is
-/// a boundary too: `plugins_registry%2Frook-ceph.rbd.csi.ceph.com-reg.sock`
-/// ends the escape in an `F`, and a value that hid behind one would be a
-/// value that escaped.
 pub fn at_token_boundary(text: &str, start: usize, end: usize) -> bool {
     let b = text.as_bytes();
-    let left = start == 0
-        || !b[start - 1].is_ascii_alphanumeric()
-        || (start >= 3 && is_percent_escape(&b[start - 3..start]));
-    let right = end >= b.len()
-        || !b[end].is_ascii_alphanumeric()
-        || (end + 3 <= b.len() && is_percent_escape(&b[end..end + 3]));
+    let left =
+        start == 0 || !b[start - 1].is_ascii_alphanumeric() || percent_escape_ends_at(b, start);
+    let right =
+        end >= b.len() || !b[end].is_ascii_alphanumeric() || percent_escape_starts_at(b, end);
     left && right
+}
+
+fn percent_escape_ends_at(b: &[u8], pos: usize) -> bool {
+    pos >= 3 && is_percent_escape(&b[pos - 3..pos])
+}
+
+fn percent_escape_starts_at(b: &[u8], pos: usize) -> bool {
+    pos + 3 <= b.len() && is_percent_escape(&b[pos..pos + 3])
 }
 
 fn is_percent_escape(bytes: &[u8]) -> bool {
     bytes[0] == b'%' && bytes[1].is_ascii_hexdigit() && bytes[2].is_ascii_hexdigit()
 }
 
-fn overlaps(edits: &[(usize, usize, String)], start: usize, end: usize) -> bool {
+fn overlaps(edits: &[Edit], start: usize, end: usize) -> bool {
     edits.iter().any(|(s, e, _)| start < *e && *s < end)
 }
 
-/// Rewrite the collected spans back to front, so earlier offsets stay valid.
-fn apply(text: &str, mut edits: Vec<(usize, usize, String)>) -> String {
+fn apply_edits_back_to_front(text: &str, mut edits: Vec<Edit>) -> String {
     edits.sort_by_key(|e| std::cmp::Reverse(e.0));
     let mut out = text.to_string();
     for (start, end, invention) in edits {
@@ -727,46 +715,36 @@ fn apply(text: &str, mut edits: Vec<(usize, usize, String)>) -> String {
     out
 }
 
-/// Length at which a digit-bearing identifier run is read as an id, hash or
-/// stamp rather than as words: a UUID, a 32-hex digest, a pod name with a
-/// generated tail, an ISO timestamp. Below it the letters are kept.
-const ID_RUN_MIN: usize = 16;
+const MIN_ID_RUN_LEN: usize = 16;
 
-/// Is `c` part of an identifier run — the span a whole id, hash, stamp or
-/// dotted name occupies? `.`, `_` and `-` are inside it, so a UUID and a
-/// timestamp are each one run.
-fn is_ident_char(c: char) -> bool {
+fn is_id_run_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')
 }
 
-/// An id, hash or stamp: long, and at least a quarter digits. A flag name
-/// is long too (`--l2-pod-announcements-interface`) but carries one digit in
-/// thirty; folding it to `#` would put every flag in one shape and let the
-/// distiller drop all but one of them.
 fn is_id_run(run: &str) -> bool {
-    run.len() >= ID_RUN_MIN && run.bytes().filter(u8::is_ascii_digit).count() * 4 >= run.len()
+    run.len() >= MIN_ID_RUN_LEN && at_least_a_quarter_digits(run)
 }
 
-/// Words of `line` for shape purposes: whitespace, and `,{}[]` outside a
-/// quoted string, separate them — so a spaceless JSON record is one word per
-/// field, not one word. Models `patterns::word_spans`, which is what the
-/// folder splits on, plus the brackets of a JSON array.
+fn at_least_a_quarter_digits(run: &str) -> bool {
+    run.bytes().filter(u8::is_ascii_digit).count() * 4 >= run.len()
+}
+
 fn shape_words(line: &str) -> impl Iterator<Item = &str> {
     let b = line.as_bytes();
     let mut i = 0;
     let mut quoted = false;
-    let sep = |c: u8, quoted: bool| {
+    let separates_words_or_json_fields = |c: u8, quoted: bool| {
         c.is_ascii_whitespace() || (!quoted && matches!(c, b',' | b'{' | b'}' | b'[' | b']'))
     };
     std::iter::from_fn(move || {
-        while i < b.len() && sep(b[i], quoted) {
+        while i < b.len() && separates_words_or_json_fields(b[i], quoted) {
             i += 1;
         }
         if i >= b.len() {
             return None;
         }
         let start = i;
-        while i < b.len() && !sep(b[i], quoted) {
+        while i < b.len() && !separates_words_or_json_fields(b[i], quoted) {
             if b[i] == b'"' && (i == 0 || b[i - 1] != b'\\') {
                 quoted = !quoted;
             }
@@ -776,14 +754,7 @@ fn shape_words(line: &str) -> impl Iterator<Item = &str> {
     })
 }
 
-/// A line's word shape: the words above, with every maximal digit run
-/// replaced by `#` and every id-shaped run replaced by `#` whole.
-/// Detector-independent on purpose — it is the check that catches a fold
-/// across a literal word, which is exactly the case where the detectors saw
-/// nothing. Keeping the letters is what makes `"action":"liveness"` and
-/// `"action":"readiness"`, or `--bpf-ct-global-tcp-max='16384'` and
-/// `--bpf-policy-map-max='16384'`, two shapes instead of one.
-pub fn word_shape(line: &str) -> String {
+pub fn literal_word_shape(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     for word in shape_words(line) {
         if !out.is_empty() {
@@ -791,7 +762,7 @@ pub fn word_shape(line: &str) -> String {
         }
         let mut rest = word;
         while !rest.is_empty() {
-            let run_end = rest.find(|c| !is_ident_char(c)).unwrap_or(rest.len());
+            let run_end = rest.find(|c| !is_id_run_char(c)).unwrap_or(rest.len());
             if run_end == 0 {
                 let c = rest.chars().next().expect("rest is not empty");
                 out.push(c);
@@ -826,19 +797,17 @@ mod mac_tests {
     use super::*;
 
     #[test]
-    fn mac_rewrites_preserve_notation_and_use_local_unicast_addresses() {
+    fn mac_rewrites_keep_notation_and_the_local_unicast_bits_on_every_seed_not_one_golden() {
         for (original, separator, alphabet) in [
             ("00:1a:2b:3c:4d:5e", ':', "0123456789abcdef"),
             ("00:1A:2B:3C:4D:5E", ':', "0123456789ABCDEF"),
             ("00-1a-2b-3c-4d-5e", '-', "0123456789abcdef"),
             ("00-1A-2B-3C-4D-5E", '-', "0123456789ABCDEF"),
         ] {
-            // Exercise the address-bit contract across a reproducible set
-            // of draws, rather than pinning one random address as a golden.
             for seed in 0..32 {
                 let mut a = Anonymizer::new(seed, Vec::new());
                 a.learn(&[Token::Mac(original.to_string())]);
-                a.seal();
+                let mut a = a.seal();
                 let out = a.rewrite(original);
 
                 assert_ne!(out, original, "the hardware identity must be invented");
@@ -852,8 +821,16 @@ mod mac_tests {
                     );
                 }
                 let first = u8::from_str_radix(octets[0], 16).unwrap();
-                assert_eq!(first & 1, 0, "invented addresses must be unicast: {out}");
-                assert_eq!(first & 2, 2, "invented addresses must be local: {out}");
+                assert_eq!(
+                    first & 1,
+                    0,
+                    "seed {seed}: invented addresses must be unicast: {out}"
+                );
+                assert_eq!(
+                    first & 2,
+                    2,
+                    "seed {seed}: invented addresses must be local: {out}"
+                );
             }
         }
     }
@@ -892,9 +869,8 @@ mod ipv4_tests {
     fn distinct_subnets_remain_distinct_when_invented_prefixes_collide() {
         let mut a = Anonymizer::new(1, Vec::new());
         let mut subnets = HashSet::new();
-        // Enough networks to exercise redraws in the seeded 16-bit prefix
-        // space, rather than just checking two lucky initial draws.
-        for network in 0..1024 {
+        let enough_networks_to_force_prefix_redraws = 0..1024;
+        for network in enough_networks_to_force_prefix_redraws {
             let original = format!("198.{}.{}.17", network / 256, network % 256);
             let out = a.invent_value(Class::Ipv4, &original);
             let octets = out.parse::<Ipv4Addr>().unwrap().octets();
@@ -922,7 +898,7 @@ mod ipv6_tests {
                 ("fd12:3456::abcd", "fd"),
                 ("FC12:3456::ABCD", "FC"),
             ] {
-                let out = a.draw_ipv6(original);
+                let out = a.draw_ipv6_keeping_prefix_class(original);
                 assert!(out.parse::<Ipv6Addr>().is_ok(), "invalid IPv6: {out}");
                 assert!(out.starts_with(prefix), "address class lost: {out}");
                 assert_ne!(out, original, "the host identity must be invented");
@@ -939,10 +915,10 @@ mod ipv6_tests {
     fn ipv6_special_addresses_stay_but_prefix_like_host_groups_are_invented() {
         let mut a = Anonymizer::new(1, Vec::new());
         for original in ["::", "::1", "fe80::"] {
-            assert_eq!(a.draw_ipv6(original), original);
+            assert_eq!(a.draw_ipv6_keeping_prefix_class(original), original);
         }
 
-        let out = a.draw_ipv6("2001:db8:fe80:fd12:fc34::abcd");
+        let out = a.draw_ipv6_keeping_prefix_class("2001:db8:fe80:fd12:fc34::abcd");
         assert!(out.parse::<Ipv6Addr>().is_ok(), "invalid IPv6: {out}");
         let groups: Vec<&str> = out.split(':').collect();
         assert_ne!(groups[2], "fe80", "only the first group defines the class");
@@ -957,7 +933,7 @@ mod credential_tests {
 
     #[test]
     fn credentials_are_consistent_but_do_not_rewrite_the_same_word_in_prose() {
-        let mut a = Anonymizer::new(1, Vec::new());
+        let mut a = Anonymizer::new(1, Vec::new()).seal();
         let out = a.rewrite("前缀 token=Fable9Wren8 note=Fable9Wren8");
         let (invented, prose) = out
             .strip_prefix("前缀 token=")
@@ -981,7 +957,7 @@ mod credential_tests {
     fn a_credential_that_is_also_a_known_address_reuses_its_address_invention() {
         let mut a = Anonymizer::new(1, Vec::new());
         a.learn(&[Token::IPv4("203.0.113.25".to_string())]);
-        a.seal();
+        let mut a = a.seal();
         let invented = a.rewrite("203.0.113.25");
         assert_ne!(invented, "203.0.113.25");
         assert!(invented.parse::<std::net::Ipv4Addr>().is_ok());
@@ -997,18 +973,19 @@ mod credential_tests {
 mod tests {
     use super::*;
 
-    /// An invented label may not be a vocabulary word: the run exists to
-    /// remove that word, and the survived-word check would fail on it.
     #[test]
     fn an_invention_never_carries_a_vocabulary_word() {
         let mut hits = 0;
         for seed in 0..200u64 {
             let mut a = Anonymizer::new(seed, vec!["g8".to_string(), "ab".to_string()]);
             a.learn(&[Token::Fqdn("lc.oppdiqfrhj.vyvmmxvn.k9.bolt".to_string())]);
-            a.seal();
+            let mut a = a.seal();
             let out = a.rewrite("loading lc.oppdiqfrhj.vyvmmxvn.k9.bolt");
             for seg in out.split(|c: char| !c.is_ascii_alphanumeric()) {
-                assert!(seg != "g8" && seg != "ab", "seed {seed}: {out}");
+                assert!(
+                    seg != "g8" && seg != "ab",
+                    "seed {seed}: an invented segment is a vocabulary word the run exists to remove, and the survived-word check would fail on it: {out}"
+                );
             }
             hits += 1;
         }
@@ -1022,7 +999,7 @@ mod tests {
     #[test]
     fn ipv4_stays_ipv4_in_ten_slash_eight() {
         let mut a = anon();
-        let out = a.draw_ipv4("203.0.113.9");
+        let out = a.draw_ipv4_keeping_subnet_membership("203.0.113.9");
         let octets: Vec<u8> = out.split('.').map(|p| p.parse().unwrap()).collect();
         assert_eq!(octets.len(), 4, "{out} must still be an IPv4 address");
         assert_eq!(octets[0], 10, "{out} must live in 10.0.0.0/8");
@@ -1054,7 +1031,7 @@ mod tests {
         assert_eq!(&uuid[14..15], "4", "the version nibble is the kind");
         assert_ne!(uuid, "9c0e2dfe-6623-4cad-bc68-c9bc9bf2f9cc");
 
-        let ulid = a.draw_uuid("01K5H2M4N6P8Q0R2S4T6V8W0X2");
+        let ulid = a.draw_ulid("01K5H2M4N6P8Q0R2S4T6V8W0X2");
         assert_eq!(ulid.len(), 26);
         assert!(
             ulid.bytes().all(|b| CROCKFORD.contains(&b)),
@@ -1083,7 +1060,7 @@ mod tests {
     }
 
     #[test]
-    fn k8s_suffix_keeps_alphabet_and_length_and_leaves_the_words() {
+    fn k8s_suffix_keeps_alphabet_length_and_digit_positions_and_leaves_the_words() {
         let mut a = anon();
         let out = a.draw_k8s("pushprox-kube-proxy-client-9djm4");
         assert!(
@@ -1096,36 +1073,35 @@ mod tests {
             suffix.bytes().all(|b| K8S_RAND_ALPHABET.contains(&b)),
             "invented suffix stays in the k8s alphabet: {suffix}"
         );
-        // Digit positions in the original stay digits in the invention:
-        // "9djm4" has a digit at position 0 and position 4.
         let orig = "9djm4";
         for (i, c) in orig.char_indices() {
             let inv = suffix.as_bytes()[i] as char;
             assert_eq!(
                 c.is_ascii_digit(),
                 inv.is_ascii_digit(),
-                "position {i}: {orig} -> {suffix}"
+                "position {i}: a digit of {orig} stays a digit and a letter a letter -> {suffix}"
             );
         }
         assert_ne!(out, "pushprox-kube-proxy-client-9djm4");
+    }
 
-        // A segment with a character outside the k8s alphabet (e.g. 'a')
-        // falls back to invent_like: same length, digits stay digits, not
-        // equal to the input.
-        let out2 = a.draw_k8s("web-1a0e5f-abcde");
-        let suffix2 = out2.rsplit('-').next().unwrap();
-        assert_eq!(suffix2.len(), 5);
+    #[test]
+    fn k8s_segment_outside_the_alphabet_falls_back_to_same_char_classes() {
+        let mut a = anon();
+        let out = a.draw_k8s("web-1a0e5f-abcde");
+        let suffix = out.rsplit('-').next().unwrap();
+        assert_eq!(suffix.len(), 5, "same length: {out}");
         assert!(
-            suffix2.chars().all(|c| c.is_ascii_lowercase()),
-            "invent_like keeps letter class: {suffix2}"
+            suffix.chars().all(|c| c.is_ascii_lowercase()),
+            "invent_same_char_classes keeps letter class: {suffix}"
         );
-        assert_ne!(suffix2, "abcde");
+        assert_ne!(suffix, "abcde");
     }
 
     #[test]
     fn host_keeps_label_count_length_and_tld() {
         let mut a = anon();
-        let out = a.draw_host("db1.prod.example.com");
+        let out = a.draw_host_keeping_tld("db1.prod.example.com");
         let labels: Vec<&str> = out.split('.').collect();
         assert_eq!(labels.len(), 4, "{out}");
         assert_eq!(labels[3], "com", "TLD is kept: {out}");
@@ -1154,7 +1130,7 @@ mod tests {
 
     #[test]
     fn word_replacement_respects_word_and_percent_boundaries() {
-        let mut a = Anonymizer::new(1, vec!["acme".to_string()]);
+        let mut a = Anonymizer::new(1, vec!["acme".to_string()]).seal();
         let out = a.rewrite("Host:acme dbus acme-01 x%2Dacme%2Dy acmed");
         assert_eq!(
             out.to_lowercase().matches("acme").count(),
@@ -1181,21 +1157,18 @@ mod tests {
     fn a_hostname_never_rewrites_a_longer_token() {
         let mut a = anon();
         a.learn(&[Token::Host("db".to_string())]);
-        a.seal();
+        let mut a = a.seal();
         let out = a.rewrite("db dbus /var/db");
         assert!(out.contains("dbus"), "{out}");
         assert!(!out.starts_with("db "), "{out}");
     }
 
     #[test]
-    fn a_mapped_value_is_replaced_inside_a_compound_token_on_every_line() {
+    fn a_host_seen_only_on_a_later_line_is_replaced_inside_an_earlier_compound_token() {
         let mut a = anon();
-        // The volume name arrives on line 1, the bare host only on line 2.
-        // The mapping is built over the whole log before a line is emitted,
-        // so the later host is still replaced in the earlier compound token.
         a.learn(&[Token::VolumeName("zorvex-model-storage".to_string())]);
         a.learn(&[Token::Host("zorvex".to_string())]);
-        a.seal();
+        let mut a = a.seal();
         let one = a.rewrite("PVC=\"vllm/zorvex-model-storage\" mounted");
         let two = a.rewrite("Aug 29 08:40:15 zorvex kubelet: ready");
         assert!(
@@ -1206,7 +1179,7 @@ mod tests {
         let invention = two.split_whitespace().nth(3).expect("host field");
         assert!(
             one.contains(&format!("vllm/{invention}-model-storage")),
-            "one original, one invention, both lines: {one} vs {invention}"
+            "the mapping covers the whole log before a line is emitted, so the host from line 2 is replaced in line 1: {one} vs {invention}"
         );
     }
 
@@ -1216,7 +1189,7 @@ mod tests {
         a.learn(&[Token::PodName(
             "logical-backup-quorlin-postgres-cluster-1756425600".to_string(),
         )]);
-        a.seal();
+        let mut a = a.seal();
         let out = a.rewrite(
             "job logical-backup-quorlin-postgres-cluster-1756425600 x%2Fquorlin%2Fy a-b-quorlin-c quorlind",
         );
@@ -1239,7 +1212,7 @@ mod tests {
             Token::IPv6("fe80::".to_string()),
             Token::Host("zorvex".to_string()),
         ]);
-        a.seal();
+        let mut a = a.seal();
         let out = a.rewrite("route add fe80::/64 dev zorvex");
         assert!(out.contains("fe80::/64"), "a route prefix is kept: {out}");
         let replaced = a.replaced_originals();
@@ -1255,53 +1228,51 @@ mod tests {
         let a = "Aug 29 08:40:15 host1 sshd[123]: Failed password for root from 10.0.0.5";
         let b = "Aug 30 09:41:16 host1 sshd[456]: Failed password for root from 10.0.0.9";
         let c = "Aug 29 08:40:15 host1 sshd[123]: Accepted password for root from 10.0.0.5";
-        assert_eq!(word_shape(a), word_shape(b));
-        assert_ne!(word_shape(a), word_shape(c));
+        assert_eq!(literal_word_shape(a), literal_word_shape(b));
+        assert_ne!(literal_word_shape(a), literal_word_shape(c));
         assert_eq!(
-            word_shape(a),
+            literal_word_shape(a),
             "Aug # #:#:# host# sshd # : Failed password for root from #.#.#.#"
         );
     }
 
     #[test]
     fn word_shape_splits_a_spaceless_json_record_into_fields() {
-        // One whitespace word each: without the field split both records
-        // were `#`, and the distiller dropped one of the two events.
         assert_ne!(
-            word_shape(r#"{"action":"flomp","ms":12}"#),
-            word_shape(r#"{"action":"blorb","ms":12}"#)
+            literal_word_shape(r#"{"action":"flomp","ms":12}"#),
+            literal_word_shape(r#"{"action":"blorb","ms":12}"#),
+            "without the field split both records shape to `#` and the distiller drops one event"
         );
     }
 
     #[test]
     fn word_shape_keeps_the_letters_around_a_digit() {
         assert_ne!(
-            word_shape("switch0.1045: Gained carrier"),
-            word_shape("eth0: Gained carrier")
+            literal_word_shape("switch0.1045: Gained carrier"),
+            literal_word_shape("eth0: Gained carrier")
         );
-        assert_ne!(word_shape("/soc/csr@40000"), word_shape("/soc/cti@40000"));
         assert_ne!(
-            word_shape("  --frobnicate-cache-max='16384'"),
-            word_shape("  --frobnicate-queue-max='16384'")
+            literal_word_shape("/soc/csr@40000"),
+            literal_word_shape("/soc/cti@40000")
+        );
+        assert_ne!(
+            literal_word_shape("  --frobnicate-cache-max='16384'"),
+            literal_word_shape("  --frobnicate-queue-max='16384'")
         );
     }
 
     #[test]
     fn word_shape_folds_ids_stamps_and_pids() {
         assert_eq!(
-            word_shape("2026-08-29T08:40:15.123456Z pid=4021 job done"),
-            word_shape("2026-08-30T21:04:59.987654Z pid=77 job done")
+            literal_word_shape("2026-08-29T08:40:15.123456Z pid=4021 job done"),
+            literal_word_shape("2026-08-30T21:04:59.987654Z pid=77 job done")
         );
         assert_eq!(
-            word_shape("blob a3f5b8c9d0e1f2a3b4c5d6e7f8091a2b done"),
-            word_shape("blob 7c1d9e0f2a3b4c5d6e7f8091a2b3c4d5 done")
+            literal_word_shape("blob a3f5b8c9d0e1f2a3b4c5d6e7f8091a2b done"),
+            literal_word_shape("blob 7c1d9e0f2a3b4c5d6e7f8091a2b3c4d5 done")
         );
     }
 
-    /// lessence-defect: `"route_id":"liveness"` was classified as an
-    /// opaque id and invented into `5f21025e`, taking `"action":"liveness"`
-    /// down with it (same-value rewrite is global). A real 8-hex id must
-    /// still be recognised and changed.
     #[test]
     fn a_plain_word_survives_anonymize_but_a_real_hex_id_does_not() {
         use crate::patterns::uuid::UuidDetector;
@@ -1312,11 +1283,11 @@ mod tests {
             let (_, tokens) = UuidDetector::detect_and_replace(line);
             a.learn(&tokens);
         }
-        a.seal();
+        let mut a = a.seal();
         let rewritten = a.rewrite(route_line);
         assert!(
             rewritten.contains("liveness"),
-            "a plain word is not an id: {rewritten}"
+            "a plain word is not an id; inventing `route_id` would take `action` with it through the global rewrite: {rewritten}"
         );
         let rewritten_hex = a.rewrite(hex_line);
         assert!(
@@ -1327,8 +1298,8 @@ mod tests {
 
     #[test]
     fn word_shape_folds_digits_and_keeps_words() {
-        assert_eq!(word_shape("a 1 b2 c"), "a # b# c");
-        assert_eq!(word_shape("   spaced   out  "), "spaced out");
+        assert_eq!(literal_word_shape("a 1 b2 c"), "a # b# c");
+        assert_eq!(literal_word_shape("   spaced   out  "), "spaced out");
     }
 }
 
@@ -1340,7 +1311,7 @@ mod boundary_tests {
     fn a_value_behind_a_percent_escape_is_still_replaced() {
         let mut a = Anonymizer::new(1, Vec::new());
         a.learn(&[Token::Fqdn("rook-ceph.rbd.csi.ceph.com".to_string())]);
-        a.seal();
+        let mut a = a.seal();
         let out = a.rewrite(
             "x%2Frook-ceph.rbd.csi.ceph.com-reg.sock and /rook-ceph.rbd.csi.ceph.com^0001",
         );
@@ -1353,14 +1324,15 @@ mod whole_value_tests {
     use super::*;
     use crate::patterns::network::NetworkDetector;
 
-    /// Learn a line the way `--anonymize` does: its tokens, then its text.
-    fn anonymize(lines: &[&str]) -> Vec<String> {
+    fn learn_tokens_then_text_and_rewrite(lines: &[&str]) -> Vec<String> {
         let mut a = Anonymizer::new(1, Vec::new());
         for line in lines {
-            a.learn(&NetworkDetector::detect_and_replace(line, true, true, true).1);
-            a.learn_text(line);
+            a.learn_line(
+                &NetworkDetector::detect_and_replace(line, true, true, true).1,
+                line,
+            );
         }
-        a.seal();
+        let mut a = a.seal();
         lines.iter().map(|line| a.rewrite(line)).collect()
     }
 
@@ -1389,7 +1361,7 @@ mod whole_value_tests {
 
     #[test]
     fn an_address_with_any_port_is_invented() {
-        let out = anonymize(&[
+        let out = learn_tokens_then_text_and_rewrite(&[
             "peer 198.51.100.3:99999 dropped",
             "peer [2001:db8::5]:70000 x",
         ]);
@@ -1408,7 +1380,7 @@ mod whole_value_tests {
         let mut a = Anonymizer::new(1, Vec::new());
         let line = "GET http://203.0.113.44:8080/x for carol@example.com via [2001:db8::44]";
         a.learn_text(line);
-        a.seal();
+        let mut a = a.seal();
         let out = a.rewrite(line);
         for original in ["203.0.113.44", "carol@example.com", "2001:db8::44"] {
             assert!(!out.contains(original), "{out}");
@@ -1417,7 +1389,7 @@ mod whole_value_tests {
 
     #[test]
     fn header_and_url_credentials_are_invented() {
-        let mut a = Anonymizer::new(1, Vec::new());
+        let mut a = Anonymizer::new(1, Vec::new()).seal();
         let out = a.rewrite("Authorization: Bearer Zm9vYmFyYmF6cXV4");
         let token = out.strip_prefix("Authorization: Bearer ").unwrap();
         assert_ne!(token, "Zm9vYmFyYmF6cXV4");

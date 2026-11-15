@@ -635,7 +635,7 @@ fn streamed_token_hash_equals_hashing_the_value_string_for_every_variant() {
         Token::Pid(9999),
         Token::ThreadID("worker-3".into()),
         Token::Path("/var/log/app.log".into()),
-        Token::Json(r#"{"key":"val"}"#.into()),
+        Token::EmbeddedJson(r#"{"key":"val"}"#.into()),
         Token::Duration("3.5s".into()),
         Token::CpuQuantity("750m".into()),
         Token::Size("2MB".into()),
@@ -693,7 +693,7 @@ fn is_sample_worthy_covers_all_token_variants() {
         (Token::HttpStatus(200), true),
         (Token::HttpStatusClass("2xx".into()), true),
         (Token::BracketContext(vec!["err".into()]), true),
-        (Token::Json("{}".into()), true),
+        (Token::EmbeddedJson("{}".into()), true),
         (Token::CpuQuantity("750m".into()), true),
         (Token::Timestamp("ts".into()), false),
         (Token::Port(80), false),
@@ -753,7 +753,7 @@ fn token_type_name_covers_all_variants() {
         Token::Pid(1),
         Token::ThreadID("t".into()),
         Token::Path("/p".into()),
-        Token::Json("{}".into()),
+        Token::EmbeddedJson("{}".into()),
         Token::Duration("1s".into()),
         Token::CpuQuantity("750m".into()),
         Token::Size("1K".into()),
@@ -808,7 +808,7 @@ fn token_value_string_handles_all_variants() {
         Token::Pid(9999),
         Token::ThreadID("worker-3".into()),
         Token::Path("/var/log/app.log".into()),
-        Token::Json(r#"{"key":"val"}"#.into()),
+        Token::EmbeddedJson(r#"{"key":"val"}"#.into()),
         Token::Duration("3.5s".into()),
         Token::Size("2MB".into()),
         Token::Number("42".into()),
@@ -2036,7 +2036,7 @@ fn a_group_record_opens_with_the_head_the_report_index_reads() {
     f.format_group_json(&group, BTreeMap::new()).unwrap();
     let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
     assert_eq!(
-        crate::overview::group_head(&json),
+        crate::overview::writer_group_head(&json),
         Some((1, 2)),
         "the report index fast path reads id and count from the record's first bytes"
     );
@@ -3181,7 +3181,7 @@ fn count_pattern_types_path() {
 #[test]
 fn count_pattern_types_json() {
     let mut f = make_folder();
-    f.count_pattern_types(&[Token::Json("{}".into())]);
+    f.count_pattern_types(&[Token::EmbeddedJson("{}".into())]);
     assert_eq!(f.stats.json, 1);
     assert_eq!(f.stats.paths, 0);
 }
@@ -6117,8 +6117,14 @@ fn mac_occurrences_and_distinct_values_are_separate_counts() {
         f.count_pattern_types(&[Token::Mac(value.into())]);
     }
     assert_eq!(f.stats.macs, 3);
-    assert_eq!(f.stats.cardinality_for(StatsBucket::Macs), (2, true));
-    assert_eq!(f.stats.cardinality_for(StatsBucket::Emails), (0, true));
+    assert_eq!(
+        f.stats.cardinality_for(StatsBucket::Macs),
+        crate::briefing::Distinct::Exact(2)
+    );
+    assert_eq!(
+        f.stats.cardinality_for(StatsBucket::Emails),
+        crate::briefing::Distinct::Exact(0)
+    );
 }
 
 #[test]

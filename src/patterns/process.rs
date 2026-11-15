@@ -28,12 +28,12 @@ static THREAD_NAME_REGEX: LazyLock<Regex> =
 // By the time this runs the timestamp and the call site are placeholders;
 // the number between them is a pid whatever its digit count (`1` in a
 // container, `114343` on a node), so the slot says so. A protected klog
-// call site (`AnchorSentinel::KlogCallSite`) carries the same grammar while
+// call site (`AnchorSentinel::KlogCallSiteVisibleToPid`) carries the same grammar while
 // the original site is kept for visible rendering.
 static KLOG_PID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(<TIMESTAMP>\s+)(\d+)( (?:[A-Za-z0-9_]+\.go:<LINE>|{}\d+\x00)\])",
-        regex::escape(AnchorSentinel::KlogCallSite.start())
+        regex::escape(AnchorSentinel::KlogCallSiteVisibleToPid.start())
     ))
     .unwrap()
 });
@@ -45,7 +45,9 @@ impl ProcessDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        if result.contains(".go:<LINE>]") || result.contains(AnchorSentinel::KlogCallSite.start()) {
+        if result.contains(".go:<LINE>]")
+            || result.contains(AnchorSentinel::KlogCallSiteVisibleToPid.start())
+        {
             super::fold_matches(&mut result, &mut tokens, &KLOG_PID_REGEX, |caps| {
                 Some((
                     Token::Pid(caps[2].parse().unwrap_or(0)),
@@ -199,17 +201,17 @@ mod tests {
             .0
         };
         assert_eq!(
-            line(AnchorSentinel::KlogCallSite),
+            line(AnchorSentinel::KlogCallSiteVisibleToPid),
             format!(
                 "<TIMESTAMP>    <PID> {}] done",
-                AnchorSentinel::KlogCallSite.text(4)
+                AnchorSentinel::KlogCallSiteVisibleToPid.text(4)
             )
         );
         assert_eq!(
-            line(AnchorSentinel::Opaque),
+            line(AnchorSentinel::OpaqueToDetectors),
             format!(
                 "<TIMESTAMP>    3310 {}] done",
-                AnchorSentinel::Opaque.text(4)
+                AnchorSentinel::OpaqueToDetectors.text(4)
             )
         );
     }

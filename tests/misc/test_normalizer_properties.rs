@@ -64,7 +64,7 @@ fn masked_forms(spec: &str, planted: &str, before: &str, after: &str) -> Vec<Str
     let z = Sanitizer::parse(&[spec.to_string()], false)
         .unwrap()
         .unwrap()
-        .with_key(7);
+        .with_test_key(7);
     let line = format!("{before} {planted} {after}");
     let normalized = default_normalizer().normalize_line(line.clone()).unwrap();
     vec![

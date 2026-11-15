@@ -1,11 +1,11 @@
 use lessence::config::Config;
-use lessence::ingest::{Event, IngestReport, Ingestor, InputReader};
+use lessence::ingest::{Event, IngestReport, Ingestor, InputReader, Source};
 
 /// Run text through the real ingestion path and collect the delivered lines.
 fn ingest_lines(config: &Config, text: String) -> (Vec<String>, IngestReport) {
     let ingestor = Ingestor::from_config(config).expect("valid config");
     let readers = vec![InputReader {
-        source: None,
+        source: Source::Stdin,
         reader: Box::new(std::io::Cursor::new(text.into_bytes())),
     }];
     let mut delivered = Vec::new();
