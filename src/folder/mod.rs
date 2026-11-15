@@ -233,7 +233,7 @@ impl PatternGroup {
         if line.hash == self.first().hash {
             return Some(Vec::new());
         }
-        varying_spans(&self.template, &line.normalized)
+        template_edits(&self.template, &line.normalized)
     }
 
     fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
@@ -1174,19 +1174,31 @@ fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>
     out
 }
 
+fn is_field_delimiter(b: u8) -> bool {
+    matches!(b, b'=' | b':' | b'[' | b'(')
+}
+
+fn is_closing_bracket(b: u8) -> bool {
+    matches!(b, b']' | b')')
+}
+
+fn after_last_field_delimiter(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|&b| is_field_delimiter(b))
+        .map_or(0, |i| i + 1)
+}
+
 fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
     let (rb, wb) = (r.as_bytes(), w.as_bytes());
     let common = rb.iter().zip(wb).take_while(|(x, y)| x == y).count();
     let common = common.min(r.len() - 1).min(w.len() - 1);
-    let prefix = rb[..common]
-        .iter()
-        .rposition(|&b| matches!(b, b'=' | b':' | b'[' | b'('))
-        .map_or(0, |i| i + 1);
+    let prefix = after_last_field_delimiter(&rb[..common]);
     let mut suffix = 0;
     while prefix + suffix + 1 < rb.len()
         && prefix + suffix + 1 < wb.len()
         && rb[rb.len() - 1 - suffix] == wb[wb.len() - 1 - suffix]
-        && matches!(rb[rb.len() - 1 - suffix], b']' | b')')
+        && is_closing_bracket(rb[rb.len() - 1 - suffix])
     {
         suffix += 1;
     }
@@ -1200,10 +1212,7 @@ fn kept_affixes(prefix: &str, suffix: &str, w: &str) -> (usize, usize) {
         pb.len()
     } else {
         let common = common.min(wb.len().saturating_sub(1));
-        pb[..common]
-            .iter()
-            .rposition(|&b| matches!(b, b'=' | b':' | b'[' | b'('))
-            .map_or(0, |i| i + 1)
+        after_last_field_delimiter(&pb[..common])
     };
     let mut q = 0;
     while q < sb.len() && p + q + 1 < wb.len() && sb[sb.len() - 1 - q] == wb[wb.len() - 1 - q] {
@@ -1227,10 +1236,16 @@ fn unpaired_quote(r: &str, from: usize, to: usize) -> bool {
 }
 
 fn balance_quotes(r: &str, w: &str, p: usize, q: usize) -> (usize, usize) {
-    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
-    if !odd(p, q) {
+    if !unpaired_quote(r, p, r.len() - q) {
         return (p, q);
     }
+    closing_quote_joins_suffix(r, w, p, q)
+        .or_else(|| opening_quote_joins_prefix(r, w, p, q))
+        .unwrap_or_else(|| slot_covers_quoted_value(r, p, q))
+}
+
+fn closing_quote_joins_suffix(r: &str, w: &str, p: usize, q: usize) -> Option<(usize, usize)> {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
     let (rb, wb) = (r.as_bytes(), w.as_bytes());
     let mut inner = q;
     while let Some(quote) = r[p..r.len() - inner].rfind('"').map(|at| p + at) {
@@ -1241,40 +1256,48 @@ fn balance_quotes(r: &str, w: &str, p: usize, q: usize) -> (usize, usize) {
         };
         let keep = r.len() - quote;
         if quote == p || wb.len() <= p + keep || !w.ends_with(&r[quote..]) {
-            break;
+            return None;
         }
         inner = keep;
         if !odd(p, inner) {
             while p + inner + 1 < rb.len()
                 && p + inner + 1 < wb.len()
                 && rb[rb.len() - 1 - inner] == wb[wb.len() - 1 - inner]
-                && matches!(rb[rb.len() - 1 - inner], b']' | b')')
+                && is_closing_bracket(rb[rb.len() - 1 - inner])
             {
                 inner += 1;
             }
-            return (p, inner);
+            return Some((p, inner));
         }
     }
+    None
+}
+
+fn opening_quote_joins_prefix(r: &str, w: &str, p: usize, q: usize) -> Option<(usize, usize)> {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
+    let wb = w.as_bytes();
     let mut inner = p;
     while let Some(quote) = r[inner..r.len() - q].find('"').map(|at| inner + at) {
         let keep = quote + 1;
         if keep >= r.len() - q || wb.len() <= keep + q || !w.starts_with(&r[..keep]) {
-            break;
+            return None;
         }
         inner = keep;
         if !odd(inner, q) {
-            return (inner, q);
+            return Some((inner, q));
         }
     }
+    None
+}
+
+fn slot_covers_quoted_value(r: &str, p: usize, q: usize) -> (usize, usize) {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
     let mut outer = p;
     while odd(outer, q) {
         let Some(quote) = r[..outer].rfind('"') else {
             break;
         };
-        outer = r[..quote]
-            .bytes()
-            .rposition(|b| matches!(b, b'=' | b':' | b'[' | b'('))
-            .map_or(0, |i| i + 1);
+        outer = after_last_field_delimiter(&r.as_bytes()[..quote]);
     }
     if !odd(outer, q) {
         (outer, q)
@@ -1384,11 +1407,17 @@ fn range_text<'m>(member: &'m str, spans: &[(usize, usize)], (c, d): (usize, usi
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Edit {
-    Vary { at: usize, len: usize },
-    Open { at: usize, text: String },
+    Vary {
+        at: usize,
+        len: usize,
+    },
+    Open {
+        at: usize,
+        unit_with_separator: String,
+    },
 }
 
-fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
+fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
     let spans = unit_spans(template);
     let member_spans = unit_spans(member);
     let tmpl: Vec<&str> = spans
@@ -1410,8 +1439,7 @@ fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
     };
     let mut unshown = unshown.into_iter().peekable();
     let mut edits = Vec::new();
-    let mut same_pci_identity = None;
-    let mut same_option_identity = None;
+    let mut shared_atoms = SharedAtoms::new(template, member);
     for i in 0..=spans.len() {
         while let Some((_, run)) = unshown.next_if(|&(t, _)| t == i) {
             edits.push(slot_opening(
@@ -1452,26 +1480,7 @@ fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
             }
             continue;
         }
-        if crate::normalize::pci_addresses(r)
-            .next()
-            .is_some_and(|m| m.start() == 0 && m.end() == r.len())
-            && *same_pci_identity.get_or_insert_with(|| {
-                crate::normalize::pci_addresses(template)
-                    .map(|m| m.as_str())
-                    .eq(crate::normalize::pci_addresses(member).map(|m| m.as_str()))
-            })
-        {
-            continue;
-        }
-        if crate::normalize::cli_option_names(r)
-            .next()
-            .is_some_and(|m| m.start() == 0 && m.end() == r.len())
-            && *same_option_identity.get_or_insert_with(|| {
-                crate::normalize::cli_option_names(template)
-                    .map(|m| m.as_str())
-                    .eq(crate::normalize::cli_option_names(member).map(|m| m.as_str()))
-            })
-        {
+        if shared_atoms.keeps(r) {
             continue;
         }
         let partner = aligned[i].or_else(|| match ranges.get(i).copied().flatten() {
@@ -1488,6 +1497,50 @@ fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
         });
     }
     Some(edits)
+}
+
+struct SharedAtoms<'a> {
+    template: &'a str,
+    member: &'a str,
+    same_pci_addresses: Option<bool>,
+    same_option_names: Option<bool>,
+}
+
+impl<'a> SharedAtoms<'a> {
+    fn new(template: &'a str, member: &'a str) -> Self {
+        Self {
+            template,
+            member,
+            same_pci_addresses: None,
+            same_option_names: None,
+        }
+    }
+
+    fn keeps(&mut self, unit: &str) -> bool {
+        use crate::normalize::{cli_option_names, pci_addresses};
+        let (template, member) = (self.template, self.member);
+        (is_whole_atom(pci_addresses(unit), unit)
+            && *self
+                .same_pci_addresses
+                .get_or_insert_with(|| same_atoms(pci_addresses(template), pci_addresses(member))))
+            || (is_whole_atom(cli_option_names(unit), unit)
+                && *self.same_option_names.get_or_insert_with(|| {
+                    same_atoms(cli_option_names(template), cli_option_names(member))
+                }))
+    }
+}
+
+fn is_whole_atom<'s>(mut atoms: impl Iterator<Item = regex::Match<'s>>, unit: &str) -> bool {
+    atoms
+        .next()
+        .is_some_and(|m| m.start() == 0 && m.end() == unit.len())
+}
+
+fn same_atoms<'s>(
+    ours: impl Iterator<Item = regex::Match<'s>>,
+    theirs: impl Iterator<Item = regex::Match<'s>>,
+) -> bool {
+    ours.map(|m| m.as_str()).eq(theirs.map(|m| m.as_str()))
 }
 
 fn slot_opening(
@@ -1514,12 +1567,12 @@ fn slot_opening(
     Some(if parts_apart && text.strip_prefix(before) == Some(after) {
         Edit::Open {
             at: between.start + before.len(),
-            text: VARIES_MARK.to_string(),
+            unit_with_separator: VARIES_MARK.to_string(),
         }
     } else if t == 0 {
         Edit::Open {
             at: between.end,
-            text: format!(
+            unit_with_separator: format!(
                 "{VARIES_MARK}{}",
                 if after.is_empty() { " " } else { after }
             ),
@@ -1527,7 +1580,7 @@ fn slot_opening(
     } else {
         Edit::Open {
             at: between.start,
-            text: format!(
+            unit_with_separator: format!(
                 "{}{VARIES_MARK}",
                 if before.is_empty() { " " } else { before }
             ),
@@ -1539,7 +1592,10 @@ fn apply_edits(template: &mut String, edits: &[Edit]) {
     for edit in edits.iter().rev() {
         match edit {
             Edit::Vary { at, len } => template.replace_range(*at..at + len, VARIES_MARK),
-            Edit::Open { at, text } => template.insert_str(*at, text),
+            Edit::Open {
+                at,
+                unit_with_separator,
+            } => template.insert_str(*at, unit_with_separator),
         }
     }
 }
@@ -1644,6 +1700,15 @@ fn cli_option_units(s: &str, units: Vec<(usize, usize)>) -> Vec<(usize, usize)> 
     ranges.sort_unstable_by_key(|range| range.start);
     boundaries.sort_unstable();
     boundaries.dedup();
+    split_units_at(s, units, &ranges, &boundaries)
+}
+
+fn split_units_at(
+    s: &str,
+    units: Vec<(usize, usize)>,
+    ranges: &[std::ops::Range<usize>],
+    boundaries: &[usize],
+) -> Vec<(usize, usize)> {
     let mut split = Vec::with_capacity(units.len() + boundaries.len());
     let (mut range_index, mut boundary_index) = (0, 0);
     for (at, len) in units {
@@ -1686,34 +1751,11 @@ pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
                 })
                 .collect();
             boundaries.dedup();
-            let mut split = Vec::with_capacity(units.len() + requests.len() * 5);
-            let (mut request_index, mut boundary_index) = (0, 0);
-            for (at, len) in units {
-                while request_index < requests.len() && requests[request_index].0.end() <= at {
-                    request_index += 1;
-                }
-                if request_index == requests.len() || requests[request_index].0.start() >= at + len
-                {
-                    split.push((at, len));
-                    continue;
-                }
-                for (word_at, word_len) in word_spans(&s[at..at + len]) {
-                    let start = at + word_at;
-                    let end = start + word_len;
-                    let mut cursor = start;
-                    while boundary_index < boundaries.len() && boundaries[boundary_index] <= start {
-                        boundary_index += 1;
-                    }
-                    while boundary_index < boundaries.len() && boundaries[boundary_index] < end {
-                        let boundary = boundaries[boundary_index];
-                        split.push((cursor, boundary - cursor));
-                        cursor = boundary;
-                        boundary_index += 1;
-                    }
-                    split.push((cursor, end - cursor));
-                }
-            }
-            units = split;
+            let ranges: Vec<_> = requests
+                .iter()
+                .map(|(request, _)| request.range())
+                .collect();
+            units = split_units_at(s, units, &ranges, &boundaries);
         }
     }
     units = cli_option_units(s, units);
@@ -2792,7 +2834,7 @@ impl PatternFolder {
             if line.hash == group.lines[0].hash {
                 continue;
             }
-            let edits = varying_spans(&template, &line.normalized).unwrap_or_default();
+            let edits = template_edits(&template, &line.normalized).unwrap_or_default();
             if edits.is_empty() {
                 continue;
             }

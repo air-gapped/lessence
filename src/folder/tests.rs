@@ -5309,7 +5309,7 @@ fn repeated_option_names_survive_arguments_of_different_lengths() {
         r#"{"msg":"depot --mode alpha --mode gamma","note":"steady"}"#,
         r#"{"msg":"depot --mode alpha extra --mode delta","note":"steady"}"#,
     ] {
-        let edits = varying_spans(&template, member).unwrap();
+        let edits = template_edits(&template, member).unwrap();
         apply_edits(&mut template, &edits);
         assert_eq!(template.matches("--mode").count(), 2, "{template}");
         assert!(template.ends_with(r#"","note":"steady"}"#), "{template}");
@@ -5487,7 +5487,7 @@ fn a_slot_against_a_member_of_another_length_is_rechecked_in_its_gap() {
 /// `template` with every span `member` turns into `<VARIES>` replaced.
 fn marked(template: &str, member: &str) -> String {
     let mut t = template.to_string();
-    apply_edits(&mut t, &varying_spans(template, member).unwrap());
+    apply_edits(&mut t, &template_edits(template, member).unwrap());
     t
 }
 
@@ -5765,7 +5765,7 @@ fn request_route_survives_repeated_method_and_version_variation() {
         r#"request="PUT /health HTTP/3" done"#,
         r#"request="GET /health HTTP/1" done"#,
     ] {
-        let edits = varying_spans(&template, member).unwrap();
+        let edits = template_edits(&template, member).unwrap();
         apply_edits(&mut template, &edits);
         assert_eq!(template, r#"request="<VARIES> /health HTTP/<VARIES>" done"#);
     }
@@ -8186,11 +8186,11 @@ fn a_line_its_groups_template_is_false_of_stops_a_test_build() {
     group.add_line(make_line("user bob@test.com logged in", vec![]), 2);
 }
 
-/// `varying_spans` for a member the template can be made to show, each
+/// `template_edits` for a member the template can be made to show, each
 /// edit as the span it turns into `<VARIES>`, and an opened slot as the
 /// empty span where it goes in.
 fn spans_of(template: &str, member: &str) -> Vec<(usize, usize)> {
-    varying_spans(template, member)
+    template_edits(template, member)
         .expect("the member can be shown")
         .into_iter()
         .map(|edit| match edit {
@@ -8271,7 +8271,7 @@ fn two_long_lines_too_unlike_to_align_call_for_no_edit() {
     let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
     let template = words.join(" ");
     let longer = format!("{template} {}", words[..=ALIGN_BAND].join(" "));
-    assert_eq!(varying_spans(&template, &longer), None);
+    assert_eq!(template_edits(&template, &longer), None);
 }
 
 #[test]
@@ -8279,7 +8279,7 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
     let open = |at: usize, text: &str| {
         Some(Edit::Open {
             at,
-            text: text.to_string(),
+            unit_with_separator: text.to_string(),
         })
     };
     let member = ("a b c", [(0, 1), (2, 1), (4, 1)]);
@@ -8352,7 +8352,7 @@ fn a_slot_goes_between_the_separators_the_template_shares_with_the_member() {
         slot_opening("a {}", &[(0, 1)], "a {x}", &[(0, 1), (3, 1)], 1, (1, 2)),
         Some(Edit::Open {
             at: 3,
-            text: VARIES_MARK.into()
+            unit_with_separator: VARIES_MARK.into()
         })
     );
     assert_eq!(
@@ -8379,7 +8379,7 @@ fn an_opened_slot_counts_the_members_already_held_as_absent() {
     };
     let open = |at: usize| Edit::Open {
         at,
-        text: " <VARIES>".into(),
+        unit_with_separator: " <VARIES>".into(),
     };
     // right after the slot `k=<VARIES>`, which ends at 12: the second slot
     let mut state = held();
