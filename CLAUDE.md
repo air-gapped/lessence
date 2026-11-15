@@ -16,7 +16,7 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 ## Commands
 
 ```bash
-make ci             # fmt + clippy + doc + test + deny + mutants-pins (~20 s warm, every commit). Tests run on
+make ci             # fmt + clippy + doc + test + deny + mutants-pins + comment-budget (~20 s warm, every commit). Tests run on
                     # the test profile: the release profile (fat LTO, one codegen unit) is
                     # for the shipped binary, and GitHub CI is where it is checked to compile
 make gate           # FAILS on exactly five things: a new ##CASE that also passes on the

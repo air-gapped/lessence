@@ -2,7 +2,7 @@
 # `make ci` mirrors .github/workflows/ci.yml except that CI also runs
 # `cargo build --release` (the release profile is checked there) — run it before every commit
 
-.PHONY: ci fmt clippy doc build test deny mutants-pins docs install clean help \
+.PHONY: ci fmt clippy doc build test deny mutants-pins comment-budget docs install clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
        gate release-check distill
 
@@ -11,7 +11,7 @@
 #---------------------------------------------------------------------------
 
 ## ci: Run the full CI pipeline locally (same as GitHub Actions)
-ci: fmt clippy doc test deny mutants-pins
+ci: fmt clippy doc test deny mutants-pins comment-budget
 	@echo "✓ All CI checks passed"
 
 ## fmt: Check formatting (cargo fmt --check)
@@ -41,6 +41,10 @@ deny:
 ## mutants-pins: Every exclusion in .cargo/mutants.toml still matches a mutant (~1 s)
 mutants-pins:
 	./scripts/check-mutants-pins.sh
+
+## comment-budget: Plain comment lines in src, tests and benches may only shrink
+comment-budget:
+	./scripts/check-comment-budget.sh
 
 #---------------------------------------------------------------------------
 # Verification gates (docs/verification.md)
