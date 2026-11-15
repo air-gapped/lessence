@@ -879,7 +879,49 @@ pub(crate) const VARIES_MARK: &str = "<VARIES>";
 const ABSENT: &str = "∅";
 
 pub(super) fn template_holds(template: &str, member: &str) -> bool {
-    shows_every_unit(template, member) || reads_as(template, member)
+    reads_as(template, member)
+        || (shows_every_unit(template, member) && separators_beside_slots_hold(template, member))
+}
+
+fn separators_beside_slots_hold(template: &str, member: &str) -> bool {
+    let spans = unit_spans(template);
+    let member_spans = unit_spans(member);
+    for (i, &(at, len)) in spans.iter().enumerate() {
+        if &template[at..at + len] != VARIES_MARK {
+            continue;
+        }
+        let beside: String = [i, i + 1]
+            .iter()
+            .map(|&g| &template[gap_between(&spans, template.len(), g)])
+            .collect();
+        if separator_bytes(&beside).next().is_none() {
+            continue;
+        }
+        let prev = i
+            .checked_sub(1)
+            .map(|p| range_text(template, &spans, (p, i)));
+        let next = (i + 1 < spans.len()).then(|| range_text(template, &spans, (i + 1, i + 2)));
+        for c in 0..=member_spans.len() {
+            let prev_here = match prev {
+                None => c == 0,
+                Some(p) => c > 0 && range_text(member, &member_spans, (c - 1, c)) == p,
+            };
+            let next_here = match next {
+                None => c == member_spans.len(),
+                Some(n) => {
+                    c < member_spans.len() && range_text(member, &member_spans, (c, c + 1)) == n
+                }
+            };
+            let gap = &member[gap_between(&member_spans, member.len(), c)];
+            if prev_here
+                && next_here
+                && !takes_every_separator(&mut separator_bytes(gap).collect(), &beside)
+            {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 fn shows_every_unit(template: &str, member: &str) -> bool {
@@ -1138,21 +1180,44 @@ fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
     {
         suffix += 1;
     }
-    (prefix, suffix)
+    let mut shared = suffix;
+    while prefix + shared + 1 < rb.len()
+        && prefix + shared + 1 < wb.len()
+        && rb[rb.len() - 1 - shared] == wb[wb.len() - 1 - shared]
+    {
+        shared += 1;
+    }
+    (prefix, suffix.max(words_at_the_end(rb, shared)))
+}
+
+fn words_at_the_end(bytes: &[u8], shared: usize) -> usize {
+    bytes[bytes.len() - shared..]
+        .iter()
+        .position(u8::is_ascii_whitespace)
+        .map_or(0, |at| shared - at)
 }
 
 fn kept_affixes(prefix: &str, suffix: &str, w: &str) -> (usize, usize) {
     let (pb, sb, wb) = (prefix.as_bytes(), suffix.as_bytes(), w.as_bytes());
     let common = pb.iter().zip(wb).take_while(|(x, y)| x == y).count();
-    let p = if common == pb.len() && wb.len() > pb.len() {
+    let field_prefix = || after_last_field_delimiter(&pb[..common.min(wb.len().saturating_sub(1))]);
+    let mut p = if common == pb.len() && wb.len() > pb.len() {
         pb.len()
     } else {
-        let common = common.min(wb.len().saturating_sub(1));
-        after_last_field_delimiter(&pb[..common])
+        field_prefix()
     };
     let mut q = 0;
     while q < sb.len() && p + q + 1 < wb.len() && sb[sb.len() - 1 - q] == wb[wb.len() - 1 - q] {
         q += 1;
+    }
+    if q < sb.len() && sb.iter().any(u8::is_ascii_whitespace) {
+        p = field_prefix();
+        let brackets = sb[sb.len() - q..]
+            .iter()
+            .rev()
+            .take_while(|&&b| is_closing_bracket(b))
+            .count();
+        q = brackets.max(words_at_the_end(sb, q));
     }
     (p, q)
 }
@@ -1378,6 +1443,50 @@ enum Edit {
         at: usize,
         unit_with_separator: String,
     },
+    Respace {
+        at: usize,
+        len: usize,
+        with: String,
+    },
+}
+
+fn gap_between(units: &[(usize, usize)], len: usize, i: usize) -> std::ops::Range<usize> {
+    let from = i.checked_sub(1).map_or(0, |b| units[b].0 + units[b].1);
+    let to = units.get(i).map_or(len, |&(at, _)| at);
+    from..to
+}
+
+fn separator_bytes(gap: &str) -> impl Iterator<Item = u8> + '_ {
+    gap.bytes()
+        .filter(|&b| crate::patterns::is_word_sep(b) && !b.is_ascii_whitespace())
+}
+
+fn takes_every_separator(held: &mut Vec<u8>, gap: &str) -> bool {
+    let mut left = held.clone();
+    for b in separator_bytes(gap) {
+        match left.iter().position(|&h| h == b) {
+            Some(k) => {
+                left.swap_remove(k);
+            }
+            None => return false,
+        }
+    }
+    *held = left;
+    true
+}
+
+fn respaced_gap(template: &str, spans: &[(usize, usize)], gap: usize) -> Option<Edit> {
+    let range = gap_between(spans, template.len(), gap);
+    let with = if gap == 0 || gap == spans.len() {
+        ""
+    } else {
+        " "
+    };
+    (template[range.clone()] != *with).then(|| Edit::Respace {
+        at: range.start,
+        len: range.len(),
+        with: with.to_string(),
+    })
 }
 
 fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
@@ -1406,7 +1515,13 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
     let mut unshown = unshown.into_iter().peekable();
     let mut edits = Vec::new();
     let mut shared_atoms = SharedAtoms::new(template, member);
+    let mut gap_after: Option<Edit> = None;
+    let mut touched_gap: Option<usize> = None;
     for i in 0..=spans.len() {
+        if let Some(edit) = gap_after.take() {
+            edits.push(edit);
+            touched_gap = Some(i);
+        }
         while let Some(run) = unshown.next_if(|run| run.before_unit == i) {
             edits.push(slot_opening(
                 template,
@@ -1416,10 +1531,29 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
                 i,
                 run.member_units,
             )?);
+            touched_gap = Some(i);
         }
         let Some(&(at, len)) = spans.get(i) else {
             break;
         };
+        let absent = ranges
+            .get(i)
+            .copied()
+            .flatten()
+            .is_some_and(|(c, d)| c == d);
+        let beside_has_separator = |gap: usize| {
+            separator_bytes(&template[gap_between(&spans, template.len(), gap)])
+                .next()
+                .is_some()
+        };
+        if absent && (beside_has_separator(i) || beside_has_separator(i + 1)) {
+            if touched_gap != Some(i) {
+                edits.extend(respaced_gap(template, &spans, i));
+            }
+            if unshown.peek().is_none_or(|next| next.before_unit != i + 1) {
+                gap_after = respaced_gap(template, &spans, i + 1);
+            }
+        }
         let r = tmpl[i];
         if aligned[i].is_some_and(|j| mem[j] == r) {
             continue;
@@ -1521,14 +1655,27 @@ fn slot_opening(
         return None;
     }
     let gap = |units: &[(usize, usize)], len: usize, i: usize| {
-        let from = i.checked_sub(1).map_or(0, |b| units[b].0 + units[b].1);
-        let to = units.get(i).map_or(len, |&(at, _)| at);
-        (i == 0 || i == units.len() || from < to).then_some(from..to)
+        let range = gap_between(units, len, i);
+        (i == 0 || i == units.len() || !range.is_empty()).then_some(range)
     };
     let between = gap(spans, template.len(), t)?;
     let before = &member[gap(member_spans, member.len(), m0)?];
     let after = &member[gap(member_spans, member.len(), m1)?];
     let text = &template[between.clone()];
+    if separator_bytes(text).next().is_some() {
+        let with = if t == 0 {
+            format!("{VARIES_MARK} ")
+        } else if t == spans.len() {
+            format!(" {VARIES_MARK}")
+        } else {
+            format!(" {VARIES_MARK} ")
+        };
+        return Some(Edit::Respace {
+            at: between.start,
+            len: between.len(),
+            with,
+        });
+    }
     let parts_apart = (t == 0 || !before.is_empty()) && (t == spans.len() || !after.is_empty());
     Some(if parts_apart && text.strip_prefix(before) == Some(after) {
         Edit::Open {
@@ -1538,20 +1685,25 @@ fn slot_opening(
     } else if t == 0 {
         Edit::Open {
             at: between.end,
-            unit_with_separator: format!(
-                "{VARIES_MARK}{}",
-                if after.is_empty() { " " } else { after }
-            ),
+            unit_with_separator: format!("{VARIES_MARK}{}", space_beside_slot(text, after)),
         }
     } else {
         Edit::Open {
             at: between.start,
-            unit_with_separator: format!(
-                "{}{VARIES_MARK}",
-                if before.is_empty() { " " } else { before }
-            ),
+            unit_with_separator: format!("{}{VARIES_MARK}", space_beside_slot(text, before)),
         }
     })
+}
+
+fn space_beside_slot<'m>(template_gap: &str, member_gap: &'m str) -> &'m str {
+    if template_gap.is_empty()
+        && !member_gap.is_empty()
+        && separator_bytes(member_gap).next().is_none()
+    {
+        member_gap
+    } else {
+        " "
+    }
 }
 
 fn apply_edits(template: &mut String, edits: &[Edit]) {
@@ -1562,6 +1714,7 @@ fn apply_edits(template: &mut String, edits: &[Edit]) {
                 at,
                 unit_with_separator,
             } => template.insert_str(*at, unit_with_separator),
+            Edit::Respace { at, len, with } => template.replace_range(*at..at + len, with),
         }
     }
 }

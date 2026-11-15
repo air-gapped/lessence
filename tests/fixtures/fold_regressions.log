@@ -5035,3 +5035,21 @@ failed to start "db" on node "n1"
 failed to start "cache" on node "n2"
 failed to start "db" on node "n2"
 failed to start "cache" on node "n1"
+
+##CASE lessence-31c template_present=response="count:<VARIES> ok"
+##WHY a slot inside a quoted value of several words keeps the word every member shares after it
+##FROM invented lines
+reply response="count:0 ok" key=alpha
+reply response="count:12 ok" key=alpha
+
+##CASE lessence-31c template_present=response="<VARIES> ok"
+##WHY a quoted value that differs in its first word keeps both quotes and the shared word after it
+##FROM invented lines
+reply response="0 ok" key=alpha
+reply response="12 ok" key=alpha
+
+##CASE lessence-w8l template_absent=a=1, <VARIES>
+##WHY a field only one member has leaves no comma beside its slot, since the member without it has none there
+##FROM invented lines
+sync done x a=1, b=2 took 5
+sync done x a=1 took 5

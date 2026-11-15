@@ -7200,6 +7200,7 @@ fn spans_of(template: &str, member: &str) -> Vec<(usize, usize)> {
         .map(|edit| match edit {
             Edit::Vary { at, len } => (at, len),
             Edit::Open { at, .. } => (at, 0),
+            Edit::Respace { at, len, .. } => (at, len),
         })
         .collect()
 }
@@ -7232,8 +7233,8 @@ fn extra_words_before_the_first_unit_open_a_slot_in_front() {
     assert_eq!(marked("a b", "x a b"), "<VARIES> a b");
     assert_eq!(
         marked("a b", "x,a b"),
-        "<VARIES>,a b",
-        "written with the separator the member has after the words"
+        "<VARIES> a b",
+        "written with a space: the members without the words have no comma there"
     );
 }
 
@@ -7243,10 +7244,11 @@ fn extra_words_past_the_last_unit_open_a_slot_at_the_end() {
 }
 
 #[test]
-fn an_opened_slot_keeps_the_separator_the_member_has_before_it() {
+fn an_opened_slot_leaves_the_template_one_separator_where_its_members_have_one() {
     assert_eq!(
         marked(r#"{"a":1,"c":3}"#, r#"{"a":1,"b":2,"c":3}"#),
-        r#"{"a":1,<VARIES>,"c":3}"#
+        r#"{"a":1 <VARIES> "c":3}"#,
+        "neither gap beside the slot keeps a comma, whichever member came first"
     );
 }
 
@@ -7353,25 +7355,32 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
 }
 
 #[test]
-fn a_slot_goes_between_the_separators_the_template_shares_with_the_member() {
+fn an_opened_slot_takes_the_separators_of_its_gap_with_it() {
     assert_eq!(
         slot_opening("a {}", &[(0, 1)], "a {x}", &[(0, 1), (3, 1)], 1, (1, 2)),
-        Some(Edit::Open {
-            at: 3,
-            unit_with_separator: VARIES_MARK.into()
+        Some(Edit::Respace {
+            at: 1,
+            len: 3,
+            with: format!(" {VARIES_MARK}")
         }),
-        "the {{}} is the member's space-brace and closing brace with the run taken out"
+        "past the last unit the gap's braces go, as they would from the member that has x"
     );
     assert_eq!(
         marked("GRPC response: {}", r#"GRPC response: {"size":7}"#),
-        "GRPC response: {<VARIES>}"
+        "GRPC response: <VARIES>"
+    );
+    assert_eq!(
+        marked(r#"GRPC response: {"size":7}"#, "GRPC response: {}"),
+        "GRPC response: <VARIES>",
+        "the same template in the other order"
     );
     assert_eq!(
         marked("{a}", "{x,a}"),
-        "{<VARIES>,a}",
-        "in front of the first unit, with the member's separator after the run"
+        "<VARIES> a}",
+        "in front of the first unit the leading brace goes too"
     );
-    assert_eq!(marked("{a}", "x{a}"), "<VARIES>{a}");
+    assert_eq!(marked("{x,a}", "{a}"), "<VARIES> a}");
+    assert_eq!(marked("{a}", "x{a}"), "<VARIES> a}");
 }
 
 #[test]
@@ -7745,4 +7754,151 @@ fn three_lines_two_quoted_slots_fold_to_one_group_in_every_order() {
 #[test]
 fn four_lines_two_quoted_slots_fold_to_one_group_in_every_order() {
     assert_one_group_in_every_order(&START_ON_NODE, 24);
+}
+
+#[test]
+fn a_slot_inside_a_quoted_value_keeps_the_words_every_member_shares() {
+    assert_eq!(
+        marked(
+            r#"reply response="count:0 ok" key=alpha"#,
+            r#"reply response="count:12 ok" key=alpha"#
+        ),
+        r#"reply response="count:<VARIES> ok" key=alpha"#
+    );
+    assert_eq!(
+        marked(
+            r#"reply response="0 ok" key=alpha"#,
+            r#"reply response="12 ok" key=alpha"#
+        ),
+        r#"reply response="<VARIES> ok" key=alpha"#,
+        "both quotes and the shared word stay on the line"
+    );
+    assert_eq!(
+        marked(
+            r#"reply response="count:<VARIES> ok" key=alpha"#,
+            r#"reply response="count:7 bad" key=alpha"#
+        ),
+        r#"reply response="count:<VARIES>" key=alpha"#,
+        "a member that ends the value in another word keeps only the closing quote"
+    );
+    assert_eq!(shared_affixes(r#"r="0 ok""#, r#"r="12 ok""#), (2, 4));
+    assert_eq!(
+        kept_affixes("r=\"", " ok\"", "r=\"5 ok\""),
+        (3, 4),
+        "a member that shares the whole kept tail keeps it"
+    );
+    assert_eq!(
+        kept_affixes("r=\"", " a ok\"", "r=\"5 b ok\""),
+        (2, 4),
+        "a partly shared tail keeps the words the member shares"
+    );
+    assert_eq!(
+        kept_affixes("r=\"", " ok\"", "r=\"5 xok\""),
+        (2, 0),
+        "a tail shared only part-way into a word is cut back to the start of a word"
+    );
+    assert_eq!(
+        kept_affixes("slot[", "\"]", "slot[2]"),
+        (5, 1),
+        "a tail with no word in it still keeps its closing brackets"
+    );
+}
+
+#[test]
+fn single_word_units_and_unquoted_words_fold_as_before() {
+    assert_eq!(
+        marked("reply count:0 key=alpha", "reply count:12 key=alpha"),
+        "reply count:<VARIES> key=alpha"
+    );
+    assert_eq!(
+        marked(
+            "reply (count:0 size:5 ok) key=alpha",
+            "reply (count:12 size:5 ok) key=alpha"
+        ),
+        "reply (count:<VARIES> size:5 ok) key=alpha",
+        "unquoted words are units of their own"
+    );
+}
+
+#[test]
+fn a_unit_a_member_lacks_takes_the_separator_the_member_lacks_with_it() {
+    assert_eq!(
+        marked("sync done x a=1, b=2 took 5", "sync done x a=1 took 5"),
+        "sync done x a=1 <VARIES> took 5"
+    );
+    assert_eq!(
+        marked(
+            "got peers=node-1,node-2,node-3 ok",
+            "got peers=node-1,node-2 ok"
+        ),
+        "got peers=node-1,node-2 <VARIES> ok"
+    );
+    assert_eq!(
+        marked("set a=1, b=2, c=3 done", "set a=1, c=3 done"),
+        "set a=1 <VARIES> c=3 done",
+        "neither gap beside the slot keeps its comma"
+    );
+    assert_eq!(
+        marked(r#"{"a":1,"b":2,"c":3}"#, r#"{"a":1,"c":3}"#),
+        r#"{"a":1 <VARIES> "c":3}"#
+    );
+    assert_eq!(
+        marked("set a=1, b=2, c=3, d=4 done", "set a=1 d=4 done"),
+        "set a=1 <VARIES> <VARIES> d=4 done",
+        "no comma is left beside the slots of a run of lacking units"
+    );
+    assert_eq!(
+        marked("set a=1, <VARIES> took 5", "set a=1 took 5"),
+        "set a=1 <VARIES> took 5",
+        "a slot a member lacks loses the comma the member lacks"
+    );
+}
+
+#[test]
+fn an_opened_slot_has_no_separator_the_members_without_it_lack() {
+    assert_eq!(
+        marked("set a=1, c=3 done", "set a=1, b=2, c=3 done"),
+        "set a=1 <VARIES> c=3 done"
+    );
+    assert_eq!(
+        marked(
+            "got peers=node-1,node-2 ok",
+            "got peers=node-1,node-2,node-3 ok"
+        ),
+        "got peers=node-1,node-2 <VARIES> ok"
+    );
+    assert_eq!(marked("a,b", "a,b,c"), "a,b <VARIES>");
+}
+
+#[test]
+fn a_separator_beside_a_slot_a_member_lacks_is_a_false_claim() {
+    assert!(!template_holds(
+        "sync done x a=1, <VARIES> took 5",
+        "sync done x a=1 took 5"
+    ));
+    assert!(template_holds(
+        "sync done x a=1, <VARIES> took 5",
+        "sync done x a=1, b=2 took 5"
+    ));
+    assert!(template_holds(
+        "sync done x a=1 <VARIES> took 5",
+        "sync done x a=1 took 5"
+    ));
+    assert!(!template_holds(
+        "set a=1, <VARIES>, c=3 done",
+        "set a=1, c=3 done"
+    ));
+    assert!(template_holds(
+        "set a=1 <VARIES>, c=3 done",
+        "set a=1, c=3 done"
+    ));
+    assert!(template_holds(
+        "set a=1 <VARIES>, c=3 done",
+        "set a=1, b=2, c=3 done"
+    ));
+    assert!(!template_holds(
+        "got peers=node-1,node-2,<VARIES> ok",
+        "got peers=node-1,node-2 ok"
+    ));
+    assert!(!template_holds("<VARIES>,a b", "a b"));
 }
