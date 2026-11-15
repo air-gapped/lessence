@@ -157,10 +157,15 @@ build them (`make ci`, the mutants profile), on every line of every corpus
 and `##CASE` the tests fold. A release build compiles them out.
 
 1. **The template holds** (`template_holds`, `src/folder/mod.rs`): each time a
-   line joins a group, every unit of the group's template is on that line and
-   on the group's first line, in order; a `<VARIES>` stands for any text. It
-   does not check the reverse: a line may hold words the template does not
-   show.
+   line joins a group, the group's template reads true of that line and of
+   the group's first line both ways. Every unit of the template is on the
+   line, in order, and every unit of the line is shown by one unit of the
+   template: a plain unit by the one equal to it, a bare `<VARIES>` by any
+   run of them or none, a unit with text beside its slot (`msg=<VARIES>`)
+   by a run that starts and ends with that text. A line may hold no word
+   the template does not show. Read character by character instead, each
+   `<VARIES>` standing for any text, when a slot swallowed a quote and the
+   two no longer split into the same units.
 2. **A prefilter only saves time** (`DETECTOR_ORDER`, `src/normalize.rs`): when
    a detector's `prefilter` turns a line away, the detector is run anyway and
    must change nothing. A rule that keeps a detector off a line it would

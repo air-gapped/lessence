@@ -152,7 +152,13 @@ frequent ones plus the rarest: `Server Busy` ×7,164 with one `Server Reject`
 is visible as `["Busy","Reject"]` / `[7164, 1]`, not as "distinct_count 2".
 Members with a different word count are aligned by longest common
 subsequence; a template word a member has no counterpart for varies and is
-counted as `∅`. A line that disagrees with a group's founder in two or more
+counted as `∅`. The reverse holds too: words a member has where the
+template has none open a `<VARIES>` of their own there, one slot for a run
+of them, counted as those words for the members that have them and as `∅`
+for the rest — `+ [ <VARIES> -f <PATH> ]` with `["∅","!"]`, never a
+`+ [ -f <PATH> ]` that hides the `!`. A line whose extra words cannot be
+shown as a slot of their own (they touch a neighbouring word with nothing
+between) founds its own group. A line that disagrees with a group's founder in two or more
 words of the sentence — the verb and the outcome, `Synchronization … succeeded`
 beside `Connection … lost.` — is not folded into it at all: one differing
 word is a name or a value, two are another event.

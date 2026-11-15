@@ -689,12 +689,7 @@ fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
             retained.retained = Some(computer.seed(&retained));
             for (i, text) in texts.iter().enumerate().skip(2) {
                 full.add_line(make(text), i);
-                retained.retained_rejoin(
-                    make(text),
-                    LineLocation::new(SourceId::STDIN, i),
-                    &computer,
-                    3,
-                );
+                retained.rejoin(make(text), i, &computer, 3);
                 assert_eq!(
                     retained.lines.len(),
                     2,
@@ -776,12 +771,7 @@ fn a_capped_retained_rollup_holds_the_same_values_as_a_full_scan() {
     retained.retained = Some(computer.seed(&retained));
     for (i, text) in texts.iter().enumerate().skip(2) {
         full.add_line(make(text), i);
-        retained.retained_rejoin(
-            make(text),
-            LineLocation::new(SourceId::STDIN, i),
-            &computer,
-            3,
-        );
+        retained.rejoin(make(text), i, &computer, 3);
     }
     assert_eq!(retained.template, full.template);
     let actual = computer.finalize_retained(
@@ -1984,16 +1974,17 @@ fn varies_is_absent_for_identical_lines() {
 }
 
 #[test]
-fn varies_skips_members_with_a_different_word_count() {
+fn an_inserted_word_varies_against_the_members_that_lack_it() {
     // An inserted word shifts every later position; pairing them would
-    // report the whole tail as variation. The similarity metric tolerated
-    // the insertion; VARIES stays silent rather than lie.
+    // report the whole tail as variation. The word is a slot of its own
+    // (lessence-1tee), absent from the members that do not have it.
     let r = rollup_of(&[
         "worker started handling batch alpha beta gamma delta",
         "worker started now handling batch alpha beta gamma delta",
         "worker started handling batch alpha beta gamma delta",
     ]);
-    assert!(!r.contains_key(VARIES), "{r:?}");
+    assert_eq!(r[VARIES].samples, vec![ABSENT, "now"], "{r:?}");
+    assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
 }
 
 #[test]
@@ -5285,9 +5276,8 @@ fn repeated_option_names_survive_arguments_of_different_lengths() {
         r#"{"msg":"depot --mode alpha --mode gamma","note":"steady"}"#,
         r#"{"msg":"depot --mode alpha extra --mode delta","note":"steady"}"#,
     ] {
-        for (at, len) in varying_spans(&template, member).into_iter().rev() {
-            template.replace_range(at..at + len, VARIES_MARK);
-        }
+        let edits = varying_spans(&template, member).unwrap();
+        apply_edits(&mut template, &edits);
         assert_eq!(template.matches("--mode").count(), 2, "{template}");
         assert!(template.ends_with(r#"","note":"steady"}"#), "{template}");
     }
@@ -5365,12 +5355,14 @@ fn a_member_with_fewer_words_marks_the_words_it_lacks() {
     // sentence words) — and where a shorter member does join, the missing
     // words vary and count as absent.
     assert_eq!(
-        varying_spans("alpha beta gamma delta", "alpha gamma delta"),
+        spans_of("alpha beta gamma delta", "alpha gamma delta"),
         vec![(6, 4)]
     );
+    // and a word only the member has opens a slot of its own after the
+    // last unit
     assert_eq!(
-        varying_spans("alpha beta gamma", "alpha zeta gamma extra"),
-        vec![(6, 4)]
+        spans_of("alpha beta gamma", "alpha zeta gamma extra"),
+        vec![(6, 4), (16, 0)]
     );
     let mut f = make_folder();
     for l in [
@@ -5433,37 +5425,36 @@ fn a_slot_against_a_member_of_another_length_is_rechecked_in_its_gap() {
     // A unit carrying <VARIES> equals no member unit, so the word alignment
     // never pairs it: its counterpart is what the member has between the
     // slot's aligned neighbours.
-    assert!(varying_spans("a msg=<VARIES> c", "a msg=z c d").is_empty());
-    assert!(varying_spans("a msg=<VARIES> c", "a msg=y z c").is_empty());
+    // a word past the template's last opens a slot there
+    assert_eq!(spans_of("a msg=<VARIES> c", "a msg=z c d"), vec![(16, 0)]);
+    assert!(spans_of("a msg=<VARIES> c", "a msg=y z c").is_empty());
     assert_eq!(
-        varying_spans("a msg=<VARIES> c", "a other=y c d"),
-        vec![(2, 12)]
+        spans_of("a msg=<VARIES> c", "a other=y c d"),
+        vec![(2, 12), (16, 0)]
     );
     // nothing there: the slot keeps nothing
-    assert_eq!(varying_spans("a msg=<VARIES> c d", "a c d"), vec![(2, 12)]);
+    assert_eq!(spans_of("a msg=<VARIES> c d", "a c d"), vec![(2, 12)]);
     // two template units over another number of member units: a slot
     // whose affix a member unit carries anchors there, and the rest of
     // the gap is read on either side of it
     assert_eq!(
-        varying_spans("a k=<VARIES> j=<VARIES> c", "a k=1 c"),
+        spans_of("a k=<VARIES> j=<VARIES> c", "a k=1 c"),
         vec![(13, 10)]
     );
-    assert!(varying_spans("a x <VARIES> k=<VARIES> c", "a x y z k=1 c").is_empty());
+    assert!(spans_of("a x <VARIES> k=<VARIES> c", "a x y z k=1 c").is_empty());
     // and with no anchor, which pairs is unknown
     assert_eq!(
-        varying_spans("a k=<VARIES> j=<VARIES> c", "a x=1 y=2 z=3 c"),
+        spans_of("a k=<VARIES> j=<VARIES> c", "a x=1 y=2 z=3 c"),
         vec![(2, 10), (13, 10)]
     );
     // a slot with nothing kept has nothing to recheck
-    assert!(varying_spans("a <VARIES> c", "a b b c").is_empty());
+    assert!(spans_of("a <VARIES> c", "a b b c").is_empty());
 }
 
 /// `template` with every span `member` turns into `<VARIES>` replaced.
 fn marked(template: &str, member: &str) -> String {
     let mut t = template.to_string();
-    for (at, len) in varying_spans(template, member).into_iter().rev() {
-        t.replace_range(at..at + len, VARIES_MARK);
-    }
+    apply_edits(&mut t, &varying_spans(template, member).unwrap());
     t
 }
 
@@ -5599,12 +5590,7 @@ fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     retained.add_line(make(texts[1]), 1);
     retained.retained = Some(computer.seed(&retained));
     full.add_line(make(texts[2]), 2);
-    retained.retained_rejoin(
-        make(texts[2]),
-        LineLocation::new(SourceId::STDIN, 2),
-        &computer,
-        3,
-    );
+    retained.rejoin(make(texts[2]), 2, &computer, 3);
     assert_eq!(full.template, "job <VARIES> done");
     assert_eq!(retained.template, full.template);
     let state = retained.retained.take().unwrap();
@@ -5746,9 +5732,8 @@ fn request_route_survives_repeated_method_and_version_variation() {
         r#"request="PUT /health HTTP/3" done"#,
         r#"request="GET /health HTTP/1" done"#,
     ] {
-        for (at, len) in varying_spans(&template, member).into_iter().rev() {
-            template.replace_range(at..at + len, VARIES_MARK);
-        }
+        let edits = varying_spans(&template, member).unwrap();
+        apply_edits(&mut template, &edits);
         assert_eq!(template, r#"request="<VARIES> /health HTTP/<VARIES>" done"#);
     }
     assert_eq!(unit_spans(r#"controller="crt configmap" done"#).len(), 2);
@@ -5758,7 +5743,7 @@ fn request_route_survives_repeated_method_and_version_variation() {
         let first = format!("\"GET /health {suffix}");
         let next = format!("\"POST /health {suffix}");
         let mut template = first.clone();
-        for (at, len) in varying_spans(&first, &next).into_iter().rev() {
+        for (at, len) in spans_of(&first, &next).into_iter().rev() {
             template.replace_range(at..at + len, VARIES_MARK);
         }
         assert_eq!(template, format!("\"<VARIES> /health {suffix}"));
@@ -5771,7 +5756,7 @@ fn separate_quoted_requests_keep_their_own_targets() {
     let first = r#"request="GET /health HTTP/1" prior="POST /metrics HTTP/1""#;
     let next = r#"request="POST /health HTTP/2" prior="PUT /metrics HTTP/2""#;
     let mut template = first.to_string();
-    for (at, len) in varying_spans(first, next).into_iter().rev() {
+    for (at, len) in spans_of(first, next).into_iter().rev() {
         template.replace_range(at..at + len, VARIES_MARK);
     }
     assert_eq!(
@@ -5804,7 +5789,7 @@ fn request_atoms_preserve_nested_pci_addresses_and_status_markers() {
     let first = r#""GET /devices/<N> 0000:2a:00.3 <STATUS_2XX> HTTP/1""#;
     let next = r#""POST /devices/<N> 0000:2a:00.3 <STATUS_2XX> HTTP/2""#;
     let mut template = first.to_string();
-    for (at, len) in varying_spans(first, next).into_iter().rev() {
+    for (at, len) in spans_of(first, next).into_iter().rev() {
         template.replace_range(at..at + len, VARIES_MARK);
     }
     assert_eq!(
@@ -5830,7 +5815,7 @@ fn pci_identity_survives_variation_on_either_side_without_added_spaces() {
         ),
     ] {
         let mut template = first.to_string();
-        for (at, len) in varying_spans(first, next).into_iter().rev() {
+        for (at, len) in spans_of(first, next).into_iter().rev() {
             template.replace_range(at..at + len, VARIES_MARK);
         }
         assert!(template.contains(address), "{first} vs {next}: {template}");
@@ -5852,7 +5837,7 @@ fn pci_template_atoms_do_not_treat_different_address_lists_as_equal() {
         ),
     ] {
         let mut template = first.to_string();
-        for (at, len) in varying_spans(first, next).into_iter().rev() {
+        for (at, len) in spans_of(first, next).into_iter().rev() {
             template.replace_range(at..at + len, VARIES_MARK);
         }
         assert_eq!(
@@ -6690,11 +6675,12 @@ fn a_long_template_marks_the_unit_a_shorter_member_lacks() {
     founder.insert(150, "shard=k7/east");
     let founder = founder.join(" ");
     let member = words.join(" ");
-    let edits = varying_spans(&founder, &member);
+    let edits = spans_of(&founder, &member);
     let at = founder.find("shard=").unwrap();
     assert_eq!(edits, vec![(at, "shard=k7/east".len())]);
-    // a member that carries everything the template shows changes nothing
-    assert!(varying_spans(&member, &founder).is_empty());
+    // a member that carries a unit the template lacks opens a slot there
+    let after = member.find(" w150").unwrap();
+    assert_eq!(spans_of(&member, &founder), vec![(after, 0)]);
 }
 
 /// shared_affixes 1227 (prefix cap), 1233/1234 (suffix loop bounds).
@@ -6853,13 +6839,23 @@ fn retained_accumulators_add_counts_and_honour_the_cap() {
     // template order
     slot_mut(&mut state.varies, 0).add("x", 3, 1);
     let template = "a old <VARIES>";
-    rc.accumulate_new_varies(template, &unit_spans(template), &[(2, 3)], &mut state);
+    rc.accumulate_new_varies(
+        template,
+        &unit_spans(template),
+        &[Edit::Vary { at: 2, len: 3 }],
+        &mut state,
+    );
     assert_eq!(state.varies.len(), 2, "{:?}", state.varies);
     assert_eq!(state.varies[0].counts["old"], 3);
     assert_eq!(state.varies[1].counts["x"], 3);
     // a slot opened after it goes after it
     let template = "a <VARIES> <VARIES> b";
-    rc.accumulate_new_varies(template, &unit_spans(template), &[(20, 1)], &mut state);
+    rc.accumulate_new_varies(
+        template,
+        &unit_spans(template),
+        &[Edit::Vary { at: 20, len: 1 }],
+        &mut state,
+    );
     assert_eq!(state.varies.len(), 3, "{:?}", state.varies);
     assert_eq!(state.varies[2].counts["b"], 3);
     // past the cap the lower-ranked value is held: `old` ranks below `new`,
@@ -7473,7 +7469,7 @@ fn a_literal_marker_singleton_is_not_duplicated_when_another_source_converges() 
 
 #[test]
 fn an_option_identity_survives_a_positional_alignment_shift() {
-    let edits = varying_spans("a --x v", "--x v a");
+    let edits = spans_of("a --x v", "--x v a");
     assert!(!edits.is_empty());
     assert!(
         edits.iter().all(|&(at, len)| at + len <= 2 || at >= 5),
@@ -7485,7 +7481,7 @@ fn an_option_identity_survives_a_positional_alignment_shift() {
 fn an_option_shaped_suffix_after_pci_still_marks_its_changed_value() {
     let template = "dev 0000:21:00.0--x=1 up";
     let mut rendered = template.to_string();
-    let edits = varying_spans(template, "dev 0000:21:00.0--x=2 up");
+    let edits = spans_of(template, "dev 0000:21:00.0--x=2 up");
     assert!(!edits.is_empty());
     for (at, len) in edits.into_iter().rev() {
         rendered.replace_range(at..at + len, VARIES_MARK);
@@ -7818,7 +7814,10 @@ fn units_in_a_gap_pair_in_order_when_both_sides_have_as_many() {
     let aligned = [Some(0), None, None, Some(3)];
     assert_eq!(
         unit_ranges(&tmpl, &mem, &aligned),
-        vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))]
+        (
+            vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))],
+            vec![]
+        )
     );
 }
 
@@ -7828,7 +7827,7 @@ fn a_gap_at_the_end_of_the_template_reads_the_rest_of_the_member() {
     let mem = ["a", "p", "q"];
     assert_eq!(
         unit_ranges(&tmpl, &mem, &[Some(0), None]),
-        vec![Some((0, 1)), Some((1, 3))]
+        (vec![Some((0, 1)), Some((1, 3))], vec![])
     );
 }
 
@@ -7953,21 +7952,11 @@ fn a_rejoined_group_below_min_collapse_keeps_every_member() {
     group.add_line(plain_line(text), 1);
     group.add_line(plain_line(text), 2);
     group.retained = Some(rc.seed(&group));
-    group.retained_rejoin(
-        plain_line(text),
-        LineLocation::new(SourceId::STDIN, 3),
-        &rc,
-        5,
-    );
+    group.rejoin(plain_line(text), 3, &rc, 5);
     assert_eq!(group.count, 4);
     assert_eq!(group.lines.len(), 4);
     // at min_collapse it is cut to the first and the last
-    group.retained_rejoin(
-        plain_line(text),
-        LineLocation::new(SourceId::STDIN, 4),
-        &rc,
-        5,
-    );
+    group.rejoin(plain_line(text), 4, &rc, 5);
     assert_eq!(group.count, 5);
     assert_eq!(group.lines.len(), 2);
 }
@@ -8075,12 +8064,37 @@ fn a_bare_slot_stands_for_any_word_or_none() {
 }
 
 #[test]
-fn a_member_may_hold_words_the_template_does_not_show() {
-    assert!(template_holds(
+fn a_member_word_the_template_does_not_show_breaks_the_claim() {
+    // lessence-1tee: a template that hides what a member holds is as false
+    // as one that names what it lacks
+    assert!(!template_holds(
         "worker <VARIES> ready",
         "worker c3 ready now"
     ));
-    assert!(template_holds("worker ready", "worker is ready"));
+    assert!(!template_holds("worker ready", "worker is ready"));
+    assert!(!template_holds("[ -f <PATH> ]", "[ ! -f <PATH> ]"));
+}
+
+#[test]
+fn a_bare_slot_shows_a_run_of_words_or_none() {
+    assert!(template_holds(
+        "worker <VARIES> ready",
+        "worker is now ready"
+    ));
+    assert!(template_holds("worker ready <VARIES>", "worker ready"));
+    assert!(template_holds(
+        "worker ready <VARIES>",
+        "worker ready at 10:00"
+    ));
+    assert!(template_holds("<VARIES> worker ready", "now worker ready"));
+}
+
+#[test]
+fn a_slot_with_kept_text_shows_no_word_outside_its_run() {
+    assert!(!template_holds("x q=[<VARIES>] done", "x q=[a b] c done"));
+    assert!(!template_holds("x q=[<VARIES>] done", "x w q=[a b] done"));
+    // a run that both starts and ends in one word
+    assert!(template_holds("x q=[<VARIES>] done", "x q=[a] done"));
 }
 
 #[test]
@@ -8136,4 +8150,348 @@ fn a_line_its_groups_template_is_false_of_stops_a_test_build() {
     // on naming alice for a line that says bob.
     let mut group = PatternGroup::new(make_line("user alice@test.com logged in", vec![]), 1);
     group.add_line(make_line("user bob@test.com logged in", vec![]), 2);
+}
+
+/// `varying_spans` for a member the template can be made to show, each
+/// edit as the span it turns into `<VARIES>`, and an opened slot as the
+/// empty span where it goes in.
+fn spans_of(template: &str, member: &str) -> Vec<(usize, usize)> {
+    varying_spans(template, member)
+        .expect("the member can be shown")
+        .into_iter()
+        .map(|edit| match edit {
+            Edit::Vary { at, len } => (at, len),
+            Edit::Open { at, .. } => (at, 0),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------
+// lessence-1tee: words only some members have open a slot of their own
+// ---------------------------------------------------------------
+
+#[test]
+fn a_word_only_a_later_member_has_opens_a_slot_where_it_sits() {
+    let mut f = make_folder();
+    for l in [
+        "+ [ -f /etc/a.conf ]",
+        "+ [ -f /etc/b.conf ]",
+        "+ [ ! -f /etc/c.conf ]",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1);
+    assert_eq!(f.buffer[0].template(), "+ [ <VARIES> -f <PATH> ]");
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].samples, vec![ABSENT, "!"]);
+    assert_eq!(r[VARIES].counts, Some(vec![2, 1]));
+}
+
+#[test]
+fn a_run_of_extra_words_is_one_slot() {
+    assert_eq!(marked("a b c", "a x y b c"), "a <VARIES> b c");
+    assert_eq!(spans_of("a b c", "a x y b c"), vec![(1, 0)]);
+}
+
+#[test]
+fn extra_words_before_the_first_unit_open_a_slot_in_front() {
+    assert_eq!(marked("a b", "x a b"), "<VARIES> a b");
+    // written with the separator the member has after them
+    assert_eq!(marked("a b", "x,a b"), "<VARIES>,a b");
+}
+
+#[test]
+fn extra_words_past_the_last_unit_open_a_slot_at_the_end() {
+    assert_eq!(marked("a b", "a b c d"), "a b <VARIES>");
+}
+
+#[test]
+fn an_opened_slot_keeps_the_separator_the_member_has_before_it() {
+    assert_eq!(
+        marked(r#"{"a":1,"c":3}"#, r#"{"a":1,"b":2,"c":3}"#),
+        r#"{"a":1,<VARIES>,"c":3}"#
+    );
+}
+
+#[test]
+fn a_slot_anchored_in_a_gap_leaves_the_words_after_it_to_a_slot_of_their_own() {
+    // `k=` anchors on `k=1`; `z` after it is shown by nothing else
+    assert_eq!(
+        marked("a <VARIES> k=<VARIES> c", "a y k=1 z c"),
+        "a <VARIES> k=<VARIES> <VARIES> c"
+    );
+}
+
+#[test]
+fn a_lone_unit_in_a_gap_keeps_the_affixes_it_shares_with_its_counterpart() {
+    // the counts differ, so the pair is not aligned, but the gap holds one
+    // unit on each side and they pair as an aligned pair would
+    assert_eq!(
+        marked("a [x:error] b c", "a [y:error] b c d"),
+        "a [<VARIES>] b c <VARIES>"
+    );
+}
+
+#[test]
+fn two_long_lines_too_unlike_to_align_call_for_no_edit() {
+    let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
+    let template = words.join(" ");
+    let longer = format!("{template} {}", words[..=ALIGN_BAND].join(" "));
+    assert_eq!(varying_spans(&template, &longer), None);
+}
+
+#[test]
+fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
+    let open = |at: usize, text: &str| {
+        Some(Edit::Open {
+            at,
+            text: text.to_string(),
+        })
+    };
+    let member = ("a b c", [(0, 1), (2, 1), (4, 1)]);
+    // template units 0 and 1 touch: nowhere to put a unit between them
+    assert_eq!(
+        slot_opening("abcdefg", &[(0, 3), (3, 4)], member.0, &member.1, 1, (1, 2)),
+        None
+    );
+    assert_eq!(
+        slot_opening(
+            "abc defg",
+            &[(0, 3), (4, 4)],
+            member.0,
+            &member.1,
+            1,
+            (1, 2)
+        ),
+        open(3, " <VARIES>")
+    );
+    // the run touches the member unit before it, or after it
+    let template = ("a c", [(0, 1), (2, 1)]);
+    assert_eq!(
+        slot_opening(
+            template.0,
+            &template.1,
+            "ab c",
+            &[(0, 1), (1, 1), (3, 1)],
+            1,
+            (1, 2)
+        ),
+        None
+    );
+    assert_eq!(
+        slot_opening(
+            template.0,
+            &template.1,
+            "a bc",
+            &[(0, 1), (2, 1), (3, 1)],
+            1,
+            (1, 2)
+        ),
+        None
+    );
+    // in front of the first unit and past the last nothing needs a gap
+    assert_eq!(
+        slot_opening("a", &[(0, 1)], "x;a", &[(0, 1), (2, 1)], 0, (0, 1)),
+        open(0, "<VARIES>;")
+    );
+    assert_eq!(
+        slot_opening("a", &[(0, 1)], "a;x", &[(0, 1), (2, 1)], 1, (1, 2)),
+        open(1, ";<VARIES>")
+    );
+    // a run that is the whole member has no separator of its own to use
+    assert_eq!(
+        slot_opening("a", &[(0, 1)], "x", &[(0, 1)], 0, (0, 1)),
+        open(0, "<VARIES> ")
+    );
+    assert_eq!(
+        slot_opening("a", &[(0, 1)], "x", &[(0, 1)], 1, (0, 1)),
+        open(1, " <VARIES>")
+    );
+    // an empty template has no unit to open a slot beside
+    assert_eq!(slot_opening("", &[], "x", &[(0, 1)], 0, (0, 1)), None);
+}
+
+#[test]
+fn a_slot_goes_between_the_separators_the_template_shares_with_the_member() {
+    // `{}` is the member's ` {` and `}` with the run taken out
+    assert_eq!(
+        slot_opening("a {}", &[(0, 1)], "a {x}", &[(0, 1), (3, 1)], 1, (1, 2)),
+        Some(Edit::Open {
+            at: 3,
+            text: VARIES_MARK.into()
+        })
+    );
+    assert_eq!(
+        marked("GRPC response: {}", r#"GRPC response: {"size":7}"#),
+        "GRPC response: {<VARIES>}"
+    );
+    // in front of the first unit, with the member's separator after the run
+    assert_eq!(marked("{a}", "{x,a}"), "{<VARIES>,a}");
+    assert_eq!(marked("{a}", "x{a}"), "<VARIES>{a}");
+}
+
+#[test]
+fn an_opened_slot_counts_the_members_already_held_as_absent() {
+    let rc = RollupComputer::with_defaults();
+    let template = "a k=<VARIES> b";
+    let units = unit_spans(template);
+    let held = || {
+        let mut state = RetainedState {
+            positional_members: 3,
+            ..RetainedState::default()
+        };
+        slot_mut(&mut state.varies, 0).add("x", 3, ROLLUP_DISTINCT_CAP);
+        state
+    };
+    let open = |at: usize| Edit::Open {
+        at,
+        text: " <VARIES>".into(),
+    };
+    // right after the slot `k=<VARIES>`, which ends at 12: the second slot
+    let mut state = held();
+    rc.accumulate_new_varies(template, &units, &[open(12)], &mut state);
+    assert_eq!(state.varies.len(), 2);
+    assert_eq!(state.varies[0].counts, HashMap::from([("x".into(), 3)]));
+    assert_eq!(state.varies[1].counts, HashMap::from([(ABSENT.into(), 3)]));
+    assert!(!state.varies_unknown);
+    // right after `a`: the first
+    let mut state = held();
+    rc.accumulate_new_varies(template, &units, &[open(1)], &mut state);
+    assert_eq!(state.varies[0].counts, HashMap::from([(ABSENT.into(), 3)]));
+    assert_eq!(state.varies[1].counts, HashMap::from([("x".into(), 3)]));
+    // a slot that has counted nothing yet still takes its place
+    let mut state = RetainedState {
+        positional_members: 2,
+        ..RetainedState::default()
+    };
+    rc.accumulate_new_varies(template, &units, &[open(14)], &mut state);
+    assert_eq!(state.varies.len(), 2);
+    assert_eq!(state.varies[1].counts, HashMap::from([(ABSENT.into(), 2)]));
+}
+
+#[test]
+fn a_slot_made_before_any_member_was_held_counts_no_value() {
+    // no member is held positionally: nothing to count, not a value at 0
+    let rc = RollupComputer::with_defaults();
+    let template = "a b";
+    let mut state = RetainedState::default();
+    rc.accumulate_new_varies(
+        template,
+        &unit_spans(template),
+        &[Edit::Vary { at: 2, len: 1 }],
+        &mut state,
+    );
+    assert_eq!(state.varies.len(), 1);
+    assert!(state.varies[0].counts.is_empty());
+}
+
+#[test]
+fn a_retained_group_counts_an_opened_slot_as_a_full_scan_does() {
+    for texts in [
+        [
+            "worker alpha ready on n1",
+            "worker alpha ready on n2",
+            "worker alpha ready now on n1",
+            "worker alpha ready on n1",
+        ],
+        [
+            "worker alpha ready on n1",
+            "worker alpha ready on n1",
+            "worker alpha ready on n2",
+            "worker alpha ready now on n1",
+        ],
+    ] {
+        let computer = RollupComputer::with_defaults();
+        let mut full = PatternGroup::new(plain_line(texts[0]), 0);
+        let mut retained = PatternGroup::new(plain_line(texts[0]), 0);
+        full.add_line(plain_line(texts[1]), 1);
+        retained.add_line(plain_line(texts[1]), 1);
+        retained.retained = Some(computer.seed(&retained));
+        for (i, text) in texts.iter().enumerate().skip(2) {
+            full.add_line(plain_line(text), i);
+            retained.rejoin(plain_line(text), i, &computer, 3);
+        }
+        assert_eq!(full.template, "worker alpha ready <VARIES> on <VARIES>");
+        assert_eq!(retained.template, full.template);
+        let expected = computer.compute(&full);
+        assert_eq!(
+            expected[VARIES].slots.as_ref().unwrap()[0].samples,
+            vec![ABSENT, "now"]
+        );
+        let actual = computer.finalize_retained(
+            retained.retained.take().unwrap(),
+            &retained.template,
+            &retained.first().normalized,
+        );
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(expected).unwrap(),
+            "{texts:?}"
+        );
+    }
+}
+
+/// The lines of the refused-join tests: a word only the last one has,
+/// glued to an address that is split from it as a unit of its own.
+const GLUED: [&str; 3] = [
+    "pci slot 0000:21:00.0 link is up and ready for traffic now",
+    "pci slot 0000:21:00.0 link is up and ready for traffic now",
+    "pci slot x-0000:21:00.0 link is up and ready for traffic now",
+];
+
+#[test]
+fn a_line_whose_extra_word_cannot_open_a_slot_founds_its_own_group() {
+    let mut f = make_folder();
+    for l in GLUED {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2);
+    assert_eq!(f.buffer[0].count(), 2);
+    assert_eq!(f.buffer[0].template(), f.buffer[0].first().normalized);
+}
+
+#[test]
+fn a_line_whose_extra_word_cannot_open_a_slot_does_not_rejoin_a_retained_group() {
+    let mut f = make_folder();
+    for l in &GLUED[..2] {
+        f.process_line(l).unwrap();
+    }
+    f.position_counter += 1_000;
+    f.flush_oldest_safe_group().unwrap();
+    assert_eq!(f.retained.len(), 1, "the first group must be retained");
+    f.process_line(GLUED[2]).unwrap();
+    assert_eq!(f.buffer.len(), 1, "the line founds a live group");
+    let retained = f.retained.values().next().unwrap();
+    assert_eq!(retained.count(), 2);
+}
+
+#[test]
+fn a_line_equal_to_the_founder_calls_for_no_edit() {
+    let mut group = PatternGroup::new(plain_line("a <VARIES> c"), 0);
+    group.template = "a <VARIES>".into();
+    assert_eq!(
+        group.edits_for(&plain_line("a <VARIES> c")),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn every_member_unit_is_shown_read_unit_by_unit() {
+    // the unit reading alone, without the character reading beside it
+    assert!(shows_every_unit("x msg=<VARIES> y", "x msg=hello y"));
+    assert!(!shows_every_unit("x msg=<VARIES> y", "x text=hello y"));
+    // the kept text on both sides needs room in one word, overlapping none
+    assert!(!shows_every_unit("x ab<VARIES>b y", "x ab y"));
+    // a run of one unit, and of several
+    assert!(shows_every_unit("x q=[<VARIES>] done", "x q=[a] done"));
+    assert!(shows_every_unit("x q=[<VARIES>] done", "x q=[a b c] done"));
+    assert!(shows_every_unit("q=[<VARIES>] done", "q=[a b] done"));
+    assert!(!shows_every_unit("x q=[<VARIES>] done", "x q=[a b] c done"));
+    assert!(!shows_every_unit("x q=[<VARIES>]", "x q=[a b] c"));
+    // a bare slot: any run or none, and nothing past the template's end
+    assert!(shows_every_unit("a <VARIES> b", "a b"));
+    assert!(shows_every_unit("a <VARIES> b", "a x y b"));
+    assert!(shows_every_unit("a <VARIES>", "a x y"));
+    assert!(!shows_every_unit("a b", "a b c"));
+    assert!(!shows_every_unit("a b", "a"));
 }

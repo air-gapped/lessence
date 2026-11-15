@@ -327,14 +327,42 @@ impl PatternGroup {
         }
     }
 
+    /// Join `line` by hand, as the folder would once it decided to: with
+    /// the template edits it calls for, none when it cannot be shown.
+    #[cfg(test)]
     fn add_line(&mut self, line: LogLine, line_no: usize) {
-        self.add_line_at(line, LineLocation::new(SourceId::STDIN, line_no));
+        let edits = self.edits_for(&line).unwrap_or_default();
+        self.add_line_at(line, LineLocation::new(SourceId::STDIN, line_no), &edits);
     }
 
-    fn add_line_at(&mut self, line: LogLine, location: LineLocation) {
-        if line.hash != self.lines[0].hash {
-            self.mark_varying_words(&line.normalized);
+    /// `retained_rejoin` by hand, the way `add_line` is `add_line_at`.
+    #[cfg(test)]
+    fn rejoin(
+        &mut self,
+        line: LogLine,
+        line_no: usize,
+        rollup_computer: &RollupComputer,
+        min_collapse: usize,
+    ) {
+        let edits = self.edits_for(&line).unwrap_or_default();
+        let location = LineLocation::new(SourceId::STDIN, line_no);
+        self.retained_rejoin(line, location, &edits, rollup_computer, min_collapse);
+    }
+
+    /// The template edits `line` calls for if it joins (`varying_spans`),
+    /// or `None` when the template could not show it truthfully, and the
+    /// line must found a group of its own. A line equal to the founder
+    /// calls for none.
+    fn edits_for(&self, line: &LogLine) -> Option<Vec<Edit>> {
+        if line.hash == self.first().hash {
+            return Some(Vec::new());
         }
+        varying_spans(&self.template, &line.normalized)
+    }
+
+    /// Add a member whose join was decided with `edits` (`edits_for`).
+    fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
+        self.mark_varying_words(edits);
         self.assert_claim_holds(&line.normalized);
         self.lines.push(line);
         self.last_line_no = location.line_no;
@@ -352,6 +380,7 @@ impl PatternGroup {
         &mut self,
         line: LogLine,
         location: LineLocation,
+        edits: &[Edit],
         rollup_computer: &RollupComputer,
         min_collapse: usize,
     ) {
@@ -359,28 +388,18 @@ impl PatternGroup {
         // by the template edit and the rollup below.
         let line_units = unit_spans(&line.normalized);
         let mut template_units = unit_spans(&self.template);
-        if line.hash != self.first().hash {
-            let edits = varying_spans_in(
-                &self.template,
-                &template_units,
-                &line.normalized,
-                &line_units,
-            );
-            if !edits.is_empty() {
-                if let Some(state) = &mut self.retained {
-                    rollup_computer.accumulate_new_varies(
-                        &self.template,
-                        &template_units,
-                        &edits,
-                        state,
-                    );
-                }
-                for (at, len) in edits.into_iter().rev() {
-                    self.template.replace_range(at..at + len, VARIES_MARK);
-                }
-                template_units = unit_spans(&self.template);
-                self.slot_units = Some(template_units.clone());
+        if !edits.is_empty() {
+            if let Some(state) = &mut self.retained {
+                rollup_computer.accumulate_new_varies(
+                    &self.template,
+                    &template_units,
+                    edits,
+                    state,
+                );
             }
+            apply_edits(&mut self.template, edits);
+            template_units = unit_spans(&self.template);
+            self.slot_units = Some(template_units.clone());
         }
         self.assert_claim_holds(&line.normalized);
         self.count += 1;
@@ -487,15 +506,15 @@ impl PatternGroup {
     /// `key=` / `"key":` prefix is kept (`msg=<VARIES>`), so the field name
     /// stays on the line. Members with a different word count are aligned
     /// by longest common subsequence; template words the member lacks vary
-    /// too, since the template cannot show an absence any other way.
-    fn mark_varying_words(&mut self, member: &str) {
-        let edits = varying_spans(&self.template, member);
+    /// too, since the template cannot show an absence any other way, and
+    /// words the member has where the template has none open a slot of
+    /// their own there, since a template must not hide them either.
+    /// `edits` are the member's, from `edits_for`.
+    fn mark_varying_words(&mut self, edits: &[Edit]) {
         if edits.is_empty() {
             return;
         }
-        for (at, len) in edits.into_iter().rev() {
-            self.template.replace_range(at..at + len, VARIES_MARK);
-        }
+        apply_edits(&mut self.template, edits);
         self.slot_units = Some(unit_spans(&self.template));
     }
 
@@ -523,8 +542,8 @@ impl PatternGroup {
 
     /// Checked in test builds each time a line joins: the template must
     /// read true for the line that joined and for the founder. A template
-    /// that names a word one of its members lacks is the failure this tool
-    /// exists to prevent, and every corpus and `##CASE` the tests fold runs
+    /// that names a word one of its members lacks, or hides a word one of
+    /// them holds, is the failure this tool exists to prevent, and every corpus and `##CASE` the tests fold runs
     /// through here.
     fn assert_claim_holds(&self, joined: &str) {
         debug_assert!(
@@ -1387,43 +1406,72 @@ fn hash_token_value(token: &Token) -> u64 {
 pub(super) const VARIES: &str = "VARIES";
 /// The placeholder a template shows where its members disagree.
 pub(crate) const VARIES_MARK: &str = "<VARIES>";
+/// The `<VARIES>` value counted for a member that has nothing in a slot:
+/// it lacks the word the slot replaced, or the words others hold there.
+const ABSENT: &str = "∅";
 
 /// Does `template` hold for `member`? This is the claim a shown line makes
-/// about its group: every unit of the template is on every member, in the
-/// template's order. A bare `<VARIES>` claims nothing; a unit with text
-/// beside its slot (`msg=<VARIES>`) claims that text, and its slot may stand
-/// for several of the member's units. A member may hold units the template
-/// does not show. Read two ways, by unit and by character, and true when
-/// either reading is.
+/// about its group, and it has two halves: every unit of the template is on
+/// the member, in the template's order, and every unit of the member is
+/// shown by one of the template's. A plain unit shows the one member unit
+/// equal to it. A bare `<VARIES>` shows any run of the member's units, or
+/// none: it is how a template says that some members have words there and
+/// others do not. A unit with text beside its slot (`msg=<VARIES>`) claims
+/// that text and shows a run of units that starts and ends with it. Read two
+/// ways, by unit and by character, and true when either reading is.
 pub(super) fn template_holds(template: &str, member: &str) -> bool {
-    units_hold(template, member) || reads_as(template, member)
+    shows_every_unit(template, member) || reads_as(template, member)
 }
 
-/// The template's units are on the member, in order.
-fn units_hold(template: &str, member: &str) -> bool {
+/// The template's units, in order, show the member's units, in order,
+/// each member unit by exactly one template unit (see [`template_holds`]).
+/// Read from the end: `shown[j]` says whether the template units already
+/// read show the member's units from `j` on.
+fn shows_every_unit(template: &str, member: &str) -> bool {
     let words: Vec<&str> = unit_spans(member)
         .iter()
         .map(|&(at, len)| &member[at..at + len])
         .collect();
-    let mut next = 0;
-    unit_spans(template).iter().all(|&(at, len)| {
+    let n = words.len();
+    let mut shown = vec![false; n + 1];
+    shown[n] = true;
+    let mut here = vec![false; n + 1];
+    for &(at, len) in unit_spans(template).iter().rev() {
         let unit = &template[at..at + len];
         if unit == VARIES_MARK {
-            return true;
-        }
-        match unit_on(unit, &words[next..]) {
-            Some(past) => {
-                next += past;
-                true
+            // none of the member's units, or the next one and a run after it
+            here[n] = shown[n];
+            for j in (0..n).rev() {
+                here[j] = shown[j] || here[j + 1];
             }
-            None => false,
+        } else if let Some((first, last)) = unit.find(VARIES_MARK).zip(unit.rfind(VARIES_MARK)) {
+            let (before, after) = (&unit[..first], &unit[last + VARIES_MARK.len()..]);
+            // whether a later unit ends the run: it ends with `after`, and
+            // the template's next unit shows what follows it
+            let mut later = false;
+            here[n] = false;
+            for j in (0..n).rev() {
+                let word = words[j];
+                let ends_here = word.len() >= before.len() + after.len()
+                    && word.ends_with(after)
+                    && shown[j + 1];
+                here[j] = word.starts_with(before) && (ends_here || later);
+                later |= word.ends_with(after) && shown[j + 1];
+            }
+        } else {
+            here[n] = false;
+            for j in (0..n).rev() {
+                here[j] = words[j] == unit && shown[j + 1];
+            }
         }
-    })
+        std::mem::swap(&mut shown, &mut here);
+    }
+    shown[0]
 }
 
 /// `member` read as `template` character by character, each `<VARIES>`
 /// standing for any text or none. A slot that swallowed a quote changes
-/// where the template's units fall, so a template `units_hold` cannot
+/// where the template's units fall, so a template `shows_every_unit` cannot
 /// follow may still read true this way.
 fn reads_as(template: &str, member: &str) -> bool {
     let mut parts = template.split(VARIES_MARK);
@@ -1441,31 +1489,6 @@ fn reads_as(template: &str, member: &str) -> bool {
         }
     }
     rest.ends_with(last)
-}
-
-/// Where the template unit `unit` is found in `words`: the count of words
-/// up to and including its last one. A unit without a slot is one word. A
-/// unit with one is a word that starts with the text before its first
-/// `<VARIES>`, and that word or a later one ending with the text after its
-/// last.
-fn unit_on(unit: &str, words: &[&str]) -> Option<usize> {
-    let Some(first) = unit.find(VARIES_MARK) else {
-        return words.iter().position(|&word| word == unit).map(|at| at + 1);
-    };
-    let before = &unit[..first];
-    let after = &unit[unit.rfind(VARIES_MARK)? + VARIES_MARK.len()..];
-    words.iter().enumerate().find_map(|(from, word)| {
-        if !word.starts_with(before) {
-            return None;
-        }
-        if word.len() >= before.len() + after.len() && word.ends_with(after) {
-            return Some(from + 1);
-        }
-        words[from + 1..]
-            .iter()
-            .position(|later| later.ends_with(after))
-            .map(|to| from + 1 + to + 1)
-    })
 }
 
 /// A line may join a group whose founder it disagrees with in at most this
@@ -1775,6 +1798,11 @@ fn slot_affix(r: &str) -> Option<(&str, &str)> {
     Some((&r[..k], &r[k + VARIES_MARK.len()..]))
 }
 
+/// Runs of a member's units that no template unit stands for, as
+/// `(t, range)`: the run sits just before template unit `t`
+/// (`t == template units` past the last).
+type Unshown = Vec<(usize, (usize, usize))>;
+
 /// The member units each template unit stands for, as a range of member
 /// unit indexes — empty where the member has none, `None` where nothing
 /// says which correspond. An aligned unit stands for its partner. A unit
@@ -1785,19 +1813,28 @@ fn slot_affix(r: &str) -> Option<(&str, &str)> {
 /// in order; otherwise a slot whose kept affix a member unit carries is
 /// anchored on the first such unit and the gap on either side of it is
 /// read the same way.
+///
+/// Second, the member's units no template unit stands for, in ascending
+/// order of where they sit: a run between two aligned template units, or
+/// before the first or past the last, or what is left over where a slot
+/// anchors a gap.
 fn unit_ranges(
     tmpl: &[&str],
     mem: &[&str],
     aligned: &[Option<usize>],
-) -> Vec<Option<(usize, usize)>> {
+) -> (Vec<Option<(usize, usize)>>, Unshown) {
     fn resolve(
         tmpl: &[&str],
         mem: &[&str],
         (t0, t1): (usize, usize),
         (m0, m1): (usize, usize),
         out: &mut [Option<(usize, usize)>],
+        unshown: &mut Unshown,
     ) {
         if t0 == t1 {
+            if m0 < m1 {
+                unshown.push((t0, (m0, m1)));
+            }
             return;
         }
         if m0 == m1 {
@@ -1818,8 +1855,8 @@ fn unit_ranges(
             });
             if let Some((i, j)) = anchor {
                 out[i] = Some((j, j + 1));
-                resolve(tmpl, mem, (t0, i), (m0, j), out);
-                resolve(tmpl, mem, (i + 1, t1), (j + 1, m1), out);
+                resolve(tmpl, mem, (t0, i), (m0, j), out, unshown);
+                resolve(tmpl, mem, (i + 1, t1), (j + 1, m1), out, unshown);
             } else if tmpl[t0..t1].iter().all(|&r| r == VARIES_MARK) {
                 // a run of bare slots keeps nothing that could tell its
                 // units apart: read the member into it in order, the last
@@ -1835,10 +1872,17 @@ fn unit_ranges(
     }
     let mut out: Vec<Option<(usize, usize)>> =
         aligned.iter().map(|a| a.map(|j| (j, j + 1))).collect();
+    let mut unshown = Unshown::new();
     let mut i = 0;
+    // the first member unit no template unit read so far stands for
     let mut from = 0;
     while i < aligned.len() {
         if let Some(j) = aligned[i] {
+            // what the member has between two aligned units the template
+            // holds side by side
+            if from < j {
+                unshown.push((i, (from, j)));
+            }
             from = j + 1;
             i += 1;
             continue;
@@ -1847,10 +1891,19 @@ fn unit_ranges(
         while i < aligned.len() && aligned[i].is_none() {
             i += 1;
         }
-        let to = aligned.get(i).copied().flatten().unwrap_or(mem.len());
-        resolve(tmpl, mem, (start, i), (from, to.max(from)), &mut out);
+        let to = aligned
+            .get(i)
+            .copied()
+            .flatten()
+            .unwrap_or(mem.len())
+            .max(from);
+        resolve(tmpl, mem, (start, i), (from, to), &mut out, &mut unshown);
+        from = to;
     }
-    out
+    if from < mem.len() {
+        unshown.push((aligned.len(), (from, mem.len())));
+    }
+    (out, unshown)
 }
 
 /// The member text covered by a range of its units: from the first unit's
@@ -1864,21 +1917,30 @@ fn range_text<'m>(member: &'m str, spans: &[(usize, usize)], (c, d): (usize, usi
     &member[start..at + len]
 }
 
-/// The template spans a member turns into `<VARIES>`: every aligned pair
-/// that differs (unless the template already varies there), minus a shared
-/// field prefix, plus every template word the member has no counterpart for.
-/// A unit that already varies keeps only the affix the member shares.
-fn varying_spans(template: &str, member: &str) -> Vec<(usize, usize)> {
-    varying_spans_in(template, &unit_spans(template), member, &unit_spans(member))
+/// One change a member makes to a template (`varying_spans`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Edit {
+    /// `template[at..at + len]` becomes `<VARIES>`.
+    Vary { at: usize, len: usize },
+    /// `text`, a `<VARIES>` unit with the separator that sets it apart from
+    /// the unit beside it, goes in at `at`.
+    Open { at: usize, text: String },
 }
 
-/// `varying_spans` for a template and member already split into units.
-fn varying_spans_in(
-    template: &str,
-    spans: &[(usize, usize)],
-    member: &str,
-    member_spans: &[(usize, usize)],
-) -> Vec<(usize, usize)> {
+/// The template edits a member calls for, in ascending order: every
+/// aligned pair that differs (unless the template already varies there),
+/// minus a shared field prefix, plus every template word the member has no
+/// counterpart for, each a span to turn into `<VARIES>`. A unit that
+/// already varies keeps only the affix the member shares. Words the member
+/// has where the template has none open a `<VARIES>` unit of their own
+/// there (lessence-1tee): one slot for a run of them, so a template never
+/// hides what a member holds. `None` when such a slot cannot be opened
+/// truthfully — the run is joined to a neighbouring unit with nothing
+/// between, or the two lines are too long and unlike to align — and the
+/// member must not join.
+fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
+    let spans = unit_spans(template);
+    let member_spans = unit_spans(member);
     let tmpl: Vec<&str> = spans
         .iter()
         .map(|&(at, len)| &template[at..at + len])
@@ -1887,12 +1949,35 @@ fn varying_spans_in(
         .iter()
         .map(|&(at, len)| &member[at..at + len])
         .collect();
+    if !alignable(tmpl.len(), mem.len()) {
+        return None;
+    }
     let aligned = align_words(&tmpl, &mem);
-    let mut ranges = None;
+    // Equal counts pair every unit with its partner: no gap to read and
+    // nothing left over.
+    let (ranges, unshown) = if tmpl.len() == mem.len() {
+        (Vec::new(), Unshown::new())
+    } else {
+        unit_ranges(&tmpl, &mem, &aligned)
+    };
+    let mut unshown = unshown.into_iter().peekable();
     let mut edits = Vec::new();
     let mut same_pci_identity = None;
     let mut same_option_identity = None;
-    for (i, &(at, len)) in spans.iter().enumerate() {
+    for i in 0..=spans.len() {
+        while let Some((_, run)) = unshown.next_if(|&(t, _)| t == i) {
+            edits.push(slot_opening(
+                template,
+                &spans,
+                member,
+                &member_spans,
+                i,
+                run,
+            )?);
+        }
+        let Some(&(at, len)) = spans.get(i) else {
+            break;
+        };
         let r = tmpl[i];
         if aligned[i].is_some_and(|j| mem[j] == r) {
             continue;
@@ -1906,16 +1991,19 @@ fn varying_spans_in(
             }
             let range = match aligned[i] {
                 Some(j) => Some((j, j + 1)),
-                None => ranges.get_or_insert_with(|| unit_ranges(&tmpl, &mem, &aligned))[i],
+                None => ranges[i],
             };
             let (p, q) = range.map_or((0, 0), |range| {
-                let w = range_text(member, member_spans, range);
+                let w = range_text(member, &member_spans, range);
                 let (p, q) = kept_affixes(prefix, suffix, w);
                 let (p, q) = balance_quotes(r, w, p, q);
                 (p.min(prefix.len()), q.min(suffix.len()))
             });
             if p < prefix.len() || q < suffix.len() {
-                edits.push((at + p, len - p - q));
+                edits.push(Edit::Vary {
+                    at: at + p,
+                    len: len - p - q,
+                });
             }
             continue;
         }
@@ -1945,16 +2033,91 @@ fn varying_spans_in(
         {
             continue;
         }
-        match aligned[i] {
-            Some(j) => {
-                let (p, q) = shared_affixes(r, mem[j]);
-                let (p, q) = balance_quotes(r, mem[j], p, q);
-                edits.push((at + p, len - p - q));
-            }
-            None => edits.push((at, len)),
+        // its counterpart: the aligned unit, or the one unit of the member
+        // its gap holds
+        let partner = aligned[i].or_else(|| match ranges.get(i).copied().flatten() {
+            Some((c, d)) if d == c + 1 => Some(c),
+            _ => None,
+        });
+        let (p, q) = partner.map_or((0, 0), |j| {
+            let (p, q) = shared_affixes(r, mem[j]);
+            balance_quotes(r, mem[j], p, q)
+        });
+        edits.push(Edit::Vary {
+            at: at + p,
+            len: len - p - q,
+        });
+    }
+    Some(edits)
+}
+
+/// The slot the member's units `run` open, which no template unit stands
+/// for and which sit just before template unit `t`. Where the template's
+/// text between its units there is the member's text around the run with
+/// the run taken out (`{}` against `{"size":7}`), the slot goes in between
+/// and the template reads as the member does. Otherwise it goes after the
+/// unit before, with the separator the member has in front of the run, or
+/// in front of the first unit with the separator the member has after it.
+/// `None` unless the run is set apart from what is around it on both
+/// lines, by space or a separator such as `,`, so that the slot reads as a
+/// unit of its own.
+fn slot_opening(
+    template: &str,
+    spans: &[(usize, usize)],
+    member: &str,
+    member_spans: &[(usize, usize)],
+    t: usize,
+    (m0, m1): (usize, usize),
+) -> Option<Edit> {
+    if spans.is_empty() {
+        return None;
+    }
+    // the text before unit `i` back to the unit before it or the start;
+    // `None` when two units touch
+    let gap = |units: &[(usize, usize)], len: usize, i: usize| {
+        let from = i.checked_sub(1).map_or(0, |b| units[b].0 + units[b].1);
+        let to = units.get(i).map_or(len, |&(at, _)| at);
+        (i == 0 || i == units.len() || from < to).then_some(from..to)
+    };
+    let between = gap(spans, template.len(), t)?;
+    let before = &member[gap(member_spans, member.len(), m0)?];
+    let after = &member[gap(member_spans, member.len(), m1)?];
+    let text = &template[between.clone()];
+    // the slot is set apart from the template unit on each side it has one
+    let parts_apart = (t == 0 || !before.is_empty()) && (t == spans.len() || !after.is_empty());
+    Some(if parts_apart && text.strip_prefix(before) == Some(after) {
+        Edit::Open {
+            at: between.start + before.len(),
+            text: VARIES_MARK.to_string(),
+        }
+    } else if t == 0 {
+        Edit::Open {
+            at: between.end,
+            text: format!(
+                "{VARIES_MARK}{}",
+                if after.is_empty() { " " } else { after }
+            ),
+        }
+    } else {
+        Edit::Open {
+            at: between.start,
+            text: format!(
+                "{}{VARIES_MARK}",
+                if before.is_empty() { " " } else { before }
+            ),
+        }
+    })
+}
+
+/// `template` with `edits` (from [`varying_spans`]) made, last first so
+/// that every offset still points where it did.
+fn apply_edits(template: &mut String, edits: &[Edit]) {
+    for edit in edits.iter().rev() {
+        match edit {
+            Edit::Vary { at, len } => template.replace_range(*at..at + len, VARIES_MARK),
+            Edit::Open { at, text } => template.insert_str(*at, text),
         }
     }
-    edits
 }
 
 /// The letters of a word, in order: what the sentence says once digits
@@ -2766,7 +2929,9 @@ impl RollupComputer {
             let masked;
             let range = match aligned[i] {
                 Some(j) => Some((j, j + 1)),
-                None => ranges.get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned))[i],
+                None => {
+                    ranges.get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned).0)[i]
+                }
             };
             let value = match range.filter(|&(from, to)| from < to) {
                 Some(range) => {
@@ -2783,7 +2948,7 @@ impl RollupComputer {
                         .and_then(|v| v.strip_suffix(suffix))
                         .unwrap_or(w)
                 }
-                None => "∅",
+                None => ABSENT,
             };
             slot_mut(varies, s).add(value, count, self.distinct_cap);
         }
@@ -2822,67 +2987,67 @@ impl RollupComputer {
         }
     }
 
-    /// A newly varying slot was a literal shared by all positional members.
-    /// Account for those discarded members without inventing a sample or
-    /// retaining their raw lines. An edit that widens an existing slot
-    /// leaves the counts already taken under its narrower affix unknown.
+    /// A newly varying slot was a literal shared by all positional members,
+    /// and a newly opened one was absent from all of them: account for
+    /// those discarded members without inventing a sample or retaining
+    /// their raw lines. An edit that widens an existing slot leaves the
+    /// counts already taken under its narrower affix unknown.
     fn accumulate_new_varies(
         &self,
         template: &str,
         units: &[(usize, usize)],
-        edits: &[(usize, usize)],
+        edits: &[Edit],
         state: &mut RetainedState,
     ) {
         // Each slot is counted under its place in template order, and a new
         // slot shifts every later one by one: `made` is how many this edit
-        // run has opened in units before the current one. `edits` ascend,
-        // one unit at a time (`varying_spans_in`).
+        // run has made before the current one. `edits` ascend, at most one
+        // inside each template unit and one between two (`varying_spans`).
         let mut made = 0;
-        let mut opened_in = None;
-        for &(at, len) in edits {
+        for edit in edits {
+            let (at, len) = match *edit {
+                Edit::Vary { at, len } => (at, len),
+                Edit::Open { at, .. } => (at, 0),
+            };
             if template[at..at + len].contains(VARIES_MARK) {
                 state.varies_unknown = true;
                 continue;
             }
-            let &(start, width) = units
-                .iter()
-                .find(|&&(start, width)| start <= at && at + len <= start + width)
-                .expect("a varying edit is inside one template unit");
-            let unit = &template[start..start + width];
-            let before = units
-                .iter()
-                .take_while(|&&(s, _)| s < start)
-                .filter(|&&(s, w)| template[s..s + w].contains(VARIES_MARK))
-                .count();
-            let index = if opened_in == Some(start) {
-                before + made - 1
-            } else if unit.contains(VARIES_MARK) {
-                before + made
+            // the slots in units that end before the edit; a unit an edit
+            // lies inside holds none, or the edit would cover it
+            let index = made
+                + units
+                    .iter()
+                    .take_while(|&&(s, w)| s + w <= at)
+                    .filter(|&&(s, w)| template[s..s + w].contains(VARIES_MARK))
+                    .count();
+            state
+                .varies
+                .resize_with(state.varies.len().max(index), VariesCounts::default);
+            state.varies.insert(index, VariesCounts::default());
+            made += 1;
+            if state.positional_members == 0 {
+                continue;
+            }
+            let value = if len == 0 {
+                ABSENT.to_string()
             } else {
-                let index = before + made;
-                if index < state.varies.len() {
-                    state.varies.insert(index, VariesCounts::default());
-                }
-                made += 1;
-                opened_in = Some(start);
-                index
+                let &(start, width) = units
+                    .iter()
+                    .find(|&&(start, width)| start <= at && at + len <= start + width)
+                    .expect("a varying edit is inside one template unit");
+                let unit = &template[start..start + width];
+                let masked = match &self.sanitizer {
+                    Some(z) => z.mask_text(unit),
+                    None => unit.to_string(),
+                };
+                masked
+                    .strip_prefix(&template[start..at])
+                    .and_then(|v| v.strip_suffix(&template[at + len..start + width]))
+                    .unwrap_or(&masked)
+                    .to_string()
             };
-            let masked;
-            let value = if let Some(z) = &self.sanitizer {
-                masked = z.mask_text(unit);
-                masked.as_str()
-            } else {
-                unit
-            };
-            let value = value
-                .strip_prefix(&template[start..at])
-                .and_then(|v| v.strip_suffix(&template[at + len..start + width]))
-                .unwrap_or(value);
-            slot_mut(&mut state.varies, index).add(
-                value,
-                state.positional_members,
-                self.distinct_cap,
-            );
+            state.varies[index].add(&value, state.positional_members, self.distinct_cap);
         }
     }
 
@@ -3374,14 +3539,20 @@ impl PatternFolder {
             if let Some(epoch) = epoch {
                 group.timeline.record(epoch);
             }
+            // the founder's own line: nothing to edit
             group.retained_rejoin(
                 normalized_line,
                 loc,
+                &[],
                 &self.rollup_computer,
                 self.config.min_collapse,
             );
             return;
         }
+        // The template edits the line calls for in the group it joins,
+        // worked out while deciding the join: a line the template could
+        // not show truthfully joins nowhere (`PatternGroup::edits_for`).
+        let mut edits = Vec::new();
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
@@ -3399,16 +3570,21 @@ impl PatternFolder {
                     .into_iter()
                     .filter_map(|key| {
                         let group = self.retained.get(&key)?;
-                        (self.normalizer.are_similar(&normalized_line, group.first())
+                        if !(self.normalizer.are_similar(&normalized_line, group.first())
                             && plain_word_diffs(
                                 &normalized_line.normalized,
                                 &group.first().normalized,
                             ) <= MAX_PLAIN_WORD_DIFFS)
-                            .then_some((group.position, key))
+                        {
+                            return None;
+                        }
+                        Some((group.position, key, group.edits_for(&normalized_line)?))
                     })
-                    .min_by_key(|&(position, _)| position)
+                    .min_by_key(|&(position, _, _)| position)
             };
-            let before = retained_match.map_or(usize::MAX, |(position, _)| position);
+            let before = retained_match
+                .as_ref()
+                .map_or(usize::MAX, |&(position, _, _)| position);
             // The live buffer remains in founder order after removals.
             // A matching retained founder rules out every newer live one.
             // The line's units, split once and only if a slotted group
@@ -3431,9 +3607,13 @@ impl PatternFolder {
                     similar
                         && plain_word_diffs(&normalized_line.normalized, &first.normalized)
                             <= MAX_PLAIN_WORD_DIFFS
+                        && group
+                            .edits_for(&normalized_line)
+                            .map(|found| edits = found)
+                            .is_some()
                 });
             if live_match.is_none()
-                && let Some((_, key)) = retained_match
+                && let Some((_, key, edits)) = retained_match
             {
                 let loc = location
                     .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
@@ -3444,6 +3624,7 @@ impl PatternFolder {
                 group.retained_rejoin(
                     normalized_line,
                     loc,
+                    &edits,
                     &self.rollup_computer,
                     self.config.min_collapse,
                 );
@@ -3464,11 +3645,9 @@ impl PatternFolder {
             if let Some(epoch) = epoch {
                 self.buffer[index].timeline.record(epoch);
             }
-            if let Some(location) = location {
-                self.buffer[index].add_line_at(normalized_line, location);
-            } else {
-                self.buffer[index].add_line(normalized_line, self.position_counter);
-            }
+            let location = location
+                .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
+            self.buffer[index].add_line_at(normalized_line, location, &edits);
             if let Some(line_no) = distill_line_no {
                 self.buffer[index].member_line_nos.push(line_no);
             }
@@ -3575,13 +3754,11 @@ impl PatternFolder {
             if line.hash == group.lines[0].hash {
                 continue;
             }
-            let edits = varying_spans(&template, &line.normalized);
+            let edits = varying_spans(&template, &line.normalized).unwrap_or_default();
             if edits.is_empty() {
                 continue;
             }
-            for (at, len) in edits.into_iter().rev() {
-                template.replace_range(at..at + len, VARIES_MARK);
-            }
+            apply_edits(&mut template, &edits);
             chosen.insert(idx);
         }
 
