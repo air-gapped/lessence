@@ -5656,18 +5656,18 @@ fn two_sentence_words_apart_is_another_event() {
             "1:S 28 Aug <NUMBER> <TIMESTAMP> * Synchronization with replica <FQDN>:<PORT> succeeded",
             "1:S 28 Aug <NUMBER> <TIMESTAMP> * Connection with replica <FQDN>:<PORT> lost."
         ),
-        2
+        Some(2)
     );
     assert_eq!(
         plain_word_diffs("user alice from <IP>", "user bob from <IP>"),
-        1
+        Some(1)
     );
     assert_eq!(
         plain_word_diffs(
             "Fork CoW for RDB: current <SIZE>",
             "Fork CoW for AOF rewrite: current <SIZE>"
         ),
-        3
+        Some(3)
     );
     // Values are not sentence words: quoted, typed, keyed with structure,
     // numbers, placeholders.
@@ -5676,19 +5676,22 @@ fn two_sentence_words_apart_is_another_event() {
             r#"Failed to watch *v1.Node: nodes is forbidden: cannot list resource "nodes""#,
             r#"Failed to watch *v1.Pod: pods is forbidden: cannot list resource "pods""#
         ),
-        1
+        Some(1)
     );
     assert_eq!(
         plain_word_diffs(
             r#"{"controller": "triggerauthentication", "controllerKind": "TriggerAuthentication"}"#,
             r#"{"controller": "scaledjob", "controllerKind": "ScaledJob"}"#
         ),
-        0
+        Some(0)
     );
-    assert_eq!(plain_word_diffs("GPS mode 3 -> 2", "GPS mode 2 -> 3"), 0);
+    assert_eq!(
+        plain_word_diffs("GPS mode 3 -> 2", "GPS mode 2 -> 3"),
+        Some(0)
+    );
     assert_eq!(
         plain_word_diffs("x k8s:app=virt-handler y", "x k8s:app=traefik y"),
-        0
+        Some(0)
     );
     // A JSON sentence's words are sentence words: the key goes, the word stays.
     assert_eq!(
@@ -5696,7 +5699,7 @@ fn two_sentence_words_apart_is_another_event() {
             r#"{"msg":"finished scheduled compaction"}"#,
             r#"{"msg":"storing new hash"}"#
         ),
-        3
+        Some(3)
     );
 
     let mut f = make_folder();
@@ -6684,20 +6687,17 @@ fn long_lines_count_plain_word_diffs_through_the_band() {
         }
         w.join(" ")
     };
-    assert_eq!(plain_word_diffs(&line, &with(&["zone=k2/west"])), 0);
-    assert_eq!(plain_word_diffs(&with(&["zone=k2/west"]), &line), 0);
-    assert_eq!(plain_word_diffs(&line, &with(&["stalled"])), 1);
+    assert_eq!(plain_word_diffs(&line, &with(&["zone=k2/west"])), Some(0));
+    assert_eq!(plain_word_diffs(&with(&["zone=k2/west"]), &line), Some(0));
+    assert_eq!(plain_word_diffs(&line, &with(&["stalled"])), Some(1));
     let values: Vec<String> = (0..=ALIGN_BAND).map(|i| format!("t{i}=v/{i}")).collect();
     let values: Vec<&str> = values.iter().map(String::as_str).collect();
-    assert_eq!(plain_word_diffs(&line, &with(&values[..ALIGN_BAND])), 0);
     assert_eq!(
-        plain_word_diffs(&line, &with(&values)),
-        MAX_PLAIN_WORD_DIFFS + 1
+        plain_word_diffs(&line, &with(&values[..ALIGN_BAND])),
+        Some(0)
     );
-    assert_eq!(
-        plain_word_diffs(&with(&values), &line),
-        MAX_PLAIN_WORD_DIFFS + 1
-    );
+    assert_eq!(plain_word_diffs(&line, &with(&values)), None);
+    assert_eq!(plain_word_diffs(&with(&values), &line), None);
 }
 
 /// The template a long member is folded into marks what that member lacks.
@@ -6818,17 +6818,17 @@ fn units_cut_requests_options_and_pci_addresses_out_whole() {
 /// words), 1580/1592 (a lone unit the other line has elsewhere).
 #[test]
 fn plain_word_diffs_count_sentence_words_not_values() {
-    assert_eq!(plain_word_diffs("user alice", "user bob"), 1);
-    assert_eq!(plain_word_diffs("user alice", "user 10.0.0.1"), 1);
-    assert_eq!(plain_word_diffs("peer 10.0.0.1", "peer 10.0.0.2"), 0);
-    assert_eq!(plain_word_diffs("p q", "p q x.y"), 0);
-    assert_eq!(plain_word_diffs("p q", "p q q"), 0);
-    assert_eq!(plain_word_diffs("p q", "p q r"), 1);
-    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a b c""#), 1);
-    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a c""#), 1);
+    assert_eq!(plain_word_diffs("user alice", "user bob"), Some(1));
+    assert_eq!(plain_word_diffs("user alice", "user 10.0.0.1"), Some(1));
+    assert_eq!(plain_word_diffs("peer 10.0.0.1", "peer 10.0.0.2"), Some(0));
+    assert_eq!(plain_word_diffs("p q", "p q x.y"), Some(0));
+    assert_eq!(plain_word_diffs("p q", "p q q"), Some(0));
+    assert_eq!(plain_word_diffs("p q", "p q r"), Some(1));
+    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a b c""#), Some(1));
+    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a c""#), Some(1));
     assert_eq!(
         plain_word_diffs("Fork CoW for RDB", "Fork CoW for AOF rewrite"),
-        3
+        Some(3)
     );
 }
 
@@ -7005,8 +7005,8 @@ fn word_alignment_drops_a_left_word_to_reach_a_later_match() {
 /// elsewhere is not a difference.
 #[test]
 fn a_repeated_left_unit_is_not_a_plain_word_diff() {
-    assert_eq!(plain_word_diffs("p q q", "p q"), 0);
-    assert_eq!(plain_word_diffs("p q x.y", "p q"), 0);
+    assert_eq!(plain_word_diffs("p q q", "p q"), Some(0));
+    assert_eq!(plain_word_diffs("p q x.y", "p q"), Some(0));
 }
 
 /// unit_spans 1477/1489/1520/1527, cli_option_units 1410-1449: the exact

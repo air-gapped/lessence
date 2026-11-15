@@ -1841,6 +1841,25 @@ fn first_difference_may_vary(template: &str, line: &str) -> bool {
     true
 }
 
+enum SlotReading {
+    Same,
+    QuotedValueInsideSlot,
+    OtherQuotedValue,
+}
+
+fn read_through_slots(template_unit: &str, line_unit: &str) -> Option<SlotReading> {
+    if template_unit == line_unit {
+        return Some(SlotReading::Same);
+    }
+    let around = quoted_value(line_unit)?;
+    match slot_affix(template_unit) {
+        Some(kept) => (around == kept).then_some(SlotReading::QuotedValueInsideSlot),
+        None => {
+            (quoted_value(template_unit) == Some(around)).then_some(SlotReading::OtherQuotedValue)
+        }
+    }
+}
+
 fn joins_through_slots(
     template: &str,
     template_units: &[(usize, usize)],
@@ -1853,31 +1872,18 @@ fn joins_through_slots(
     }
     let mut diffs = 0usize;
     for (&(ta, tl), &(la, ll)) in template_units.iter().zip(line_units) {
-        let t = &template[ta..ta + tl];
-        let m = &line[la..la + ll];
-        if t == m {
-            continue;
+        match read_through_slots(&template[ta..ta + tl], &line[la..la + ll]) {
+            None => return false,
+            Some(SlotReading::OtherQuotedValue) => diffs += 1,
+            Some(SlotReading::Same | SlotReading::QuotedValueInsideSlot) => {}
         }
-        let Some(around) = quoted_value(m) else {
-            return false;
-        };
-        if let Some((prefix, suffix)) = slot_affix(t) {
-            if around == (prefix, suffix) {
-                continue;
-            }
-            return false;
-        }
-        if quoted_value(t) != Some(around) {
-            return false;
-        }
-        diffs += 1;
     }
     let n = template_units.len();
     let agree = (n - diffs) as f64 / n as f64 * 100.0;
     agree >= f64::from(threshold)
 }
 
-pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
+pub(super) fn plain_word_diffs(a: &str, b: &str) -> Option<usize> {
     let differs =
         |x: &str, y: &str| !(letters(x).eq(letters(y)) || (data_shaped(x) && data_shaped(y)));
     let lone = |x: &str| letters(x).next().is_some() && !data_shaped(x);
@@ -1890,7 +1896,7 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
         .map(|(at, len)| &b[at..at + len])
         .collect();
     if !alignable(ua.len(), ub.len()) {
-        return MAX_PLAIN_WORD_DIFFS + 1;
+        return None;
     }
     let aligned = align_words(&ua, &ub);
     let unit_diffs = |x: &str, y: &str| -> usize {
@@ -1925,11 +1931,17 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
             None => {}
         }
     }
-    diffs
-        + ub.iter()
-            .zip(&matched_b)
-            .filter(|(u, m)| !**m && lone_unit(u, &ua))
-            .count()
+    Some(
+        diffs
+            + ub.iter()
+                .zip(&matched_b)
+                .filter(|(u, m)| !**m && lone_unit(u, &ua))
+                .count(),
+    )
+}
+
+fn within_plain_word_allowance(a: &str, b: &str) -> bool {
+    plain_word_diffs(a, b).is_some_and(|diffs| diffs <= MAX_PLAIN_WORD_DIFFS)
 }
 
 fn seed_for_group(normalized: &str) -> u64 {
@@ -2688,10 +2700,10 @@ impl PatternFolder {
                     .filter_map(|key| {
                         let group = self.retained.get(&key)?;
                         if !(self.normalizer.are_similar(&normalized_line, group.first())
-                            && plain_word_diffs(
+                            && within_plain_word_allowance(
                                 &normalized_line.normalized,
                                 &group.first().normalized,
-                            ) <= MAX_PLAIN_WORD_DIFFS)
+                            ))
                         {
                             return None;
                         }
@@ -2718,8 +2730,10 @@ impl PatternFolder {
                                 threshold,
                             ));
                     similar
-                        && plain_word_diffs(&normalized_line.normalized, &first.normalized)
-                            <= MAX_PLAIN_WORD_DIFFS
+                        && within_plain_word_allowance(
+                            &normalized_line.normalized,
+                            &first.normalized,
+                        )
                         && group
                             .edits_for(&normalized_line)
                             .map(|found| edits = found)
