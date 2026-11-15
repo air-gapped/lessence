@@ -32,7 +32,7 @@ jobs:
       - name: Install tools
         uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2
         with:
-          tool: cargo-deny,cargo-nextest
+          tool: cargo-deny,cargo-nextest,cargo-mutants
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -55,3 +55,9 @@ jobs:
 
       - name: Deny
         run: cargo deny check
+
+      # Lists mutants (no build, about a second) and fails on an exclusion
+      # in .cargo/mutants.toml that no longer matches one.
+      - name: Mutants pins
+        if: runner.os == 'Linux'
+        run: ./scripts/check-mutants-pins.sh
