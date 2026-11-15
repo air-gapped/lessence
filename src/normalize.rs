@@ -243,15 +243,22 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         run: |_, s| LogWithModuleDetector::detect_and_replace(s),
     },
     DetectorEntry {
-        name: "structured",
+        name: "structured-json",
         tier: Tier::Specific,
         after: &[],
-        enabled: |c| c.normalize_json || c.normalize_key_value,
-        only_when: Some(|c, _, s| {
-            (c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('='))
-        }),
+        enabled: |c| c.normalize_json,
+        only_when: None,
         prefilter: Some(|_, _, s| StructuredMessageDetector::has_structured_indicators(s)),
-        run: |_, s| StructuredMessageDetector::detect_and_replace(s),
+        run: |_, s| StructuredMessageDetector::detect_json_records(s),
+    },
+    DetectorEntry {
+        name: "structured-logfmt",
+        tier: Tier::Specific,
+        after: &[],
+        enabled: |c| c.normalize_key_value,
+        only_when: None,
+        prefilter: Some(|_, _, s| StructuredMessageDetector::has_structured_indicators(s)),
+        run: |_, s| StructuredMessageDetector::detect_logfmt_records(s),
     },
     DetectorEntry {
         name: "duration",
@@ -2872,6 +2879,23 @@ mod tests {
     }
 
     #[test]
+    fn each_structured_half_answers_only_to_its_own_flag() {
+        let json = r#"{"level":"info","component":"api","msg":"set a=b"}"#;
+        let logfmt = "level=info component=api-gateway msg=ready";
+        let has_record = |line: LogLine| {
+            line.tokens
+                .iter()
+                .any(|t| matches!(t, Token::StructuredMessage { .. }))
+        };
+        assert!(has_record(run(|_| {}, json)));
+        assert!(has_record(run(|_| {}, logfmt)));
+        assert!(!has_record(run(|c| c.normalize_json = false, json)));
+        assert!(has_record(run(|c| c.normalize_json = false, logfmt)));
+        assert!(has_record(run(|c| c.normalize_key_value = false, json)));
+        assert!(!has_record(run(|c| c.normalize_key_value = false, logfmt)));
+    }
+
+    #[test]
     fn normalize_kubernetes_disabled_suppresses_k8s_tokens() {
         let input = "volume \"kube-api-access-abc123\" (projected) failed to mount for pod kube-system/test-pod";
         let on = run(|_| {}, input);
@@ -4140,7 +4164,7 @@ mod e8v_normalize_2026_09_17 {
     fn detector_order_keeps_what_each_entry_declares() {
         let order: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
         assert_eq!(order_complaints(&order), Vec::<String>::new());
-        assert_eq!(order.len(), 19);
+        assert_eq!(order.len(), 20);
     }
 
     #[test]

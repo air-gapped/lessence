@@ -32,23 +32,32 @@ static CONTAINER_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 pub struct StructuredMessageDetector;
 
 impl StructuredMessageDetector {
+    /// Both halves in table order: the JSON records, then the logfmt ones.
+    /// The text is kept verbatim; only tokens are extracted.
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no structured log indicators
-        if !Self::has_structured_indicators(text) {
-            return (text.to_string(), Vec::new());
-        }
+        let (text, mut tokens) = Self::detect_json_records(text);
+        tokens.extend(Self::detect_logfmt_records(&text).1);
+        (text, tokens)
+    }
 
-        // SPIKE q01: token-only extraction — the text is kept verbatim, so no
-        // replace_all string rebuilding is needed (autoresearch iteration 1).
+    /// The half `--disable-patterns json` switches off. K8s records are
+    /// left to `KubernetesDetector`.
+    pub(crate) fn detect_json_records(text: &str) -> (String, Vec<Token>) {
         let mut tokens = Vec::new();
+        if Self::has_structured_indicators(text) {
+            Self::apply_container_pattern(text, &mut tokens);
+            Self::apply_json_pattern(text, &mut tokens);
+            Self::apply_json_alt_pattern(text, &mut tokens);
+        }
+        (text.to_string(), tokens)
+    }
 
-        // Apply structured message detection in order of specificity
-        // NOTE: K8s pattern disabled - handled by KubernetesDetector to prevent theft
-        Self::apply_container_pattern(text, &mut tokens);
-        Self::apply_json_pattern(text, &mut tokens);
-        Self::apply_json_alt_pattern(text, &mut tokens);
-        Self::apply_logfmt_pattern(text, &mut tokens);
-
+    /// The half `--disable-patterns key-value` switches off.
+    pub(crate) fn detect_logfmt_records(text: &str) -> (String, Vec<Token>) {
+        let mut tokens = Vec::new();
+        if Self::has_structured_indicators(text) {
+            Self::apply_logfmt_pattern(text, &mut tokens);
+        }
         (text.to_string(), tokens)
     }
 
