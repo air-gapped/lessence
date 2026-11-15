@@ -5027,3 +5027,11 @@ restarted container redis-a1b2c3 after probe on node n1 in zone west
 ##FROM invented container lines
 restarted container pod=nginx-a1b2c3 after probe on node=n1 zone=west mode=fast
 restarted container pod=redis-a1b2c3 after probe on node=n1 zone=west mode=fast
+
+##CASE lessence-5zpx out_present=varies×2 {"n1"×2, "n2"×2} holds-on-base
+##WHY a template with two slots lists each slot's values on their own, so the reader can tell which values belong to which slot
+##FROM invented service lines
+failed to start "db" on node "n1"
+failed to start "cache" on node "n2"
+failed to start "db" on node "n2"
+failed to start "cache" on node "n1"

@@ -69,7 +69,11 @@ How to read the overview:
    screen cut; `report-sampled` on the `variation:` line is what the *report*
    itself does not hold, because the rollup hit its cap. The count kind is on
    the line too: `ip=9` is exact, `ip>=64` is a lower bound, `ip~9 (kind
-   unstated)` means the record did not say. A group whose entry reads
+   unstated)` means the record did not say. A template with two or more
+   `<VARIES>` slots lists each slot on its own, in template order, with
+   per-value counts unless every value in that slot occurred once:
+   `VARIES#1=2 ["cache"×2|"db"×2]  VARIES#2=2
+   ["n1"×2|"n2"×2]`. A group whose entry reads
    `variation: not recorded` had no rollup computed, or nothing to vary — the
    record does not distinguish those, and neither does the overview.
 4. The **recipes** at the end are jq one-liners against the report by group

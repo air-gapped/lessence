@@ -154,6 +154,10 @@ struct Variation {
     samples_complete: Option<bool>,
     #[serde(default)]
     capped: bool,
+    #[serde(default)]
+    sample_counts: Vec<usize>,
+    #[serde(default)]
+    slots: Option<Vec<Variation>>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -439,6 +443,54 @@ fn cut_at_char_boundary(s: &str, max: usize) -> (&str, bool) {
     (&s[..end], true)
 }
 
+fn variation_fact(
+    name: &str,
+    v: &Variation,
+    bounded: bool,
+    counted: bool,
+    cut_samples: &mut bool,
+    sampled_in_report: &mut Vec<String>,
+) -> String {
+    let shown = if bounded {
+        v.samples.len().min(SAMPLES_SHOWN)
+    } else {
+        v.samples.len()
+    };
+    let counts = (counted
+        && v.sample_counts.len() == v.samples.len()
+        && v.sample_counts.iter().any(|&n| n > 1))
+    .then_some(&v.sample_counts);
+    let mut rendered: Vec<String> = Vec::with_capacity(shown);
+    for (i, sample) in v.samples.iter().take(shown).enumerate() {
+        let mut text = if bounded {
+            let (head, was_cut) = cut_at_char_boundary(sample, SAMPLE_PREVIEW);
+            if was_cut {
+                *cut_samples = true;
+            }
+            head.to_string()
+        } else {
+            sample.clone()
+        };
+        if let Some(counts) = counts {
+            text.push_str(&format!("×{}", counts[i]));
+        }
+        rendered.push(text);
+    }
+    let mut fact = v.count_text(name);
+    if !rendered.is_empty() {
+        fact.push_str(&format!(" [{}]", rendered.join("|")));
+    }
+    if shown < v.samples.len() {
+        *cut_samples = true;
+        fact.push_str(&format!(" …[showing {shown} of {}]", v.samples.len()));
+    }
+    if v.report_held_fewer_values() {
+        sampled_in_report.push(name.to_string());
+        fact.push_str(&format!(" …[report kept {}]", v.samples.len()));
+    }
+    fact
+}
+
 fn render_entry(record: &Record, bounded: bool) -> String {
     let stamp = |t: &Option<String>| t.clone().unwrap_or_else(|| "-".to_string());
     let bunched = record
@@ -482,40 +534,33 @@ fn render_entry(record: &Record, bounded: bool) -> String {
     out.push('\n');
 
     let mut cut_samples = false;
-    let mut sampled_in_report: Vec<&str> = Vec::new();
+    let mut sampled_in_report: Vec<String> = Vec::new();
     if !record.variation.is_empty() {
         let mut facts = Vec::new();
         for (name, v) in &record.variation {
-            let shown = if bounded {
-                v.samples.len().min(SAMPLES_SHOWN)
-            } else {
-                v.samples.len()
-            };
-            let mut rendered: Vec<String> = Vec::with_capacity(shown);
-            for sample in v.samples.iter().take(shown) {
-                if bounded {
-                    let (head, was_cut) = cut_at_char_boundary(sample, SAMPLE_PREVIEW);
-                    if was_cut {
-                        cut_samples = true;
+            match v.slots.as_deref() {
+                Some(slots) if slots.len() >= 2 => {
+                    for (i, slot) in slots.iter().enumerate() {
+                        let slot_name = format!("{name}#{}", i + 1);
+                        facts.push(variation_fact(
+                            &slot_name,
+                            slot,
+                            bounded,
+                            true,
+                            &mut cut_samples,
+                            &mut sampled_in_report,
+                        ));
                     }
-                    rendered.push(head.to_string());
-                } else {
-                    rendered.push(sample.clone());
                 }
+                _ => facts.push(variation_fact(
+                    name,
+                    v,
+                    bounded,
+                    false,
+                    &mut cut_samples,
+                    &mut sampled_in_report,
+                )),
             }
-            let mut fact = v.count_text(name);
-            if !rendered.is_empty() {
-                fact.push_str(&format!(" [{}]", rendered.join("|")));
-            }
-            if shown < v.samples.len() {
-                cut_samples = true;
-                fact.push_str(&format!(" …[showing {shown} of {}]", v.samples.len()));
-            }
-            if v.report_held_fewer_values() {
-                sampled_in_report.push(name);
-                fact.push_str(&format!(" …[report kept {}]", v.samples.len()));
-            }
-            facts.push(fact);
         }
         let sampled = if sampled_in_report.is_empty() {
             String::new()
@@ -873,6 +918,8 @@ mod tests {
             samples: Vec::new(),
             samples_complete: None,
             capped: true,
+            sample_counts: Vec::new(),
+            slots: None,
         };
         assert_eq!(
             v.count_text("host"),
@@ -1167,6 +1214,8 @@ mod tests {
             samples,
             samples_complete,
             capped,
+            sample_counts: Vec::new(),
+            slots: None,
         }
     }
 
@@ -1270,6 +1319,95 @@ mod tests {
         let out = render_entry(&record, true);
         assert!(out.contains("ip~5 (kind unstated)"), "{out}");
         assert!(out.contains("report-sampled: ip"), "1 of 5 kept: {out}");
+    }
+
+    fn counted(samples: &[(&str, usize)]) -> Variation {
+        let mut v = variation(
+            samples.len(),
+            Some(DistinctCountKind::Exact),
+            samples.iter().map(|(s, _)| s.to_string()).collect(),
+            Some(true),
+            false,
+        );
+        v.sample_counts = samples.iter().map(|(_, n)| *n).collect();
+        v
+    }
+
+    fn varies_record(entry: Variation) -> Record {
+        let mut vars = BTreeMap::new();
+        vars.insert("VARIES".to_string(), entry);
+        Record {
+            id: 0,
+            count: 4,
+            normalized: "failed to start <VARIES> on node <VARIES>".into(),
+            time_range: TimeRange::default(),
+            variation: vars,
+        }
+    }
+
+    #[test]
+    fn a_two_slot_group_prints_each_slot_separately_in_template_order() {
+        let mut pooled = counted(&[
+            ("\"cache\"", 2),
+            ("\"db\"", 2),
+            ("\"n1\"", 2),
+            ("\"n2\"", 2),
+        ]);
+        pooled.slots = Some(vec![
+            counted(&[("\"cache\"", 2), ("\"db\"", 2)]),
+            counted(&[("\"n1\"", 2), ("\"n2\"", 2)]),
+        ]);
+        let record = varies_record(pooled);
+        for bounded in [true, false] {
+            let out = render_entry(&record, bounded);
+            assert_eq!(
+                out.lines().nth(2),
+                Some(r#"variation: VARIES#1=2 ["cache"×2|"db"×2]  VARIES#2=2 ["n1"×2|"n2"×2]"#),
+                "bounded={bounded}: {out}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_slot_over_the_preview_is_cut_and_sampled_under_its_own_name() {
+        let mut first = counted(&[("a", 5), ("b", 3), ("c", 2), ("d", 1)]);
+        first.distinct_count = 9;
+        first.samples_complete = Some(false);
+        let mut pooled = counted(&[("a", 5)]);
+        pooled.slots = Some(vec![first, counted(&[("x", 11)])]);
+        let out = render_entry(&varies_record(pooled), true);
+        assert!(
+            out.contains(
+                r"VARIES#1=9 [a×5|b×3|c×2] …[showing 3 of 4] …[report kept 4]  VARIES#2=1 [x×11]"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("report-sampled: VARIES#1 —"), "{out}");
+        assert!(out.contains("previewed here: samples"), "{out}");
+    }
+
+    #[test]
+    fn a_slot_whose_values_each_occur_once_prints_no_counts() {
+        let mut pooled = counted(&[("down", 1)]);
+        pooled.slots = Some(vec![
+            counted(&[("down", 1), ("up", 1)]),
+            counted(&[("n1", 1), ("n2", 3)]),
+        ]);
+        let out = render_entry(&varies_record(pooled), true);
+        assert_eq!(
+            out.lines().nth(2),
+            Some("variation: VARIES#1=2 [down|up]  VARIES#2=2 [n1×1|n2×3]"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn a_one_slot_group_renders_as_before_without_counts() {
+        let record = varies_record(counted(&[("\"cache\"", 2), ("\"db\"", 2)]));
+        assert_eq!(
+            render_entry(&record, true),
+            "[4x] id=0 - → -\nfailed to start <VARIES> on node <VARIES>\nvariation: VARIES=2 [\"cache\"|\"db\"]\n"
+        );
     }
 
     #[test]

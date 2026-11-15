@@ -128,7 +128,9 @@ An entry declares its omissions in two separate registers: `previewed here`
 is what this screen cut, `report-sampled` on the `variation:` line is what the
 report itself does not hold. `ip=9` is an exact distinct count, `ip>=64` a
 lower bound, and `variation: not recorded` means no rollup was computed for
-that group, or it had nothing to vary.
+that group, or it had nothing to vary. A template with two or more `<VARIES>`
+slots lists each slot on its own, in template order, with per-value counts
+unless every value in that slot occurred once: `VARIES#1=2 ["cache"×2|"db"×2]  VARIES#2=2 ["n1"×2|"n2"×2]`.
 
 An entry's first line is its count, id and time range; a group whose lines
 bunch in time adds where most of them fell, exactly as the text marker does
