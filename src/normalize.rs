@@ -922,6 +922,28 @@ impl AnchorRender {
             _ => AnchorSentinel::Opaque,
         }
     }
+
+    fn shows_text_verbatim(&self) -> bool {
+        matches!(self, Self::Exact | Self::KlogCallSite | Self::PciAddress)
+    }
+
+    fn when_nested(&self, cover_shows_text_verbatim: bool) -> NestedIdentity {
+        match self {
+            Self::Route | Self::ProseTarget | Self::PodPrefix => NestedIdentity::Hidden,
+            Self::HttpStatus | Self::StatusField => NestedIdentity::EveryOccurrence,
+            Self::PciAddress if !cover_shows_text_verbatim => NestedIdentity::EveryOccurrence,
+            Self::PciAddress | Self::Exact | Self::KlogCallSite | Self::SystemdUnit => {
+                NestedIdentity::OnceUnlessShown
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NestedIdentity {
+    Hidden,
+    EveryOccurrence,
+    OnceUnlessShown,
 }
 
 struct ProtectedAnchors<'a> {
@@ -1213,24 +1235,15 @@ fn protect_anchored_spans<'a>(
     let mut result = String::with_capacity(original.len());
     let mut renders: Vec<(String, String)> = Vec::with_capacity(spans.len());
     let mut cursor = 0;
-    let mut covering_is_literal = false;
+    let mut cover_shows_text_verbatim = false;
     for (i, (start, end, render)) in spans.into_iter().enumerate() {
         if start < cursor {
-            if matches!(
-                render,
-                AnchorRender::HttpStatus
-                    | AnchorRender::StatusField
-                    | AnchorRender::Exact
-                    | AnchorRender::KlogCallSite
-                    | AnchorRender::PciAddress
-                    | AnchorRender::SystemdUnit
-            ) && let Some((_, rendered)) = renders.last_mut()
+            let showing = render.when_nested(cover_shows_text_verbatim);
+            if showing != NestedIdentity::Hidden
+                && let Some((_, rendered)) = renders.last_mut()
             {
                 let identity = render.render(&original[start..end]);
-                if matches!(render, AnchorRender::HttpStatus | AnchorRender::StatusField)
-                    || (matches!(render, AnchorRender::PciAddress) && !covering_is_literal)
-                    || !rendered.contains(&identity)
-                {
+                if showing == NestedIdentity::EveryOccurrence || !rendered.contains(&identity) {
                     rendered.push(' ');
                     rendered.push_str(&identity);
                 }
@@ -1239,10 +1252,7 @@ fn protect_anchored_spans<'a>(
         }
         result.push_str(&original[cursor..start]);
         let sentinel = render.sentinel().text(i);
-        covering_is_literal = matches!(
-            render,
-            AnchorRender::Exact | AnchorRender::KlogCallSite | AnchorRender::PciAddress
-        );
+        cover_shows_text_verbatim = render.shows_text_verbatim();
         renders.push((sentinel.clone(), render.render(&original[start..end])));
         result.push_str(&sentinel);
         cursor = end;
@@ -4230,6 +4240,35 @@ mod e8v_normalize_2026_09_17 {
             split(AnchorClass::Caller, AnchorClass::Program),
             split(AnchorClass::Method, AnchorClass::Program),
             "x as a caller and x as a method are different anchors beside the same program"
+        );
+    }
+
+    #[test]
+    fn a_nested_identity_shows_by_its_own_kind_and_by_what_covers_it() {
+        use NestedIdentity::{EveryOccurrence, Hidden, OnceUnlessShown};
+        for cover_verbatim in [false, true] {
+            for (render, expected) in [
+                (AnchorRender::Route, Hidden),
+                (AnchorRender::ProseTarget, Hidden),
+                (AnchorRender::PodPrefix, Hidden),
+                (AnchorRender::HttpStatus, EveryOccurrence),
+                (AnchorRender::StatusField, EveryOccurrence),
+                (AnchorRender::Exact, OnceUnlessShown),
+                (AnchorRender::KlogCallSite, OnceUnlessShown),
+                (AnchorRender::SystemdUnit, OnceUnlessShown),
+            ] {
+                assert_eq!(render.when_nested(cover_verbatim), expected);
+            }
+        }
+        assert_eq!(
+            AnchorRender::PciAddress.when_nested(false),
+            EveryOccurrence,
+            "a route skeleton drops its query, so each PCI address in it is appended"
+        );
+        assert_eq!(
+            AnchorRender::PciAddress.when_nested(true),
+            OnceUnlessShown,
+            "a verbatim cover already shows the PCI address inside it"
         );
     }
 
