@@ -680,7 +680,8 @@ fn anchor_hash(identities: &mut [(AnchorClass, AnchorIdentity<'_>)]) -> u64 {
     }
     identities.sort_by_key(|&(class, _)| class);
     let mut hasher = AHasher::default();
-    for &(_, identity) in identities.iter() {
+    for &(class, identity) in identities.iter() {
+        class.hash(&mut hasher);
         match identity {
             AnchorIdentity::Route(route) => hash_route(route, &mut hasher),
             AnchorIdentity::Text(text) => text.hash(&mut hasher),
@@ -925,7 +926,7 @@ struct ProtectedAnchors<'a> {
     identities: Vec<(AnchorClass, AnchorIdentity<'a>)>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum AnchorClass {
     RequestRoute,
     RequestStatus,
@@ -4210,6 +4211,23 @@ mod e8v_normalize_2026_09_17 {
                 "`uuid` must come after `timestamp`",
                 "`uuid` must come after `path`"
             ]
+        );
+    }
+
+    #[test]
+    fn the_same_identity_in_two_anchor_classes_is_two_anchors() {
+        let one = |class| anchor_hash(&mut [(class, AnchorIdentity::Text("GET"))]);
+        assert_ne!(one(AnchorClass::Method), one(AnchorClass::Program));
+        let split = |first, second| {
+            anchor_hash(&mut [
+                (first, AnchorIdentity::Text("x")),
+                (second, AnchorIdentity::Text("y")),
+            ])
+        };
+        assert_ne!(
+            split(AnchorClass::Caller, AnchorClass::Program),
+            split(AnchorClass::Method, AnchorClass::Program),
+            "x as a caller and x as a method are different anchors beside the same program"
         );
     }
 
