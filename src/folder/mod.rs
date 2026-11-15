@@ -25,7 +25,11 @@ fn is_credential_value(text: &str, match_start: usize, value: &str) -> bool {
         .strip_prefix(['"', '\''])
         .and_then(|v| v.strip_suffix(['"', '\'']))
         .unwrap_or(value);
-    bare.len() >= MIN_CREDENTIAL_VALUE && !text[..match_start].ends_with('/')
+    bare.len() >= MIN_CREDENTIAL_VALUE && !key_is_a_url_path_segment(text, match_start)
+}
+
+fn key_is_a_url_path_segment(text: &str, key_start: usize) -> bool {
+    text[..key_start].ends_with('/')
 }
 
 pub(crate) fn credential_spans(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -94,9 +98,7 @@ fn slot_mut(slots: &mut SlotCounts, i: usize) -> &mut VariesCounts {
 
 impl VariesCounts {
     fn rank(value: &str) -> u64 {
-        let mut h = FNV_OFFSET;
-        fnv1a_fold(&mut h, value.as_bytes());
-        h
+        fnv1a(value.as_bytes())
     }
 
     fn add(&mut self, value: &str, n: usize, cap: usize) {
@@ -888,6 +890,12 @@ fn token_value_string(token: &Token) -> String {
 
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET;
+    fnv1a_fold(&mut h, bytes);
+    h
+}
 
 fn fnv1a_fold(h: &mut u64, bytes: &[u8]) {
     for &b in bytes {
@@ -1863,9 +1871,7 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
 }
 
 fn seed_for_group(normalized: &str) -> u64 {
-    let mut h = FNV_OFFSET;
-    fnv1a_fold(&mut h, normalized.as_bytes());
-    h
+    fnv1a(normalized.as_bytes())
 }
 
 #[cfg(test)]
