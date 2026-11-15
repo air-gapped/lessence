@@ -1789,7 +1789,6 @@ fn joins_through_slots(
         diffs += 1;
     }
     let n = template_units.len();
-    #[allow(clippy::cast_precision_loss)]
     let agree = (n - diffs) as f64 / n as f64 * 100.0;
     agree >= f64::from(threshold)
 }
@@ -2885,7 +2884,8 @@ impl PatternFolder {
             return Retention::Declined(group);
         }
         let key = group.first().hash;
-        if !self.retained.contains_key(&key) && self.retained.len() >= RETAINED_TEMPLATE_CAP {
+        let already_retained = self.retained.contains_key(&key);
+        if !already_retained && self.retained.len() >= RETAINED_TEMPLATE_CAP {
             self.json_retention_cap_hits += 1;
             return Retention::Declined(group);
         }
@@ -2899,7 +2899,7 @@ impl PatternFolder {
             };
         }
         group.retained = Some(state);
-        if !self.retained.contains_key(&key) {
+        if !already_retained {
             self.retained_index.insert(group.first());
         }
         self.retained.insert(key, group);

@@ -1360,7 +1360,6 @@ impl Normalizer {
         hasher.finish()
     }
 
-    #[allow(clippy::cast_precision_loss)]
     pub fn similarity_score(&self, line1: &LogLine, line2: &LogLine) -> f64 {
         let s1 = &line1.normalized;
         let s2 = &line2.normalized;
@@ -1497,7 +1496,6 @@ impl Normalizer {
         p + s + usize::from(prev[bm.len()])
     }
 
-    #[allow(clippy::cast_precision_loss)]
     pub fn are_similar(&self, line1: &LogLine, line2: &LogLine) -> bool {
         if line1.hash == line2.hash {
             return true;
