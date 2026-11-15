@@ -24,7 +24,9 @@ fi
 
 listing="$(mktemp)"
 trap 'rm -f "$listing"' EXIT
-cargo mutants --list --no-config >"$listing"
+# CI sets CARGO_TERM_COLOR=always, which colours the listing; an escape
+# sequence inside a line matches no entry.
+cargo mutants --list --no-config --colors never >"$listing"
 if [ ! -s "$listing" ]; then
     echo "check-mutants-pins: cargo mutants --list printed nothing" >&2
     exit 2
@@ -35,7 +37,12 @@ import re
 import sys
 import tomllib
 
-mutants = open(sys.argv[1], encoding="utf-8").read().splitlines()
+text = open(sys.argv[1], encoding="utf-8").read()
+mutants = re.sub(r"\x1b\[[0-9;]*m", "", text).splitlines()
+if not any(re.match(r"^src/\S+:\d+:\d+: ", m) for m in mutants):
+    print("check-mutants-pins: the listing has no `src/file:line:col: ` line; first line was:")
+    print(repr(mutants[0]) if mutants else "(empty)")
+    sys.exit(2)
 with open(".cargo/mutants.toml", "rb") as f:
     entries = tomllib.load(f).get("exclude_re", [])
 
