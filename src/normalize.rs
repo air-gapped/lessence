@@ -2840,7 +2840,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_json_disabled_with_brace_input() {
+    fn json_detector_folds_an_event_metadata_block() {
         let (_, direct_tokens) = crate::patterns::json::JsonDetector::detect_and_replace(
             "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
         );
@@ -2848,6 +2848,23 @@ mod tests {
             direct_tokens.iter().any(|t| matches!(t, Token::Json(_))),
             "JsonDetector should detect Event objects: {direct_tokens:?}"
         );
+    }
+
+    #[test]
+    fn the_json_flag_decides_an_event_block_once_the_path_detector_is_off() {
+        let input = "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}";
+        let json_on = run(|c| c.normalize_paths = false, input);
+        let json_off = run(
+            |c| {
+                c.normalize_paths = false;
+                c.normalize_json = false;
+            },
+            input,
+        );
+        assert_eq!(json_on.normalized, "<EVENT_OBJECT>,Reason:Pulled}");
+        assert!(json_on.tokens.iter().any(|t| matches!(t, Token::Json(_))));
+        assert_eq!(json_off.normalized, input);
+        assert!(!json_off.tokens.iter().any(|t| matches!(t, Token::Json(_))));
     }
 
     fn run(config_mut: impl FnOnce(&mut Config), input: &str) -> LogLine {
