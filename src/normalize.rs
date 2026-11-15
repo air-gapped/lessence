@@ -435,7 +435,14 @@ fn prose_target_parts(target: &str) -> (&str, &str) {
     if let Some((scheme, rest)) = target.split_once("://") {
         let start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         let path = &rest[start..];
-        (scheme, if path.starts_with('/') { path } else { "/" })
+        (
+            scheme,
+            if path.starts_with(['/', '?']) {
+                path
+            } else {
+                "/"
+            },
+        )
     } else {
         ("", target)
     }
@@ -704,24 +711,34 @@ fn anchor_hash(identities: &mut [(AnchorClass, AnchorIdentity<'_>)]) -> u64 {
     hasher.finish()
 }
 
+fn is_generated_pod_part(seg: &str) -> bool {
+    let b = seg.as_bytes();
+    (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
+        || (b.len() <= 2 && b.iter().all(u8::is_ascii_lowercase))
+        || (b.len() == 5 && b.iter().all(|c| K8S_RAND_ALPHABET.contains(c)))
+        || ((8..=10).contains(&b.len())
+            && b.iter()
+                .all(|c| K8S_RAND_ALPHABET.contains(c) || c.is_ascii_digit()))
+}
+
 fn pod_skeleton(pod: &str) -> &str {
-    let generated = |seg: &str| {
-        let b = seg.as_bytes();
-        (!b.is_empty() && b.iter().all(u8::is_ascii_digit))
-            || (b.len() <= 2 && b.iter().all(u8::is_ascii_lowercase))
-            || (b.len() == 5 && b.iter().all(|c| K8S_RAND_ALPHABET.contains(c)))
-            || ((8..=10).contains(&b.len())
-                && b.iter()
-                    .all(|c| K8S_RAND_ALPHABET.contains(c) || c.is_ascii_digit()))
-    };
     let mut keep = pod;
     for _ in 0..3 {
         match keep.rsplit_once('-') {
-            Some((head, tail)) if generated(tail) => keep = head,
+            Some((head, tail)) if is_generated_pod_part(tail) => keep = head,
             _ => break,
         }
     }
     keep
+}
+
+fn generated_pod_stem(segment: &str) -> Option<&str> {
+    let stem = pod_skeleton(segment);
+    let suffix = segment.get(stem.len() + 1..)?;
+    let random = suffix
+        .split('-')
+        .any(|part| part.len() >= 5 && !part.bytes().all(|b| b.is_ascii_digit()));
+    (!stem.is_empty() && random).then_some(stem)
 }
 
 fn systemd_units(original: &str) -> impl Iterator<Item = regex::Match<'_>> {
@@ -823,6 +840,9 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
             Some(ext) => RouteSegment::Skeleton(format!("<ID>.{ext}")),
         };
     }
+    if let Some(stem) = generated_pod_stem(segment) {
+        return RouteSegment::Skeleton(format!("{stem}-<SUFFIX>"));
+    }
     let b = segment.as_bytes();
     let mut out = String::with_capacity(segment.len());
     let mut i = 0;
@@ -849,8 +869,15 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
     RouteSegment::Skeleton(out)
 }
 
+fn route_path(target: &str) -> (&str, bool) {
+    match target.find(['?', '#']) {
+        Some(at) => (&target[..at], target.as_bytes()[at] == b'?'),
+        None => (target, false),
+    }
+}
+
 fn hash_route(target: &str, hasher: &mut AHasher) {
-    let path = target.split(['?', '#']).next().unwrap_or(target);
+    let (path, has_query) = route_path(target);
     for segment in path.split('/') {
         match classify_route_segment(segment) {
             RouteSegment::Slash => "/".hash(hasher),
@@ -859,11 +886,12 @@ fn hash_route(target: &str, hasher: &mut AHasher) {
         }
         "|".hash(hasher);
     }
+    has_query.hash(hasher);
 }
 
 fn render_route(target: &str) -> String {
-    let path = target.split(['?', '#']).next().unwrap_or(target);
-    let mut out = String::with_capacity(path.len());
+    let (path, has_query) = route_path(target);
+    let mut out = String::with_capacity(path.len() + 8);
     for (i, segment) in path.split('/').enumerate() {
         if i > 0 {
             out.push('/');
@@ -873,6 +901,9 @@ fn render_route(target: &str) -> String {
             RouteSegment::Id => out.push_str("<ID>"),
             RouteSegment::Skeleton(s) => out.push_str(&s),
         }
+    }
+    if has_query {
+        out.push_str("?<QUERY>");
     }
     out
 }
@@ -1649,7 +1680,7 @@ mod tests {
         assert_eq!(first.anchor, same.anchor);
         assert_eq!(
             first.normalized,
-            "making GET http request: http://<HOST>/items/<N>"
+            "making GET http request: http://<HOST>/items/<N>?<QUERY>"
         );
         assert_eq!(first.normalized, same.normalized);
         assert!(
@@ -1667,14 +1698,17 @@ mod tests {
         for (text, shown) in [
             (
                 "sent PATCH https://worker.example/items/92?x=y.",
-                "PATCH https://<HOST>/items/<N>.",
+                "PATCH https://<HOST>/items/<N>?<QUERY>.",
             ),
             (
                 "making DELETE HTTP request: /items/42",
                 "DELETE HTTP request: /items/<N>",
             ),
             ("GET http request: /", "GET http request: /"),
-            ("GET http://worker.example?ready=yes", "GET http://<HOST>/"),
+            (
+                "GET http://worker.example?ready=yes",
+                "GET http://<HOST>?<QUERY>",
+            ),
         ] {
             let line = norm(text);
             assert!(line.normalized.contains(shown), "{}", line.normalized);
@@ -2113,7 +2147,10 @@ mod tests {
 
         let login = line("GET ok url=https://shop.example/login?u=1 user=a1");
         let logout = line("GET ok url=https://shop.example/logout?u=1 user=a1");
-        assert_eq!(login.normalized, "GET ok url=https://<HOST>/login user=a1");
+        assert_eq!(
+            login.normalized,
+            "GET ok url=https://<HOST>/login?<QUERY> user=a1"
+        );
         assert_ne!(login.hash, logout.hash);
         assert!(
             login
@@ -2124,7 +2161,7 @@ mod tests {
 
         let a = line(r#"x url="https://a.example/item/1001?ref=a" y"#);
         let b = line(r#"x url="https://b.example/item/1002?ref=b" y"#);
-        assert_eq!(a.normalized, r#"x url="https://<HOST>/item/<N>" y"#);
+        assert_eq!(a.normalized, r#"x url="https://<HOST>/item/<N>?<QUERY>" y"#);
         assert_eq!(a.normalized, b.normalized);
         assert_eq!(a.hash, b.hash);
 
@@ -2161,6 +2198,81 @@ mod tests {
         hash_route("/k8s/pods/42", &mut c);
         hash_route("/k8s/pods/99", &mut d);
         assert_eq!(c.finish(), d.finish(), "the object id still folds");
+    }
+
+    fn route_hash(target: &str) -> u64 {
+        let mut h = AHasher::default();
+        hash_route(target, &mut h);
+        h.finish()
+    }
+
+    #[test]
+    fn a_generated_pod_name_in_a_route_segment_is_an_id() {
+        assert_eq!(
+            render_route("/api/v1/namespaces/shop/pods/web-7d9c5b8f4-x2kqz"),
+            "/api/v<N>/namespaces/shop/pods/web-<SUFFIX>"
+        );
+        assert_eq!(
+            route_hash("/api/v1/namespaces/shop/pods/web-7d9c5b8f4-x2kqz"),
+            route_hash("/api/v1/namespaces/shop/pods/web-5f6b8c9d7-m4wzt")
+        );
+        assert_eq!(render_route("/pods/web-x2kqz"), "/pods/web-<SUFFIX>");
+        assert_ne!(
+            route_hash("/pods/web-7d9c5b8f4-x2kqz"),
+            route_hash("/pods/api-7d9c5b8f4-x2kqz"),
+            "the workload name is part of the route"
+        );
+    }
+
+    #[test]
+    fn a_route_segment_without_a_generated_suffix_is_classified_as_before() {
+        assert_eq!(
+            render_route("/leases/kube-scheduler"),
+            "/leases/kube-scheduler"
+        );
+        assert_eq!(
+            render_route("/configmaps/app-config"),
+            "/configmaps/app-config"
+        );
+        assert_eq!(render_route("/items/item-42"), "/items/item-<N>");
+        assert_eq!(render_route("/docs/start-en"), "/docs/start-en");
+        assert_ne!(
+            route_hash("/docs/start-en"),
+            route_hash("/docs/start-de"),
+            "a short word after a dash is not a generated suffix"
+        );
+        assert_eq!(render_route("/builds/run-20241105"), "/builds/run-<N>");
+    }
+
+    #[test]
+    fn a_route_with_a_query_hashes_apart_from_one_without() {
+        assert_ne!(
+            route_hash("/leases/kube-scheduler?timeout=5s"),
+            route_hash("/leases/kube-scheduler")
+        );
+        assert_eq!(
+            route_hash("/leases/kube-scheduler?timeout=5s"),
+            route_hash("/leases/kube-scheduler?timeout=10s&watch=1"),
+            "the query's content is not part of the route"
+        );
+        assert_eq!(
+            route_hash("/leases/kube-scheduler#top"),
+            route_hash("/leases/kube-scheduler"),
+            "a fragment is not a query"
+        );
+    }
+
+    #[test]
+    fn a_route_query_renders_as_a_placeholder() {
+        assert_eq!(
+            render_route(
+                "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/kube-scheduler?timeout=5s"
+            ),
+            "/apis/coordination.k8s.io/v<N>/namespaces/kube-system/leases/kube-scheduler?<QUERY>"
+        );
+        assert_eq!(render_route("/search?"), "/search?<QUERY>");
+        assert_eq!(render_route("/search#q=1"), "/search");
+        assert_eq!(render_route("/search"), "/search");
     }
 
     #[test]

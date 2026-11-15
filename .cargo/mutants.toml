@@ -31,23 +31,23 @@ exclude_re = [
     # token_lcs prefix/suffix trims and the early-exit bound are exact
     # optimizations: disabling a trim (< → == / >) or loosening the bound
     # (- → + / /) can never change the returned LCS or decision, only speed.
-    '^src/normalize\.rs:1481:17: replace < with (==|>) in Normalizer::token_lcs$',
-    '^src/normalize\.rs:1490:17: replace < with (==|>) in Normalizer::token_lcs$',
-    '^src/normalize\.rs:1511:42: replace - with \+ in Normalizer::token_lcs$',
-    '^src/normalize\.rs:1511:46: replace - with (\+|/) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1512:17: replace < with (==|>) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1521:17: replace < with (==|>) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1542:42: replace - with \+ in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1542:46: replace - with (\+|/) in Normalizer::token_lcs$',
     # are_similar multiset bound: these mutations push the bound above any
     # admissible threshold (<= 100) so the reject never fires — decisions
     # unchanged, only the DP shortcut is lost.
-    '^src/normalize\.rs:1556:21: replace \* with \+ in Normalizer::are_similar$',
-    '^src/normalize\.rs:1556:66: replace / with \* in Normalizer::are_similar$',
-    '^src/normalize\.rs:1556:75: replace \* with \+ in Normalizer::are_similar$',
+    '^src/normalize\.rs:1587:21: replace \* with \+ in Normalizer::are_similar$',
+    '^src/normalize\.rs:1587:66: replace / with \* in Normalizer::are_similar$',
+    '^src/normalize\.rs:1587:75: replace \* with \+ in Normalizer::are_similar$',
     # are_similar needed-LCS seed: ceil((T*total)/200) is only a starting
     # point — division by total (>= 2) can only undershoot it, and the
     # step-up loop walks `need` to the same authoritative value. Addition
     # is NOT equivalent at threshold 0; keep that mutant testable. The
     # bounds above need exact locations because their * -> + mutations
     # share a function name with this non-equivalent seed mutation.
-    '^src/normalize\.rs:1560:40: replace \* with / in Normalizer::are_similar$',
+    '^src/normalize\.rs:1591:40: replace \* with / in Normalizer::are_similar$',
 
     # lessence-e8v: widened prefilters only add inert detector calls.
     # cpu_quantities and the bracket detector repeat their own guards;

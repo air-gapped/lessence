@@ -4880,7 +4880,7 @@ x path=/api/v1/orders/44 done
 {"uri":"/api/v1/users/43","level":"info"}
 {"uri":"/api/v1/orders/44","level":"info"}
 
-##CASE lessence-oub template_present=url="https://<HOST>/item/<N>"
+##CASE lessence-oub template_present=url="https://<HOST>/item/<N>?<QUERY>"
 ##WHY same route, another id and query value: one event whose route is on the line
 ##FROM invented request records
 GET ok url="https://shop.example/item/1001?ref=a" user=a1
@@ -5078,3 +5078,25 @@ upload done filename=invoice.txt
 ##FLAGS --disable-patterns json
 I1102 10:00:01 event.go:12] &Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}
 I1102 10:00:02 event.go:12] &Event{ObjectMeta:{web-b.29c1  default    0 map[] []},Reason:Pulled}
+
+##CASE lessence-1ro groups=1
+##WHY a generated pod-name suffix in a route segment is an id, as it already is in the same line's fields
+##FROM invented Kubernetes audit records
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/pods/web-7d9c5b8f4-x2kqz","verb":"get","user":{"username":"system:node:wrk-1"},"objectRef":{"resource":"pods","namespace":"shop","name":"web-7d9c5b8f4-x2kqz"},"responseStatus":{"code":200}}
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/pods/web-7d9c5b8f4-q8vrn","verb":"get","user":{"username":"system:node:wrk-1"},"objectRef":{"resource":"pods","namespace":"shop","name":"web-7d9c5b8f4-q8vrn"},"responseStatus":{"code":200}}
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/pods/web-5f6b8c9d7-m4wzt","verb":"get","user":{"username":"system:node:wrk-1"},"objectRef":{"resource":"pods","namespace":"shop","name":"web-5f6b8c9d7-m4wzt"},"responseStatus":{"code":200}}
+
+##CASE lessence-1ro template_present=kube-scheduler?<QUERY>
+##WHY a route's query string is shown as a placeholder, not dropped
+##FROM invented Kubernetes audit records
+{"kind":"Event","auditID":"3f1c9a2e-7b4d-4e8a-9c61-2d5f8b0e4a17","stage":"ResponseComplete","requestURI":"/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/kube-scheduler?timeout=5s","verb":"update","user":{"username":"system:kube-scheduler"},"objectRef":{"resource":"leases","namespace":"kube-system","name":"kube-scheduler"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-03-14T09:21:04.118302Z","stageTimestamp":"2026-03-14T09:21:04.121947Z"}
+{"kind":"Event","auditID":"8a2e6d41-0c9f-4b37-a5e8-61f3c7d29b04","stage":"ResponseComplete","requestURI":"/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/kube-scheduler?timeout=5s","verb":"update","user":{"username":"system:kube-scheduler"},"objectRef":{"resource":"leases","namespace":"kube-system","name":"kube-scheduler"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-03-14T09:21:06.130475Z","stageTimestamp":"2026-03-14T09:21:06.134012Z"}
+{"kind":"Event","auditID":"c57b0e93-4d18-4f6a-b2c9-9e0a3f6d71e8","stage":"ResponseComplete","requestURI":"/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/kube-scheduler?timeout=5s","verb":"update","user":{"username":"system:kube-scheduler"},"objectRef":{"resource":"leases","namespace":"kube-system","name":"kube-scheduler"},"responseStatus":{"code":200},"requestReceivedTimestamp":"2026-03-14T09:21:08.142836Z","stageTimestamp":"2026-03-14T09:21:08.146290Z"}
+
+##CASE lessence-1ro groups=2 holds-on-base
+##WHY two resources under the same namespace are two routes
+##FROM invented Kubernetes audit records
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/configmaps/app-config","verb":"get","user":{"username":"system:serviceaccount:shop:web"},"objectRef":{"resource":"configmaps","namespace":"shop","name":"app-config"},"responseStatus":{"code":200}}
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/configmaps/app-config","verb":"get","user":{"username":"system:serviceaccount:shop:web"},"objectRef":{"resource":"configmaps","namespace":"shop","name":"app-config"},"responseStatus":{"code":200}}
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/secrets/app-config","verb":"get","user":{"username":"system:serviceaccount:shop:web"},"objectRef":{"resource":"secrets","namespace":"shop","name":"app-config"},"responseStatus":{"code":200}}
+{"kind":"Event","stage":"ResponseComplete","requestURI":"/api/v1/namespaces/shop/secrets/app-config","verb":"get","user":{"username":"system:serviceaccount:shop:web"},"objectRef":{"resource":"secrets","namespace":"shop","name":"app-config"},"responseStatus":{"code":200}}
