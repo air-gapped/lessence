@@ -152,7 +152,6 @@ impl PatternFolder {
         }
 
         let record = GroupRecord {
-            record_type: "group",
             id,
             count: group.count(),
             token_types: token_types.into_iter().collect(),
@@ -367,8 +366,12 @@ impl PatternFolder {
         top_n: Option<usize>,
         fit_budget: Option<usize>,
     ) -> Result<()> {
-        let (display, total_patterns, was_capped, fit_truncated) =
-            self.prepare_summary(top_n, fit_budget)?;
+        let super::SummaryRows {
+            display,
+            total_patterns,
+            was_capped,
+            fit_truncated,
+        } = self.prepare_summary(top_n, fit_budget)?;
         let shown_count = display.len();
         self.account_summary(&display);
 
@@ -430,7 +433,6 @@ impl PatternFolder {
     /// a trailing newline so the JSONL stream terminates cleanly.
     pub fn print_summary_json(&self, writer: &mut impl io::Write, elapsed: Duration) -> Result<()> {
         let record = SummaryRecord {
-            record_type: "summary",
             stats: self.build_stats_json(elapsed),
             metadata: RunMetadata::new(
                 &self.input_facts,

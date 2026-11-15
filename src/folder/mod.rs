@@ -767,9 +767,8 @@ struct TimeRange {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename = "group")]
 struct GroupRecord {
-    #[serde(rename = "type")]
-    record_type: &'static str,
     id: usize,
     count: usize,
     token_types: Vec<&'static str>,
@@ -783,9 +782,8 @@ struct GroupRecord {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename = "summary")]
 struct SummaryRecord {
-    #[serde(rename = "type")]
-    record_type: &'static str,
     #[serde(flatten)]
     stats: StatsJson,
     #[serde(flatten)]
@@ -2712,6 +2710,20 @@ fn keep_earliest_members_until(held: usize, members: usize, chosen: &mut MemberI
     }
 }
 
+struct SummaryRows {
+    display: Vec<(usize, String)>,
+    total_patterns: usize,
+    was_capped: bool,
+    fit_truncated: usize,
+}
+
+pub struct TopGroups {
+    pub shown: Vec<(usize, String)>,
+    pub total_groups: usize,
+    pub coverage_pct: usize,
+    pub fit_truncated: usize,
+}
+
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let sanitizer = config.sanitizer();
@@ -3150,7 +3162,7 @@ impl PatternFolder {
         &mut self,
         top_n: Option<usize>,
         fit_budget: Option<usize>,
-    ) -> Result<(Vec<(usize, String)>, usize, bool, usize)> {
+    ) -> Result<SummaryRows> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
@@ -3186,9 +3198,13 @@ impl PatternFolder {
             _ => (DEFAULT_SUMMARY_CAP, total_patterns > DEFAULT_SUMMARY_CAP, 0),
         };
         sorted.truncate(limit);
-        let display = sorted;
 
-        Ok((display, total_patterns, was_capped, fit_truncated))
+        Ok(SummaryRows {
+            display: sorted,
+            total_patterns,
+            was_capped,
+            fit_truncated,
+        })
     }
 
     fn fix_timeline_grid(&mut self) {
@@ -3253,7 +3269,7 @@ impl PatternFolder {
         n: usize,
         fit_budget: Option<usize>,
         cap_is_summary: bool,
-    ) -> Result<(Vec<(usize, String)>, usize, usize, usize)> {
+    ) -> Result<TopGroups> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
@@ -3335,16 +3351,16 @@ impl PatternFolder {
             self.json_omitted_by_fit += fit_truncated;
         }
 
-        Ok((
-            output,
+        Ok(TopGroups {
+            shown: output,
             total_groups,
-            if total_input_lines > 0 {
+            coverage_pct: if total_input_lines > 0 {
                 (lines_covered as f64 / total_input_lines as f64 * 100.0) as usize
             } else {
                 0
             },
             fit_truncated,
-        ))
+        })
     }
 
     fn should_flush_buffer(&self) -> bool {

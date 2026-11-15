@@ -329,7 +329,11 @@ fn summary_retains_all_groups_past_flush_threshold() {
         let out = folder.process_line(&eviction_word(i)).unwrap();
         assert!(out.is_none(), "ranked mode must not stream evictions");
     }
-    let (display, total_patterns, _, _) = folder.prepare_summary(Some(0), None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns,
+        ..
+    } = folder.prepare_summary(Some(0), None).unwrap();
     assert_eq!(total_patterns, 1_100, "every group must survive to ranking");
     assert_eq!(display.len(), 1_100);
 }
@@ -344,7 +348,11 @@ fn top_n_retains_all_groups_past_flush_threshold() {
     for i in 0..1_100 {
         folder.process_line(&eviction_word(i)).unwrap();
     }
-    let (output, total_groups, _, _) = folder.finish_top_n(5, None, false).unwrap();
+    let TopGroups {
+        shown: output,
+        total_groups,
+        ..
+    } = folder.finish_top_n(5, None, false).unwrap();
     assert_eq!(total_groups, 1_100, "denominator must count every group");
     assert_eq!(output.len(), 5);
 }
@@ -2757,7 +2765,12 @@ fn finish_top_n_derives_json_group_completeness() {
             .unwrap();
         }
     }
-    let (shown, total, _coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
+    let TopGroups {
+        shown,
+        total_groups: total,
+        fit_truncated,
+        ..
+    } = f.finish_top_n(3, Some(2), false).unwrap();
     assert_eq!(total, 4);
     assert_eq!(shown.len(), 1);
     assert_eq!(fit_truncated, 2);
@@ -2785,7 +2798,11 @@ fn summary_keeps_groups_that_share_a_template_but_not_an_anchor() {
         line.anchor = anchor;
         f.buffer.push(PatternGroup::new(line, pos));
     }
-    let (shown, total, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display: shown,
+        total_patterns: total,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert_eq!(total, 2);
     assert_eq!(shown.len(), 2);
 }
@@ -2805,7 +2822,12 @@ fn finish_top_n_coverage_counts_only_the_groups_shown_after_fit() {
             .unwrap();
         }
     }
-    let (shown, _total, coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
+    let TopGroups {
+        shown,
+        coverage_pct: coverage,
+        fit_truncated,
+        ..
+    } = f.finish_top_n(3, Some(2), false).unwrap();
     assert_eq!(shown.len(), 1);
     assert_eq!(fit_truncated, 2);
     assert_eq!(coverage, 40);
@@ -2825,7 +2847,12 @@ fn finish_top_n_summary_cap_classifies_omissions() {
             .unwrap();
         }
     }
-    let (shown, total, _coverage, fit_truncated) = f.finish_top_n(1, None, true).unwrap();
+    let TopGroups {
+        shown,
+        total_groups: total,
+        fit_truncated,
+        ..
+    } = f.finish_top_n(1, None, true).unwrap();
     assert_eq!((shown.len(), total, fit_truncated), (1, 3, 0));
 
     let mut buf = Vec::new();
@@ -3373,7 +3400,11 @@ fn finish_top_n_returns_sorted_by_count() {
     f.process_line("unique log entry with no pattern match")
         .unwrap();
 
-    let (top, total_groups, _coverage, _) = f.finish_top_n(2, None, false).unwrap();
+    let TopGroups {
+        shown: top,
+        total_groups,
+        ..
+    } = f.finish_top_n(2, None, false).unwrap();
     assert_eq!(top.len(), 2, "should return top 2");
     assert!(
         top[0].0 >= top[1].0,
@@ -3391,7 +3422,7 @@ fn finish_top_n_returns_correct_total_groups() {
     f.process_line("line B with 10.0.0.2").unwrap();
     f.process_line("line C with something else entirely different")
         .unwrap();
-    let (_top, total_groups, _coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups { total_groups, .. } = f.finish_top_n(10, None, false).unwrap();
     assert!(total_groups >= 1, "should have at least 1 group");
 }
 
@@ -3399,7 +3430,7 @@ fn finish_top_n_returns_correct_total_groups() {
 fn finish_top_n_n_exceeds_groups() {
     let mut f = make_folder();
     f.process_line("only one line 10.0.0.1").unwrap();
-    let (top, _total, _coverage, _) = f.finish_top_n(100, None, false).unwrap();
+    let TopGroups { shown: top, .. } = f.finish_top_n(100, None, false).unwrap();
     // Should return all groups (1 or more), not crash
     assert!(!top.is_empty());
 }
@@ -3411,7 +3442,10 @@ fn finish_top_n_coverage_percentage() {
     for _ in 0..10 {
         f.process_line("2024-01-01 ERROR same 10.0.0.1").unwrap();
     }
-    let (_top, _total, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 100, "single group covering all lines = 100%");
 }
 
@@ -3464,7 +3498,11 @@ fn prepare_summary_merges_identical_groups() {
         make_line("error <IP>", vec![Token::IPv4("10.0.0.2".into())]),
         2,
     ));
-    let (display, total_patterns, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert_eq!(total_patterns, 1, "identical normalized text should merge");
     assert_eq!(display[0].0, 2, "merged count should be 1+1=2");
 }
@@ -3480,7 +3518,7 @@ fn prepare_summary_accumulates_counts() {
     g2.add_line(make_line("err <IP>", vec![]), 11);
     f.buffer.push(g1);
     f.buffer.push(g2);
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert_eq!(display[0].0, 5, "merged count should be 3+2=5");
 }
 
@@ -3517,7 +3555,7 @@ fn prepare_summary_sorts_descending() {
         big.add_line(make_line("big", vec![]), 11 + i);
     }
     f.buffer.push(big);
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert!(display[0].0 >= display[1].0, "should sort descending");
 }
 
@@ -3530,7 +3568,11 @@ fn prepare_summary_top_n_limits() {
             i + 1,
         ));
     }
-    let (display, total, _, _) = f.prepare_summary(Some(3), None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns: total,
+        ..
+    } = f.prepare_summary(Some(3), None).unwrap();
     assert_eq!(display.len(), 3, "top_n=3 should return 3");
     assert_eq!(total, 10, "total_patterns should be 10");
 }
@@ -3544,7 +3586,7 @@ fn prepare_summary_top_zero_shows_all() {
             i + 1,
         ));
     }
-    let (display, _, _, _) = f.prepare_summary(Some(0), None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(Some(0), None).unwrap();
     assert_eq!(display.len(), 5, "top_n=0 should show all");
 }
 
@@ -3557,7 +3599,11 @@ fn prepare_summary_default_cap_at_30() {
             i + 1,
         ));
     }
-    let (display, _, was_capped, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert_eq!(display.len(), 30, "default cap should be 30");
     assert!(was_capped, "should indicate capping");
 }
@@ -3571,7 +3617,11 @@ fn prepare_summary_fit_budget_limits() {
             i + 1,
         ));
     }
-    let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(None, Some(5)).unwrap();
     assert_eq!(display.len(), 4, "fit_budget=5 → show 4 (budget-1)");
     assert_eq!(fit_truncated, 16, "should report 16 remaining");
 }
@@ -3586,7 +3636,7 @@ fn prepare_summary_flushes_batch_buffer() {
     });
     f.process_line("2024-01-01 ERROR test 10.0.0.1").unwrap();
     assert!(!f.batch_buffer.is_empty(), "should have buffered line");
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert!(!display.is_empty(), "should have processed batch");
 }
 
@@ -3935,7 +3985,11 @@ fn prepare_summary_exactly_30_not_capped() {
             i + 1,
         ));
     }
-    let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert!(!was_capped, "exactly 30 should not be capped");
     assert_eq!(display.len(), 30);
 }
@@ -3949,7 +4003,11 @@ fn prepare_summary_31_is_capped() {
             i + 1,
         ));
     }
-    let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert!(was_capped, "31 should be capped");
     assert_eq!(display.len(), 30);
 }
@@ -3963,7 +4021,11 @@ fn prepare_summary_top_zero_no_cap_50() {
             i + 1,
         ));
     }
-    let (display, _total, was_capped, _) = f.prepare_summary(Some(0), None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(Some(0), None).unwrap();
     assert!(!was_capped);
     assert_eq!(display.len(), 50);
 }
@@ -3977,7 +4039,11 @@ fn prepare_summary_fit_budget_10_of_50() {
             i + 1,
         ));
     }
-    let (display, _total, _was_capped, fit_truncated) = f.prepare_summary(None, Some(10)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(None, Some(10)).unwrap();
     assert!(display.len() <= 10);
     assert!(fit_truncated > 0);
 }
@@ -3990,7 +4056,10 @@ fn prepare_summary_fit_budget_10_of_50() {
 fn finish_top_n_zero_input_lines() {
     let mut f = make_folder();
     f.stats.total_lines = 0;
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 0);
 }
 
@@ -4048,7 +4117,12 @@ fn prepare_summary_returns_nonempty_for_nonempty_buffer() {
     let mut f = make_folder();
     f.buffer
         .push(PatternGroup::new(make_line("error", vec![]), 1));
-    let (display, total, was_capped, fit_truncated) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns: total,
+        was_capped,
+        fit_truncated,
+    } = f.prepare_summary(None, None).unwrap();
     assert!(
         !display.is_empty(),
         "should return entries for non-empty buffer"
@@ -4069,7 +4143,11 @@ fn prepare_summary_top_zero_fit_budget_exact_boundary() {
         ));
     }
     // top=0 + budget=5: sorted.len() == budget, NOT > budget → no truncation
-    let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(5)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(Some(0), Some(5)).unwrap();
     assert_eq!(display.len(), 5);
     assert_eq!(fit_truncated, 0, "exact fit should not truncate");
 }
@@ -4084,7 +4162,11 @@ fn prepare_summary_top_zero_fit_budget_over() {
         ));
     }
     // top=0 + budget=3: sorted.len() > budget → truncate
-    let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(3)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(Some(0), Some(3)).unwrap();
     assert_eq!(display.len(), 2); // budget.saturating_sub(1) = 2
     assert_eq!(fit_truncated, 3); // 5 - 2 = 3 remaining
 }
@@ -4100,7 +4182,11 @@ fn prepare_summary_top_zero_fit_budget_one() {
         ));
     }
     // budget=1, saturating_sub(1) = 0 → show 0 patterns, remaining = 5
-    let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(1)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(Some(0), Some(1)).unwrap();
     assert_eq!(display.len(), 0);
     assert_eq!(fit_truncated, 5);
 }
@@ -4116,7 +4202,11 @@ fn prepare_summary_fit_budget_exact() {
         ));
     }
     // fit_budget=5, sorted.len()=5 → NOT > budget → no truncation
-    let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(None, Some(5)).unwrap();
     assert_eq!(display.len(), 5);
     assert_eq!(fit_truncated, 0);
 }
@@ -4186,7 +4276,11 @@ fn finish_top_n_flushes_batch_buffer() {
     // Put lines in batch_buffer (simulating unprocessed batch)
     f.batch_buffer.push("error one".to_string());
     f.batch_buffer.push("error two".to_string());
-    let (output, total, _, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        shown: output,
+        total_groups: total,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     // Should have flushed and processed the batch
     assert!(f.batch_buffer.is_empty(), "batch should be flushed");
     assert!(total > 0 || output.is_empty()); // processed something
@@ -4222,7 +4316,10 @@ fn finish_top_n_coverage_50_percent() {
         group.add_line(make_line("error", vec![]), i + 1);
     }
     f.buffer.push(group);
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 50, "50/100 lines = 50% coverage");
 }
 
@@ -4778,7 +4875,7 @@ fn prepare_summary_fit_truncated_zero_when_under_budget() {
         ));
     }
     // budget=10, only 3 patterns → fit_truncated = 0
-    let (_, _, _, fit_truncated) = f.prepare_summary(None, Some(10)).unwrap();
+    let SummaryRows { fit_truncated, .. } = f.prepare_summary(None, Some(10)).unwrap();
     assert_eq!(
         fit_truncated, 0,
         "3 patterns within budget=10 should have fit_truncated=0"
@@ -4795,7 +4892,7 @@ fn prepare_summary_fit_truncated_nonzero_when_over_budget() {
         ));
     }
     // budget=5, 10 patterns → fit_truncated > 0
-    let (_, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+    let SummaryRows { fit_truncated, .. } = f.prepare_summary(None, Some(5)).unwrap();
     assert!(
         fit_truncated > 0,
         "10 patterns with budget=5 should have fit_truncated > 0, got {fit_truncated}"
@@ -4815,7 +4912,10 @@ fn finish_top_n_zero_total_lines_zero_coverage() {
     // because total_input_lines is 0
     f.buffer
         .push(PatternGroup::new(make_line("error", vec![]), 1));
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(
         coverage, 0,
         "zero total_input_lines should produce 0% coverage"
@@ -4831,7 +4931,10 @@ fn finish_top_n_nonzero_total_lines_nonzero_coverage() {
         group.add_line(make_line("error", vec![]), i + 1);
     }
     f.buffer.push(group);
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 100, "10/10 lines should be 100% coverage");
 }
 
@@ -4960,7 +5063,7 @@ fn summary_masks_pii_when_enabled() {
             .process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert!(!display.is_empty());
     for (_, representative) in &display {
         assert!(
@@ -6457,7 +6560,10 @@ fn a_top_omission_alone_makes_groups_and_the_run_incomplete() {
     for _ in 0..3 {
         f.process_line("bravo event").unwrap();
     }
-    let (_shown, total, _coverage, _fit) = f.finish_top_n(1, None, false).unwrap();
+    let TopGroups {
+        total_groups: total,
+        ..
+    } = f.finish_top_n(1, None, false).unwrap();
     assert_eq!(total, 2);
     let v = summary_json(&f);
     let c = &v["completeness"];
@@ -7411,7 +7517,12 @@ fn fit_budget_equal_to_group_count_keeps_every_entry() {
     let mut f = make_folder_json();
     f.process_line("alpha").unwrap();
     f.process_line("bravo charlie delta").unwrap();
-    let (out, total, _, truncated) = f.finish_top_n(2, Some(2), false).unwrap();
+    let TopGroups {
+        shown: out,
+        total_groups: total,
+        fit_truncated: truncated,
+        ..
+    } = f.finish_top_n(2, Some(2), false).unwrap();
     assert_eq!(total, 2);
     assert_eq!(out.len(), 2);
     assert_eq!(truncated, 0);
