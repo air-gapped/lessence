@@ -4562,6 +4562,22 @@ ledger-flush bababan babakon babarin babamun babaten babason babalan babavin bab
 2024/01/01 10:00:00 [error] 12345#0: *1 ngx_http_core_module: client closed param=1
 2024/01/01 10:00:01 [error] 12345#0: *1 ngx_http_core_module: client closed param=1
 
+##CASE 092dda7 groups=2 holds-on-base
+##WHY `--threshold` reaches the fold: these two lines are one group at the default and two at 95
+##FROM invented; found when a planted bug that dropped the flag passed every test
+##FLAGS --threshold 95
+alpha beta gamma delta epsilon zeta one
+alpha beta gamma delta epsilon zeta two
+
+##CASE 092dda7 template_present=write rejected at ledger.Flush.run holds-on-base
+##WHY `--frame-continuations` reaches the reader: an indented line joins the record above it
+##FROM invented; found when a planted bug that dropped the flag passed every test
+##FLAGS --frame-continuations
+ledger: write rejected
+    at ledger.Flush.run
+ledger: write rejected
+    at ledger.Flush.run
+
 ##CASE lessence-l05o out_present=billing.Export×2, ledger.Flush×2
 ##WHY a `LEVEL [logger.Name]` prefix is the event's level and source: the same words from two loggers show each logger with its count, where the line used to read `ERROR [<LOG_WITH_MODULE>]` and named neither
 ##FROM invented Java-logger lines; `param=` keeps the bracket detector off the line

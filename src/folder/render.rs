@@ -415,10 +415,7 @@ impl PatternFolder {
     pub fn print_summary_json(&self, writer: &mut impl io::Write, elapsed: Duration) -> Result<()> {
         let record = SummaryRecord {
             stats: self.build_stats_json(elapsed),
-            metadata: RunMetadata::new(
-                &self.input_facts,
-                self.config.sanitize_pii || self.config.sanitize.is_some(),
-            ),
+            metadata: RunMetadata::new(&self.input_facts, self.config.sanitize.is_some()),
             completeness: {
                 let group_total = self.json_groups_total.unwrap_or(self.json_groups_emitted);
                 let groups_complete = self.json_omitted_by_top == 0
@@ -593,10 +590,7 @@ impl PatternFolder {
         }
         let report = Preflight {
             briefing: self.build_briefing(),
-            metadata: RunMetadata::new(
-                &self.input_facts,
-                self.config.sanitize_pii || self.config.sanitize.is_some(),
-            ),
+            metadata: RunMetadata::new(&self.input_facts, self.config.sanitize.is_some()),
         };
         let json = serde_json::to_string_pretty(&report)?;
         writeln!(writer, "{json}")?;

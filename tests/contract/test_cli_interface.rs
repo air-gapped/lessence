@@ -91,6 +91,30 @@ fn contract_invalid_thread_count() {
 }
 
 #[test]
+fn a_thread_count_above_the_machine_is_capped_and_said_so() {
+    let mut child = lessence()
+        .args(["--threads", "100000"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn command");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"test line 1\n")
+        .unwrap();
+    let output = child.wait_with_output().expect("Failed to wait");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("capping --threads 100000 at "),
+        "--threads must reach the fold, which caps it at the cores there are: {stderr}"
+    );
+}
+
+#[test]
 fn contract_multi_thread_unchanged() {
     let mut child = lessence()
         .args(["--threads", "4"])

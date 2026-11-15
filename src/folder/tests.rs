@@ -2480,7 +2480,7 @@ fn format_group_pii_masking_masks_emails() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         ..Config::default()
     });
     let mut line = make_line(
@@ -3743,7 +3743,7 @@ fn format_group_pii_masking_only_in_non_essence() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         essence_mode: false,
         ..Config::default()
     });
@@ -3931,7 +3931,7 @@ fn format_group_pii_plus_essence_masks_the_template() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         essence_mode: true,
         ..Config::default()
     });
@@ -4049,7 +4049,7 @@ fn format_group_pii_masks_last_line_in_non_essence() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         essence_mode: false,
         ..Config::default()
     });
@@ -4085,7 +4085,7 @@ fn format_group_pii_masks_the_essence_line() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 2,
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         essence_mode: true,
         ..Config::default()
     });
@@ -4304,7 +4304,7 @@ fn get_stats_reflects_processing() {
 fn json_records_mask_pii_when_enabled() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         output_format: OutputFormat::Json,
         ..Config::default()
     });
@@ -4323,7 +4323,7 @@ fn json_records_mask_pii_when_enabled() {
 fn text_marker_masks_email_samples_when_enabled() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         ..Config::default()
     });
     for who in ["alice", "bob", "eve", "alice", "bob", "eve"] {
@@ -4340,7 +4340,7 @@ fn text_marker_masks_email_samples_when_enabled() {
 fn summary_masks_pii_when_enabled() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         ..Config::default()
     });
     for who in ["alice", "bob", "carol"] {
@@ -4417,7 +4417,7 @@ fn summary_record_and_stats_json_report_identical_metrics() {
 fn markdown_document_masks_pii_and_shares_fold_metrics() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         output_format: OutputFormat::Markdown,
         ..Config::default()
     });
@@ -5058,7 +5058,7 @@ fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        sanitize_pii: true,
+        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
         ..Config::default()
     });
     for l in [

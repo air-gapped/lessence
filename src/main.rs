@@ -267,7 +267,6 @@ fn main() -> Result<()> {
             .max_line_length
             .or(Some(config::DEFAULT_MAX_LINE_LENGTH)),
         max_lines: cli.max_lines,
-        sanitize_pii: sanitizer.is_some(),
         sanitize: sanitizer,
         top_n: effective_top,
         stats_json: cli.stats_json,
@@ -312,10 +311,7 @@ fn main() -> Result<()> {
     record_open_failures(failed_sources);
 
     let ingestor = ingestor.with_input_hash_if_every_input_opened(
-        (use_json_output || config.preflight)
-            && !distilling
-            && !config.sanitize_pii
-            && config.sanitize.is_none(),
+        (use_json_output || config.preflight) && !distilling && config.sanitize.is_none(),
         failed_sources,
     );
 

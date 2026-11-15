@@ -176,7 +176,7 @@ fn test_security_performance_overhead() {
     }
 
     let config = Config {
-        sanitize_pii: true,
+        sanitize: Some(lessence::sanitize::Sanitizer::pii_alias()),
         max_line_length: Some(1024 * 1024),
         max_lines: Some(1_000_000),
         ..Default::default()

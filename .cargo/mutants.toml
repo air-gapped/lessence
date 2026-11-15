@@ -53,7 +53,7 @@ exclude_re = [
     'replace && with \|\| in pci_addresses$',
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
-    '^src/folder/render\.rs:488:34: replace > with >= in PatternFolder::build_briefing$',
+    '^src/folder/render\.rs:485:34: replace > with >= in PatternFolder::build_briefing$',
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.

@@ -70,7 +70,6 @@ pub struct Config {
 
     pub max_line_length: Option<usize>,
     pub max_lines: Option<usize>,
-    pub sanitize_pii: bool,
     pub sanitize: Option<crate::sanitize::Sanitizer>,
     pub top_n: Option<usize>,
     pub stats_json: bool,
@@ -112,7 +111,6 @@ impl Default for Config {
 
             max_line_length: Some(DEFAULT_MAX_LINE_LENGTH),
             max_lines: None,
-            sanitize_pii: false,
             sanitize: None,
             top_n: None,
             stats_json: false,
@@ -198,10 +196,7 @@ pub const PATTERN_REGISTRY: &[PatternEntry] = &[
 
 impl Config {
     pub fn sanitizer(&self) -> Option<crate::sanitize::Sanitizer> {
-        self.sanitize.clone().or_else(|| {
-            self.sanitize_pii
-                .then(crate::sanitize::Sanitizer::pii_alias)
-        })
+        self.sanitize.clone()
     }
 
     pub fn keep_sanitized_detectors(&mut self) {
@@ -268,8 +263,7 @@ mod tests {
         let all_off = |sanitize: &[&str], pii: bool| {
             let specs: Vec<String> = sanitize.iter().map(ToString::to_string).collect();
             let mut c = Config {
-                sanitize: crate::sanitize::Sanitizer::parse(&specs, false).unwrap(),
-                sanitize_pii: pii,
+                sanitize: crate::sanitize::Sanitizer::parse(&specs, pii).unwrap(),
                 ..Config::default()
             };
             for entry in PATTERN_REGISTRY {
@@ -380,7 +374,7 @@ mod tests {
         assert!(!c.essence_mode);
         assert_eq!(c.max_line_length, Some(1024 * 1024));
         assert!(c.max_lines.is_none());
-        assert!(!c.sanitize_pii);
+        assert!(c.sanitize.is_none());
         assert!(c.top_n.is_none());
         assert!(!c.stats_json);
         assert!(c.fail_pattern.is_none());
