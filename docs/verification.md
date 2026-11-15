@@ -214,6 +214,11 @@ test by accident and `make release-check` always runs all of them.
 - `pre-push`: `scripts/check-public-text.sh --outgoing` runs the same
   checks on every commit the push would send, then `make ci`.
 
+`.claude/settings.json` registers `scripts/build-guard.sh` as a PreToolUse
+hook on Bash: a command that builds or tests is refused while another
+cargo, rustc or nextest process runs, or while less than 10 GB of memory is
+available (`LESSENCE_BUILD_MIN_AVAILABLE_GB`).
+
 ## Corpus-dependent tests
 
 `tests/common/mod.rs::require_example(path)`: panics naming the path when the
