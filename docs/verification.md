@@ -150,6 +150,27 @@ generated at a commit whose `src/` equals HEAD's
 `Skill-Unchanged: <reason>`; `make ci`; `cargo nextest run --release --profile slow`. Writes `target/gate/release.json`, prints ≤ 25
 lines. `RELEASE_CHECK_SKIP_MUTANTS=1` skips mutants (testing only).
 
+## Checks built into test builds
+
+Three `debug_assert!`s run inside the binary and the library wherever tests
+build them (`make ci`, the mutants profile), on every line of every corpus
+and `##CASE` the tests fold. A release build compiles them out.
+
+1. **The template holds** (`template_holds`, `src/folder/mod.rs`): each time a
+   line joins a group, every unit of the group's template is on that line and
+   on the group's first line, in order; a `<VARIES>` stands for any text. It
+   does not check the reverse: a line may hold words the template does not
+   show.
+2. **A prefilter only saves time** (`DETECTOR_ORDER`, `src/normalize.rs`): when
+   a detector's `prefilter` turns a line away, the detector is run anyway and
+   must change nothing. A rule that keeps a detector off a line it would
+   change is the entry's `only_when`, which is not checked.
+3. **A gate is no narrower than its pattern** (`gate`, `src/normalize.rs`):
+   when the byte test before an anchor pattern turns a line away, the pattern
+   must find nothing on it.
+
+`known_fold_regressions` prints the panic when one of these stops a case.
+
 ## Test profiles (`.config/nextest.toml`)
 
 The default profile's `default-filter` excludes the tests that assert a

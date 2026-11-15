@@ -22,11 +22,17 @@ use crate::patterns::{
 struct DetectorEntry {
     /// Config gate: is this detector enabled for the run?
     enabled: fn(&Config) -> bool,
-    /// Cheap byte-level gate on `(config, original line, partially-
-    /// normalized line)`; the detector is skipped when it returns false.
-    /// Mirrors the detector's own fast pre-filter where one exists. The
-    /// original is there for the gates that ask about a field
-    /// normalization has already erased. A gate asks about the shape the
+    /// A rule about where the detector may run, on `(config, original
+    /// line, partially-normalized line)`: on a line this turns away the
+    /// detector would change text it must leave alone. The original is
+    /// there for a rule about a field normalization has already erased.
+    only_when: Option<fn(&Config, &str, &str) -> bool>,
+    /// A cheap byte-level test that only saves the detector's time: on a
+    /// line it turns away the detector finds nothing. Test builds run the
+    /// detector anyway and panic when it does, so a prefilter narrower than
+    /// its detector cannot pass the test suite. Something that must keep
+    /// the detector off a line it would change is `only_when`, not this.
+    /// A gate asks about the shape the
     /// detector folds, never about a word elsewhere on the line: the
     /// kubernetes deference that used to skip the bracket, log-module and
     /// structured detectors on any line saying `pod/` or `etcd` is gone
@@ -45,42 +51,49 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // minute-duration passes can consume the value or its field context.
     DetectorEntry {
         enabled: |c| c.normalize_durations,
+        only_when: None,
         prefilter: Some(|_, _, s| s.contains('m') && (s.contains("cpu") || s.contains("CPU"))),
         run: |_, s| DurationDetector::cpu_quantities(s),
     },
     // TIMESTAMPS: most specific formats, highest priority.
     DetectorEntry {
         enabled: |c| c.normalize_timestamps,
+        only_when: None,
         prefilter: None,
         run: |_, s| UnifiedTimestampDetector::detect_and_replace(s),
     },
     // EMAIL: before paths so emails inside URLs are handled correctly.
     DetectorEntry {
         enabled: |c| c.normalize_emails,
+        only_when: None,
         prefilter: Some(|_, _, s| s.contains('@')),
         run: |n, s| n.email_detector.detect_and_replace(s),
     },
     // PATHS: before network patterns so URLs are consumed as whole units.
     DetectorEntry {
         enabled: |c| c.normalize_paths,
+        only_when: None,
         prefilter: None,
         run: |_, s| PathDetector::detect_and_replace(s),
     },
     // JSON: structured data, Event objects, K8s objects.
     DetectorEntry {
         enabled: |c| c.normalize_json,
+        only_when: None,
         prefilter: Some(|_, _, s| s.contains('{')),
         run: |_, s| JsonDetector::detect_and_replace(s),
     },
     // UUIDs: before hashes, whose hex pattern would fragment a UUID.
     DetectorEntry {
         enabled: |c| c.normalize_uuids,
+        only_when: None,
         prefilter: None,
         run: |_, s| UuidDetector::detect_and_replace(s),
     },
     // NETWORK: IPs, ports, FQDNs; after paths to avoid breaking URLs.
     DetectorEntry {
         enabled: |c| c.normalize_ips || c.normalize_ports || c.normalize_fqdns,
+        only_when: None,
         prefilter: None,
         run: |n, s| {
             NetworkDetector::detect_and_replace(
@@ -94,12 +107,14 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // HASHES: after UUIDs (see above).
     DetectorEntry {
         enabled: |c| c.normalize_hashes,
+        only_when: None,
         prefilter: None,
         run: |_, s| HashDetector::detect_and_replace(s),
     },
     // PROCESS IDs: [pid=123], (12345).
     DetectorEntry {
         enabled: |c| c.normalize_pids,
+        only_when: None,
         prefilter: None,
         run: |_, s| ProcessDetector::detect_and_replace(s),
     },
@@ -109,27 +124,32 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // `prog[<PID>]:`, which the tag alternative matches).
     DetectorEntry {
         enabled: |c| c.normalize_fqdns,
-        prefilter: Some(|_, original, s| {
-            s.starts_with("<TIMESTAMP> ")
-                && !UnifiedTimestampDetector::opens_with_kernel_uptime(original)
+        // A kernel line under an uptime stamp has no host field: the word
+        // after the stamp is the subsystem.
+        only_when: Some(|_, original, _| {
+            !UnifiedTimestampDetector::opens_with_kernel_uptime(original)
         }),
+        prefilter: Some(|_, _, s| s.starts_with("<TIMESTAMP> ")),
         run: |_, s| replace_syslog_host(s),
     },
     // KUBERNETES: before the generic bracket/module/structured detectors.
     DetectorEntry {
         enabled: |c| c.normalize_kubernetes,
+        only_when: None,
         prefilter: None,
         run: |_, s| KubernetesDetector::detect_and_replace(s),
     },
     // HTTP STATUS: groups status codes into classes (200-299 -> 2xx).
     DetectorEntry {
         enabled: |c| c.normalize_http_status,
+        only_when: None,
         prefilter: None,
         run: |_, s| HttpStatusDetector::detect_and_replace(s),
     },
     // BRACKET CONTEXT: [error] [mod_jk] style tags.
     DetectorEntry {
         enabled: |c| c.normalize_brackets,
+        only_when: None,
         prefilter: Some(|_, _, s| {
             s.contains('[') && BracketContextDetector::has_bracket_indicators(s)
         }),
@@ -141,7 +161,10 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         // An `=` inside a quoted value is not a pair: gated on any `=`,
         // whether a Tetragon JSON event folded depended on the base64
         // padding of a field twenty kilobytes into the record.
-        prefilter: Some(|_, _, s| has_unquoted_eq(s)),
+        // Without an `=` outside quotes the line has no key=value pair, and
+        // the detector would rewrite the values of a JSON record instead.
+        only_when: Some(|_, _, s| has_unquoted_eq(s)),
+        prefilter: None,
         run: |_, s| KeyValueDetector::detect_and_replace(s),
     },
     // LOG MODULE: [level] module patterns (Apache/nginx). Gated by the
@@ -149,6 +172,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // disable every bracket-shaped detector.
     DetectorEntry {
         enabled: |c| c.normalize_brackets,
+        only_when: None,
         prefilter: Some(|_, _, s| {
             s.contains('[') && LogWithModuleDetector::has_log_module_indicators(s)
         }),
@@ -159,16 +183,19 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // --disable-patterns key-value.
     DetectorEntry {
         enabled: |c| c.normalize_json || c.normalize_key_value,
-        prefilter: Some(|c, _, s| {
-            ((c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('=')))
-                && StructuredMessageDetector::has_structured_indicators(s)
+        // The detector cannot tell which half it is asked for: a half that
+        // is switched off must not run on its own shape.
+        only_when: Some(|c, _, s| {
+            (c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('='))
         }),
+        prefilter: Some(|_, _, s| StructuredMessageDetector::has_structured_indicators(s)),
         run: |_, s| StructuredMessageDetector::detect_and_replace(s),
     },
     // DURATIONS & MEASUREMENTS: broad (decimals, sizes, percentages);
     // late, after every more specific pattern above.
     DetectorEntry {
         enabled: |c| c.normalize_durations,
+        only_when: None,
         prefilter: None,
         run: |_, s| DurationDetector::detect_and_replace(s),
     },
@@ -176,6 +203,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // after the specific patterns to catch what remains.
     DetectorEntry {
         enabled: |c| c.normalize_names,
+        only_when: None,
         prefilter: None,
         run: |_, s| NameDetector::detect_and_replace(s),
     },
@@ -184,6 +212,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     // honours the same --disable-patterns gates as this table.
     DetectorEntry {
         enabled: |c| c.normalize_quoted,
+        only_when: None,
         prefilter: Some(|_, _, s| s.contains('"') || s.contains('\'')),
         run: |n, s| {
             QuotedStringDetector::detect_and_replace_with(s, NestedGates::from_config(&n.config))
@@ -439,6 +468,35 @@ fn is_route_shaped(value: &str) -> bool {
         || value.split_once("://").is_some_and(|(scheme, _)| {
             !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphabetic())
         })
+}
+
+/// A cheap test in front of an anchor scan. It only saves the scan's time:
+/// on a line the test turns away, the scan must find nothing. Test builds
+/// run `finds` on such a line and panic when it does, so a gate narrower
+/// than its pattern cannot pass the test suite. Every `if` that decides
+/// whether an anchor pattern runs goes through here.
+#[inline]
+fn gate(open: bool, what: &str, original: &str, finds: impl FnOnce() -> bool) -> bool {
+    debug_assert!(
+        open || !finds(),
+        "the gate before the {what} anchor turned away a line its pattern matches:\n  {original}"
+    );
+    open
+}
+
+/// The route-shaped values of the line's path fields: where each starts and
+/// its text, closing punctuation dropped. With `has_method` the quoted ones
+/// are left to the method rule, which already anchored them.
+fn field_routes(original: &str, has_method: bool) -> impl Iterator<Item = (usize, &str)> {
+    FIELD_PATH.captures_iter(original).filter_map(move |caps| {
+        let m = match (caps.get(1), caps.get(2)) {
+            (Some(_), _) if has_method => return None,
+            (Some(m), _) | (None, Some(m)) => m,
+            (None, None) => return None,
+        };
+        let value = m.as_str().trim_end_matches([')', ']', '}', '.', ';']);
+        (!value.is_empty() && is_route_shaped(value)).then_some((m.start(), value))
+    })
 }
 
 /// Can the line hold a route-shaped field value at all? A byte gate before
@@ -1000,7 +1058,12 @@ fn protect_anchored_spans<'a>(
         ));
     }
 
-    if original.contains("HTTP/") {
+    if gate(original.contains("HTTP/"), "request line", original, || {
+        REQUEST_TARGET.is_match(original)
+            || http_status_anchors(original, &REQUEST_STATUS_CLASS)
+                .next()
+                .is_some()
+    }) {
         for caps in REQUEST_TARGET.captures_iter(original) {
             if let Some(m) = caps.get(1) {
                 spans.push((m.start(), m.end(), AnchorRender::Route));
@@ -1019,7 +1082,12 @@ fn protect_anchored_spans<'a>(
 
     // Set when an HTTP method field made every quoted path field a route.
     let mut has_method = false;
-    if original.contains("ethod") || original.contains("ETHOD") {
+    if gate(
+        original.contains("ethod") || original.contains("ETHOD"),
+        "method field",
+        original,
+        || FIELD_METHOD.is_match(original),
+    ) {
         // Every method field is identity; only an HTTP one makes the
         // record's path a route.
         for caps in FIELD_METHOD.captures_iter(original) {
@@ -1045,28 +1113,30 @@ fn protect_anchored_spans<'a>(
     // rendered as `scheme://<HOST>/route`, and the full value stays in the
     // PATH facts. Values the method rule above already anchored are left
     // to it.
-    if may_hold_route_field(original) {
-        for caps in FIELD_PATH.captures_iter(original) {
-            let m = match (caps.get(1), caps.get(2)) {
-                (Some(_), _) if has_method => continue,
-                (Some(m), _) | (None, Some(m)) => m,
-                (None, None) => continue,
-            };
-            let value = m.as_str().trim_end_matches([')', ']', '}', '.', ';']);
-            if value.is_empty() || !is_route_shaped(value) {
-                continue;
-            }
-            let end = m.start() + value.len();
-            spans.push((m.start(), end, AnchorRender::ProseTarget));
-            identities.push((
-                AnchorClass::FieldRoute,
-                AnchorIdentity::ProseTarget(&original[m.start()..end]),
-            ));
-            path_facts.push(original[m.start()..end].to_string());
+    if gate(
+        may_hold_route_field(original),
+        "field route",
+        original,
+        || field_routes(original, has_method).next().is_some(),
+    ) {
+        for (start, value) in field_routes(original, has_method) {
+            let end = start + value.len();
+            spans.push((start, end, AnchorRender::ProseTarget));
+            identities.push((AnchorClass::FieldRoute, AnchorIdentity::ProseTarget(value)));
+            path_facts.push(value.to_string());
         }
     }
 
-    if original.contains("tatus") || original.contains("TATUS") {
+    if gate(
+        original.contains("tatus") || original.contains("TATUS"),
+        "status field",
+        original,
+        || {
+            http_status_anchors(original, &FIELD_STATUS)
+                .next()
+                .is_some()
+        },
+    ) {
         for (span, class) in http_status_anchors(original, &FIELD_STATUS) {
             statuses.push(ProtectedStatus {
                 code: original[span.clone()].to_string(),
@@ -1107,7 +1177,16 @@ fn protect_anchored_spans<'a>(
     // These anchors match their literal identity, unlike route/status
     // skeletons. Restore that same identity after generic path/number
     // detectors would otherwise erase the distinction between events.
-    if original.contains(".go:") {
+    if gate(
+        original.contains(".go:"),
+        "klog call site",
+        original,
+        || {
+            exact_anchor_fields(original, &KLOG_CALL_SITE)
+                .next()
+                .is_some()
+        },
+    ) {
         for field in exact_anchor_fields(original, &KLOG_CALL_SITE) {
             spans.push((field.start(), field.end(), AnchorRender::KlogCallSite));
             identities.push((
@@ -1118,47 +1197,63 @@ fn protect_anchored_spans<'a>(
     }
     // An audit record's type is identity with nothing to protect: no
     // detector erases it.
-    if original.starts_with("type=") {
+    if gate(
+        original.starts_with("type="),
+        "audit type",
+        original,
+        || AUDIT_RECORD_TYPE.is_match(original),
+    ) {
         for caps in AUDIT_RECORD_TYPE.captures_iter(original) {
             let record = caps.get(1).map_or("", |m| m.as_str());
             identities.push((AnchorClass::AuditType, AnchorIdentity::Text(record)));
         }
     }
-    for (class, pattern) in [
+    for (class, open, pattern) in [
         (
             AnchorClass::AuditOutcome,
-            original
-                .starts_with("type=SYSCALL ")
-                .then_some(&*AUDIT_SYSCALL_OUTCOME),
+            original.starts_with("type=SYSCALL "),
+            &*AUDIT_SYSCALL_OUTCOME,
         ),
         (
             AnchorClass::Caller,
-            original.contains("caller").then_some(&*STRUCTURED_CALLER),
+            original.contains("caller"),
+            &*STRUCTURED_CALLER,
         ),
         (
             AnchorClass::MessageCallSite,
-            original.contains(".go:").then_some(&*MESSAGE_CALL_SITE),
+            original.contains(".go:"),
+            &*MESSAGE_CALL_SITE,
         ),
         (
             AnchorClass::TracebackFrame,
-            original.contains("File \"").then_some(&*TRACEBACK_FRAME),
+            original.contains("File \""),
+            &*TRACEBACK_FRAME,
         ),
         (
             AnchorClass::Program,
-            (original.contains("exe=")
+            original.contains("exe=")
                 || original.contains("comm=")
-                || original.contains("\"binary\""))
-            .then_some(&*PROGRAM_FIELD),
+                || original.contains("\"binary\""),
+            &*PROGRAM_FIELD,
         ),
     ] {
-        let Some(pattern) = pattern else { continue };
+        if !gate(open, "exact field", original, || {
+            exact_anchor_fields(original, pattern).next().is_some()
+        }) {
+            continue;
+        }
         for field in exact_anchor_fields(original, pattern) {
             spans.push((field.start(), field.end(), AnchorRender::Exact));
             identities.push((class, AnchorIdentity::Text(field.as_str())));
         }
     }
 
-    if original.starts_with("[pod/") {
+    if gate(
+        original.starts_with("[pod/"),
+        "pod prefix",
+        original,
+        || KUBECTL_PREFIX.is_match(original),
+    ) {
         for caps in KUBECTL_PREFIX.captures_iter(original) {
             if let Some(m) = caps.get(0) {
                 spans.push((m.start(), m.end(), AnchorRender::PodPrefix));
@@ -1272,9 +1367,26 @@ impl Normalizer {
             if !(entry.enabled)(&self.config) {
                 continue;
             }
+            if let Some(only_when) = entry.only_when
+                && !only_when(&self.config, &original, &normalized)
+            {
+                continue;
+            }
             if let Some(prefilter) = entry.prefilter
                 && !prefilter(&self.config, &original, &normalized)
             {
+                // A prefilter only saves the detector's time: on a line it
+                // turns away the detector must find nothing. Test builds
+                // run the detector anyway and say so when it does.
+                #[cfg(debug_assertions)]
+                {
+                    let (skipped_text, skipped_tokens) = (entry.run)(self, &normalized);
+                    let at = DETECTOR_ORDER.iter().position(|e| std::ptr::eq(e, entry));
+                    debug_assert!(
+                        skipped_text == normalized && skipped_tokens.is_empty(),
+                        "the prefilter of DETECTOR_ORDER[{at:?}] turned away a line its detector changes:\n  line:   {normalized}\n  result: {skipped_text}"
+                    );
+                }
                 continue;
             }
             let (new_normalized, mut new_tokens) = (entry.run)(self, &normalized);
@@ -4408,6 +4520,34 @@ mod e8v_normalize_2026_09_17 {
         // on a line the byte gate lets through, a path key over a relative
         // value anchors nothing
         assert_eq!(normalize("x path=relative/dir/file to=/srv y").anchor, 0);
+    }
+
+    #[test]
+    fn an_open_gate_or_a_scan_that_finds_nothing_passes() {
+        assert!(gate(true, "t", "line", || true));
+        assert!(gate(true, "t", "line", || false));
+        assert!(!gate(false, "t", "line", || false));
+    }
+
+    /// The check is compiled into test builds only.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "turned away a line its pattern matches")]
+    fn a_gate_narrower_than_its_pattern_stops_a_test_build() {
+        gate(false, "t", "line", || true);
+    }
+
+    #[test]
+    fn field_routes_are_the_route_shaped_values_without_closing_punctuation() {
+        let line = r#"x path=/api/a; dir=relative url="https://a.example/b" uri="/c""#;
+        let found: Vec<_> = field_routes(line, false).collect();
+        assert_eq!(
+            found,
+            vec![(7, "/api/a"), (33, "https://a.example/b"), (59, "/c")]
+        );
+        // with a method on the line the quoted ones belong to the method rule
+        let found: Vec<_> = field_routes(line, true).collect();
+        assert_eq!(found, vec![(7, "/api/a")]);
     }
 
     #[test]

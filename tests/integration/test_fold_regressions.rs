@@ -328,9 +328,20 @@ fn check(cases: &[Case]) -> Vec<String> {
             Expect::Exit(want) => (got.status != *want)
                 .then(|| format!("want exit {want}, got {}\n     {}", got.status, got.stderr)),
         };
+        // A check built into the binary (a template that does not hold, a
+        // gate narrower than its pattern) ends the run with a panic: say
+        // so, or the case only reads as a wrong group count.
+        let crash = if got.stderr.contains("panicked at") {
+            format!(
+                "\n     the binary panicked:\n     {}",
+                got.stderr.trim_end()
+            )
+        } else {
+            String::new()
+        };
         complaint.map(|detail| {
             format!(
-                "{}\n     {}\n     from: {}\n     flags: {:?}\n     {detail}",
+                "{}\n     {}\n     from: {}\n     flags: {:?}\n     {detail}{crash}",
                 case.bead, case.why, case.from, case.flags
             )
         })

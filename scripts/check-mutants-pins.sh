@@ -8,9 +8,13 @@
 # to nothing. This runs in `make ci`, so the entry is re-pinned in the
 # commit that moves the code.
 #
-#   scripts/check-mutants-pins.sh    exit 1 and one line per dead entry
+#   scripts/check-mutants-pins.sh           exit 1 and one line per dead entry
+#   scripts/check-mutants-pins.sh --repin   first move every dead pin whose
+#                                           mutant is found on exactly one
+#                                           other line (same file, column,
+#                                           text and function)
 #
-# To re-pin: `cargo mutants --list --no-config | grep '<function name>'`,
+# What --repin leaves: `cargo mutants --list --no-config | grep '<function>'`,
 # pick the mutant the entry's comment describes, and write its location.
 set -euo pipefail
 
@@ -32,7 +36,7 @@ if [ ! -s "$listing" ]; then
     exit 2
 fi
 
-python3 - "$listing" <<'PY'
+python3 - "$listing" "$@" <<'PY'
 import re
 import sys
 import tomllib
@@ -47,14 +51,39 @@ with open(".cargo/mutants.toml", "rb") as f:
     entries = tomllib.load(f).get("exclude_re", [])
 
 dead = [e for e in entries if not any(re.search(e, m) for m in mutants)]
+
+# --repin: code above a pin moved and took the pin's line with it. Where the
+# entry with its line number left open matches mutants on exactly one line,
+# that line is the pin's new place; the file is rewritten and the rest are
+# left for a reader.
+if dead and "--repin" in sys.argv[2:]:
+    text = open(".cargo/mutants.toml", encoding="utf-8").read()
+    moved = 0
+    for e in dead:
+        pin = re.match(r"^(\^src/[^:]+:)(\d+)(:.*)$", e)
+        if not pin:
+            continue
+        loose = pin.group(1) + r"(\d+)" + pin.group(3)
+        lines = {m.group(1) for m in (re.search(loose, x) for x in mutants) if m}
+        if len(lines) == 1 and text.count(e) == 1:
+            new = pin.group(1) + lines.pop() + pin.group(3)
+            text = text.replace(e, new)
+            print(f"re-pinned: {e}\n        to: {new}")
+            moved += 1
+    open(".cargo/mutants.toml", "w", encoding="utf-8").write(text)
+    with open(".cargo/mutants.toml", "rb") as f:
+        entries = tomllib.load(f).get("exclude_re", [])
+    dead = [e for e in entries if not any(re.search(e, m) for m in mutants)]
+    print(f"{moved} entries re-pinned, {len(dead)} left")
 for e in dead:
     print(f"dead exclude_re entry, matches no mutant: {e}")
 if dead:
     print(
         f"{len(dead)} of {len(entries)} entries in .cargo/mutants.toml match nothing. "
-        "Re-pin each to the mutant its comment describes "
-        "(cargo mutants --list --no-config | grep '<function>'), "
-        "or delete it if the code it excused is gone."
+        "Run scripts/check-mutants-pins.sh --repin to move the ones whose "
+        "line only shifted; re-pin the rest by hand to the mutant each "
+        "comment describes (cargo mutants --list --no-config | grep "
+        "'<function>'), or delete an entry whose code is gone."
     )
     sys.exit(1)
 print(f"mutants pins: {len(entries)} entries, each matches a mutant")

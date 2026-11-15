@@ -335,6 +335,7 @@ impl PatternGroup {
         if line.hash != self.lines[0].hash {
             self.mark_varying_words(&line.normalized);
         }
+        self.assert_claim_holds(&line.normalized);
         self.lines.push(line);
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
@@ -381,6 +382,7 @@ impl PatternGroup {
                 self.slot_units = Some(template_units.clone());
             }
         }
+        self.assert_claim_holds(&line.normalized);
         self.count += 1;
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
@@ -517,6 +519,25 @@ impl PatternGroup {
                     threshold,
                 )
         })
+    }
+
+    /// Checked in test builds each time a line joins: the template must
+    /// read true for the line that joined and for the founder. A template
+    /// that names a word one of its members lacks is the failure this tool
+    /// exists to prevent, and every corpus and `##CASE` the tests fold runs
+    /// through here.
+    fn assert_claim_holds(&self, joined: &str) {
+        debug_assert!(
+            template_holds(&self.template, joined),
+            "the template does not hold for the line that joined:\n  template: {}\n  joined:   {joined}",
+            self.template
+        );
+        debug_assert!(
+            template_holds(&self.template, &self.lines[0].normalized),
+            "the template no longer holds for the group's first line:\n  template: {}\n  first:    {}",
+            self.template,
+            self.lines[0].normalized
+        );
     }
 
     /// The shown form of the group: the first line's template with
@@ -1366,6 +1387,86 @@ fn hash_token_value(token: &Token) -> u64 {
 pub(super) const VARIES: &str = "VARIES";
 /// The placeholder a template shows where its members disagree.
 pub(crate) const VARIES_MARK: &str = "<VARIES>";
+
+/// Does `template` hold for `member`? This is the claim a shown line makes
+/// about its group: every unit of the template is on every member, in the
+/// template's order. A bare `<VARIES>` claims nothing; a unit with text
+/// beside its slot (`msg=<VARIES>`) claims that text, and its slot may stand
+/// for several of the member's units. A member may hold units the template
+/// does not show. Read two ways, by unit and by character, and true when
+/// either reading is.
+pub(super) fn template_holds(template: &str, member: &str) -> bool {
+    units_hold(template, member) || reads_as(template, member)
+}
+
+/// The template's units are on the member, in order.
+fn units_hold(template: &str, member: &str) -> bool {
+    let words: Vec<&str> = unit_spans(member)
+        .iter()
+        .map(|&(at, len)| &member[at..at + len])
+        .collect();
+    let mut next = 0;
+    unit_spans(template).iter().all(|&(at, len)| {
+        let unit = &template[at..at + len];
+        if unit == VARIES_MARK {
+            return true;
+        }
+        match unit_on(unit, &words[next..]) {
+            Some(past) => {
+                next += past;
+                true
+            }
+            None => false,
+        }
+    })
+}
+
+/// `member` read as `template` character by character, each `<VARIES>`
+/// standing for any text or none. A slot that swallowed a quote changes
+/// where the template's units fall, so a template `units_hold` cannot
+/// follow may still read true this way.
+fn reads_as(template: &str, member: &str) -> bool {
+    let mut parts = template.split(VARIES_MARK);
+    let Some(mut rest) = member.strip_prefix(parts.next().unwrap_or("")) else {
+        return false;
+    };
+    let mut parts: Vec<&str> = parts.collect();
+    let Some(last) = parts.pop() else {
+        return rest.is_empty();
+    };
+    for part in parts {
+        match rest.find(part) {
+            Some(at) => rest = &rest[at + part.len()..],
+            None => return false,
+        }
+    }
+    rest.ends_with(last)
+}
+
+/// Where the template unit `unit` is found in `words`: the count of words
+/// up to and including its last one. A unit without a slot is one word. A
+/// unit with one is a word that starts with the text before its first
+/// `<VARIES>`, and that word or a later one ending with the text after its
+/// last.
+fn unit_on(unit: &str, words: &[&str]) -> Option<usize> {
+    let Some(first) = unit.find(VARIES_MARK) else {
+        return words.iter().position(|&word| word == unit).map(|at| at + 1);
+    };
+    let before = &unit[..first];
+    let after = &unit[unit.rfind(VARIES_MARK)? + VARIES_MARK.len()..];
+    words.iter().enumerate().find_map(|(from, word)| {
+        if !word.starts_with(before) {
+            return None;
+        }
+        if word.len() >= before.len() + after.len() && word.ends_with(after) {
+            return Some(from + 1);
+        }
+        words[from + 1..]
+            .iter()
+            .position(|later| later.ends_with(after))
+            .map(|to| from + 1 + to + 1)
+    })
+}
 
 /// A line may join a group whose founder it disagrees with in at most this
 /// many plain words.

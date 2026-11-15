@@ -4653,8 +4653,9 @@ fn format_group_pii_masks_the_essence_line() {
         "user alice@test.com logged in",
         vec![Token::Email("alice@test.com".into())],
     );
+    // The same template, as two lines the join rule puts in one group have.
     let mut line2 = make_line(
-        "user bob@test.com logged in",
+        "user alice@test.com logged in",
         vec![Token::Email("bob@test.com".into())],
     );
     line2.original = "user bob@test.com logged in".to_string();
@@ -8053,4 +8054,86 @@ fn a_json_group_carries_its_timeline_on_the_log_wide_grid() {
         40,
         "{range}"
     );
+}
+
+// ---------------------------------------------------------------
+// template_holds: the claim checked each time a line joins a group
+// ---------------------------------------------------------------
+
+#[test]
+fn a_template_without_a_slot_holds_only_for_its_own_words() {
+    assert!(template_holds("worker ready now", "worker ready now"));
+    assert!(!template_holds("worker ready now", "worker ready later"));
+    assert!(!template_holds("worker ready now", "worker ready"));
+}
+
+#[test]
+fn a_bare_slot_stands_for_any_word_or_none() {
+    assert!(template_holds("worker <VARIES> ready", "worker c3 ready"));
+    assert!(template_holds("worker <VARIES> ready", "worker ready"));
+    assert!(!template_holds("worker <VARIES> ready", "worker c3 done"));
+}
+
+#[test]
+fn a_member_may_hold_words_the_template_does_not_show() {
+    assert!(template_holds(
+        "worker <VARIES> ready",
+        "worker c3 ready now"
+    ));
+    assert!(template_holds("worker ready", "worker is ready"));
+}
+
+#[test]
+fn the_templates_words_are_on_the_member_in_the_templates_order() {
+    assert!(!template_holds("alpha beta", "beta alpha"));
+    assert!(!template_holds("alpha <VARIES> beta", "beta c3 alpha"));
+}
+
+#[test]
+fn text_kept_beside_a_slot_is_part_of_the_claim() {
+    assert!(template_holds("x msg=<VARIES> y", "x msg=hello y"));
+    assert!(template_holds("x msg=<VARIES> y", "x msg= y"));
+    assert!(!template_holds("x msg=<VARIES> y", "x text=hello y"));
+    assert!(template_holds("x [<VARIES>] y", "x [a1] y"));
+    assert!(!template_holds("x [<VARIES>] y", "x [a1 y"));
+    // shorter than the kept text on both sides together
+    assert!(!template_holds("x ab<VARIES>bc y", "x abc y"));
+}
+
+#[test]
+fn a_slot_with_kept_text_may_stand_for_several_words() {
+    assert!(template_holds("x q=[<VARIES>] done", "x q=[a b c] done"));
+    assert!(!template_holds("x q=[<VARIES>] done", "x q=[a b c done"));
+    // the words after the slot's last one are still checked, in order
+    assert!(!template_holds("x q=[<VARIES>] done", "x done q=[a b c]"));
+}
+
+#[test]
+fn a_template_holds_when_it_reads_true_character_by_character() {
+    // The slot swallowed a quote, so the two no longer split into the same
+    // units; read as text the template is still true of the member.
+    let template = r#"{"req":"put >> <VARIES>,"size":"22"}"#;
+    let member = r#"{"req":"put >> range > >>","size":"22"}"#;
+    assert!(template_holds(template, member));
+    assert!(!template_holds(
+        template,
+        r#"{"req":"put >> range > >>","size":"23"}"#
+    ));
+    assert!(reads_as("a <VARIES> c <VARIES> e", "a b c d e"));
+    assert!(!reads_as("a <VARIES> c <VARIES> e", "a b d c"));
+    assert!(!reads_as("a <VARIES> c", "b a c"));
+    assert!(reads_as("abc", "abc"));
+    assert!(!reads_as("abc", "abcd"));
+}
+
+/// The check is compiled into test builds only.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "the template does not hold for the line that joined")]
+fn a_line_its_groups_template_is_false_of_stops_a_test_build() {
+    // Two lines the join rule never puts in one group, pushed in by hand: a
+    // word that looks like data is not made a slot, so the template would go
+    // on naming alice for a line that says bob.
+    let mut group = PatternGroup::new(make_line("user alice@test.com logged in", vec![]), 1);
+    group.add_line(make_line("user bob@test.com logged in", vec![]), 2);
 }
