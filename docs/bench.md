@@ -50,9 +50,9 @@ Six files under `examples/distilled/`. Each exercises a different pattern mix:
 | `nginx_sample.log` | 2 KB | Tiny — fixed-overhead floor |
 
 `epyc_7days_journalctl.log` is **not** in the Tier 1 gate. Its pattern
-density (1000+ distinct templates in the first 5k lines) trips the
-`should_flush_buffer()` cap in `src/folder/mod.rs`, which contaminates
-the subtraction method. Journalctl coverage is deferred to the Phase 5
+density (1000+ distinct templates in the first 5k lines) once made the
+single-threaded fold format groups mid-stream, which contaminated the
+subtraction method. Journalctl coverage is deferred to the Phase 5
 manual sweep (`docs/rollup-calibration.md`).
 
 ## Recording a baseline

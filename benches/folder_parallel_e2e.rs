@@ -76,9 +76,7 @@ fn run_parallel_e2e(content: &str) -> Vec<String> {
     let mut folder = PatternFolder::new(parallel_config());
     let mut outputs = Vec::new();
     for line in content.lines() {
-        if let Ok(Some(output)) = folder.process_line(line) {
-            outputs.push(output);
-        }
+        let _ = folder.process_line(line);
     }
     if let Ok(final_outputs) = folder.finish() {
         outputs.extend(final_outputs);

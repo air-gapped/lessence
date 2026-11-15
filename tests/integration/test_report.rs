@@ -578,50 +578,9 @@ fn tmpfs_is_rejected_for_automatic_placement_and_accepted_by_the_explicit_pair()
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
-/// A log wide enough that groups are evicted from the live buffer and
-/// spooled *during* ingest rather than all at EOF — which is what makes a
-/// write failure abort the input before EOF. Single-threaded because the
-/// parallel pipeline batches its output to the end of the run.
-fn wide_log(dir: &Path) -> PathBuf {
-    let path = dir.join("wide.log");
-    let vocab = [
-        "alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india",
-        "juliet", "kilo", "lima", "mike", "november", "oscar", "papa", "quebec", "romeo",
-    ];
-    // A cheap deterministic LCG: distinct word sequences do not fold into
-    // each other, so one line is one template and the run passes
-    // RETAINED_TEMPLATE_CAP. An eighth over the cap is margin enough —
-    // six to thirteen words drawn from eighteen is 34 million sequences
-    // at its narrowest, so collisions at this many draws are single
-    // digits. Derived from the cap, so it follows the cap rather than
-    // being a number somebody picked.
-    let mut state: u64 = 1;
-    let mut next = |n: u64| {
-        state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1);
-        (state >> 33) % n
-    };
-    let mut text = String::new();
-    let lines = lessence::folder::RETAINED_TEMPLATE_CAP * 9 / 8;
-    for _ in 0..lines {
-        let words = 6 + next(8);
-        for w in 0..words {
-            if w > 0 {
-                text.push(' ');
-            }
-            text.push_str(vocab[next(vocab.len() as u64) as usize]);
-        }
-        text.push('\n');
-    }
-    std::fs::write(&path, text).unwrap();
-    path
-}
-
 #[test]
-fn a_write_failure_mid_spool_removes_the_partial_and_says_the_input_is_incomplete() {
+fn a_failure_writing_the_first_record_removes_the_partial_and_says_the_input_is_complete() {
     let tmp = tmpdir();
-    let log = wide_log(tmp.path());
     let run = bin()
         .env("LESSENCE_TEST_FAIL_WRITE", "1")
         .args([
@@ -629,7 +588,8 @@ fn a_write_failure_mid_spool_removes_the_partial_and_says_the_input_is_incomplet
             "1",
             "--report-dir",
             tmp.path().to_str().unwrap(),
-            log.to_str().unwrap(),
+            "-q",
+            fixture(),
         ])
         .output()
         .unwrap();
@@ -637,16 +597,15 @@ fn a_write_failure_mid_spool_removes_the_partial_and_says_the_input_is_incomplet
     let err = String::from_utf8(run.stderr).unwrap();
     assert!(err.contains("report: not written"), "{err}");
     assert!(
-        err.contains("input incomplete (aborted at line "),
-        "the briefing must say the ingest never reached EOF: {err}"
+        err.contains("record 1"),
+        "the failure names the first write: {err}"
     );
-    assert!(err.contains("report removed"), "{err}");
     assert!(
-        !err.contains("lessence briefing") && !err.contains("top templates"),
-        "an aborted ingest has no established template statistics to print: {err}"
+        err.contains("briefing: input complete"),
+        "every record is written after EOF, so the input is complete: {err}"
     );
     assert_no_partial(tmp.path());
-    assert_eq!(walk(tmp.path()), vec![log], "only the input log is left");
+    assert!(walk(tmp.path()).is_empty());
 }
 
 #[test]

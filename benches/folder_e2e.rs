@@ -30,10 +30,9 @@ use std::time::Duration;
 /// Tier 1 gate corpus — every bench invocation must pass on all of these.
 ///
 /// `epyc_7days_journalctl.log` was considered but dropped: its pattern density
-/// is extreme (1000+ distinct groups by line ~5000), which trips the
-/// `should_flush_buffer()` cap at `src/folder/mod.rs` during streaming and
-/// contaminates the subtraction-method measurement. Journalctl coverage is
-/// deferred to the Phase 5 manual calibration sweep.
+/// is extreme (1000+ distinct groups by line ~5000), which once made the
+/// single-threaded fold format groups during streaming. Journalctl coverage
+/// is deferred to the Phase 5 manual calibration sweep.
 const TIER1_CORPUS: &[(&str, &str)] = &[
     ("examples/distilled/kubelet.log", "kubelet"),
     (
@@ -90,16 +89,14 @@ fn canonical_config() -> Config {
     }
 }
 
-/// Full end-to-end pass: process each line, collect all emitted output.
+/// Full end-to-end pass: process each line, collect the output `finish()` emits.
 /// `black_box` on the collected output prevents dead-code elimination of
 /// the fold work — otherwise LLVM might prove the output is unused.
 fn run_e2e(content: &str) -> Vec<String> {
     let mut folder = PatternFolder::new(canonical_config());
     let mut outputs = Vec::new();
     for line in content.lines() {
-        if let Ok(Some(output)) = folder.process_line(line) {
-            outputs.push(output);
-        }
+        let _ = folder.process_line(line);
     }
     if let Ok(final_outputs) = folder.finish() {
         outputs.extend(final_outputs);

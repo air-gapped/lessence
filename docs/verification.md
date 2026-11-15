@@ -51,9 +51,9 @@ No target other than `make distill` reads an original corpus.
    listed in `gate.json`; a change alone is not a FAIL.
 5b. Modes: for each distilled corpus, the `--explain` and `--format json`
    inventories are taken for both binaries and the rows the two modes do not
-   share are counted (`comm -3`). `--explain` never evicts and `--format json`
-   does, so the two must agree. A corpus where the baseline count is 0 must
-   stay 0 → FAIL otherwise; a corpus already carrying the eviction residual
+   share are counted (`comm -3`). The two modes fold the same way, so they
+   must agree. A corpus where the baseline count is 0 must stay 0 → FAIL
+   otherwise; a corpus already carrying a residual on the baseline
    (lessence-3ck) is printed, not judged. Corpora with a non-zero count on
    either binary are printed (`modes:` line) and listed in `gate.json`.
 6. Perf: `taskset -c $GATE_CPU perf stat -e instructions:u,task-clock -x, --
@@ -180,8 +180,8 @@ and `##CASE` the tests fold. A release build compiles them out.
 
 The default profile's `default-filter` excludes the tests that assert a
 duration (every `*scales_linearly*` test, `test_processing_speed_requirement`
-and the others `.config/nextest.toml` names), the mid-spool write-failure
-test and the 200,000-group `--overview all` streaming test. The `slow`
+and the others `.config/nextest.toml` names), the 200,000-group
+`--overview all` streaming test and the corpus-wide detector-order test. The `slow`
 profile is exactly those, run by `make release-check`
 and by hand with `cargo nextest run --release --profile slow`. A `-E`
 expression on the command line selects within the profile's default filter

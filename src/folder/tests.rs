@@ -14,89 +14,6 @@ fn make_line(normalized: &str, tokens: Vec<Token>) -> LogLine {
     LogLine::new(normalized.to_string(), normalized.to_string(), tokens, 0)
 }
 
-/// The group hash-index must stay consistent across buffer evictions
-/// (`buffer.remove` shifts every later index). 1,100 mutually dissimilar
-/// lines overflow the 1,000-group buffer and force ~100 evictions; a
-/// repeated line whose group is still buffered must then fold into that
-/// group via the index, not land in a wrong group or found a duplicate.
-#[test]
-fn group_index_survives_eviction() {
-    let config = Config {
-        thread_count: Some(1),
-        ..Config::default()
-    };
-    let mut folder = PatternFolder::new(config);
-
-    // Deterministic 6-letter words: single-token lines that never group
-    // with each other (zero shared tokens → score 0).
-    let word = |i: usize| {
-        let mut s = String::new();
-        let mut x = i;
-        for _ in 0..6 {
-            s.push(char::from(b'a' + (x % 26) as u8));
-            x /= 26;
-        }
-        s
-    };
-
-    let mut output = String::new();
-    for i in 0..1_100 {
-        if let Some(flushed) = folder.process_line(&word(i)).unwrap() {
-            output.push_str(&flushed);
-            output.push('\n');
-        }
-    }
-    // Introspect before the repeats: the map entry for word(1050) must
-    // exist and point at the group whose representative is word(1050).
-    let probe = folder.normalizer.normalize_line(word(1_050)).unwrap();
-    let idx = folder
-        .group_index
-        .get(&probe.hash)
-        .copied()
-        .unwrap_or_else(|| panic!("map entry for {} missing before repeats", word(1_050)));
-    assert_eq!(
-        folder.buffer[idx].first().normalized,
-        word(1_050),
-        "map entry for {} points at the wrong group",
-        word(1_050)
-    );
-
-    for _ in 0..5 {
-        if let Some(flushed) = folder.process_line(&word(1_050)).unwrap() {
-            output.push_str(&flushed);
-            output.push('\n');
-        }
-    }
-    for line in folder.finish().unwrap() {
-        output.push_str(&line);
-        output.push('\n');
-    }
-
-    // One folded group renders as first occurrence, fold marker, last
-    // occurrence — exactly two bare target lines. A stale index would
-    // yield three or more (a stranded single plus a separate folded
-    // group), or a markerless single if the repeats joined a wrong group.
-    let target = word(1_050);
-    let lines: Vec<&str> = output.lines().collect();
-    let occurrences: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.contains(&target))
-        .map(|(i, _)| i)
-        .collect();
-    assert_eq!(
-        occurrences.len(),
-        2,
-        "expected first+last of one folded group for {target}, got {} lines",
-        occurrences.len()
-    );
-    assert!(
-        lines[occurrences[0] + 1].contains("similar"),
-        "fold marker must follow the first {target} occurrence, got: {}",
-        lines[occurrences[0] + 1]
-    );
-}
-
 /// Build a PatternGroup with N lines, each having the given tokens.
 /// All lines share the same normalized template.
 fn make_group(normalized: &str, lines: Vec<Vec<Token>>) -> PatternGroup {
@@ -315,19 +232,18 @@ fn pii_masking_applies_credential_rules() {
     assert_eq!(result, "<EMAIL> password=<SECRET>");
 }
 
-/// Ranked modes must hold every group: with eviction active, patterns past
-/// the 1,000-group flush threshold vanished from both the ranking and the
-/// coverage denominator ("1000 of 1000 patterns" on 1,100-pattern input).
+/// Ranked modes hold every group: past 1,000 groups, patterns once vanished
+/// from both the ranking and the coverage denominator ("1000 of 1000
+/// patterns" on 1,100-pattern input).
 #[test]
-fn summary_retains_all_groups_past_flush_threshold() {
+fn summary_ranks_every_group_of_a_wide_log() {
     let mut folder = PatternFolder::new(Config {
         thread_count: Some(1),
         summary: true,
         ..Config::default()
     });
     for i in 0..1_100 {
-        let out = folder.process_line(&eviction_word(i)).unwrap();
-        assert!(out.is_none(), "ranked mode must not stream evictions");
+        folder.process_line(&distinct_word(i)).unwrap();
     }
     let SummaryRows {
         display,
@@ -339,14 +255,14 @@ fn summary_retains_all_groups_past_flush_threshold() {
 }
 
 #[test]
-fn top_n_retains_all_groups_past_flush_threshold() {
+fn top_n_counts_every_group_of_a_wide_log() {
     let mut folder = PatternFolder::new(Config {
         thread_count: Some(1),
         top_n: Some(5),
         ..Config::default()
     });
     for i in 0..1_100 {
-        folder.process_line(&eviction_word(i)).unwrap();
+        folder.process_line(&distinct_word(i)).unwrap();
     }
     let TopGroups {
         shown: output,
@@ -357,39 +273,11 @@ fn top_n_retains_all_groups_past_flush_threshold() {
     assert_eq!(output.len(), 5);
 }
 
-/// The inverse guard: streaming fold mode must keep evicting past the
-/// threshold, or unbounded inputs would grow the buffer without limit.
-/// Since lessence-940 an eviction keeps the group's identity in
-/// `retained` instead of streaming it out immediately (a bounded
-/// accumulator, not the member list the threshold exists to cap) — so
-/// this now pins the buffer staying bounded and the retained map picking
-/// up exactly what left it, not `process_line` returning `Some`.
+/// On a log of over 2,000 distinct lines, the sum of every group record's
+/// `count` equals the input line count exactly, and no normalized template is
+/// the `normalized` field of two different group records (lessence-940).
 #[test]
-fn fold_mode_still_evicts_past_flush_threshold() {
-    let mut folder = PatternFolder::new(Config {
-        thread_count: Some(1),
-        ..Config::default()
-    });
-    for i in 0..1_200 {
-        folder.process_line(&eviction_word(i)).unwrap();
-    }
-    assert!(
-        folder.buffer.len() <= 1_000,
-        "buffer must stay bounded past the flush threshold, got {}",
-        folder.buffer.len()
-    );
-    assert!(
-        !folder.retained.is_empty(),
-        "evicted groups must be retained, not silently dropped"
-    );
-}
-
-/// The count-conservation half of lessence-940's fix: across an eviction
-/// large enough to force several flushes, the sum of every group record's
-/// `count` must equal the input line count exactly, and no normalized
-/// template may be the `normalized` field of two different group records.
-#[test]
-fn retained_groups_conserve_total_count_and_never_duplicate_template() {
+fn a_wide_log_conserves_total_count_and_never_duplicates_a_template() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         output_format: "json".to_string(),
@@ -398,13 +286,12 @@ fn retained_groups_conserve_total_count_and_never_duplicate_template() {
     });
     let mut total_lines = 0usize;
     // A repeating signal, interleaved with over 2,000 mutually dissimilar
-    // filler lines — several buffer flushes' worth — so the signal's group
-    // is evicted and re-encountered more than once.
+    // filler lines, so the signal recurs after more than 1,000 other groups.
     for round in 0..3 {
         f.process_line("gateway heartbeat ok node=edge-01").unwrap();
         total_lines += 1;
         for i in 0..800 {
-            f.process_line(&format!("filler event {}", eviction_word(round * 800 + i)))
+            f.process_line(&format!("filler event {}", distinct_word(round * 800 + i)))
                 .unwrap();
             total_lines += 1;
         }
@@ -441,97 +328,21 @@ fn retained_groups_conserve_total_count_and_never_duplicate_template() {
     );
 }
 
-/// The rollup half of lessence-940's fix: a group's `<VARIES>` value
-/// histogram must keep accumulating across an eviction, not restart. Two
-/// members straddling the eviction boundary carry different values in the
-/// same rolled-up (untokenised, plain-word) slot; the finalised rollup must
-/// still name both.
+/// A line that recurs after more than 1,000 other groups folds to one record,
+/// with and without `--explain`: the same event is never two records with
+/// split counts (lessence-940).
 #[test]
-fn rollup_survives_eviction_and_names_values_from_both_sides() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        output_format: "json".to_string(),
-        min_collapse: 3,
-        ..Config::default()
-    });
-    // Founder and a similarity-joined member, merged while still live: the
-    // group's template already carries a VARIES slot for "alpha"/"beta"
-    // before eviction ever happens.
-    f.process_line("worker process alpha started successfully at 10.0.0.1")
-        .unwrap();
-    f.process_line("worker process beta started successfully at 10.0.0.2")
-        .unwrap();
-
-    // Over 1,000 mutually dissimilar filler lines force the group (still
-    // below min_collapse, and now well past the 100-line safe distance) to
-    // be evicted and retained.
-    for i in 0..1_050 {
-        f.process_line(&format!("filler event {}", eviction_word(i)))
-            .unwrap();
-    }
-
-    // Rejoin: only an exact-hash match to the founder reaches a retained
-    // group, so this must repeat the founder's own text — extending the
-    // "alpha" side of the histogram after the accumulator was seeded (with
-    // both "alpha" and "beta") at eviction time.
-    f.process_line("worker process alpha started successfully at 10.0.0.1")
-        .unwrap();
-
-    let output = f.finish().unwrap();
-    let record = output
-        .iter()
-        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
-        .find(|v| v["normalized"] == "worker process <VARIES> started successfully at <IP>")
-        .expect("the worker group must fold to one record");
-    assert_eq!(record["count"], 3);
-
-    let varies = &record["variation"]["VARIES"];
-    let samples: Vec<&str> = varies["samples"]
-        .as_array()
-        .expect("VARIES samples present")
-        .iter()
-        .map(|s| s.as_str().unwrap())
-        .collect();
-    assert!(
-        samples.contains(&"alpha") && samples.contains(&"beta"),
-        "rollup must name values from both sides of the eviction, got: {samples:?}"
-    );
-    let counts: Vec<u64> = varies["sample_counts"]
-        .as_array()
-        .expect("VARIES sample_counts present")
-        .iter()
-        .map(|c| c.as_u64().unwrap())
-        .collect();
-    let alpha_idx = samples.iter().position(|&s| s == "alpha").unwrap();
-    let beta_idx = samples.iter().position(|&s| s == "beta").unwrap();
-    assert_eq!(
-        counts[alpha_idx], 2,
-        "alpha occurs twice: founder plus the rejoin"
-    );
-    assert_eq!(
-        counts[beta_idx], 1,
-        "beta occurs once, from before the eviction"
-    );
-}
-
-/// `--explain` is consumed whole after the run by a machine, never streamed
-/// to a human reader: an evicted group re-forming later must not emit the
-/// same event as two records with split counts (lessence-940). Pins the
-/// exemption itself, not the threshold: the same input under `explain:
-/// false` must still evict.
-#[test]
-fn explain_retains_a_recurring_group_past_flush_threshold() {
+fn a_recurring_line_folds_to_one_record_past_a_thousand_groups() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         explain: true,
         ..Config::default()
     });
-    assert!(f.process_line("recurringkey").unwrap().is_none());
+    f.process_line("recurringkey").unwrap();
     for i in 0..1_100 {
-        f.process_line(&eviction_word(i)).unwrap();
+        f.process_line(&distinct_word(i)).unwrap();
     }
-    // Recurring after the buffer would have overflowed a non-explain run.
-    assert!(f.process_line("recurringkey").unwrap().is_none());
+    f.process_line("recurringkey").unwrap();
     let output = f.finish().unwrap();
     let matches = output.iter().filter(|s| s.contains("recurringkey")).count();
     assert_eq!(
@@ -539,27 +350,15 @@ fn explain_retains_a_recurring_group_past_flush_threshold() {
         "one recurring key must fold to one group record under --explain, got: {output:?}"
     );
 
-    // The identical sequence with explain off must ALSO fold to one record
-    // now (lessence-940): eviction keeps the group's identity in
-    // `retained` instead of forgetting it, so a recurring key no longer
-    // fragments outside --explain either. `process_line` never streams a
-    // "recurringkey" record early — the group is always the buffer's
-    // current-oldest-first pick or retained, never the newest — so every
-    // match surfaces only at `finish()`.
     let mut f2 = PatternFolder::new(Config {
         thread_count: Some(1),
         ..Config::default()
     });
-    assert!(f2.process_line("recurringkey").unwrap().is_none());
+    f2.process_line("recurringkey").unwrap();
     for i in 0..1_100 {
-        assert!(
-            !f2.process_line(&eviction_word(i))
-                .unwrap()
-                .is_some_and(|s| s.contains("recurringkey")),
-            "recurringkey must not stream out early"
-        );
+        f2.process_line(&distinct_word(i)).unwrap();
     }
-    assert!(f2.process_line("recurringkey").unwrap().is_none());
+    f2.process_line("recurringkey").unwrap();
     let output2 = f2.finish().unwrap();
     let matches2 = output2
         .iter()
@@ -571,10 +370,8 @@ fn explain_retains_a_recurring_group_past_flush_threshold() {
     );
 }
 
-/// Deterministic 6-letter words: single-token lines that never group with
-/// each other (zero shared tokens → similarity score 0).
 #[test]
-fn only_the_inline_path_evicts_and_both_paths_fold_the_same_records() {
+fn the_thread_count_does_not_change_the_records_of_a_wide_log() {
     let run = |thread_count| {
         let mut f = PatternFolder::new(Config {
             thread_count,
@@ -582,30 +379,37 @@ fn only_the_inline_path_evicts_and_both_paths_fold_the_same_records() {
             min_collapse: 3,
             ..Config::default()
         });
-        let mut output = Vec::new();
         for round in 0..3 {
-            output.extend(f.process_line("gateway heartbeat ok node=edge-01").unwrap());
+            for _ in 0..400 {
+                f.process_line("gateway heartbeat ok node=edge-01").unwrap();
+            }
             for i in 0..800 {
-                let line = format!("filler event {}", eviction_word(round * 800 + i));
-                output.extend(f.process_line(&line).unwrap());
+                let line = format!("filler event {}", distinct_word(round * 800 + i));
+                f.process_line(&line).unwrap();
             }
         }
-        f.process_batch().unwrap();
-        let retained = f.retained.len();
-        output.extend(f.finish().unwrap());
-        (retained, output)
+        f.finish().unwrap()
     };
-    let (inline_retained, inline) = run(Some(1));
-    let (batch_retained, batch) = run(None);
+    let inline = run(Some(1));
     assert!(
-        inline_retained > 0,
-        "2,403 distinct lines overflow the buffer"
+        inline.len() > 2_400,
+        "2,401 distinct events, more than 1,000 of them live at once"
     );
-    assert_eq!(batch_retained, 0, "the batch path holds every group");
-    assert_eq!(batch, inline, "and the two render the same records");
+    assert!(
+        inline[0].contains("\"count\":1200"),
+        "the repeated group is one record of every member: {}",
+        inline[0]
+    );
+    assert_eq!(
+        run(None),
+        inline,
+        "one thread and the pool fold the same records"
+    );
 }
 
-fn eviction_word(i: usize) -> String {
+/// Deterministic 6-letter words: single-token lines that never group with
+/// each other (zero shared tokens → similarity score 0).
+fn distinct_word(i: usize) -> String {
     let mut s = String::new();
     let mut x = i;
     for _ in 0..6 {
@@ -616,7 +420,7 @@ fn eviction_word(i: usize) -> String {
 }
 
 #[test]
-fn eviction_preserves_founder_order_and_nontransitive_membership() {
+fn a_wide_log_preserves_founder_order_and_nontransitive_membership() {
     let a = "worker process alpha started successfully at 10.0.0.1";
     let b = "worker process beta started successfully at 10.0.0.2";
     let c = "worker process beta stopped successfully at 10.0.0.3";
@@ -632,14 +436,11 @@ fn eviction_preserves_founder_order_and_nontransitive_membership() {
         }
         for i in 0..1_005 {
             folder
-                .process_line(&format!("filler event {}", eviction_word(i)))
+                .process_line(&format!("filler event {}", distinct_word(i)))
                 .unwrap();
         }
-        if !explain {
-            assert!(!folder.retained.is_empty(), "exercise an actual eviction");
-        }
         // B matches A and C, but A and C differ in two plain words. B must
-        // rejoin A even after eviction; it cannot found a group with C.
+        // join A even after 1,005 other groups; it cannot found a group with C.
         for line in [c, c, c, b, b, b] {
             folder.process_line(line).unwrap();
         }
@@ -663,92 +464,6 @@ fn eviction_preserves_founder_order_and_nontransitive_membership() {
     assert_eq!(expected[0].1, 6);
     assert_eq!(expected[1].1, 3);
     assert_eq!(run(false), expected);
-}
-
-#[test]
-fn retained_new_slots_have_the_same_counts_as_full_member_rollups() {
-    // Include a slot already varying before eviction, new slots after it,
-    // preserved key delimiters, quoted units, missing words, and masking.
-    let sequences: &[&[&str]] = &[
-        &[
-            "worker alpha status=ready",
-            "worker beta status=ready",
-            "worker alpha status=waiting",
-        ],
-        &[
-            "worker alpha status=(ready)",
-            "worker beta status=(ready)",
-            "worker alpha status=(waiting)",
-        ],
-        &[
-            "worker name=\"alpha one\" done",
-            "worker name=\"beta two\" done",
-            "worker name=\"alpha one\" failed",
-        ],
-        &[
-            "worker alpha ready now",
-            "worker beta ready now",
-            "worker alpha now",
-        ],
-        &[
-            "worker alpha ready now",
-            "worker alpha now",
-            "worker beta ready now",
-        ],
-        &[
-            "worker password=abcdef ready",
-            "worker password=abcdef ready",
-            "worker password=ghijkl ready",
-        ],
-        // a slot opened after eviction ahead of one that already varied is
-        // counted as the first slot, not pooled with or behind it
-        &[
-            "worker alpha status=ready on n1",
-            "worker alpha status=waiting on n1",
-            "worker beta status=ready on n2",
-            "worker gamma status=ready on n1",
-        ],
-        &[
-            "worker alpha status=ready on n1",
-            "worker alpha status=waiting on n1",
-            "worker alpha status=ready on n2",
-            "worker beta status=ready on n2",
-        ],
-    ];
-    for &texts in sequences {
-        for sanitize in [false, true] {
-            let computer =
-                RollupComputer::with_defaults().sanitized(sanitize.then(Sanitizer::legacy));
-            let make = |s: &str| LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s));
-            let mut full = PatternGroup::new(make(texts[0]), 0);
-            let mut retained = PatternGroup::new(make(texts[0]), 0);
-            for (i, text) in texts.iter().enumerate().skip(1).take(1) {
-                full.add_line(make(text), i);
-                retained.add_line(make(text), i);
-            }
-            retained.retained = Some(computer.seed(&retained));
-            for (i, text) in texts.iter().enumerate().skip(2) {
-                full.add_line(make(text), i);
-                retained.rejoin(make(text), i, &computer, 3);
-                assert_eq!(
-                    retained.lines.len(),
-                    2,
-                    "retained member window must stay bounded"
-                );
-            }
-            assert_eq!(retained.template, full.template);
-            let actual = computer.finalize_retained(
-                retained.retained.take().unwrap(),
-                &retained.template,
-                &retained.first().normalized,
-            );
-            assert_eq!(
-                serde_json::to_value(actual).unwrap(),
-                serde_json::to_value(computer.compute(&full)).unwrap(),
-                "sanitize={sanitize}, texts={texts:?}",
-            );
-        }
-    }
 }
 
 #[test]
@@ -787,67 +502,6 @@ fn a_capped_varies_set_holds_the_same_values_in_any_order() {
     let mut held: Vec<&String> = a.counts.keys().collect();
     held.sort_by_key(|v| (VariesCounts::rank(v), v.as_str()));
     assert_eq!(held, ranked[..8]);
-}
-
-#[test]
-fn a_capped_retained_rollup_holds_the_same_values_as_a_full_scan() {
-    // A retained group counts its unequal-length members last, so under a
-    // first-come cap it held other values than the same group scanned
-    // whole, as it is at another thread count.
-    let computer = RollupComputer::new(3, 4);
-    let make = |s: &str| LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s));
-    let texts = [
-        "worker a1 ready",
-        "worker b2 ready",
-        "worker c3 ready now",
-        "worker d4 ready",
-        "worker e5 ready",
-        "worker f6 ready",
-    ];
-    let mut full = PatternGroup::new(make(texts[0]), 0);
-    let mut retained = PatternGroup::new(make(texts[0]), 0);
-    full.add_line(make(texts[1]), 1);
-    retained.add_line(make(texts[1]), 1);
-    retained.retained = Some(computer.seed(&retained));
-    for (i, text) in texts.iter().enumerate().skip(2) {
-        full.add_line(make(text), i);
-        retained.rejoin(make(text), i, &computer, 3);
-    }
-    assert_eq!(retained.template, full.template);
-    let actual = computer.finalize_retained(
-        retained.retained.take().unwrap(),
-        &retained.template,
-        &retained.first().normalized,
-    );
-    let expected = computer.compute(&full);
-    assert!(expected[VARIES].capped);
-    assert_eq!(
-        serde_json::to_value(actual).unwrap(),
-        serde_json::to_value(expected).unwrap()
-    );
-}
-
-#[test]
-fn retained_alignment_cap_reports_unknown_counts_instead_of_partial_counts() {
-    let computer = RollupComputer::new(2, 2);
-    let mut group = PatternGroup::new(make_line("worker alpha ready now", vec![]), 0);
-    let mut state = computer.seed(&group);
-    for text in ["worker alpha now", "worker ready now", "worker now"] {
-        let template = VariesSlots::new(&group.template, &unit_spans(&group.template));
-        computer.accumulate_retained_varies(
-            &make_line(text, vec![]),
-            &unit_spans(text),
-            &template,
-            &mut state,
-        );
-    }
-    assert_eq!(state.realign.len(), 2);
-    assert!(state.realign_capped);
-    group.template = "worker <VARIES> <VARIES> now".into();
-    let rollup = computer.finalize_retained(state, &group.template, &group.first().normalized);
-    assert!(rollup[VARIES].capped);
-    assert!(rollup[VARIES].samples.is_empty());
-    assert_eq!(rollup[VARIES].counts, Some(vec![]));
 }
 
 #[test]
@@ -892,24 +546,6 @@ fn first_timestamp_multiple_returns_first() {
 // ---------------------------------------------------------------
 // Existing folding tests
 // ---------------------------------------------------------------
-
-#[test]
-fn test_simple_folding() -> Result<()> {
-    let config = Config::default();
-    let mut folder = PatternFolder::new(config);
-
-    let line1 = "2025-01-20 10:15:01 [pid=12345] Connection failed to 192.168.1.100:8080";
-    let line2 = "2025-01-20 10:15:02 [pid=12346] Connection failed to 192.168.1.101:8081";
-    let line3 = "2025-01-20 10:15:03 [pid=12347] Connection failed to 192.168.1.102:8082";
-
-    folder.process_line(line1)?;
-    folder.process_line(line2)?;
-    let result = folder.process_line(line3)?;
-
-    assert!(result.is_none());
-
-    Ok(())
-}
 
 #[test]
 fn test_folding_with_finish() -> Result<()> {
@@ -1883,7 +1519,7 @@ mod rollup_properties {
 }
 
 // ---------------------------------------------------------------
-// Pipeline: process_line, flush_oldest_safe_group, should_flush_buffer
+// Pipeline: process_line
 // ---------------------------------------------------------------
 
 /// Build a single-threaded PatternFolder with sensible test defaults.
@@ -2281,9 +1917,8 @@ fn process_line_batches_in_parallel_mode() {
         min_collapse: 3,
         ..Config::default()
     });
-    let result = f.process_line("2024-01-01 INFO hello 10.0.0.1").unwrap();
+    f.process_line("2024-01-01 INFO hello 10.0.0.1").unwrap();
     // Parallel mode buffers lines instead of processing immediately
-    assert_eq!(result, None, "parallel mode should buffer, not process");
     assert_eq!(f.batch_buffer.len(), 1, "line should be in batch_buffer");
     assert_eq!(
         f.buffer.len(),
@@ -2310,85 +1945,7 @@ fn process_line_finish_outputs_collapsed_groups() {
     );
 }
 
-#[test]
-fn should_flush_buffer_false_at_1000() {
-    let mut f = make_folder();
-    // Manually push 1000 groups into the buffer
-    for i in 0..1000 {
-        f.buffer.push(PatternGroup::new(
-            make_line(&format!("unique pattern {i}"), vec![]),
-            i + 1,
-        ));
-    }
-    assert!(
-        !f.should_flush_buffer(),
-        "should_flush_buffer should be false at exactly 1000 groups"
-    );
-}
-
-#[test]
-fn should_flush_buffer_true_above_1000() {
-    let mut f = make_folder();
-    for i in 0..1001 {
-        f.buffer.push(PatternGroup::new(
-            make_line(&format!("unique pattern {i}"), vec![]),
-            i + 1,
-        ));
-    }
-    assert!(
-        f.should_flush_buffer(),
-        "should_flush_buffer should be true at 1001 groups"
-    );
-}
-
-#[test]
-fn flush_oldest_safe_group_empty_buffer_returns_none() {
-    let mut f = make_folder();
-    let result = f.flush_oldest_safe_group().unwrap();
-    assert_eq!(result, None);
-}
-
-#[test]
-fn flush_oldest_safe_group_flushes_old_group() {
-    let mut f = make_folder();
-    // Add a group at position 1
-    f.buffer.push(PatternGroup::new(
-        make_line(
-            "old line with 10.0.0.1",
-            vec![Token::IPv4("10.0.0.1".into())],
-        ),
-        1,
-    ));
-    // Advance position counter well past safe_distance (100)
-    f.position_counter = 200;
-    let result = f.flush_oldest_safe_group().unwrap();
-    // Since lessence-940 a successful eviction keeps the group's identity
-    // in `retained` instead of streaming it out immediately, so the return
-    // is `None` on success now — the buffer emptying (and the group
-    // landing in `retained`) is the observable effect.
-    assert_eq!(
-        result, None,
-        "a retained eviction returns no formatted output"
-    );
-    assert!(f.buffer.is_empty(), "buffer should be empty after flush");
-    assert_eq!(f.retained.len(), 1, "the evicted group must be retained");
-}
-
-#[test]
-fn flush_oldest_safe_group_does_not_flush_recent_group() {
-    let mut f = make_folder();
-    // Add a group at position 50
-    f.buffer
-        .push(PatternGroup::new(make_line("recent line", vec![]), 50));
-    // Position counter is only 60 — well within safe_distance=100
-    f.position_counter = 60;
-    let result = f.flush_oldest_safe_group().unwrap();
-    // Group has 1 line (< min_collapse=3) and is recent (10 < 100), so NOT ready
-    assert_eq!(result, None, "should not flush recent small group");
-    assert_eq!(f.buffer.len(), 1, "group should remain in buffer");
-}
-
-// --- Mutant-killing tests for process_line + flush_oldest_safe_group ---
+// --- Mutant-killing tests for process_line ---
 
 #[test]
 fn process_line_advances_position_counter() {
@@ -2402,107 +1959,16 @@ fn process_line_advances_position_counter() {
 }
 
 #[test]
-fn flush_exact_safe_distance_boundary() {
-    // Kills: > safe_distance → >= safe_distance
-    // safe_distance = 100, so distance of exactly 100 should NOT flush
-    let mut f = make_folder();
-    f.buffer
-        .push(PatternGroup::new(make_line("boundary line", vec![]), 1));
-    f.position_counter = 101; // distance = 101 - 1 = 100, exactly at boundary
-    let result = f.flush_oldest_safe_group().unwrap();
-    assert_eq!(
-        result, None,
-        "distance of exactly 100 should NOT flush (> not >=)"
-    );
-    assert_eq!(f.buffer.len(), 1, "group must still be in the buffer");
-
-    // distance = 101 SHOULD flush. A successful eviction retains the group
-    // (lessence-940) rather than streaming it, so the observable effect is
-    // the buffer emptying, not a `Some` return.
-    f.position_counter = 102; // distance = 102 - 1 = 101
-    let result = f.flush_oldest_safe_group().unwrap();
-    assert_eq!(
-        result, None,
-        "a retained eviction returns no formatted output"
-    );
-    assert!(f.buffer.is_empty(), "distance of 101 should flush");
-}
-
-#[test]
-fn flush_uses_subtraction_not_division() {
-    // Kills: current_position - group.position → current_position / group.position
-    // With position=50, counter=160: 160-50=110 > 100 (flush), 160/50=3 (no flush)
-    let mut f = make_folder();
-    f.buffer
-        .push(PatternGroup::new(make_line("division test", vec![]), 50));
-    f.position_counter = 160;
-    let result = f.flush_oldest_safe_group().unwrap();
-    assert_eq!(
-        result, None,
-        "a retained eviction returns no formatted output"
-    );
-    assert!(
-        f.buffer.is_empty(),
-        "distance 110 should flush (subtraction gives 110, division gives 3)"
-    );
-}
-
-#[test]
-fn flush_selects_first_among_equal_positions() {
-    // Kills: group.position < oldest_position → <= oldest_position
-    // Two groups at same position, different content — first should be selected
-    let mut f = make_folder();
-    f.buffer
-        .push(PatternGroup::new(make_line("first_group_aaa", vec![]), 5));
-    f.buffer
-        .push(PatternGroup::new(make_line("second_group_bbb", vec![]), 5));
-    f.position_counter = 200;
-    let result = f.flush_oldest_safe_group().unwrap();
-    // A successful eviction is retained, not streamed (lessence-940): which
-    // group was picked shows up in what is left behind, not in the return.
-    assert_eq!(
-        result, None,
-        "a retained eviction returns no formatted output"
-    );
-    assert_eq!(f.buffer.len(), 1, "one group should remain buffered");
-    assert!(
-        f.buffer[0].template().contains("second_group_bbb"),
-        "the first group at equal position should have been the one flushed, buffer holds: {}",
-        f.buffer[0].template()
-    );
-    assert!(
-        f.retained
-            .values()
-            .any(|g| g.template().contains("first_group_aaa")),
-        "should flush first group at equal position, retained holds: {:?}",
-        f.retained
-            .values()
-            .map(PatternGroup::template)
-            .collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn flush_accumulates_output_lines() {
+fn finish_accumulates_output_lines() {
     // Kills: output_lines += count → *= count (0 * N = 0)
     let mut f = make_folder();
     f.buffer
         .push(PatternGroup::new(make_line("output line", vec![]), 1));
-    f.position_counter = 200;
     assert_eq!(f.stats.output_lines, 0);
-    let _result = f.flush_oldest_safe_group().unwrap();
-    // Since lessence-940 a retained eviction defers formatting (and so
-    // `output_lines`) to `finish()` — it does not run
-    // `self.stats.output_lines += formatted.lines().count()` at flush time
-    // at all, unlike the pre-retention behaviour this test used to pin.
-    assert_eq!(
-        f.stats.output_lines, 0,
-        "a retained eviction must not format (or count output lines) early"
-    );
     f.finish().unwrap();
     assert!(
         f.stats.output_lines > 0,
-        "output_lines should be incremented once the retained group is finally emitted, got 0"
+        "output_lines should be incremented once the group is emitted, got 0"
     );
 }
 
@@ -2891,8 +2357,8 @@ fn absorb_ingest_report_sets_input_completeness() {
 #[test]
 fn format_group_dispatch_text_mode() {
     let mut f = make_folder();
-    let mut group = make_group("hello", vec![vec![]]);
-    let output = f.format_group_dispatch(&mut group).unwrap();
+    let group = make_group("hello", vec![vec![]]);
+    let output = f.format_group_dispatch(&group).unwrap();
     // Text mode: should NOT be valid JSON
     assert!(
         serde_json::from_str::<serde_json::Value>(&output).is_err(),
@@ -2903,8 +2369,8 @@ fn format_group_dispatch_text_mode() {
 #[test]
 fn format_group_dispatch_json_mode() {
     let mut f = make_folder_json();
-    let mut group = make_group("hello", vec![vec![]]);
-    let output = f.format_group_dispatch(&mut group).unwrap();
+    let group = make_group("hello", vec![vec![]]);
+    let output = f.format_group_dispatch(&group).unwrap();
     // JSON mode: should be valid JSON
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "group");
@@ -3649,7 +3115,7 @@ fn format_group_dispatch_computes_rollup_for_collapsible() {
     // Kills: >= min_collapse → < min_collapse
     // A group at min_collapse should get rollup metadata in the output
     let mut f = make_folder();
-    let mut group = make_group(
+    let group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
@@ -3659,7 +3125,7 @@ fn format_group_dispatch_computes_rollup_for_collapsible() {
         ],
     );
     assert_eq!(group.count(), 4); // >= min_collapse=3
-    let output = f.format_group_dispatch(&mut group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap();
     // Rollup produces variation markers with type names (e.g., "ipv4")
     // The legacy format_collapsed_line produces "[+N similar, varying: X]"
     // With rollup, it produces "[+N similar | ipv4×M ...]"
@@ -4072,14 +3538,14 @@ fn finish_top_n_zero_input_lines() {
 #[test]
 fn format_group_dispatch_below_min_collapse_no_rollup() {
     let mut f = make_folder(); // min_collapse = 3
-    let mut group = make_group(
+    let group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
             vec![Token::IPv4("10.0.0.2".into())],
         ],
     ); // count = 2, below min_collapse = 3
-    let output = f.format_group_dispatch(&mut group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap();
     // Below min_collapse: no rollup marker, just the raw lines
     assert!(
         !output.contains("similar"),
@@ -4091,7 +3557,7 @@ fn format_group_dispatch_below_min_collapse_no_rollup() {
 fn format_group_dispatch_at_min_collapse_computes_rollup() {
     let mut f = make_folder(); // min_collapse = 3
     // Use enough varied tokens that rollup produces distinct output vs legacy
-    let mut group = make_group(
+    let group = make_group(
         "error <IP>",
         vec![
             vec![Token::IPv4("10.0.0.1".into())],
@@ -4101,7 +3567,7 @@ fn format_group_dispatch_at_min_collapse_computes_rollup() {
             vec![Token::IPv4("10.0.0.5".into())],
         ],
     ); // count = 5, well above min_collapse
-    let output = f.format_group_dispatch(&mut group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap();
     // Rollup path produces "ipv4×N" markers; legacy produces "[+N similar, varying: ...]"
     // If >= is mutated to <, count=5 >= 3 would become 5 < 3 = false → empty rollup
     // → legacy format which says "similar" but NOT "ipv4"
@@ -5019,8 +4485,7 @@ fn json_records_mask_pii_when_enabled() {
         ..Config::default()
     });
     for who in ["alice", "bob", "carol", "dave"] {
-        let _ = f
-            .process_line(&format!("user {who}@example.com login failed"))
+        f.process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
     let out = f.finish().unwrap().join("\n");
@@ -5041,8 +4506,7 @@ fn text_marker_masks_email_samples_when_enabled() {
     // text sample threshold, so the compact marker would surface the
     // raw values inline without masking.
     for who in ["alice", "bob", "eve", "alice", "bob", "eve"] {
-        let _ = f
-            .process_line(&format!("user {who}@example.com login failed"))
+        f.process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
     let out = f.finish().unwrap().join("\n");
@@ -5059,8 +4523,7 @@ fn summary_masks_pii_when_enabled() {
         ..Config::default()
     });
     for who in ["alice", "bob", "carol"] {
-        let _ = f
-            .process_line(&format!("user {who}@example.com login failed"))
+        f.process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
     let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
@@ -5087,8 +4550,7 @@ fn fold_metrics_agree_between_text_and_json_modes() {
             ..Config::default()
         });
         for i in 0..20 {
-            let _ = f
-                .process_line(&format!("error connecting to 10.0.0.{i} timeout"))
+            f.process_line(&format!("error connecting to 10.0.0.{i} timeout"))
                 .unwrap();
         }
         let _ = f.finish().unwrap();
@@ -5111,8 +4573,7 @@ fn summary_record_and_stats_json_report_identical_metrics() {
         ..Config::default()
     });
     for i in 0..20 {
-        let _ = f
-            .process_line(&format!("error connecting to 10.0.0.{i} timeout"))
+        f.process_line(&format!("error connecting to 10.0.0.{i} timeout"))
             .unwrap();
     }
     let _ = f.finish().unwrap();
@@ -5143,8 +4604,7 @@ fn markdown_document_masks_pii_and_shares_fold_metrics() {
         ..Config::default()
     });
     for who in ["alice", "bob", "eve", "mallory"] {
-        let _ = f
-            .process_line(&format!("user {who}@example.com login failed"))
+        f.process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
     let flushed = f.finish().unwrap();
@@ -5243,14 +4703,10 @@ fn sized_pool_produces_same_output_as_default_pool() {
             min_collapse: 3,
             ..Config::default()
         });
-        let mut out = Vec::new();
         for line in &lines {
-            if let Some(o) = f.process_line(line).unwrap() {
-                out.push(o);
-            }
+            f.process_line(line).unwrap();
         }
-        out.extend(f.finish().unwrap());
-        out
+        f.finish().unwrap()
     };
     assert_eq!(
         run(Some(2)),
@@ -5709,43 +5165,6 @@ fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
 }
 
 #[test]
-fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
-    let computer = RollupComputer::with_defaults();
-    let make = |s: &str| LogLine::new(s.into(), s.into(), Vec::new(), seed_for_group(s));
-    let texts = [
-        "job 10:30:01 done",
-        "job 10:31:02 done",
-        "job 11:08:43 done",
-    ];
-    let mut full = PatternGroup::new(make(texts[0]), 0);
-    let mut retained = PatternGroup::new(make(texts[0]), 0);
-    full.add_line(make(texts[1]), 1);
-    retained.add_line(make(texts[1]), 1);
-    retained.retained = Some(computer.seed(&retained));
-    full.add_line(make(texts[2]), 2);
-    retained.rejoin(make(texts[2]), 2, &computer, 3);
-    assert_eq!(full.template, "job <VARIES> done");
-    assert_eq!(retained.template, full.template);
-    let state = retained.retained.take().unwrap();
-    assert!(state.slot_widened_after_counting);
-    let rollup = computer.finalize_retained(state, &retained.template, texts[0]);
-    // the two counted as `30:01` / `31:02` can no longer be told apart
-    // from what they were, so no count is claimed
-    assert!(rollup[VARIES].capped);
-    assert!(rollup[VARIES].samples.is_empty());
-
-    let mut into = RetainedState::default();
-    computer.merge_retained(
-        &mut into,
-        RetainedState {
-            slot_widened_after_counting: true,
-            ..RetainedState::default()
-        },
-    );
-    assert!(into.slot_widened_after_counting);
-}
-
-#[test]
 fn two_sentence_words_apart_is_another_event() {
     // oauth2-proxy redis: `Synchronization … succeeded` folded with
     // `Connection … lost.`; k8s events: SuccessfulCreate with
@@ -6099,109 +5518,6 @@ fn groups_converging_on_one_template_render_once() {
     assert_eq!(varies["distinct_count"], 8, "{varies}");
 }
 
-/// Same convergence, but the earlier group has been through eviction and
-/// carries an accumulator instead of its member list: the merge extends
-/// the accumulator rather than rescanning, and the count is still whole.
-#[test]
-fn a_retained_group_absorbs_a_converging_live_group() {
-    let mut f = make_folder_json();
-    let stem = "svc node ready check pass level info region east";
-    f.process_line(&format!("{stem} alpha state one")).unwrap();
-    f.process_line(&format!("{stem} gamma state one")).unwrap();
-    f.process_line(&format!("{stem} alpha state three"))
-        .unwrap();
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 1, "the first group must be retained");
-    f.process_line(&format!("{stem} beta state two")).unwrap();
-    f.process_line(&format!("{stem} delta state two")).unwrap();
-    f.process_line(&format!("{stem} beta state four")).unwrap();
-    let out = f.finish().unwrap();
-    assert_eq!(out.len(), 1, "{out:?}");
-    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
-    assert_eq!(record["count"], 6);
-    assert_eq!(record["variation"]["VARIES"]["distinct_count"], 8);
-}
-
-#[test]
-fn retained_merge_keeps_known_values_from_capped_sets() {
-    let computer = RollupComputer::new(3, 3);
-    for (old_capped, incoming_capped) in [(false, true), (true, false), (true, true)] {
-        let mut into = RetainedState::default();
-        let mut from = RetainedState::default();
-        into.per_type.insert(
-            "UUID",
-            TypeValues {
-                values: Accumulator::Values(["a".into()].into()),
-                capped: old_capped,
-            },
-        );
-        into.per_type.insert(
-            "NUMBER",
-            TypeValues {
-                values: Accumulator::Hashes([1].into()),
-                capped: old_capped,
-            },
-        );
-        from.per_type.insert(
-            "UUID",
-            TypeValues {
-                values: Accumulator::Values(["b".into(), "c".into()].into()),
-                capped: incoming_capped,
-            },
-        );
-        from.per_type.insert(
-            "NUMBER",
-            TypeValues {
-                values: Accumulator::Hashes([2, 3].into()),
-                capped: incoming_capped,
-            },
-        );
-        computer.merge_retained(&mut into, from);
-        for TypeValues { values, capped } in into.per_type.values() {
-            assert_eq!(
-                values.len(),
-                3,
-                "retain known values even when the union is incomplete"
-            );
-            assert!(*capped);
-        }
-    }
-}
-
-#[test]
-fn retained_merge_caps_new_values_but_not_duplicates_at_capacity() {
-    let computer = RollupComputer::new(3, 3);
-    let state = |values: &[&str]| {
-        let mut state = RetainedState::default();
-        state.per_type.insert(
-            "UUID",
-            TypeValues {
-                values: Accumulator::Values(values.iter().map(ToString::to_string).collect()),
-                capped: false,
-            },
-        );
-        state
-    };
-    let mut into = state(&["a", "b", "c"]);
-    computer.merge_retained(&mut into, state(&["a", "b", "c"]));
-    assert!(
-        !into.per_type["UUID"].capped,
-        "no new distinct value was dropped"
-    );
-    let mut into = state(&["z"]);
-    computer.merge_retained(&mut into, state(&["c", "b", "a"]));
-    let TypeValues {
-        values: Accumulator::Values(known),
-        capped,
-    } = &into.per_type["UUID"]
-    else {
-        panic!("value set")
-    };
-    assert!(*capped);
-    assert_eq!(*known, ["a".into(), "b".into(), "z".into()].into());
-}
-
 #[test]
 fn prose_requests_keep_methods_routes_and_full_url_facts() {
     let mut f = make_folder();
@@ -6318,54 +5634,7 @@ fn a_merged_group_shows_the_later_last_line() {
     );
 }
 
-// ---- e8v: survivors in absorb / merge_retained / merge_converged ----
-
-/// Two retained groups that converge: their accumulators merge, and a
-/// varying value both carried is counted once with the summed count
-/// (kills the `+=` and cap mutants in `merge_retained`).
-#[test]
-fn two_retained_groups_merge_their_varies_counts() {
-    let mut f = make_folder_json();
-    let stem = "svc node ready check pass level info region east";
-    for tail in ["alpha state one", "gamma state one", "alpha state three"] {
-        f.process_line(&format!("{stem} {tail}")).unwrap();
-    }
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    for tail in ["beta state two", "delta state two", "beta state four"] {
-        f.process_line(&format!("{stem} {tail}")).unwrap();
-    }
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 2, "both groups must be retained");
-    let out = f.finish().unwrap();
-    assert_eq!(out.len(), 1, "{out:?}");
-    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
-    assert_eq!(record["count"], 6);
-    let varies = &record["variation"]["VARIES"];
-    assert_eq!(varies["distinct_count"], 8, "{varies}");
-    // `alpha` and `beta` each appear twice across the two groups' slots;
-    // the merged counts must say so.
-    let samples: Vec<&str> = varies["samples"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_str().unwrap())
-        .collect();
-    let counts: Vec<u64> = varies["sample_counts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_u64().unwrap())
-        .collect();
-    for word in ["alpha", "beta", "one", "two"] {
-        let i = samples
-            .iter()
-            .position(|s| *s == word)
-            .unwrap_or_else(|| panic!("{word}: {varies}"));
-        assert_eq!(counts[i], 2, "{word}: {varies}");
-    }
-}
+// ---- e8v: survivors in absorb / merge_converged ----
 
 /// Three groups converging on one template merge into one, not two
 /// (kills the early-return mutant in `merge_converged`).
@@ -6393,36 +5662,9 @@ fn three_converging_groups_merge_into_one() {
     assert_eq!(record["count"], 9);
 }
 
-/// Two retained groups merging in founding order: the later group's last
-/// line is the merged group's last line, and first and last show once
-/// each (kills the `lines.len()` and `count` guard mutants on the
-/// retained path of `absorb`).
-#[test]
-fn two_retained_groups_keep_the_later_last_line() {
-    let mut f = make_folder_json();
-    let stem = "svc node ready check pass level info region east";
-    for tail in ["alpha state one", "gamma state one", "alpha state three"] {
-        f.process_line(&format!("{stem} {tail}")).unwrap();
-    }
-    for tail in ["beta state two", "delta state two", "beta state four"] {
-        f.process_line(&format!("{stem} {tail}")).unwrap();
-    }
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 2, "both groups must be retained");
-    let out = f.finish().unwrap();
-    assert_eq!(out.len(), 1, "{out:?}");
-    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
-    assert_eq!(record["first"]["line_no"], 1);
-    assert_eq!(record["last"]["line_no"], 6);
-    assert_eq!(record["last"]["line"], format!("{stem} beta state four"));
-    assert_eq!(record["count"], 6);
-}
-
 /// When two converging groups come from different sources with the same
 /// line number, founding position is the deterministic tie-breaker. The
-/// later group's last member must remain the retained group's last member.
+/// later group's last member must remain the merged group's last member.
 #[test]
 fn absorb_uses_position_to_break_equal_source_line_numbers() {
     let make = |text: &str, source: u32, position: usize| {
@@ -6437,7 +5679,7 @@ fn absorb_uses_position_to_break_equal_source_line_numbers() {
     first.template = "svc <VARIES>".into();
     let mut second = second;
     second.template = first.template.clone();
-    first.absorb(second, &RollupComputer::with_defaults(), 3);
+    first.absorb(second);
     assert_eq!(first.last().normalized, "svc beta");
 }
 
@@ -6695,7 +5937,7 @@ fn an_unsampled_variation_entry_keeps_the_sampled_count_zero() {
 }
 
 // ---- e8v folder remainder, Claude's half: word alignment, affixes, units,
-// ---- plain-word diffs, compact marker, retained accumulators, sources ----
+// ---- plain-word diffs, compact marker, sources ----
 // Every assertion names the survivors it is meant to kill; all of them are
 // hypotheses until the mutants are re-run. Where a function is shown to be
 // unreachable in a branch, the note says so instead of asserting.
@@ -6969,82 +6211,6 @@ fn the_compact_marker_ellipsis_means_more_values_than_shown() {
     assert!(!render_compact_marker(10, &all, None, None, 3).contains('…'));
 }
 
-/// retain_realign_form 1965, accumulate_new_varies 2005/2006,
-/// merge_retained 2093/2094/2151/2152: counts add, caps hold, flags or.
-#[test]
-fn retained_accumulators_add_counts_and_honour_the_cap() {
-    let rc = RollupComputer::new(3, 1);
-    let mut state = RetainedState::default();
-    rc.retain_realign_form(&mut state, "form", 1);
-    rc.retain_realign_form(&mut state, "form", 1);
-    assert_eq!(state.realign["form"], 2);
-    rc.retain_realign_form(&mut state, "other", 1);
-    assert!(state.realign_capped);
-    assert_eq!(state.realign.len(), 1);
-
-    let mut state = RetainedState {
-        positional_members: 3,
-        ..RetainedState::default()
-    };
-    // a slot opened before one already counted is counted ahead of it, in
-    // template order
-    slot_mut(&mut state.varies, 0).add("x", 3, 1);
-    let template = "a old <VARIES>";
-    rc.accumulate_new_varies(
-        template,
-        &unit_spans(template),
-        &[Edit::Vary { at: 2, len: 3 }],
-        &mut state,
-    );
-    assert_eq!(state.varies.len(), 2, "{:?}", state.varies);
-    assert_eq!(state.varies[0].counts["old"], 3);
-    assert_eq!(state.varies[1].counts["x"], 3);
-    // a slot opened after it goes after it
-    let template = "a <VARIES> <VARIES> b";
-    rc.accumulate_new_varies(
-        template,
-        &unit_spans(template),
-        &[Edit::Vary { at: 20, len: 1 }],
-        &mut state,
-    );
-    assert_eq!(state.varies.len(), 3, "{:?}", state.varies);
-    assert_eq!(state.varies[2].counts["b"], 3);
-    // past the cap the lower-ranked value is held: `old` ranks below `new`,
-    // and `w` below `v` (`VariesCounts::rank`)
-    let mut slot = VariesCounts::default();
-    slot.add("old", 5, 1);
-    slot.add("new", 3, 1);
-    assert!(slot.capped, "{slot:?}");
-    assert_eq!(slot.counts.len(), 1);
-    assert_eq!(slot.counts["old"], 5);
-
-    let mut into = RetainedState {
-        positional_members: 2,
-        ..RetainedState::default()
-    };
-    slot_mut(&mut into.varies, 0)
-        .counts
-        .insert("w".to_string(), 2);
-    let mut from = RetainedState {
-        positional_members: 3,
-        realign_capped: true,
-        ..RetainedState::default()
-    };
-    slot_mut(&mut from.varies, 0)
-        .counts
-        .insert("w".to_string(), 3);
-    slot_mut(&mut from.varies, 0)
-        .counts
-        .insert("v".to_string(), 1);
-    rc.merge_retained(&mut into, from);
-    assert_eq!(into.positional_members, 5);
-    assert!(into.realign_capped);
-    assert_eq!(into.varies.len(), 1);
-    assert_eq!(into.varies[0].counts["w"], 5);
-    assert!(into.varies[0].capped);
-    assert_eq!(into.varies[0].counts.len(), 1);
-}
-
 /// source_name 2358: a registered source answers by name, stdin has none.
 #[test]
 fn a_registered_source_has_its_name_and_stdin_has_none() {
@@ -7282,9 +6448,9 @@ fn unit_boundaries_hold_for_glued_stale_and_doubled_quotes() {
     assert!(doubled.contains(&"/x"), "{doubled:?}");
 }
 
-// The earlier founder can retain the latest member after convergence.
+// The earlier founder keeps the latest member after convergence.
 #[test]
-fn an_earlier_retained_founder_keeps_its_later_last_member() {
+fn an_earlier_founder_keeps_its_later_last_member() {
     let mut f = make_folder_json();
     let stem = "svc node ready check pass level info region east";
     for tail in [
@@ -7297,10 +6463,7 @@ fn an_earlier_retained_founder_keeps_its_later_last_member() {
     ] {
         f.process_line(&format!("{stem} {tail}")).unwrap();
     }
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 2);
+    assert_eq!(f.buffer.len(), 2, "two founders two words apart");
     let out = f.finish().unwrap();
     assert_eq!(out.len(), 1, "{out:?}");
     let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
@@ -7462,56 +6625,6 @@ fn input_degraded_codes_name_exactly_what_the_ingest_proved() {
     );
 }
 
-/// retain_evicted_group 2763: a retained group with more than one member
-/// keeps its last raw line, and the record shows it.
-#[test]
-fn a_retained_group_still_shows_its_last_line() {
-    let mut f = make_folder_json();
-    let stem = "svc node ready check pass level info region east";
-    f.process_line(&format!("{stem} alpha state one")).unwrap();
-    f.process_line(&format!("{stem} gamma state one")).unwrap();
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 1, "the group must be retained");
-    let out = f.finish().unwrap();
-    assert_eq!(out.len(), 1, "{out:?}");
-    let record: serde_json::Value = serde_json::from_str(&out[0]).unwrap();
-    assert_eq!(record["count"], 2);
-    assert_eq!(record["first"]["line"], format!("{stem} alpha state one"));
-    assert_eq!(record["last"]["line"], format!("{stem} gamma state one"));
-}
-
-#[test]
-fn retention_declines_and_counts_new_groups_once_the_cap_is_full() {
-    let mut f = make_folder_json();
-    for i in 0..RETAINED_TEMPLATE_CAP + 2 {
-        let mut line = make_line(&format!("event {i}"), vec![]);
-        line.hash = i as u64;
-        let group = PatternGroup::new(line, i + 1);
-        let result = f.retain_evicted_group(group);
-        if i < RETAINED_TEMPLATE_CAP {
-            assert!(matches!(result, Retention::Kept));
-        } else {
-            let Retention::Declined(group) = result else {
-                panic!("a new group must be declined at the retention cap");
-            };
-            assert_eq!(group.first().hash, i as u64);
-            assert_eq!(f.json_retention_cap_hits, i + 1 - RETAINED_TEMPLATE_CAP);
-        }
-    }
-    assert_eq!(f.retained.len(), RETAINED_TEMPLATE_CAP);
-    assert_eq!(f.json_retention_cap_hits, 2);
-    f.process_line("totally alien geometry").unwrap();
-    f.position_counter += 1_000;
-    let out = f
-        .flush_oldest_safe_group()
-        .unwrap()
-        .expect("a full retention table streams evictions");
-    assert!(!out.is_empty());
-    assert_eq!(f.stats.output_lines, out.lines().count());
-    assert_eq!(f.json_groups_emitted, 1);
-}
-
 #[test]
 fn fit_budget_equal_to_group_count_keeps_every_entry() {
     let mut f = make_folder_json();
@@ -7561,38 +6674,6 @@ fn converging_groups_from_one_batch_end_on_the_true_last_member() {
 }
 
 #[test]
-fn a_retained_match_precedes_a_live_group_at_the_same_position() {
-    let mut f = make_folder();
-    let stem = "svc node ready check pass level info region east";
-    f.position_counter = 1;
-    let a = f
-        .normalizer
-        .normalize_line(format!("{stem} alpha one"))
-        .unwrap();
-    let key = a.hash;
-    f.cluster_line_at(a, None);
-    let b = f
-        .normalizer
-        .normalize_line(format!("{stem} beta two"))
-        .unwrap();
-    f.cluster_line_at(b, None);
-    assert_eq!(f.buffer.len(), 2);
-    f.position_counter = 200;
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 1);
-    assert!(f.retained.contains_key(&key));
-    assert_eq!(f.buffer.len(), 1);
-    assert_eq!(f.buffer[0].position, f.retained[&key].position);
-    let line = f
-        .normalizer
-        .normalize_line(format!("{stem} alpha two"))
-        .unwrap();
-    f.cluster_line_at(line, None);
-    assert_eq!(f.retained[&key].count(), 2);
-    assert_eq!(f.buffer[0].count(), 1);
-}
-
-#[test]
 fn a_literal_marker_singleton_is_not_duplicated_when_another_source_converges() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
@@ -7602,18 +6683,12 @@ fn a_literal_marker_singleton_is_not_duplicated_when_another_source_converges() 
     let stem = "svc node ready check pass level info region east";
     let literal = format!("{stem} <VARIES> state <VARIES>");
     f.process_line_at(&literal, Some(SourceId(1)), 5).unwrap();
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 1);
     f.process_line_at(&format!("{stem} alpha state one"), Some(SourceId(2)), 1)
         .unwrap();
     f.process_line_at(&format!("{stem} gamma state one"), Some(SourceId(2)), 2)
         .unwrap();
     f.process_line_at(&format!("{stem} alpha state three"), Some(SourceId(2)), 3)
         .unwrap();
-    assert_eq!(f.retained.values().next().unwrap().count(), 1);
-    assert_eq!(f.buffer.len(), 1);
-    assert_eq!(f.buffer[0].count(), 3);
     let out = f.finish().unwrap();
     assert_eq!(
         out.iter()
@@ -8105,48 +7180,26 @@ fn plain_line(s: &str) -> LogLine {
 }
 
 #[test]
-fn a_rejoined_group_below_min_collapse_keeps_every_member() {
-    let rc = RollupComputer::with_defaults();
+fn a_group_holds_every_member_below_and_past_min_collapse() {
     let text = "cache warm pass done";
     let mut group = PatternGroup::new(plain_line(text), 0);
-    group.add_line(plain_line(text), 1);
-    group.add_line(plain_line(text), 2);
-    group.retained = Some(rc.seed(&group));
-    group.rejoin(plain_line(text), 3, &rc, 5);
-    assert_eq!(group.count, 4);
-    assert_eq!(group.lines.len(), 4);
-    // at min_collapse it is cut to the first and the last
-    group.rejoin(plain_line(text), 4, &rc, 5);
-    assert_eq!(group.count, 5);
-    assert_eq!(group.lines.len(), 2);
-}
-
-#[test]
-fn absorbing_into_a_retained_group_at_min_collapse_keeps_its_accumulator() {
-    let rc = RollupComputer::with_defaults();
-    let text = "cache warm pass done";
-    let mut group = PatternGroup::new(plain_line(text), 0);
-    group.add_line(plain_line(text), 1);
-    group.retained = Some(rc.seed(&group));
-    let other = PatternGroup::new_at(plain_line(text), 1, LineLocation::new(SourceId::STDIN, 5));
-    group.absorb(other, &rc, 3);
-    assert_eq!(group.count, 3);
-    assert!(group.retained.is_some());
-    assert_eq!(group.lines.len(), 2);
+    for line_no in 1..6 {
+        group.add_line(plain_line(text), line_no);
+        assert_eq!(group.lines.len(), group.count);
+    }
+    assert_eq!(group.count, 6);
 }
 
 #[test]
 fn absorbing_two_full_groups_past_min_collapse_keeps_every_member() {
-    let rc = RollupComputer::with_defaults();
     let text = "cache warm pass done";
     let mut group = PatternGroup::new(plain_line(text), 0);
     group.add_line(plain_line(text), 1);
     let mut other =
         PatternGroup::new_at(plain_line(text), 1, LineLocation::new(SourceId::STDIN, 5));
     other.add_line(plain_line(text), 6);
-    group.absorb(other, &rc, 3);
+    group.absorb(other);
     assert_eq!(group.count, 4);
-    assert!(group.retained.is_none());
     assert_eq!(group.lines.len(), 4);
 }
 
@@ -8170,15 +7223,6 @@ fn a_line_with_more_units_than_the_template_never_joins_through_slots() {
         &unit_spans("a b c"),
         0
     ));
-}
-
-#[test]
-fn a_retained_group_at_min_collapse_keeps_only_its_first_and_last_line() {
-    let mut f = make_folder_json();
-    let group = make_group("svc ready", vec![vec![], vec![], vec![]]);
-    let key = group.first().hash;
-    assert!(matches!(f.retain_evicted_group(group), Retention::Kept));
-    assert_eq!(f.retained[&key].lines.len(), 2);
 }
 
 #[test]
@@ -8491,62 +7535,7 @@ fn a_slot_goes_between_the_separators_the_template_shares_with_the_member() {
 }
 
 #[test]
-fn an_opened_slot_counts_the_members_already_held_as_absent() {
-    let rc = RollupComputer::with_defaults();
-    let template = "a k=<VARIES> b";
-    let units = unit_spans(template);
-    let held = || {
-        let mut state = RetainedState {
-            positional_members: 3,
-            ..RetainedState::default()
-        };
-        slot_mut(&mut state.varies, 0).add("x", 3, ROLLUP_DISTINCT_CAP);
-        state
-    };
-    let open = |at: usize| Edit::Open {
-        at,
-        unit_with_separator: " <VARIES>".into(),
-    };
-    // right after the slot `k=<VARIES>`, which ends at 12: the second slot
-    let mut state = held();
-    rc.accumulate_new_varies(template, &units, &[open(12)], &mut state);
-    assert_eq!(state.varies.len(), 2);
-    assert_eq!(state.varies[0].counts, HashMap::from([("x".into(), 3)]));
-    assert_eq!(state.varies[1].counts, HashMap::from([(ABSENT.into(), 3)]));
-    assert!(!state.slot_widened_after_counting);
-    // right after `a`: the first
-    let mut state = held();
-    rc.accumulate_new_varies(template, &units, &[open(1)], &mut state);
-    assert_eq!(state.varies[0].counts, HashMap::from([(ABSENT.into(), 3)]));
-    assert_eq!(state.varies[1].counts, HashMap::from([("x".into(), 3)]));
-    // a slot that has counted nothing yet still takes its place
-    let mut state = RetainedState {
-        positional_members: 2,
-        ..RetainedState::default()
-    };
-    rc.accumulate_new_varies(template, &units, &[open(14)], &mut state);
-    assert_eq!(state.varies.len(), 2);
-    assert_eq!(state.varies[1].counts, HashMap::from([(ABSENT.into(), 2)]));
-}
-
-#[test]
-fn a_slot_made_before_any_member_was_held_counts_no_value() {
-    // no member is held positionally: nothing to count, not a value at 0
-    let rc = RollupComputer::with_defaults();
-    let template = "a b";
-    let mut state = RetainedState::default();
-    rc.accumulate_new_varies(
-        template,
-        &unit_spans(template),
-        &[Edit::Vary { at: 2, len: 1 }],
-        &mut state,
-    );
-    assert_eq!(state.varies.len(), 1);
-    assert!(state.varies[0].counts.is_empty());
-}
-
-#[test]
-fn a_retained_group_counts_an_opened_slot_as_a_full_scan_does() {
+fn a_full_scan_counts_an_opened_slot_as_absent_for_the_members_without_it() {
     for texts in [
         [
             "worker alpha ready on n1",
@@ -8563,29 +7552,14 @@ fn a_retained_group_counts_an_opened_slot_as_a_full_scan_does() {
     ] {
         let computer = RollupComputer::with_defaults();
         let mut full = PatternGroup::new(plain_line(texts[0]), 0);
-        let mut retained = PatternGroup::new(plain_line(texts[0]), 0);
-        full.add_line(plain_line(texts[1]), 1);
-        retained.add_line(plain_line(texts[1]), 1);
-        retained.retained = Some(computer.seed(&retained));
-        for (i, text) in texts.iter().enumerate().skip(2) {
+        for (i, text) in texts.iter().enumerate().skip(1) {
             full.add_line(plain_line(text), i);
-            retained.rejoin(plain_line(text), i, &computer, 3);
         }
         assert_eq!(full.template, "worker alpha ready <VARIES> on <VARIES>");
-        assert_eq!(retained.template, full.template);
-        let expected = computer.compute(&full);
+        let rollup = computer.compute(&full);
         assert_eq!(
-            expected[VARIES].slots.as_ref().unwrap()[0].samples,
-            vec![ABSENT, "now"]
-        );
-        let actual = computer.finalize_retained(
-            retained.retained.take().unwrap(),
-            &retained.template,
-            &retained.first().normalized,
-        );
-        assert_eq!(
-            serde_json::to_value(actual).unwrap(),
-            serde_json::to_value(expected).unwrap(),
+            rollup[VARIES].slots.as_ref().unwrap()[0].samples,
+            vec![ABSENT, "now"],
             "{texts:?}"
         );
     }
@@ -8608,21 +7582,6 @@ fn a_line_whose_extra_word_cannot_open_a_slot_founds_its_own_group() {
     assert_eq!(f.buffer.len(), 2);
     assert_eq!(f.buffer[0].count(), 2);
     assert_eq!(f.buffer[0].template(), f.buffer[0].first().normalized);
-}
-
-#[test]
-fn a_line_whose_extra_word_cannot_open_a_slot_does_not_rejoin_a_retained_group() {
-    let mut f = make_folder();
-    for l in &GLUED[..2] {
-        f.process_line(l).unwrap();
-    }
-    f.position_counter += 1_000;
-    f.flush_oldest_safe_group().unwrap();
-    assert_eq!(f.retained.len(), 1, "the first group must be retained");
-    f.process_line(GLUED[2]).unwrap();
-    assert_eq!(f.buffer.len(), 1, "the line founds a live group");
-    let retained = f.retained.values().next().unwrap();
-    assert_eq!(retained.count(), 2);
 }
 
 #[test]

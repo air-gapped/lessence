@@ -1,21 +1,14 @@
 //! Streaming-only throughput benchmark — the subtraction-method `T_stream`.
 //!
 //! Identical to `folder_e2e` except `min_collapse = usize::MAX`, so
-//! `should_collapse()` always returns false and `format_group()` is never
-//! invoked from inside `flush_oldest_safe_group()` during the streaming
-//! loop. The final `finish()` still flushes everything at the end, but
-//! that terminal flush amortises to near-zero on per-byte throughput
+//! `should_collapse()` always returns false and no group computes a rollup.
+//! The final `finish()` still formats everything at the end, but without
+//! rollups that terminal pass amortises to near-zero on per-byte throughput
 //! compared to per-line streaming cost.
 //!
 //! Why this matters: `T_e2e − T_stream` gives a direct measurement of
 //! flush-time cost per byte without needing to expose `PatternGroup` or
 //! `format_group()` publicly.
-//!
-//! The 1000-group `should_flush_buffer()` threshold at `src/folder/mod.rs`
-//! is the risk: if buffer growth trips it inside the streaming loop,
-//! `format_group()` runs anyway and `T_stream` is contaminated. Tier 1 +
-//! Tier 2 inputs must stay under that threshold; Phase 1.6 verifies this
-//! empirically.
 //!
 //! Run with:
 //!   cargo bench --bench folder_streaming_only -- --save-baseline main-pre-feature
@@ -26,8 +19,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 /// Same 6-file Tier 1 corpus as `folder_e2e`, sliced to the same line
-/// budget. Journalctl is excluded because its pattern density trips the
-/// `should_flush_buffer()` cap and would contaminate the measurement.
+/// budget.
 const TIER1_CORPUS: &[(&str, &str)] = &[
     ("examples/distilled/kubelet.log", "kubelet"),
     (
@@ -84,9 +76,7 @@ fn run_streaming_only(content: &str) -> Vec<String> {
     let mut folder = PatternFolder::new(streaming_only_config());
     let mut outputs = Vec::new();
     for line in content.lines() {
-        if let Ok(Some(output)) = folder.process_line(line) {
-            outputs.push(output);
-        }
+        let _ = folder.process_line(line);
     }
     // finish() is still called so that terminal state drops deterministically,
     // but the timed region's per-byte cost should be dominated by the

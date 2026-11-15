@@ -109,13 +109,13 @@ Corollary worth internalising: if a defect is recorded into the goldens by a
 re-bless, every later gate run agrees with the defect. That is how a 606-group
 explosion in `k8s_traefik` passed green for a day.
 
-**The golden is blind to the mode users get.** It is taken from
-`--explain --threads 1`, and `should_flush` returns false whenever `summary`,
-`top_n` or `explain` is set — so the golden has never exercised eviction. The
-default text output and `--format json` are the only modes that evict, and
-neither has golden coverage.
+**The golden was blind to the mode users get.** It is taken from
+`--explain --threads 1`, and until 2026-11-15 the single-threaded default text
+output and `--format json` evicted live groups past 1,000 while `--explain`
+did not — so the golden never exercised eviction. Eviction is now removed:
+every mode and every thread count holds every group to the end of the run.
 
-That is not a theoretical gap. `lessence-940` emitted a recurring event as
+That was not a theoretical gap. `lessence-940` emitted a recurring event as
 several records with its count split across them — 210 duplicated templates in
 2,214 on the distilled epyc journal — and the gate said `golden: 80 corpora, 0
 changed` both while the defect was live and after it was fixed. It could
@@ -128,18 +128,14 @@ corpus it runs both modes on both binaries and counts the inventory rows
 the same events with the same counts; where they do not, one of them is wrong.
 A corpus on which the baseline binary agrees exactly **must still agree
 exactly** and a new disagreement there is a FAIL: that is the shape of
-`lessence-940`, an eviction defect that reaches every corpus large enough to
-evict. A corpus that already disagrees on the baseline has its count printed
-for reading, not judged, because any normalization change moves it by a few
-rows either way. The history of that count is the history of the streaming
-path: the `lessence-682` merge took the epyc journal from 516 to 481, and
-`lessence-3ck` — indexed similarity matching against retained founders in
-their original order — took the three journal corpora (481, 142, 43) to zero,
-so today all 80 agree. Counts for newly varying slots are accumulated from
-prior literals; unequal-length member shapes are kept under the existing
-distinct cap and aligned against the final template. If that shape cap is
-exceeded, VARIES counts are explicitly unavailable rather than presented as
-exact; see `docs/format-json-schema.md`.
+`lessence-940`. A corpus that already disagrees on the baseline has its count
+printed for reading, not judged, because any normalization change moves it by
+a few rows either way. The history of that count is the history of the
+streaming path: the `lessence-682` merge took the epyc journal from 516 to
+481, and `lessence-3ck` — indexed similarity matching against retained
+founders in their original order — took the three journal corpora (481, 142,
+43) to zero. The retained-founder machinery was removed with eviction on
+2026-11-15.
 
 ## The corpora
 
@@ -285,8 +281,9 @@ Notes on that table:
 
 - The **unexplained** bucket is not anchor debt. Their sharing groups have
   identical anchor values on both sides: this is `lessence-940`, streaming
-  eviction re-forming a group under a key it already used, already measured and
-  awaiting an owner decision on the streaming tradeoff. `nearest.anchor_mismatch`
+  eviction re-forming a group under a key it already used. Eviction was
+  removed on 2026-11-15, so this class has no mechanism left; the table has
+  not been re-measured since. `nearest.anchor_mismatch`
   is therefore not a reliable per-pair signal — `nearest` may point at a third
   group entirely.
 - The **request-target residual** is not an unfixed erasure. The route *is*

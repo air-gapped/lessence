@@ -47,10 +47,10 @@ fn word(i: usize) -> String {
 }
 
 #[test]
-fn evicted_group_below_min_collapse_keeps_every_line() {
-    // Five identical lines, then enough distinct ones to evict their group
-    // from the 1,000-group live buffer. The group never reaches
-    // --min-collapse 10, so it renders line by line and none may be cut.
+fn a_group_below_min_collapse_keeps_every_line_past_a_thousand_others() {
+    // Five identical lines, then 1,200 distinct ones. The group never
+    // reaches --min-collapse 10, so it renders line by line and none may be
+    // cut, at any thread count.
     let mut input = String::new();
     for _ in 0..5 {
         input.push_str("heartbeat missed from upstream\n");

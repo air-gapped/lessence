@@ -108,7 +108,7 @@ Two record types, discriminated by the `type` field:
 | `time_range.first_seen` | string \| null | Raw string of the first `Token::Timestamp` in the group's first line, or null if no timestamp was detected. Not parsed. |
 | `time_range.last_seen` | string \| null | Same, for the group's last line. |
 | `time_range.bucket_seconds` | integer, optional | Width of a bucket in `time_range.buckets`: always the briefing's `histogram.bucket_seconds`. Present together with `buckets`. |
-| `time_range.buckets` | array of integers, optional | The group's timestamped members per bucket, on the briefing histogram's grid: same length, and `buckets[i]` covers the same seconds as `briefing.histogram.buckets[i]` (from `span.first`, lines outside the span clamped to the first or last bucket as there). Never exceeds the log-wide count in any bucket; sums to the members whose timestamp places on a clock. Absent when fewer than 3 members do, or when they all fall in one bucket. Absent too for a group emitted before the end of input (past the retention cap), whose grid was not yet known. |
+| `time_range.buckets` | array of integers, optional | The group's timestamped members per bucket, on the briefing histogram's grid: same length, and `buckets[i]` covers the same seconds as `briefing.histogram.buckets[i]` (from `span.first`, lines outside the span clamped to the first or last bucket as there). Never exceeds the log-wide count in any bucket; sums to the members whose timestamp places on a clock. Absent when fewer than 3 members do, or when they all fall in one bucket. |
 | `time_range.bunched` | object, optional | Present only when the group is bunched: at least 10 timestamped members over at least 4 buckets of its own span (first to last non-empty bucket), and the shortest run of consecutive buckets holding ≥ 90% of them covers at most a quarter of that span — in buckets, and in the seconds between the run's first and last member against the group's. Fields: `first_bucket`, `last_bucket` (inclusive indices into `buckets`), `members` (in the run), `pct` (`members` as a percentage of timestamped members, rounded down), `from`, `to` (the run's first and last member's time as the text clause writes them: `HH:MM` when the group stays on one date, else with the date, the year only when the stamps carry one; seconds when the two would otherwise read the same). The text marker and the overview print it as `98% in 16:55–16:58`. |
 | `variation` | object | Per-token-type rollup metadata. See below. |
 
@@ -131,7 +131,7 @@ Each value records both the bounded data and how to interpret its counts:
 | `distinct_count` | integer | Number of distinct values seen for this token type across the group's lines. When `capped: true`, this is a lower bound (`≥ ROLLUP_DISTINCT_CAP`). |
 | `distinct_count_kind` | `"exact"` \| `"lower_bound"` | Explicit interpretation of `distinct_count`. |
 | `samples` | array of strings | Up to `ROLLUP_K` sample values, sorted lexicographically (`VARIES`: by count, most frequent first, rarest last). Empty for count-only token types (TIMESTAMP, NUMBER, DURATION, SIZE, PORT, PID, ...) — those report distinct_count only. With `--sanitize-pii`, EMAIL samples collapse to `<EMAIL>`, email values embedded in other types' samples are masked as well, and credential-class values in samples are masked (`<SECRET>`/`<JWT>`/`<KEY>`). |
-| `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation. `distinct_count` is then a lower bound. This also covers retained unequal-length shapes; see below. `false` means `distinct_count` is exact. |
+| `capped` | boolean | `true` if the `ROLLUP_DISTINCT_CAP` was hit during accumulation. `distinct_count` is then a lower bound. `false` means `distinct_count` is exact. |
 | `sample_counts` | array of integers | `VARIES` only: how many of the group's lines carried each entry of `samples`, same order. Absent on every other type. |
 | `samples_complete` | boolean | Whether `samples` contains the complete distinct set. |
 | `omitted_sample_values` | count object | Distinct values not included in `samples`; lower-bound when capped. |
@@ -293,11 +293,9 @@ aggregates bounded samples and rollup caps; groups below `--min-collapse` have
 no computed rollup and therefore make the omitted-value count unknown.
 
 `groups.fragmented_by_retention_cap` is a bare integer, not a `{value, kind}`
-object: it is always exact. It counts groups that could not be kept mergeable
-across an eviction because the retained-template cap was already full, so they
-were emitted immediately instead of staying open for later lines. Each one is
-a possible under-fold (one event shown as several lines), never an over-fold.
-Any value above zero makes `groups.complete` false.
+object, and is always `0`: it counted groups emitted early when the
+single-threaded fold evicted live groups, and every group is now held to the
+end of the run. It stays in the record so the schema does not change.
 
 `--summary --format json` remains JSONL: it emits at most 30 ordinary group
 records followed by this summary record. Omit `--summary` when every group
@@ -379,14 +377,6 @@ lessence --format json prod.log \
 
 ## Known limitations
 
-- **Retained unequal-length shapes have a cap.** Similar lines rejoin a
-  retained group after eviction using the same founder matching rule as
-  live groups. Most value counts accumulate directly. Members whose word
-  count differs need alignment against the final template; up to 64
-  distinct normalized forms are kept with occurrence counts. Beyond that,
-  `VARIES` reports `capped: true`, a zero lower bound, and empty `samples`
-  and `sample_counts` (each of its `slots` likewise), because partial counts would be misleading. The
-  group's occurrence count and other token rollups remain available.
 - **`time_range` is not chronologically ordered.** It's based on
   first-line/last-line input positions, not parsed timestamp
   comparison. For most logs this matches chronology; for merged

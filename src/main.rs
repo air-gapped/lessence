@@ -245,7 +245,6 @@ fn main() -> Result<()> {
     let start_time = Instant::now();
 
     let use_json_output = config.output_format == "json";
-    let use_top_n = config.top_n.is_some();
 
     let (readers, failed_sources) = ingest::open_inputs(&cli.files);
     if readers.is_empty() {
@@ -371,13 +370,8 @@ fn main() -> Result<()> {
     // JSON path pays the source-registration cost.
     let mut current_source_id = None;
     // The last line the ingest actually proved, for the truthful `input:
-    // incomplete (aborted at line N)` state when the spool fails mid-run.
+    // incomplete (aborted at line N)` state when the ingest fails mid-run.
     let mut lines_proved = 0usize;
-    // A reader closing stdout mid-run stops the run at once, unless
-    // --fail-on-pattern still has unread lines to judge: its verdict is on
-    // the whole input, so reading goes on to EOF and folding stops.
-    let gate_pending = config.fail_pattern.is_some();
-    let mut stdout_closed = false;
     let ingest_result = ingestor.run(readers, |event| {
         match event {
             Event::BeginInput { source } => {
@@ -389,27 +383,10 @@ fn main() -> Result<()> {
             }
             Event::Line { text, line_number } => {
                 lines_proved = line_number;
-                if stdout_closed {
-                    return Ok(());
-                }
-                let output = if use_json_output {
-                    folder.process_line_at(text, current_source_id, line_number)?
+                if use_json_output {
+                    folder.process_line_at(text, current_source_id, line_number)?;
                 } else {
-                    folder.process_line(text)?
-                };
-
-                if let Some(output) = output {
-                    if use_top_n {
-                        // In top-N mode, discard incremental output — we'll use finish_top_n()
-                    } else if let Some(spool) = spool.as_mut() {
-                        spool.write_record(&output)?;
-                    } else if !output::write_unless_closed(&mut stdout, format_args!("{output}\n"))?
-                    {
-                        if !gate_pending {
-                            output::exit_on_closed_pipe();
-                        }
-                        stdout_closed = true;
-                    }
+                    folder.process_line(text)?;
                 }
             }
         }
@@ -418,9 +395,9 @@ fn main() -> Result<()> {
     let ingest_report = match ingest_result {
         Ok(report) => report,
         Err(e) => {
-            // Either a fatal read/UTF-8 error or a spool failure mid-run.
-            // Both abort ingestion before EOF, so the report can never be
-            // completed and the briefing must say the input is incomplete.
+            // A fatal read/UTF-8 error aborts ingestion before EOF, so the
+            // report can never be completed and the briefing must say the
+            // input is incomplete.
             if let Some(spool) = spool.as_mut() {
                 spool.discard();
                 eprintln!("lessence: report: not written ({e})");
@@ -438,9 +415,6 @@ fn main() -> Result<()> {
     let pattern_matched = ingest_report.fail_pattern_matched;
     if pattern_matched {
         output::record_failure();
-    }
-    if stdout_closed {
-        output::exit_on_closed_pipe();
     }
 
     // Handle top-N mode: sort all groups by frequency and emit top N

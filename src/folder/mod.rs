@@ -65,25 +65,8 @@ struct PatternGroup {
     nearest: Option<Nearest>,
     member_line_nos: Vec<usize>,
     count: usize,
-    retained: Option<RetainedState>,
     slot_units: Option<Vec<(usize, usize)>>,
     timeline: timeline::Timeline,
-}
-
-#[derive(Debug, Default)]
-struct RetainedState {
-    per_type: PerType,
-    varies: SlotCounts,
-    positional_members: usize,
-    realign: BTreeMap<String, usize>,
-    realign_capped: bool,
-    slot_widened_after_counting: bool,
-}
-
-impl RetainedState {
-    fn varies_counts_known(&self) -> bool {
-        !self.realign_capped && !self.slot_widened_after_counting
-    }
 }
 
 #[derive(Debug)]
@@ -218,7 +201,6 @@ impl PatternGroup {
             nearest: None,
             member_line_nos: Vec::new(),
             count: 1,
-            retained: None,
             slot_units: None,
             timeline: timeline::Timeline::default(),
         }
@@ -228,19 +210,6 @@ impl PatternGroup {
     fn add_line(&mut self, line: LogLine, line_no: usize) {
         let edits = self.edits_for(&line).unwrap_or_default();
         self.add_line_at(line, LineLocation::new(SourceId::STDIN, line_no), &edits);
-    }
-
-    #[cfg(test)]
-    fn rejoin(
-        &mut self,
-        line: LogLine,
-        line_no: usize,
-        rollup_computer: &RollupComputer,
-        min_collapse: usize,
-    ) {
-        let edits = self.edits_for(&line).unwrap_or_default();
-        let location = LineLocation::new(SourceId::STDIN, line_no);
-        self.retained_rejoin(line, location, &edits, rollup_computer, min_collapse);
     }
 
     fn edits_for(&self, line: &LogLine) -> Option<Vec<Edit>> {
@@ -260,73 +229,11 @@ impl PatternGroup {
         self.assert_members_held();
     }
 
-    fn retained_rejoin(
-        &mut self,
-        line: LogLine,
-        location: LineLocation,
-        edits: &[Edit],
-        rollup_computer: &RollupComputer,
-        min_collapse: usize,
-    ) {
-        let line_units = unit_spans(&line.normalized);
-        let mut template_units = unit_spans(&self.template);
-        if !edits.is_empty() {
-            if let Some(state) = &mut self.retained {
-                rollup_computer.accumulate_new_varies(
-                    &self.template,
-                    &template_units,
-                    edits,
-                    state,
-                );
-            }
-            self.apply_template_edits(edits);
-            template_units = self
-                .slot_units
-                .clone()
-                .expect("a template with edits applied has slot units");
-        }
-        self.assert_claim_holds(&line.normalized);
-        let held_every_member = self.holds_every_member();
-        self.count += 1;
-        self.last_line_no = location.line_no;
-        self.last_source_id = location.source_id;
-        if let Some(state) = &mut self.retained {
-            rollup_computer.accumulate_tokens(std::slice::from_ref(&line), &mut state.per_type);
-            let template = VariesSlots::new(&self.template, &template_units);
-            rollup_computer.accumulate_retained_varies(&line, &line_units, &template, state);
-        }
-        if held_every_member {
-            self.lines.push(line);
-            if self.count >= min_collapse && self.lines.len() > 2 {
-                let last = self.lines.pop().expect("pushed above");
-                self.lines.truncate(1);
-                self.lines.push(last);
-            }
-        } else {
-            self.lines[1] = line;
-        }
-        self.assert_members_held();
-    }
-
-    fn holds_every_member(&self) -> bool {
-        self.lines.len() == self.count
-    }
-
     fn assert_members_held(&self) {
-        debug_assert!(
-            self.holds_every_member() || (1..=2).contains(&self.lines.len()),
-            "a group holds every member or only its first and last: {} held of {}",
-            self.lines.len(),
-            self.count
-        );
+        debug_assert_eq!(self.lines.len(), self.count, "a group holds every member");
     }
 
-    fn absorb(
-        &mut self,
-        mut other: PatternGroup,
-        rollup_computer: &RollupComputer,
-        min_collapse: usize,
-    ) {
+    fn absorb(&mut self, mut other: PatternGroup) {
         debug_assert_eq!(self.template, other.template);
         self.count += other.count;
         self.timeline.absorb(std::mem::take(&mut other.timeline));
@@ -336,51 +243,15 @@ impl PatternGroup {
             self.last_line_no = other.last_line_no;
             self.last_source_id = other.last_source_id;
         }
-
-        let all_held = self.count < min_collapse;
-        if all_held || (self.retained.is_none() && other.retained.is_none()) {
-            if all_held {
-                self.retained = None;
-            }
-            let own_last = self.lines.pop().unwrap();
-            let mut other_lines = other.lines;
-            if other_is_later {
-                self.lines.push(own_last);
-                self.lines.append(&mut other_lines);
-            } else {
-                self.lines.append(&mut other_lines);
-                self.lines.push(own_last);
-            }
-            self.assert_members_held();
-            return;
-        }
-
-        if self.retained.is_none() {
-            self.retained = Some(rollup_computer.seed(self));
-        }
-        let state = self.retained.as_mut().expect("seeded above");
-        if let Some(from) = other.retained {
-            rollup_computer.merge_retained(state, from);
+        let own_last = self.lines.pop().unwrap();
+        let mut other_lines = other.lines;
+        if other_is_later {
+            self.lines.push(own_last);
+            self.lines.append(&mut other_lines);
         } else {
-            rollup_computer.accumulate_tokens(&other.lines, &mut state.per_type);
-            let template = VariesSlots::new(&self.template, &unit_spans(&self.template));
-            for line in &other.lines {
-                let line_units = unit_spans(&line.normalized);
-                rollup_computer.accumulate_retained_varies(line, &line_units, &template, state);
-            }
+            self.lines.append(&mut other_lines);
+            self.lines.push(own_last);
         }
-        let first = self.lines[0].clone();
-        let last = if other_is_later {
-            other.lines.last().cloned()
-        } else if self.lines.len() > 1 {
-            self.lines.last().cloned()
-        } else {
-            None
-        };
-        self.lines = match last {
-            Some(last) if self.count > 1 => vec![first, last],
-            _ => vec![first],
-        };
         self.assert_members_held();
     }
 
@@ -491,9 +362,6 @@ pub struct PatternFolder {
     json_omitted_values_lower_bound: usize,
     rollup_computer: RollupComputer,
     distill_groups: Vec<DistillGroup>,
-    retained: ahash::AHashMap<u64, PatternGroup>,
-    retained_index: retained_index::RetainedIndex,
-    json_retention_cap_hits: usize,
 }
 
 enum LineDetection {
@@ -502,18 +370,7 @@ enum LineDetection {
     SizedPool(rayon::ThreadPool),
 }
 
-enum Retention {
-    Kept,
-    Declined(Box<PatternGroup>),
-}
-
-pub const RETAINED_TEMPLATE_CAP: usize = 16_384;
-
 const BATCH_LINES: usize = 10_000;
-
-const LIVE_GROUP_LIMIT: usize = 1000;
-
-const EVICTION_DISTANCE: usize = 100;
 
 pub const TOP_SHOWS_EVERY_GROUP: usize = 0;
 
@@ -1688,31 +1545,6 @@ fn slot_opening(
     })
 }
 
-impl Edit {
-    fn span(&self) -> (usize, usize) {
-        match *self {
-            Edit::Vary { at, len } => (at, len),
-            Edit::Open { at, .. } => (at, 0),
-        }
-    }
-}
-
-fn edits_ascend_one_per_unit(units: &[(usize, usize)], edits: &[Edit]) -> bool {
-    let ascend = edits.windows(2).all(|w| w[0].span().0 <= w[1].span().0);
-    let varied_units: Vec<Option<usize>> = edits
-        .iter()
-        .filter_map(|edit| match *edit {
-            Edit::Vary { at, .. } => Some(
-                units
-                    .iter()
-                    .position(|&(start, width)| start <= at && at < start + width),
-            ),
-            Edit::Open { .. } => None,
-        })
-        .collect();
-    ascend && varied_units.windows(2).all(|w| w[0] < w[1])
-}
-
 fn apply_edits(template: &mut String, edits: &[Edit]) {
     for edit in edits.iter().rev() {
         match edit {
@@ -2199,26 +2031,6 @@ impl Accumulator {
             Self::Hashes(s) => s.len(),
         }
     }
-
-    fn empty_like(other: &Self) -> Self {
-        match other {
-            Self::Values(_) => Self::Values(HashSet::new()),
-            Self::Hashes(_) => Self::Hashes(HashSet::new()),
-        }
-    }
-
-    fn merge_sorted(&mut self, other: Self, cap: usize) -> bool {
-        debug_assert_eq!(
-            std::mem::discriminant(self),
-            std::mem::discriminant(&other),
-            "a token type keeps its values the same way in every group"
-        );
-        match (self, other) {
-            (Self::Values(into), Self::Values(from)) => merge_sorted_within_cap(into, from, cap),
-            (Self::Hashes(into), Self::Hashes(from)) => merge_sorted_within_cap(into, from, cap),
-            _ => false,
-        }
-    }
 }
 
 fn insert_within_cap<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, value: T, cap: usize) -> bool {
@@ -2227,25 +2039,6 @@ fn insert_within_cap<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, value: T, ca
     }
     set.insert(value);
     true
-}
-
-fn merge_sorted_within_cap<T: Ord + std::hash::Hash>(
-    into: &mut HashSet<T>,
-    from: HashSet<T>,
-    cap: usize,
-) -> bool {
-    let mut from: Vec<T> = from.into_iter().collect();
-    from.sort_unstable();
-    for value in from {
-        if into.contains(&value) {
-            continue;
-        }
-        if into.len() >= cap {
-            return true;
-        }
-        into.insert(value);
-    }
-    false
 }
 
 struct RollupComputer {
@@ -2382,94 +2175,6 @@ impl RollupComputer {
         }
     }
 
-    fn accumulate_retained_varies(
-        &self,
-        line: &LogLine,
-        line_units: &[(usize, usize)],
-        template: &VariesSlots<'_>,
-        state: &mut RetainedState,
-    ) {
-        if line_units.len() == template.words.len() {
-            state.positional_members += 1;
-            if !template.slots.is_empty() {
-                self.accumulate_member_varies(
-                    template,
-                    &line.normalized,
-                    line_units,
-                    1,
-                    &mut state.varies,
-                );
-            }
-        } else {
-            self.retain_realign_form(state, &line.normalized, 1);
-        }
-    }
-
-    fn retain_realign_form(&self, state: &mut RetainedState, form: &str, count: usize) {
-        if let Some(n) = state.realign.get_mut(form) {
-            *n += count;
-        } else if state.realign.len() < self.distinct_cap {
-            state.realign.insert(form.to_string(), count);
-        } else {
-            state.realign_capped = true;
-        }
-    }
-
-    fn accumulate_new_varies(
-        &self,
-        template: &str,
-        units: &[(usize, usize)],
-        edits: &[Edit],
-        state: &mut RetainedState,
-    ) {
-        debug_assert!(
-            edits_ascend_one_per_unit(units, edits),
-            "a slot's index counts the slots made before it, so edits must ascend, \
-             at most one inside each template unit: {edits:?}"
-        );
-        let mut made = 0;
-        for edit in edits {
-            let (at, len) = edit.span();
-            if template[at..at + len].contains(VARIES_MARK) {
-                state.slot_widened_after_counting = true;
-                continue;
-            }
-            let index = made
-                + units
-                    .iter()
-                    .take_while(|&&(s, w)| s + w <= at)
-                    .filter(|&&(s, w)| template[s..s + w].contains(VARIES_MARK))
-                    .count();
-            state
-                .varies
-                .resize_with(state.varies.len().max(index), VariesCounts::default);
-            state.varies.insert(index, VariesCounts::default());
-            made += 1;
-            if state.positional_members == 0 {
-                continue;
-            }
-            let value = if len == 0 {
-                ABSENT.to_string()
-            } else {
-                let &(start, width) = units
-                    .iter()
-                    .find(|&&(start, width)| start <= at && at + len <= start + width)
-                    .expect("a varying edit is inside one template unit");
-                let unit = &template[start..start + width];
-                let masked = match &self.sanitizer {
-                    Some(z) => z.mask_text(unit),
-                    None => unit.to_string(),
-                };
-                masked
-                    .strip_prefix(&template[start..at])
-                    .and_then(|v| v.strip_suffix(&template[at + len..start + width]))
-                    .unwrap_or(&masked)
-                    .to_string()
-            };
-            state.varies[index].add(&value, state.positional_members, self.distinct_cap);
-        }
-    }
-
     fn compute(&self, group: &PatternGroup) -> GroupRollup {
         let mut per_type = PerType::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
@@ -2481,69 +2186,6 @@ impl RollupComputer {
             group.template(),
             &group.first().normalized,
         )
-    }
-
-    fn seed(&self, group: &PatternGroup) -> RetainedState {
-        let mut state = RetainedState::default();
-        self.accumulate_tokens(&group.lines, &mut state.per_type);
-        let template = VariesSlots::new(group.template(), &unit_spans(group.template()));
-        for line in &group.lines {
-            let line_units = unit_spans(&line.normalized);
-            self.accumulate_retained_varies(line, &line_units, &template, &mut state);
-        }
-        state
-    }
-
-    fn finalize_retained(
-        &self,
-        mut state: RetainedState,
-        template: &str,
-        seed_key: &str,
-    ) -> GroupRollup {
-        if !state.varies_counts_known() {
-            state.varies = (0..slot_count(template))
-                .map(|_| VariesCounts {
-                    capped: true,
-                    ..VariesCounts::default()
-                })
-                .collect();
-        } else {
-            self.accumulate_varies_counted(
-                state.realign.iter().map(|(text, &n)| (text.as_str(), n)),
-                template,
-                &mut state.varies,
-            );
-        }
-        self.finalize(state.per_type, state.varies, template, seed_key)
-    }
-
-    fn merge_retained(&self, into: &mut RetainedState, from: RetainedState) {
-        into.positional_members += from.positional_members;
-        into.realign_capped |= from.realign_capped;
-        into.slot_widened_after_counting |= from.slot_widened_after_counting;
-        for (form, n) in from.realign {
-            self.retain_realign_form(into, &form, n);
-        }
-        for (name, from_type) in from.per_type {
-            let entry = into.per_type.entry(name).or_insert_with(|| TypeValues {
-                values: Accumulator::empty_like(&from_type.values),
-                capped: false,
-            });
-            entry.capped |= from_type.capped;
-            if entry
-                .values
-                .merge_sorted(from_type.values, self.distinct_cap)
-            {
-                entry.capped = true;
-            }
-        }
-        for (i, slot) in from.varies.into_iter().enumerate() {
-            let into = slot_mut(&mut into.varies, i);
-            for (value, n) in slot.counts {
-                into.add(&value, n, self.distinct_cap);
-            }
-            into.capped |= slot.capped;
-        }
     }
 
     fn finalize(
@@ -2778,9 +2420,6 @@ impl PatternFolder {
             rollup_computer: RollupComputer::with_defaults().sanitized(sanitizer.clone()),
             sanitizer,
             distill_groups: Vec::new(),
-            retained: ahash::AHashMap::new(),
-            retained_index: retained_index::RetainedIndex::default(),
-            json_retention_cap_hits: 0,
         }
     }
 
@@ -2821,7 +2460,7 @@ impl PatternFolder {
         self.config.output_format.as_str() == "markdown"
     }
 
-    pub fn process_line(&mut self, line: &str) -> Result<Option<String>> {
+    pub fn process_line(&mut self, line: &str) -> Result<()> {
         self.process_line_impl(line, None)
     }
 
@@ -2830,16 +2469,12 @@ impl PatternFolder {
         line: &str,
         source_id: Option<SourceId>,
         line_no: usize,
-    ) -> Result<Option<String>> {
+    ) -> Result<()> {
         let location = LineLocation::new(source_id.unwrap_or(SourceId::STDIN), line_no);
         self.process_line_impl(line, Some(location))
     }
 
-    fn process_line_impl(
-        &mut self,
-        line: &str,
-        location: Option<LineLocation>,
-    ) -> Result<Option<String>> {
+    fn process_line_impl(&mut self, line: &str, location: Option<LineLocation>) -> Result<()> {
         self.stats.total_lines += 1;
         if matches!(self.detection, LineDetection::Inline) {
             let normalized_line = self.normalizer.normalize_line(line.to_string())?;
@@ -2852,7 +2487,7 @@ impl PatternFolder {
         if self.batch_buffer.len() >= BATCH_LINES {
             self.process_batch()?;
         }
-        Ok(None)
+        Ok(())
     }
 
     fn nearest_group(&self, line: &LogLine) -> Option<Nearest> {
@@ -2871,103 +2506,30 @@ impl PatternFolder {
         })
     }
 
-    #[cfg(test)]
-    fn cluster_line_at(&mut self, normalized_line: LogLine, location: Option<LineLocation>) {
-        self.cluster_line_timed(normalized_line, location, None);
-    }
-
     fn cluster_line_timed(
         &mut self,
         normalized_line: LogLine,
         location: Option<LineLocation>,
         epoch: Option<i64>,
     ) {
-        if let Some(group) = self.retained.get_mut(&normalized_line.hash) {
-            let loc = location
-                .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
-            if let Some(epoch) = epoch {
-                group.timeline.record(epoch);
-            }
-            group.retained_rejoin(
-                normalized_line,
-                loc,
-                &[],
-                &self.rollup_computer,
-                self.config.min_collapse,
-            );
-            return;
-        }
         let mut edits = Vec::new();
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
-            let retained_match = if self.retained.is_empty() {
-                None
-            } else {
-                self.retained_index
-                    .candidates(&normalized_line, self.config.threshold)
-                    .into_iter()
-                    .filter_map(|key| {
-                        let group = self.retained.get(&key)?;
-                        if !(self.normalizer.are_similar(&normalized_line, group.first())
-                            && within_plain_word_allowance(
-                                &normalized_line.normalized,
-                                &group.first().normalized,
-                            ))
-                        {
-                            return None;
-                        }
-                        Some((group.position, key, group.edits_for(&normalized_line)?))
-                    })
-                    .min_by_key(|&(position, _, _)| position)
-            };
-            let before = retained_match
-                .as_ref()
-                .map_or(usize::MAX, |&(position, _, _)| position);
             let mut line_units: Option<Vec<(usize, usize)>> = None;
             let threshold = self.config.threshold;
-            let live_match = self
-                .buffer
-                .iter()
-                .take_while(|g| g.position < before)
-                .position(|group| {
-                    let first = group.first();
-                    let similar = self.normalizer.are_similar(&normalized_line, first)
-                        || (group.slot_units.is_some()
-                            && group.joins_through_slots(
-                                &normalized_line,
-                                &mut line_units,
-                                threshold,
-                            ));
-                    similar
-                        && within_plain_word_allowance(
-                            &normalized_line.normalized,
-                            &first.normalized,
-                        )
-                        && group
-                            .edits_for(&normalized_line)
-                            .map(|found| edits = found)
-                            .is_some()
-                });
-            if live_match.is_none()
-                && let Some((_, key, edits)) = retained_match
-            {
-                let loc = location
-                    .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
-                let group = self.retained.get_mut(&key).expect("indexed retained group");
-                if let Some(epoch) = epoch {
-                    group.timeline.record(epoch);
-                }
-                group.retained_rejoin(
-                    normalized_line,
-                    loc,
-                    &edits,
-                    &self.rollup_computer,
-                    self.config.min_collapse,
-                );
-                return;
-            }
-            live_match
+            self.buffer.iter().position(|group| {
+                let first = group.first();
+                let similar = self.normalizer.are_similar(&normalized_line, first)
+                    || (group.slot_units.is_some()
+                        && group.joins_through_slots(&normalized_line, &mut line_units, threshold));
+                similar
+                    && within_plain_word_allowance(&normalized_line.normalized, &first.normalized)
+                    && group
+                        .edits_for(&normalized_line)
+                        .map(|found| edits = found)
+                        .is_some()
+            })
         };
 
         let distill_line_no = self
@@ -3009,7 +2571,6 @@ impl PatternFolder {
             self.buffer.push(group);
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
-            self.assert_one_key_space(rep_hash);
         }
     }
 
@@ -3072,90 +2633,6 @@ impl PatternFolder {
         }
 
         self.distill_groups.push(record);
-    }
-
-    fn flush_oldest_safe_group(&mut self) -> Result<Option<String>> {
-        if self.buffer.is_empty() {
-            return Ok(None);
-        }
-
-        let current_position = self.position_counter;
-
-        let mut oldest_index = None;
-        let mut oldest_position = usize::MAX;
-
-        for (i, group) in self.buffer.iter().enumerate() {
-            let is_old_enough = current_position - group.position > EVICTION_DISTANCE;
-            let is_ready = group.should_collapse(self.config.min_collapse) || is_old_enough;
-
-            if is_ready && group.position < oldest_position {
-                oldest_position = group.position;
-                oldest_index = Some(i);
-            }
-        }
-
-        if let Some(index) = oldest_index {
-            let group = self.buffer.remove(index);
-            self.group_index.remove(&group.first().hash);
-            for v in self.group_index.values_mut() {
-                if *v > index {
-                    *v -= 1;
-                }
-            }
-            let mut group = match self.retain_evicted_group(group) {
-                Retention::Kept => return Ok(None),
-                Retention::Declined(group) => group,
-            };
-            let formatted = self.format_group_dispatch(&mut group)?;
-            self.stats.output_lines += formatted.lines().count();
-            if self.is_markdown_output() {
-                self.markdown_entries.push(formatted);
-                return Ok(None);
-            }
-            if self.is_json_output() {
-                self.json_groups_emitted += 1;
-            }
-            return Ok(Some(formatted));
-        }
-
-        Ok(None)
-    }
-
-    fn assert_one_key_space(&self, founding_hash: u64) {
-        debug_assert!(
-            !(self.group_index.contains_key(&founding_hash)
-                && self.retained.contains_key(&founding_hash)),
-            "a founding hash keys a live group or a retained one, never both"
-        );
-    }
-
-    fn retain_evicted_group(&mut self, mut group: PatternGroup) -> Retention {
-        if self.config.distill.is_some() {
-            return Retention::Declined(Box::new(group));
-        }
-        let key = group.first().hash;
-        let already_retained = self.retained.contains_key(&key);
-        if !already_retained && self.retained.len() >= RETAINED_TEMPLATE_CAP {
-            self.json_retention_cap_hits += 1;
-            return Retention::Declined(Box::new(group));
-        }
-        let state = self.rollup_computer.seed(&group);
-        let first = group.first().clone();
-        if group.count() >= self.config.min_collapse {
-            group.lines = if group.count() <= 1 {
-                vec![first]
-            } else {
-                vec![first, group.last().clone()]
-            };
-        }
-        group.retained = Some(state);
-        group.assert_members_held();
-        if !already_retained {
-            self.retained_index.insert(group.first());
-        }
-        self.retained.insert(key, group);
-        self.assert_one_key_space(key);
-        Retention::Kept
     }
 
     fn prepare_summary(
@@ -3225,13 +2702,11 @@ impl PatternFolder {
 
         self.group_index.clear();
         let mut groups: Vec<PatternGroup> = std::mem::take(&mut self.buffer);
-        groups.extend(std::mem::take(&mut self.retained).into_values());
-        self.retained_index = retained_index::RetainedIndex::default();
         groups.sort_by_key(|group| group.position);
         let groups = self.merge_converged(groups);
 
-        for mut group in groups {
-            let formatted = self.format_group_dispatch(&mut group)?;
+        for group in groups {
+            let formatted = self.format_group_dispatch(&group)?;
             self.stats.output_lines += formatted.lines().count();
             if self.is_markdown_output() {
                 self.markdown_entries.push(formatted);
@@ -3255,7 +2730,7 @@ impl PatternFolder {
         for group in groups {
             let key = (group.template().to_string(), group.first().anchor);
             if let Some(&at) = by_claim.get(&key) {
-                out[at].absorb(group, &self.rollup_computer, self.config.min_collapse);
+                out[at].absorb(group);
             } else {
                 by_claim.insert(key, out.len());
                 out.push(group);
@@ -3273,10 +2748,6 @@ impl PatternFolder {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
-        debug_assert!(
-            self.retained.is_empty(),
-            "a ranked run never evicts, so every group is still in the live buffer"
-        );
         let n = if n == TOP_SHOWS_EVERY_GROUP {
             usize::MAX
         } else {
@@ -3321,8 +2792,8 @@ impl PatternFolder {
         }
 
         let mut output = Vec::new();
-        for (count, mut group) in top_groups {
-            let formatted = self.format_group_dispatch(&mut group)?;
+        for (count, group) in top_groups {
+            let formatted = self.format_group_dispatch(&group)?;
             self.stats.output_lines += formatted.lines().count();
             output.push((count, formatted));
         }
@@ -3363,18 +2834,6 @@ impl PatternFolder {
         })
     }
 
-    fn should_flush_buffer(&self) -> bool {
-        self.evicts_to_bound_memory() && self.buffer.len() > LIVE_GROUP_LIMIT
-    }
-
-    fn evicts_to_bound_memory(&self) -> bool {
-        matches!(self.detection, LineDetection::Inline) && !self.reads_every_group_after_the_run()
-    }
-
-    fn reads_every_group_after_the_run(&self) -> bool {
-        self.config.summary || self.config.top_n.is_some() || self.config.explain
-    }
-
     fn count_pattern_types(&mut self, tokens: &[Token]) {
         for token in tokens {
             let bucket = token.facts().stats_bucket;
@@ -3393,8 +2852,7 @@ impl PatternFolder {
         debug_assert!(locations.is_empty() || locations.len() == batch.len());
         let processed_lines = self.parallel_pattern_detection(&batch)?;
         for (index, processed_line) in processed_lines.into_iter().enumerate() {
-            let evicted = self.place_line(processed_line, locations.get(index).copied())?;
-            debug_assert!(evicted.is_none(), "only the inline path evicts");
+            self.place_line(processed_line, locations.get(index).copied())?;
         }
         Ok(())
     }
@@ -3422,14 +2880,14 @@ impl PatternFolder {
 
     #[cfg(test)]
     fn sequential_clustering(&mut self, normalized_line: LogLine) -> Result<()> {
-        self.place_line(normalized_line, None).map(drop)
+        self.place_line(normalized_line, None)
     }
 
     fn place_line(
         &mut self,
         normalized_line: LogLine,
         location: Option<LineLocation>,
-    ) -> Result<Option<String>> {
+    ) -> Result<()> {
         self.position_counter += 1;
         if !normalized_line.tokens.is_empty() {
             self.stats.patterns_detected += 1;
@@ -3440,11 +2898,7 @@ impl PatternFolder {
         let epoch = self.stats.record_span(&normalized_line.tokens);
 
         self.cluster_line_timed(normalized_line, location, epoch);
-
-        if self.should_flush_buffer() {
-            return self.flush_oldest_safe_group();
-        }
-        Ok(None)
+        Ok(())
     }
 
     pub fn get_stats(&self) -> &FoldingStats {
@@ -3457,7 +2911,6 @@ impl PatternFolder {
 }
 
 mod render;
-mod retained_index;
 mod timeline;
 
 #[cfg(test)]

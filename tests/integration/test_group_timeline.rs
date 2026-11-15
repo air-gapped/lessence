@@ -251,8 +251,8 @@ fn group_buckets_sum_to_their_members_and_never_exceed_the_log() {
 
 #[test]
 fn the_timeline_is_the_same_at_every_thread_count_and_mode() {
-    // Enough lines to cross the 10,000-line parallel batch and the
-    // streaming path's eviction, so both orders of arrival are exercised.
+    // Enough lines to cross the 10,000-line parallel batch, so lines arrive
+    // both one at a time and in batches.
     let mut log = String::new();
     for i in 0..30_000u64 {
         let t = i;

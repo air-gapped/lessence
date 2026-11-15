@@ -275,12 +275,12 @@ for name in "${distilled_corpora[@]}"; do
     rm -f "$fresh"
 done
 
-# ── 5b. Modes: --explain never evicts, --format json does. The two must
-# report the same events with the same counts (lessence-xoq); where they do
-# not, one of them is wrong. A corpus on which the baseline agrees exactly
-# must still agree exactly; a corpus already carrying the eviction residual
-# (lessence-3ck) has its count printed for reading, not judged, since any
-# normalization change moves that residual by a few rows either way.
+# ── 5b. Modes: --explain and --format json must report the same events with
+# the same counts (lessence-xoq); where they do not, one of them is wrong. A
+# corpus on which the baseline agrees exactly must still agree exactly; a
+# corpus already carrying a residual on the baseline (lessence-3ck) has its
+# count printed for reading, not judged, since any normalization change moves
+# that residual by a few rows either way.
 
 modes_json_rows=()
 modes_table_rows=()

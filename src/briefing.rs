@@ -972,9 +972,10 @@ pub(crate) fn span_duration_seconds(first: &str, last: &str) -> Option<u64> {
 }
 
 // -------------------------------------------------------------------------
-// Template counts — accumulated across group flushes (lessence-940: a
-// template can flush more than once as its group fragments across
-// evictions, so this map accumulates rather than overwrites).
+// Template counts — accumulated across groups (a template can be recorded
+// more than once: two groups may share a template under different anchors,
+// or their masked templates may coincide), so this map accumulates rather
+// than overwrites.
 // -------------------------------------------------------------------------
 
 #[derive(Debug, Default)]
@@ -995,9 +996,8 @@ impl TemplateCounts {
     /// / latest parseable epoch among its members (`None` when none of the
     /// flushed members carried one). Once the map hits `TEMPLATE_CAP`
     /// distinct templates, an existing key keeps accumulating but a new one
-    /// is dropped and `truncated` is set. Repeated flushes of the same
-    /// template (lessence-940: a group can fragment across evictions)
-    /// widen the epoch range rather than overwrite it.
+    /// is dropped and `truncated` is set. Repeated records of the same
+    /// template widen the epoch range rather than overwrite it.
     pub fn record(
         &mut self,
         template: &str,
@@ -1884,10 +1884,10 @@ mod tests {
     // -- TemplateCounts ---------------------------------------------------
 
     #[test]
-    fn template_counts_accumulates_fragmented_flush() {
-        // lessence-940: the same template can flush twice as its group
-        // fragments across evictions. Recording it twice must sum, not
-        // overwrite or duplicate as two entries.
+    fn template_counts_sums_a_template_recorded_twice() {
+        // Two groups can share a template under different anchors.
+        // Recording it twice must sum, not overwrite or duplicate as two
+        // entries.
         let mut tc = TemplateCounts::default();
         tc.record("connection <VARIES>", 5, None, None);
         tc.record("connection <VARIES>", 7, None, None);
