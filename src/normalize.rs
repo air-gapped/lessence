@@ -16,64 +16,25 @@ use crate::patterns::{
     timestamp::UnifiedTimestampDetector, uuid::UuidDetector,
 };
 
-/// How much a detector's shape takes. An earlier entry consumes text first,
-/// so the table runs from the most specific shape to the catch-alls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Tier {
-    /// A format with its own syntax: a timestamp, a UUID, a path.
     Specific,
-    /// Decimals, sizes, percentages: matches inside most specific shapes.
     Broad,
-    /// What is left once every shape above has been read.
     Generic,
-    /// Quoted strings: would swallow anything a detector above tokenizes.
     Last,
 }
 
-/// One entry in the detector ordering table. The table is the single place
-/// that says which detectors run, in which order, under which gates —
-/// `normalize_line` just walks it.
 struct DetectorEntry {
-    /// What the entry is called in `after` lists and in a failed check.
     name: &'static str,
-    /// How broad the detector's shape is. Tiers never decrease down the
-    /// table, so a broad detector cannot be moved above a specific one.
     tier: Tier,
-    /// The entries this one must come after, each with a line that proves
-    /// it: normalized with this detector moved to just before that one, the
-    /// line comes out different. A rule with no such line is not a rule,
-    /// and `every_order_dependence_on_a_corpus_line_is_declared` finds the
-    /// ones the corpora show and nobody wrote down.
     after: &'static [(&'static str, &'static str)],
-    /// Config gate: is this detector enabled for the run?
     enabled: fn(&Config) -> bool,
-    /// A rule about where the detector may run, on `(config, original
-    /// line, partially-normalized line)`: on a line this turns away the
-    /// detector would change text it must leave alone. The original is
-    /// there for a rule about a field normalization has already erased.
     only_when: Option<fn(&Config, &str, &str) -> bool>,
-    /// A cheap byte-level test that only saves the detector's time: on a
-    /// line it turns away the detector finds nothing. Test builds run the
-    /// detector anyway and panic when it does, so a prefilter narrower than
-    /// its detector cannot pass the test suite. Something that must keep
-    /// the detector off a line it would change is `only_when`, not this.
-    /// A gate asks about the shape the
-    /// detector folds, never about a word elsewhere on the line: the
-    /// kubernetes deference that used to skip the bracket, log-module and
-    /// structured detectors on any line saying `pod/` or `etcd` is gone
-    /// (lessence-enl).
     prefilter: Option<fn(&Config, &str, &str) -> bool>,
-    /// The detection pass itself.
     run: fn(&Normalizer, &str) -> (String, Vec<Token>),
 }
 
-/// Detection order — earlier entries consume text first, so order encodes
-/// priority. Each entry's `tier` and `after` say what its place depends on.
-/// A reorder that breaks one fails when a normalizer is built in a test
-/// build, and every `after` rule is proven by its own line
-/// (`every_declared_order_rule_changes_its_line`).
 static DETECTOR_ORDER: &[DetectorEntry] = &[
-    // CPU quantities: a cpu field with a millicpu unit.
     DetectorEntry {
         name: "cpu-quantity",
         tier: Tier::Specific,
@@ -83,7 +44,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| s.contains('m') && (s.contains("cpu") || s.contains("CPU"))),
         run: |_, s| DurationDetector::cpu_quantities(s),
     },
-    // TIMESTAMPS.
     DetectorEntry {
         name: "timestamp",
         tier: Tier::Specific,
@@ -93,7 +53,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| UnifiedTimestampDetector::detect_and_replace(s),
     },
-    // EMAIL.
     DetectorEntry {
         name: "email",
         tier: Tier::Specific,
@@ -103,7 +62,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| s.contains('@')),
         run: |n, s| n.email_detector.detect_and_replace(s),
     },
-    // PATHS and URLs.
     DetectorEntry {
         name: "path",
         tier: Tier::Specific,
@@ -113,7 +71,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| PathDetector::detect_and_replace(s),
     },
-    // JSON: structured data, Event objects, K8s objects.
     DetectorEntry {
         name: "json",
         tier: Tier::Specific,
@@ -123,7 +80,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: Some(|_, _, s| s.contains('{')),
         run: |_, s| JsonDetector::detect_and_replace(s),
     },
-    // UUIDs.
     DetectorEntry {
         name: "uuid",
         tier: Tier::Specific,
@@ -142,7 +98,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| UuidDetector::detect_and_replace(s),
     },
-    // NETWORK: IPs, ports, FQDNs.
     DetectorEntry {
         name: "network",
         tier: Tier::Specific,
@@ -165,7 +120,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             )
         },
     },
-    // HASHES.
     DetectorEntry {
         name: "hash",
         tier: Tier::Specific,
@@ -182,7 +136,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| HashDetector::detect_and_replace(s),
     },
-    // PROCESS IDs: [pid=123], (12345).
     DetectorEntry {
         name: "process",
         tier: Tier::Specific,
@@ -201,8 +154,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| ProcessDetector::detect_and_replace(s),
     },
-    // SYSLOG HOST: the positional field between a normalized timestamp and
-    // a program tag.
     DetectorEntry {
         name: "syslog-host",
         tier: Tier::Specific,
@@ -217,15 +168,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             ),
         ],
         enabled: |c| c.normalize_fqdns,
-        // A kernel line under an uptime stamp has no host field: the word
-        // after the stamp is the subsystem.
         only_when: Some(|_, original, _| {
             !UnifiedTimestampDetector::opens_with_kernel_uptime(original)
         }),
         prefilter: Some(|_, _, s| s.starts_with("<TIMESTAMP> ")),
         run: |_, s| replace_syslog_host(s),
     },
-    // KUBERNETES.
     DetectorEntry {
         name: "kubernetes",
         tier: Tier::Specific,
@@ -245,7 +193,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| KubernetesDetector::detect_and_replace(s),
     },
-    // HTTP STATUS: groups status codes into classes (200-299 -> 2xx).
     DetectorEntry {
         name: "http-status",
         tier: Tier::Specific,
@@ -255,7 +202,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| HttpStatusDetector::detect_and_replace(s),
     },
-    // BRACKET CONTEXT: [error] [mod_jk] style tags.
     DetectorEntry {
         name: "bracket",
         tier: Tier::Specific,
@@ -267,7 +213,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         }),
         run: |_, s| BracketContextDetector::detect_and_replace(s),
     },
-    // KEY-VALUE: config=value pairs.
     DetectorEntry {
         name: "key-value",
         tier: Tier::Specific,
@@ -282,18 +227,10 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             ),
         ],
         enabled: |c| c.normalize_key_value,
-        // An `=` inside a quoted value is not a pair: gated on any `=`,
-        // whether a Tetragon JSON event folded depended on the base64
-        // padding of a field twenty kilobytes into the record.
-        // Without an `=` outside quotes the line has no key=value pair, and
-        // the detector would rewrite the values of a JSON record instead.
         only_when: Some(|_, _, s| has_unquoted_eq(s)),
         prefilter: None,
         run: |_, s| KeyValueDetector::detect_and_replace(s),
     },
-    // LOG MODULE: [level] module patterns (Apache/nginx). Gated by the
-    // same flag as BracketContext: --disable-patterns brackets must
-    // disable every bracket-shaped detector.
     DetectorEntry {
         name: "log-module",
         tier: Tier::Specific,
@@ -305,23 +242,17 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         }),
         run: |_, s| LogWithModuleDetector::detect_and_replace(s),
     },
-    // STRUCTURED MESSAGES: JSON/logfmt structured logging. The JSON half
-    // is gated by --disable-patterns json, the logfmt half by
-    // --disable-patterns key-value.
     DetectorEntry {
         name: "structured",
         tier: Tier::Specific,
         after: &[],
         enabled: |c| c.normalize_json || c.normalize_key_value,
-        // The detector cannot tell which half it is asked for: a half that
-        // is switched off must not run on its own shape.
         only_when: Some(|c, _, s| {
             (c.normalize_json && s.contains('{')) || (c.normalize_key_value && s.contains('='))
         }),
         prefilter: Some(|_, _, s| StructuredMessageDetector::has_structured_indicators(s)),
         run: |_, s| StructuredMessageDetector::detect_and_replace(s),
     },
-    // DURATIONS & MEASUREMENTS: decimals, sizes, percentages.
     DetectorEntry {
         name: "duration",
         tier: Tier::Broad,
@@ -358,7 +289,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| DurationDetector::detect_and_replace(s),
     },
-    // NAMES: generic hyphenated component names with variable suffixes.
     DetectorEntry {
         name: "name",
         tier: Tier::Generic,
@@ -386,8 +316,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         prefilter: None,
         run: |_, s| NameDetector::detect_and_replace(s),
     },
-    // QUOTED STRINGS. Its nested cascade honours the same
-    // --disable-patterns gates as this table.
     DetectorEntry {
         name: "quoted",
         tier: Tier::Last,
@@ -428,10 +356,6 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     },
 ];
 
-/// Does the line carry an `=` outside quoted strings — a `key=value`
-/// pair rather than a `=` inside a JSON value?
-/// The places `order` breaks what its entries declare: a name used twice, a
-/// tier that drops, an entry ahead of one it must come after.
 fn order_complaints(order: &[&DetectorEntry]) -> Vec<String> {
     let mut complaints = Vec::new();
     for (at, entry) in order.iter().enumerate() {
@@ -472,21 +396,15 @@ fn has_unquoted_eq(s: &str) -> bool {
 
 pub struct Normalizer {
     config: Config,
-    // Pattern detectors
     email_detector: EmailPatternDetector,
 }
 
-/// A quoted HTTP request line: `"GET /metrics HTTP/1.1"`. The capture is the
-/// request target.
 const REQUEST_METHODS: &str = "GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT";
 static REQUEST_TARGET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(r#""(?:{REQUEST_METHODS}) ([^"\s]*) HTTP/"#))
         .expect("request-target anchor pattern must compile")
 });
 
-/// Prose requests name the protocol explicitly, or put a full HTTP URL
-/// immediately after the method. This does not reinterpret bare verbs or
-/// change the separate quoted access-log grammar.
 static PROSE_REQUEST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r#"(?:^|[\s"'(])({REQUEST_METHODS})[ \t]+(?:(?i:https?)[ \t]+request:?[ \t]+((?:https?://[^\s"'\\]+|/[^\s"'\\]*))|(https?://[^\s"'\\]+))"#
@@ -506,9 +424,6 @@ fn prose_requests(text: &str) -> impl Iterator<Item = ProseRequest> + '_ {
         .flatten()
         .filter(|caps| {
             let method = caps.get(1).unwrap();
-            // Absolute-form access requests already have their own route
-            // grammar, just like origin-form requests. Do not double-anchor
-            // them or change their existing method-folding policy.
             !(caps.get(3).is_some()
                 && text[..method.start()].ends_with('"')
                 && text[caps.get(0).unwrap().end()..].starts_with(" HTTP/"))
@@ -523,8 +438,6 @@ fn prose_requests(text: &str) -> impl Iterator<Item = ProseRequest> + '_ {
         })
 }
 
-/// The authority identifies an instance, not the route. Retain the scheme
-/// and route skeleton in the template; keep the full URL in PATH facts.
 fn prose_target_parts(target: &str) -> (&str, &str) {
     if let Some((scheme, rest)) = target.split_once("://") {
         let start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
@@ -545,10 +458,6 @@ fn render_prose_target(target: &str) -> String {
     }
 }
 
-// A rendered request can already have a varying method, and its route
-// can carry other protected identities beside it. Keep the opening and
-// closing quotes and HTTP/ prefix outside varying method/version slots.
-// Like the anchor, accept a truncated version or missing closing quote.
 static REQUEST_TEMPLATE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r#""(?:{REQUEST_METHODS}|<VARIES>) [^"\r\n]*? (HTTP/)[^"\s]*"?"#
@@ -556,8 +465,6 @@ static REQUEST_TEMPLATE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("request-template pattern must compile")
 });
 
-/// Whole rendered request and its HTTP/ prefix; uses the anchor's methods
-/// while allowing the template's method slot to have become `<VARIES>`.
 pub(crate) fn quoted_request_templates(
     text: &str,
 ) -> impl Iterator<Item = (regex::Match<'_>, regex::Match<'_>)> {
@@ -568,24 +475,17 @@ pub(crate) fn quoted_request_templates(
         .map(|caps| (caps.get(0).unwrap(), caps.get(1).unwrap()))
 }
 
-/// The status code that follows a quoted request line in an access log:
-/// `... HTTP/1.1" 404 332`. The capture is its first digit — the class.
 static REQUEST_STATUS_CLASS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#" HTTP/[0-9.]+" ([1-5])(\d\d)\b"#)
         .expect("request-status anchor pattern must compile")
 });
 
-/// A PCI address, `domain:bus:device.function` — `0000:21:00.0`.
 static PCI_ADDRESS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]\b")
         .expect("pci-address anchor pattern must compile")
 });
 
-/// One recognizer supplies the exact PCI identities to both hashing and
-/// rendering, including their order and repeated occurrences.
 pub(crate) fn pci_addresses(original: &str) -> impl Iterator<Item = regex::Match<'_>> {
-    // A PCI function is an ASCII digit 0..7 after a dot. In normalized
-    // text this cheaply rejects source files and other dotted words.
     let bytes = original.as_bytes();
     (original.contains(':')
         && original
@@ -596,20 +496,11 @@ pub(crate) fn pci_addresses(original: &str) -> impl Iterator<Item = regex::Match
     .flatten()
 }
 
-/// A klog header, `E0910 00:02:39.914326       1 status.go:71]`. The capture
-/// is the call site, `file.go:line` — klog's event identity, the way a
-/// syslog program name is.
 static KLOG_CALL_SITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\b[IWEF]\d{4} \d\d:\d\d:\d\d\.\d{6}\s+\d+ ([A-Za-z0-9_]+\.go:\d+)\]")
         .expect("klog call-site anchor pattern must compile")
 });
 
-/// A systemd message whose subject is a unit, `systemd[1]: containerd.service:
-/// Main process exited`. The capture is the unit. Messages *about* a unit
-/// (`Starting containerd.service - ...`) are not this shape and carry no
-/// anchor. Mount, device, swap and path units are named after the thing they
-/// mount — a pod volume, a device node — so for them the message is the
-/// identity and the unit is the instance; they are left to similarity.
 static SYSTEMD_UNIT_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"systemd\[\d+\]: ([A-Za-z0-9@._:\\-]+\.(?:service|slice|scope|socket|timer|target)): ",
@@ -617,33 +508,21 @@ static SYSTEMD_UNIT_SUBJECT: LazyLock<Regex> = LazyLock::new(|| {
     .expect("systemd unit anchor pattern must compile")
 });
 
-/// A structured logger's call site, `"caller":"mvcc/hash.go:157"` (zap) or
-/// `caller=/go/pkg/mod/.../reflector.go:205` (logfmt): the event identity of
-/// a JSON record, as the klog header's is of a klog line. Without it two
-/// records that share every field but `msg` read alike enough to fold.
 static STRUCTURED_CALLER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:"caller"\s*:\s*"|\bcaller=)([A-Za-z0-9_./@+-]+\.[a-z]{1,4}:\d+)"#)
         .expect("structured caller anchor pattern must compile")
 });
 
-/// A call site a klog message itself opens with — `reflector.go:397]
-/// k8s.io/client-go/informers/factory.go:160: forcing resync`. The header's
-/// site is the logging shim; the message's is the code that spoke.
 static MESSAGE_CALL_SITE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\.go:\d+\] ([A-Za-z0-9_./@+-]+\.go:\d+): ")
         .expect("message call-site anchor pattern must compile")
 });
 
-/// A Python traceback frame, `File "resources.py", line 418, in
-/// _watch_resource_loop`: the frame is the (file, line, function) triple.
 static TRACEBACK_FRAME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"File "([^"]+)", line (\d+), in (\S+)"#)
         .expect("traceback frame anchor pattern must compile")
 });
 
-/// Captures in these grammars are exactly the fields the anchor hashes.
-/// Share their byte spans with rendering so an identity is never re-parsed
-/// with a looser rule after the normal detectors have run.
 fn exact_anchor_fields<'a>(
     original: &'a str,
     pattern: &'a Regex,
@@ -653,24 +532,16 @@ fn exact_anchor_fields<'a>(
         .flat_map(|caps| (1..caps.len()).filter_map(move |i| caps.get(i)))
 }
 
-/// A method in a structured record: `"RequestMethod":"POST"`, `method=GET`,
-/// `"grpc.method":"GenerateManifest"`. A field named `…method` names what
-/// was called — the access-log request line's counterpart in JSON/logfmt,
-/// and an RPC's route.
 static FIELD_METHOD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)"?[a-z_.]*method"?\s*[:=]\s*"?([A-Za-z][A-Za-z0-9_./-]*)"#)
         .expect("field method anchor pattern must compile")
 });
 
-/// An HTTP status in a structured record: `"DownstreamStatus":500`,
-/// `status=404`, `"status_code": 302`. The capture is the class digit.
 static FIELD_STATUS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)"?[a-z_.]*status(?:_?code)?"?\s*[:=]\s*"?([1-5])(\d\d)\b"#)
         .expect("field status anchor pattern must compile")
 });
 
-/// The class and full code span come from the same match for hashing and
-/// rendering. Keep only the class as identity: 200 and 204 still agree.
 fn http_status_anchors<'a>(
     original: &'a str,
     pattern: &'a Regex,
@@ -682,21 +553,11 @@ fn http_status_anchors<'a>(
     })
 }
 
-/// The request path of a structured record: `"RequestPath":"/api/v1/x"`,
-/// `url=https://host/login`, `path="/a/b"`. A quoted value is a route when
-/// the record names an HTTP method; any value written as a route — a full URL
-/// or an absolute path — is one whatever else the record holds, so
-/// `url=…/login` and `url=…/logout` are two events exactly as
-/// `GET https://…/login` and `GET https://…/logout` are. An unquoted value
-/// follows `=` only: `MountPath:/x` in a struct dump is not a field written
-/// for a reader. Capture 1 is a quoted value, capture 2 an unquoted one.
 static FIELD_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)"?[a-z_.]*(?:path|uri|url|route)"?\s*(?:[:=]\s*"([^"]*)"|=([^\s"'\\,]+))"#)
         .expect("field path anchor pattern must compile")
 });
 
-/// A field value written as a route: a full URL (`scheme://…`) or an
-/// absolute path. The shape the value has, not the key it sits under.
 fn is_route_shaped(value: &str) -> bool {
     value.starts_with('/')
         || value.split_once("://").is_some_and(|(scheme, _)| {
@@ -704,11 +565,6 @@ fn is_route_shaped(value: &str) -> bool {
         })
 }
 
-/// A cheap test in front of an anchor scan. It only saves the scan's time:
-/// on a line the test turns away, the scan must find nothing. Test builds
-/// run `finds` on such a line and panic when it does, so a gate narrower
-/// than its pattern cannot pass the test suite. Every `if` that decides
-/// whether an anchor pattern runs goes through here.
 #[inline]
 fn gate(open: bool, what: &str, original: &str, finds: impl FnOnce() -> bool) -> bool {
     debug_assert!(
@@ -718,9 +574,6 @@ fn gate(open: bool, what: &str, original: &str, finds: impl FnOnce() -> bool) ->
     open
 }
 
-/// The route-shaped values of the line's path fields: where each starts and
-/// its text, closing punctuation dropped. With `has_method` the quoted ones
-/// are left to the method rule, which already anchored them.
 fn field_routes(original: &str, has_method: bool) -> impl Iterator<Item = (usize, &str)> {
     FIELD_PATH.captures_iter(original).filter_map(move |caps| {
         let m = match (caps.get(1), caps.get(2)) {
@@ -733,15 +586,10 @@ fn field_routes(original: &str, has_method: bool) -> impl Iterator<Item = (usize
     })
 }
 
-/// Can the line hold a route-shaped field value at all? A byte gate before
-/// `FIELD_PATH` runs on a line that names no method.
 fn may_hold_route_field(original: &str) -> bool {
     original.contains("://") || original.contains("=/") || quoted_route_after_separator(original)
 }
 
-/// Is there a `"/` whose quote follows `=` or `:`, with any whitespace
-/// between them? That is every place `FIELD_PATH` can match a quoted route:
-/// `path="/a"`, `path = "/a"`, `"uri":  "/a"`.
 fn quoted_route_after_separator(original: &str) -> bool {
     let bytes = original.as_bytes();
     original.match_indices("\"/").any(|(at, _)| {
@@ -753,31 +601,19 @@ fn quoted_route_after_separator(original: &str) -> bool {
     })
 }
 
-/// The program a record is about — auditd's `exe="/usr/bin/sudo"` and
-/// `comm="sshd"`, Tetragon's `"binary":"/usr/bin/runc"` — is its identity,
-/// as the syslog tag is a syslog line's: a syscall by sudo and one by sshd
-/// are two events however alike the rest of the record reads.
 static PROGRAM_FIELD: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:\b(?:exe|comm)=|"(?:binary|exe|comm)"\s*:\s*)"([^"]+)""#)
         .expect("program field anchor pattern must compile")
 });
 
-/// The prefix `kubectl logs --prefix` writes: `[pod/<pod>/<container>] `.
-/// The container is an identity; the pod is one up to its generated suffix,
-/// so replicas of one workload fold and different workloads do not.
 static KUBECTL_PREFIX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\[pod/([^/\]]+)/([^\]]+)\]").expect("kubectl prefix anchor pattern must compile")
 });
 
-/// An audit record's type, `type=SYSCALL msg=audit(...)`. The capture is the
-/// type — auditd's only discriminator between record kinds.
 static AUDIT_RECORD_TYPE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^type=([A-Z_]+) msg=audit\(").expect("audit type anchor pattern must compile")
 });
 
-/// The outcome in a raw audit syscall header is event identity. Match the
-/// fixed header grammar so `success=no` inside a quoted argument or prose
-/// cannot become an outcome. Keep the field visible using this same capture.
 static AUDIT_SYSCALL_OUTCOME: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^type=SYSCALL msg=audit\([0-9]+\.[0-9]+:[0-9]+\): arch=[0-9a-fA-F]+ syscall=[0-9]+ (success=(?:yes|no))(?: |$)",
@@ -785,8 +621,6 @@ static AUDIT_SYSCALL_OUTCOME: LazyLock<Regex> = LazyLock::new(|| {
     .expect("audit syscall outcome anchor pattern must compile")
 });
 
-/// Option names are keys; their values may vary, their spelling may not.
-/// A single dash before a whole word remains prose (for example -sdown).
 static CLI_OPTION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?:^|[\s"'])(--[A-Za-z][A-Za-z0-9_-]*|-[A-Za-z]\b)"#)
         .expect("CLI option anchor pattern must compile")
@@ -801,24 +635,11 @@ pub(crate) fn cli_option_names(original: &str) -> impl Iterator<Item = regex::Ma
         .filter_map(|caps| caps.get(1))
 }
 
-/// A syslog/journal host: the word between a line-leading normalized
-/// timestamp and the program tag — `<TIMESTAMP> gw-core dnsmasq[<PID>]:`,
-/// `<TIMESTAMP> usw-lab-2 daemon.err syslogd:`. The tag is `word:`
-/// (covers `word[<PID>]:` too, since a trailing `]:` is still non-space) or
-/// a `facility.level` pair. A tag opens on a letter or `/` — never a digit
-/// or a bracket: `usb 1-1.2: new device` and `peer_map_event (pdev:807e…)`
-/// are kernel lines whose second field is not a tag, so their first field
-/// is not a host.
 static SYSLOG_HOST: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^<TIMESTAMP> (\S+) (?:[A-Za-z/]\S*:|[a-z]+\.[a-z]+\b)")
         .expect("syslog host anchor pattern must compile")
 });
 
-/// Is `word` itself shaped like the `facility.level` tag alternative
-/// (`daemon.info`, `kern.warn`)? Some formats open straight on
-/// `<TIMESTAMP> facility.level tag:` with no host field at all; without this
-/// check the facility would be captured as `<HOST>` and the tag mistaken for
-/// its own trailing `word:`.
 fn is_facility_level_shape(word: &str) -> bool {
     match word.split_once('.') {
         Some((facility, level)) => {
@@ -832,10 +653,6 @@ fn is_facility_level_shape(word: &str) -> bool {
     }
 }
 
-/// Is `word` a plausible positional syslog host: has a letter, is not an
-/// all-caps severity token (`INFO`, `WARN`) sitting in the same slot, is not
-/// itself a `facility.level` tag, carries no `=`/`:` of its own, and is not
-/// already a token (`<FQDN>`, `<IP>`)?
 fn is_host_candidate(word: &str) -> bool {
     if word.starts_with('<') && word.ends_with('>') {
         return false;
@@ -849,7 +666,6 @@ fn is_host_candidate(word: &str) -> bool {
     word.chars().any(|c| c.is_ascii_lowercase())
 }
 
-/// Replace a positional syslog host with `<HOST>`. See [`SYSLOG_HOST`].
 fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
     if let Some(caps) = SYSLOG_HOST.captures(s) {
         let m = caps.get(1).expect("group 1 always present on a match");
@@ -865,27 +681,10 @@ fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
     (s.to_string(), Vec::new())
 }
 
-/// Hash the fields that must match exactly for two lines to fold together.
-///
-/// Normalization erases variable text on purpose, but some of what it erases
-/// is the entire point of the line: which endpoint was requested, which device
-/// failed. Two lines differing only there are not the same event, yet they
-/// differ by one token out of a dozen and sail past any similarity threshold
-/// low enough to be useful elsewhere. Raising the threshold instead is not an
-/// option — it costs far more folding everywhere else than it recovers here.
-///
-/// So these fields are compared for equality, never for similarity. Returns 0
-/// when the line has no anchor, which is the common case; two anchor-free
-/// lines therefore group exactly as they did before.
-///
-/// Anchors are read from the raw line, before normalization erases them:
-/// `protect_anchored_spans` matches every anchor once and hands its
-/// identities here, so no anchor pattern runs twice on a line.
 fn anchor_hash(identities: &mut [(AnchorClass, AnchorIdentity<'_>)]) -> u64 {
     if identities.is_empty() {
         return 0;
     }
-    // Stable: within a class, the order the line holds them in.
     identities.sort_by_key(|&(class, _)| class);
     let mut hasher = AHasher::default();
     for &(_, identity) in identities.iter() {
@@ -911,18 +710,6 @@ fn anchor_hash(identities: &mut [(AnchorClass, AnchorIdentity<'_>)]) -> u64 {
     hasher.finish()
 }
 
-/// A pod name's identity, with its instance suffixes stripped: the surviving
-/// prefix of `web-7d9f8b6c5-xk2lp` and `web-7d9f8b6c5-q8zmt` is one workload,
-/// `gitaly-0` and `gitaly-1` too, and so are `rook-ceph-osd-0-56d5fdf8f8-ltzv5`
-/// and `rook-ceph-osd-1-…` or `rook-ceph-mon-bp-…` and `rook-ceph-mon-cc-…`:
-/// the same daemon on another instance. A trailing segment goes when it is an
-/// ordinal, an instance letter or two, a 5-char chunk of the generated-name
-/// alphabet, or an 8–10 char pod-template hash.
-///
-/// This is the identity `anchor_hash` hashes and `render_pod_prefix` shows,
-/// so the two cannot drift: whatever this function decides to strip is
-/// exactly what disappears from the rendered line, and whatever it keeps is
-/// exactly what the shown skeleton claims held for every member of the group.
 fn pod_skeleton(pod: &str) -> &str {
     let generated = |seg: &str| {
         let b = seg.as_bytes();
@@ -958,12 +745,6 @@ enum UnitPart {
     Number,
 }
 
-/// Visit a unit name with its instance ids removed: a run holding 8+ hex digits
-/// (a hash, a uuid with its hyphens) hashes as `<id>`, every other digit run
-/// as `<d>`, all else as itself. `cri-containerd-9f3e...a1.scope` and
-/// `session-1234.scope` thus name their kind, not their instance.
-/// Hashing and rendering consume these same parts. Only the ASCII unit
-/// grammar calls this; systemd's escaped hyphen is decoded before scanning.
 fn visit_unit_skeleton(text: &str, mut visit: impl FnMut(UnitPart)) {
     let decoded;
     let text = if text.contains("\\x2d") {
@@ -1015,39 +796,20 @@ fn render_systemd_unit(unit: &str) -> String {
     rendered
 }
 
-/// A route segment's identity — shared by `hash_route` (matched exactly)
-/// and `render_route` (rendered as the visible skeleton text), so the two
-/// can never disagree about what a segment is.
-///
-/// A segment's identity is its non-numeric skeleton, so `/downloads/product_1`
-/// and `/downloads/product_2` are one route, as are `/api/devices/42/` and
-/// `/api/devices/99/`. `/login/` and `/metrics` are not. Getting this wrong in
-/// either direction is expensive: too strict and every web log fragments per
-/// object id, too loose and the anchor stops separating endpoints at all.
 enum RouteSegment {
-    /// The empty segment a leading, trailing or doubled slash produces.
     Slash,
-    /// A long hex-ish run: a uuid, digest or slug — opaque, never shown.
     Id,
-    /// Any other segment, with each digit run collapsed to one marker.
     Skeleton(String),
 }
 
-/// Classify one `/`-delimited route segment. See [`RouteSegment`].
 fn classify_route_segment(segment: &str) -> RouteSegment {
     if segment.is_empty() {
         return RouteSegment::Slash;
     }
-    // A long hex-ish run is an opaque id (uuid, digest, slug), whatever
-    // letters it happens to contain; `sha256:<hex>` is one with its
-    // algorithm in front.
     let body = segment
         .split_once(':')
         .filter(|(algo, _)| !algo.is_empty() && algo.bytes().all(|b| b.is_ascii_alphanumeric()))
         .map_or(segment, |(_, rest)| rest);
-    // A file named by such a run keeps its extension, which is a kind and
-    // not an instance: `000b-00bee12.snap` and `000b-00bf0c3.snap` are one
-    // `<ID>.snap`.
     let (stem, ext) = match body.rsplit_once('.') {
         Some((stem, ext))
             if ext.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
@@ -1067,19 +829,6 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
             Some(ext) => RouteSegment::Skeleton(format!("<ID>.{ext}")),
         };
     }
-    // Otherwise keep the skeleton and collapse each digit run, so
-    // `product_1` and `product_2` are one segment. `v1` and `v2` collapse
-    // too, where the digit *is* the identity — but an API version is
-    // normally its own segment, and fragmenting every object id is the
-    // worse error.
-    //
-    // Except a digit with a letter on both sides, which is a letter of the
-    // word: `k8s` is not a numbered `ks`, and nothing about it varies.
-    // Collapsing it made every Kubernetes route read `k<N>s`, and
-    // `authorization.k8s.io` read `authorization.k<N>s.io` — harder to read
-    // and a claim that two spellings were seen, when only one ever is.
-    // A leading or trailing run is still a number: `v1` varies, `v1beta1`
-    // keeps the `1` that names the family and varies the one that counts.
     let b = segment.as_bytes();
     let mut out = String::with_capacity(segment.len());
     let mut i = 0;
@@ -1106,10 +855,7 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
     RouteSegment::Skeleton(out)
 }
 
-/// Hash a request target as its route — the part that says *what was asked
-/// for*, with the part that says *which one* removed. See [`RouteSegment`].
 fn hash_route(target: &str, hasher: &mut AHasher) {
-    // A query string is per-request data, not route identity.
     let path = target.split(['?', '#']).next().unwrap_or(target);
     for segment in path.split('/') {
         match classify_route_segment(segment) {
@@ -1121,10 +867,6 @@ fn hash_route(target: &str, hasher: &mut AHasher) {
     }
 }
 
-/// Render a request target as its route skeleton — the same identity
-/// `hash_route` hashes, as readable text, so a template that separates two
-/// groups by route is a claim that holds for every member of each group
-/// (CLAUDE.local.md: nothing hidden, templates are claims).
 fn render_route(target: &str) -> String {
     let path = target.split(['?', '#']).next().unwrap_or(target);
     let mut out = String::with_capacity(path.len());
@@ -1141,15 +883,6 @@ fn render_route(target: &str) -> String {
     out
 }
 
-/// Render a `[pod/<pod>/<container>]` kubectl prefix as its skeleton — the
-/// same identity `anchor_hash` hashes via [`pod_skeleton`], as readable text.
-/// Re-matches `KUBECTL_PREFIX` on the short span; that is simpler than
-/// threading captures through the sentinel-splicing machinery below.
-/// `-<SUFFIX>` stands for the whole stripped tail — never one per stripped
-/// segment, since members of a group can strip a different number of
-/// segments and repeating the token would claim more than one suffix
-/// varied. It is only emitted when something was actually stripped, so
-/// `[pod/etcd/etcd]` renders verbatim.
 fn render_pod_prefix(matched: &str) -> String {
     let Some(caps) = KUBECTL_PREFIX.captures(matched) else {
         return matched.to_string();
@@ -1164,17 +897,6 @@ fn render_pod_prefix(matched: &str) -> String {
     }
 }
 
-/// Sentinel-protect every anchored span's exact bytes in `original` so no
-/// detector — `PathDetector` in particular — can swallow it before it can be
-/// rendered as its identity. Uses the same matches as `anchor_hash` for
-/// request targets, `FIELD_PATH` values on records that name a method or
-/// written as a route,
-/// `[pod/<pod>/<container>]` prefixes, status classes, PCI addresses, systemd units, and
-/// exact call-site/frame/program identities.
-/// A file path elsewhere is untouched.
-///
-/// Keeps the substituted line, the spans to restore after detection, and
-/// the status-class facts hidden from detectors by those substitutions.
 enum AnchorRender {
     Route,
     ProseTarget,
@@ -1206,16 +928,10 @@ struct ProtectedAnchors<'a> {
     renders: Vec<(String, String)>,
     statuses: Vec<ProtectedStatus>,
     unit_names: Vec<String>,
-    /// Route-shaped field values, whole, for the PATH facts: the rendered
-    /// skeleton hides their host and ids.
     path_facts: Vec<String>,
-    /// What `anchor_hash` hashes, in the order the line holds it.
     identities: Vec<(AnchorClass, AnchorIdentity<'a>)>,
 }
 
-/// The order `anchor_hash` hashes anchor classes in. It is part of the
-/// hash: identities carry no class marker, so a different order could
-/// join or split lines whose identities fall in different classes.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AnchorClass {
     RequestRoute,
@@ -1238,18 +954,12 @@ enum AnchorClass {
     PodPrefix,
 }
 
-/// One identity an anchor matched, as `anchor_hash` hashes it.
 #[derive(Clone, Copy)]
 enum AnchorIdentity<'a> {
-    /// a request target, as its route skeleton
     Route(&'a str),
-    /// literal text: a method, a status class digit, a call site, a program
     Text(&'a str),
-    /// a prose request target: its scheme, then its route skeleton
     ProseTarget(&'a str),
-    /// a systemd unit, as its skeleton
     Unit(&'a str),
-    /// a kubectl prefix: the pod's workload skeleton, then the container
     Pod(&'a str, &'a str),
 }
 
@@ -1314,7 +1024,6 @@ fn protect_anchored_spans<'a>(
         }
     }
 
-    // Set when an HTTP method field made every quoted path field a route.
     let mut has_method = false;
     if gate(
         original.contains("ethod") || original.contains("ETHOD"),
@@ -1322,8 +1031,6 @@ fn protect_anchored_spans<'a>(
         original,
         || FIELD_METHOD.is_match(original),
     ) {
-        // Every method field is identity; only an HTTP one makes the
-        // record's path a route.
         for caps in FIELD_METHOD.captures_iter(original) {
             let method = caps.get(1).map_or("", |m| m.as_str());
             identities.push((AnchorClass::Method, AnchorIdentity::Text(method)));
@@ -1342,11 +1049,6 @@ fn protect_anchored_spans<'a>(
         }
     }
 
-    // A route-shaped field value on any record is read like a prose request
-    // target: the same capture is hashed as scheme plus route skeleton and
-    // rendered as `scheme://<HOST>/route`, and the full value stays in the
-    // PATH facts. Values the method rule above already anchored are left
-    // to it.
     if gate(
         may_hold_route_field(original),
         "field route",
@@ -1401,16 +1103,11 @@ fn protect_anchored_spans<'a>(
             AnchorClass::SystemdUnit,
             AnchorIdentity::Unit(unit.as_str()),
         ));
-        // The template shows a kind, but the exact instance names still
-        // belong in the facts when the skeleton hides part of them.
         if render_systemd_unit(unit.as_str()) != unit.as_str() {
             unit_names.push(unit.as_str().to_string());
         }
     }
 
-    // These anchors match their literal identity, unlike route/status
-    // skeletons. Restore that same identity after generic path/number
-    // detectors would otherwise erase the distinction between events.
     if gate(
         original.contains(".go:"),
         "klog call site",
@@ -1429,8 +1126,6 @@ fn protect_anchored_spans<'a>(
             ));
         }
     }
-    // An audit record's type is identity with nothing to protect: no
-    // detector erases it.
     if gate(
         original.starts_with("type="),
         "audit type",
@@ -1520,9 +1215,6 @@ fn protect_anchored_spans<'a>(
     let mut covering_is_literal = false;
     for (i, (start, end, render)) in spans.into_iter().enumerate() {
         if start < cursor {
-            // An identity can itself occur inside an anchored route's
-            // query. The route skeleton drops queries, but that must not
-            // hide another identity the anchor matcher keeps.
             if matches!(
                 render,
                 AnchorRender::HttpStatus
@@ -1534,9 +1226,6 @@ fn protect_anchored_spans<'a>(
             ) && let Some((_, rendered)) = renders.last_mut()
             {
                 let identity = render.render(&original[start..end]);
-                // Literal outer fields already show nested PCI addresses.
-                // A route skeleton needs every occurrence appended, even
-                // when the same address appeared earlier in its query.
                 if matches!(render, AnchorRender::HttpStatus | AnchorRender::StatusField)
                     || (matches!(render, AnchorRender::PciAddress) && !covering_is_literal)
                     || !rendered.contains(&identity)
@@ -1545,12 +1234,9 @@ fn protect_anchored_spans<'a>(
                     rendered.push_str(&identity);
                 }
             }
-            continue; // overlapping match — already covered
+            continue;
         }
         result.push_str(&original[cursor..start]);
-        // ProcessDetector needs to recognize the PID column immediately
-        // before a protected klog call site. A distinct sentinel preserves
-        // that grammar without exposing the site to path/number detectors.
         let kind = if matches!(render, AnchorRender::KlogCallSite) {
             'K'
         } else {
@@ -1578,8 +1264,6 @@ fn protect_anchored_spans<'a>(
 
 impl Normalizer {
     pub fn new(config: Config) -> Self {
-        // Test builds refuse a detector table that breaks what its entries
-        // declare, whichever test builds the first normalizer.
         debug_assert_eq!(
             order_complaints(&DETECTOR_ORDER.iter().collect::<Vec<_>>()),
             Vec::<String>::new(),
@@ -1595,17 +1279,11 @@ impl Normalizer {
         self.normalize_in_order(original, DETECTOR_ORDER.iter())
     }
 
-    /// `normalize_line` with the detectors in `order`. The table's order is
-    /// the only one a run uses; a test passes another to show what a
-    /// declared ordering rule protects.
     fn normalize_in_order<'a>(
         &self,
         original: String,
         order: impl Iterator<Item = &'a DetectorEntry>,
     ) -> Result<LogLine> {
-        // An anchored span (see `anchor_hash`) must render as its skeleton,
-        // not `<PATH>` — otherwise the split it forces is invisible in the
-        // shown line. Protect its exact span before any detector runs...
         let pci: Vec<_> = pci_addresses(&original).collect();
         let options: Vec<_> = cli_option_names(&original).collect();
         let requests: Vec<_> = prose_requests(&original).collect();
@@ -1613,8 +1291,6 @@ impl Normalizer {
         let mut normalized = std::mem::take(&mut protected.text);
         let mut tokens = Vec::with_capacity(8);
 
-        // Walk the detector ordering table; each enabled detector replaces
-        // matched content with tokens in the partially-normalized line.
         for entry in order {
             if !(entry.enabled)(&self.config) {
                 continue;
@@ -1627,9 +1303,6 @@ impl Normalizer {
             if let Some(prefilter) = entry.prefilter
                 && !prefilter(&self.config, &original, &normalized)
             {
-                // A prefilter only saves the detector's time: on a line it
-                // turns away the detector must find nothing. Test builds
-                // run the detector anyway and say so when it does.
                 #[cfg(debug_assertions)]
                 {
                     let (skipped_text, skipped_tokens) = (entry.run)(self, &normalized);
@@ -1646,8 +1319,6 @@ impl Normalizer {
             tokens.append(&mut new_tokens);
         }
 
-        // ...then splice the rendered skeleton back in, now that no detector
-        // can consume it.
         for (sentinel, rendered) in &protected.renders {
             if normalized.contains(sentinel.as_str()) {
                 normalized = normalized.replace(sentinel.as_str(), rendered);
@@ -1657,9 +1328,6 @@ impl Normalizer {
             if status.is_http && self.config.normalize_http_status {
                 tokens.push(Token::HttpStatusClass(format!("{}xx", &status.code[..1])));
             } else if self.config.normalize_durations {
-                // Structured status fields previously contributed numeric
-                // facts. Keep exact codes in that rollup: showing a class
-                // must not discard the distinction between 200 and 204.
                 tokens.push(Token::Number(status.code));
             }
         }
@@ -1674,8 +1342,6 @@ impl Normalizer {
                 .map(Token::Path),
         );
 
-        // Anchors come from the raw line: normalization has just erased the
-        // very fields they identify.
         tokens.extend(
             requests
                 .iter()
@@ -1683,8 +1349,6 @@ impl Normalizer {
         );
         let anchor = anchor_hash(&mut protected.identities);
 
-        // Fold the anchor into the line hash so the folder's exact-hash group
-        // index cannot attach this line to a group with a different anchor.
         let hash = mix_anchor_hash(self.calculate_hash(&normalized), anchor);
 
         Ok(LogLine::new(original, normalized, tokens, hash).anchored(anchor))
@@ -1696,7 +1360,7 @@ impl Normalizer {
         hasher.finish()
     }
 
-    #[allow(clippy::cast_precision_loss)] // usize lengths → f64 for ratio calc
+    #[allow(clippy::cast_precision_loss)]
     pub fn similarity_score(&self, line1: &LogLine, line2: &LogLine) -> f64 {
         let s1 = &line1.normalized;
         let s2 = &line2.normalized;
@@ -1705,7 +1369,6 @@ impl Normalizer {
             return 100.0;
         }
 
-        // Ultra-fast similarity: check length difference first
         let len1 = s1.len();
         let len2 = s2.len();
         let max_len = len1.max(len2);
@@ -1715,16 +1378,11 @@ impl Normalizer {
             return 100.0;
         }
 
-        // If length difference is too large, reject quickly
         let length_ratio = min_len as f64 / max_len as f64;
         if length_ratio < 0.7 {
             return length_ratio * 100.0;
         }
 
-        // Token-level LCS: tolerant of an inserted or removed token, which a
-        // positional comparison is not (one early insertion used to cascade
-        // into a near-zero score for otherwise identical lines). Tokens are
-        // cached on the LogLine on first use — no re-tokenization here.
         if let (SimTokens::Tokens { toks: a, .. }, SimTokens::Tokens { toks: b, .. }) =
             (line1.sim(), line2.sim())
             && !a.is_empty()
@@ -1734,18 +1392,10 @@ impl Normalizer {
             return (2.0 * lcs as f64 / (a.len() + b.len()) as f64) * 100.0;
         }
 
-        // Token multiset for lines that overran the LCS bound but still carry
-        // hashes. Order-insensitive, so it can rate two permutations of the
-        // same tokens as identical; for structured records, whose key order is
-        // stable, that is a far smaller error than the positional comparison's
-        // collapse to near zero when one early value changes length.
         if let Some(ratio) = Self::multiset_ratio(line1, line2) {
             return ratio;
         }
 
-        // Fallback for whitespace-only lines and lines past
-        // MAX_MULTISET_TOKENS: positional byte overlap (no allocation — works
-        // on &[u8] directly).
         let b1 = s1.as_bytes();
         let b2 = s2.as_bytes();
         let mut matches: u32 = 0;
@@ -1757,10 +1407,6 @@ impl Normalizer {
         (f64::from(matches) / max_len as f64) * 100.0
     }
 
-    /// Token equality via cached per-token hashes: hash inequality proves the
-    /// tokens differ; on hash equality the bytes are compared to rule out
-    /// collisions, so the result is exactly string equality — except that
-    /// two small integers are equal to each other (see `sim_key`).
     #[inline]
     fn tok_eq(s1: &str, t1: SimTok, s2: &str, t2: SimTok) -> bool {
         if t1.hash != t2.hash {
@@ -1775,21 +1421,12 @@ impl Normalizer {
             || small_int_tail(a).is_some_and(|t| small_int_tail(b) == Some(t))
     }
 
-    /// Similarity from the token multisets, on the same 2*common/total scale
-    /// the LCS path uses so the threshold means the same thing either way.
-    ///
-    /// `None` when either line carries no hashes — whitespace-only, or past
-    /// `MAX_MULTISET_TOKENS` — leaving those to the positional fallback.
     fn multiset_ratio(line1: &LogLine, line2: &LogLine) -> Option<f64> {
         let (sim1, sim2) = (line1.sim(), line2.sim());
         let (a, b) = (sim1.sorted_hashes(), sim2.sorted_hashes());
         if a.is_empty() || b.is_empty() {
             return None;
         }
-        // Message identity first: a record's leading tokens say what it IS,
-        // and the multiset cannot see them because it discards order. Without
-        // this, a large shared payload outvotes the few words that distinguish
-        // two different messages.
         if let (Some(lead1), Some(lead2)) = (sim1.lead(), sim2.lead())
             && lead1 != lead2
         {
@@ -1799,8 +1436,6 @@ impl Normalizer {
         Some((2.0 * common as f64 / (a.len() + b.len()) as f64) * 100.0)
     }
 
-    /// Size of the multiset intersection of two ascending-sorted hash
-    /// slices (standard two-pointer merge).
     fn multiset_intersection(a: &[u64], b: &[u64]) -> usize {
         let (mut i, mut j, mut common) = (0, 0, 0);
         while i < a.len() && j < b.len() {
@@ -1817,22 +1452,9 @@ impl Normalizer {
         common
     }
 
-    /// Longest common subsequence length over cached token slices.
-    ///
-    /// Exact reductions before the DP: the common prefix and common suffix
-    /// are stripped (both are always part of an LCS), which collapses the
-    /// usual log-line case — same shape, a few differing middle tokens — to
-    /// a tiny DP or none at all. The DP itself is the rolling-row stack-only
-    /// version bounded by MAX_SIMILARITY_TOKENS.
-    ///
-    /// With `needed = Some(n)` the DP aborts once `n` is provably
-    /// unreachable and returns an upper bound that is `< n` — callers using
-    /// `needed` may only test the result against `n`, not use it as a score.
     fn token_lcs(s1: &str, a: &[SimTok], s2: &str, b: &[SimTok], needed: Option<usize>) -> usize {
         let min_n = a.len().min(b.len());
 
-        // Common prefix (covers the aligned fast path: identical-shape lines
-        // resolve here without any DP).
         let mut p = 0;
         while p < min_n && Self::tok_eq(s1, a[p], s2, b[p]) {
             p += 1;
@@ -1841,8 +1463,6 @@ impl Normalizer {
             return min_n;
         }
 
-        // Common suffix of the remainders (bounded so it cannot overlap the
-        // prefix in the shorter sequence).
         let max_s = min_n - p;
         let mut s = 0;
         while s < max_s && Self::tok_eq(s1, a[a.len() - 1 - s], s2, b[b.len() - 1 - s]) {
@@ -1866,8 +1486,6 @@ impl Normalizer {
                 row_max = row_max.max(curr[j + 1]);
             }
             if let Some(need) = needed {
-                // Each further row can raise the LCS by at most 1, and the
-                // middle LCS can never exceed the shorter middle.
                 let rows_left = am.len() - i - 1;
                 let upper = p + s + (usize::from(row_max) + rows_left).min(dp_cap);
                 if upper < need {
@@ -1879,24 +1497,18 @@ impl Normalizer {
         p + s + usize::from(prev[bm.len()])
     }
 
-    #[allow(clippy::cast_precision_loss)] // usize lengths → f64 for ratio calc
+    #[allow(clippy::cast_precision_loss)]
     pub fn are_similar(&self, line1: &LogLine, line2: &LogLine) -> bool {
-        // Quick hash comparison first
         if line1.hash == line2.hash {
             return true;
         }
 
-        // Anchors are matched, never scored: two lines naming different
-        // endpoints or devices are different events however alike they read.
         if line1.anchor != line2.anchor {
             return false;
         }
 
         let threshold = f64::from(self.config.threshold);
 
-        // Threshold-aware token path: identical decisions to
-        // `similarity_score(..) >= threshold`, but with exact O(1) bounds
-        // that skip or truncate the DP for most non-matching pairs.
         if let (
             SimTokens::Tokens {
                 toks: a,
@@ -1920,22 +1532,10 @@ impl Normalizer {
             }
 
             let total = (a.len() + b.len()) as f64;
-            // The LCS can never exceed the multiset intersection of the two
-            // token bags, computable as an O(n) merge over the sorted hash
-            // views. Collisions only overcount, so rejecting on this bound
-            // is exact. (It also subsumes the min(n1, n2) bound.)
             if (2.0 * Self::multiset_intersection(ha, hb) as f64 / total) * 100.0 < threshold {
                 return false;
             }
 
-            // Smallest LCS that satisfies the threshold. The ceil formula is
-            // exact in real arithmetic (threshold and total are small
-            // integers), but similarity_score's float expression can round a
-            // boundary score *below* an integer threshold — e.g. 7 of 10
-            // shared tokens computes as 69.999…, not 70 — so step up until
-            // the float expression itself agrees. Fires at most once: one
-            // extra token moves the true score by 200/total, far beyond any
-            // float error.
             let mut need = ((threshold * total) / 200.0).ceil() as usize;
             while (2.0 * need as f64 / total) * 100.0 < threshold {
                 need += 1;
@@ -1944,16 +1544,10 @@ impl Normalizer {
             return Self::token_lcs(s1, a, s2, b, Some(need)) >= need;
         }
 
-        // One side overran the LCS bound. Compare token multisets instead:
-        // O(n) over the sorted hash views, and — unlike a byte-positional
-        // comparison — unaffected by one value changing length and shifting
-        // everything after it.
         if let Some(ratio) = Self::multiset_ratio(line1, line2) {
             return ratio >= threshold;
         }
 
-        // Whitespace-only lines, or lines past MAX_MULTISET_TOKENS: fall back
-        // to the full score (byte-positional path).
         self.similarity_score(line1, line2) >= threshold
     }
 }
@@ -2073,8 +1667,6 @@ mod tests {
         ] {
             assert_eq!(norm(text).anchor, 0, "{text}");
         }
-        // Access logs retain their existing route/status policy in both
-        // origin-form and absolute-form targets.
         for target in ["/items", "http://localhost/items"] {
             let get = norm(&format!("\"GET {target} HTTP/1.1\" 200 5"));
             let post = norm(&format!("\"POST {target} HTTP/1.1\" 200 5"));
@@ -2407,8 +1999,6 @@ mod tests {
         }
     }
 
-    // ---- route hashing/rendering: hash_route and render_route must agree ----
-
     #[test]
     fn route_ids_hash_and_render_alike() {
         let mut h1 = AHasher::default();
@@ -2447,7 +2037,6 @@ mod tests {
         );
     }
 
-    /// A file named by an opaque run is that id plus its kind.
     #[test]
     fn an_opaque_file_name_keeps_its_extension() {
         assert_eq!(
@@ -2462,14 +2051,9 @@ mod tests {
             render_route("/wal/0000000000000d4f-00000000c012fd.wal"),
             render_route("/wal/0000000000000d4f-00000000c012fd.snap")
         );
-        // A version is not an opaque run.
         assert_eq!(render_route("/pkg/1.25.3"), "/pkg/<N>.<N>.<N>");
     }
 
-    /// A URL or absolute path written as a field value is anchored like a
-    /// prose request target: the route is on the line and splits, an id
-    /// or a query value folds, the host is `<HOST>` and the whole value
-    /// stays in the PATH facts (lessence-oub).
     #[test]
     fn a_route_in_a_field_value_is_visible_and_anchored() {
         let n = Normalizer::new(Config::default());
@@ -2499,30 +2083,22 @@ mod tests {
         assert_eq!(users.hash, users2.hash);
         assert_ne!(users.hash, orders.hash);
 
-        // A trailing comma is the list's, not the URL's.
         let listed = line("contact failed, url=http://10.0.0.7:8080/inform, rc=1");
         assert_eq!(
             listed.normalized.split(", ").nth(1),
             Some("url=http://<HOST>/inform")
         );
 
-        // A value that is not written as a route, or a struct dump's
-        // unquoted `Key:value`, is not anchored.
         assert_eq!(line("x path=relative/dir/file y").anchor, 0);
         assert_eq!(line("x MountPath:/var/run/x y").anchor, 0);
     }
 
-    /// `k8s` is a word with an 8 in it. Collapsing that digit made every
-    /// Kubernetes route read `k<N>s` and claimed a spelling varied that
-    /// never does; a leading or trailing run is still a number.
     #[test]
     fn a_digit_between_letters_is_part_of_the_word() {
         assert_eq!(
             render_route("/k8s/apis/authorization.k8s.io/v1beta1/pods/42"),
             "/k8s/apis/authorization.k8s.io/v1beta<N>/pods/<N>"
         );
-        // The identity moves with the rendering: two spellings of the word
-        // are two routes, while the object id folds.
         let mut a = AHasher::default();
         let mut b = AHasher::default();
         hash_route("/k8s/pods/42", &mut a);
@@ -2537,8 +2113,6 @@ mod tests {
 
     #[test]
     fn ordinary_file_paths_stay_paths_but_program_identity_is_visible() {
-        // A program field already anchors the event and must stay visible.
-        // An unrelated file path must keep the ordinary `<PATH>` treatment.
         let normalizer = Normalizer::new(Config::default());
         let line = normalizer
             .normalize_line(r#"exe="/usr/bin/sudo""#.to_string())
@@ -2550,9 +2124,6 @@ mod tests {
             .unwrap();
         assert_eq!(line.normalized, "workerEnv.init() ok <PATH>");
 
-        // KUBECTL_PREFIX is `^`-anchored: a `pod/x/y` run not at line start
-        // is an ordinary path, not a kubectl prefix — make it visible if
-        // that anchoring ever changes.
         let line = normalizer
             .normalize_line("saw pod/x/y earlier".to_string())
             .unwrap();
@@ -2565,7 +2136,6 @@ mod tests {
             render_pod_prefix("[pod/rook-ceph-rgw-s3-a-b69d45f98-dwxsc/rgw]"),
             "[pod/rook-ceph-rgw-s3-<SUFFIX>/rgw]"
         );
-        // Nothing stripped: no suffix claimed.
         assert_eq!(render_pod_prefix("[pod/etcd/etcd]"), "[pod/etcd/etcd]");
     }
 
@@ -2589,12 +2159,10 @@ mod tests {
             );
         }
 
-        // Two replicas of one workload render identically.
         assert_eq!(
             render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
             render_pod_prefix("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render]")
         );
-        // Different anchors render differently.
         assert_ne!(
             render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
             render_pod_prefix("[pod/render-twin-5c9c5df548-dxqmk/vllm-render]")
@@ -2626,12 +2194,6 @@ mod tests {
         assert_ne!(first, fourth, "same pod, different container");
     }
 
-    // ---- detector ordering table: no word elsewhere switches a detector ----
-    // The bracket, log-module and structured detectors used to be skipped on
-    // any line carrying a kubernetes word (`pod/`, `kubelet`, `etcd`). A word
-    // elsewhere on the line must not change how a field tokenises
-    // (lessence-moq, lessence-enl): the same line folds the same with it.
-
     #[test]
     fn a_kubernetes_word_does_not_switch_detectors_off() {
         let normalizer = Normalizer::new(Config::default());
@@ -2662,7 +2224,6 @@ mod tests {
 
     #[test]
     fn table_structured_matches_non_k8s() {
-        // Control: the same shape with a non-k8s component IS structured.
         let normalizer = Normalizer::new(Config::default());
         let line = normalizer
             .normalize_line(
@@ -2760,8 +2321,6 @@ mod tests {
             .normalize_line("2025-01-20 10:15:30 Connection to 192.168.1.100 failed".to_string())
             .unwrap();
 
-        // Even with timestamps/IPs/ports disabled, other always-on patterns
-        // (durations, names, etc.) still normalize numbers and decimals
         assert_eq!(
             line.normalized,
             "2025-01-20 10:15:30 Connection to <NUMBER>.<NUMBER>.1.<NUMBER> failed"
@@ -2773,12 +2332,10 @@ mod tests {
         let config = Config::default();
         let normalizer = Normalizer::new(config);
 
-        // Test that timestamps are NOT detected as ports
         let line1 = normalizer
             .normalize_line("2025-01-20 10:15:30 Connection failed".to_string())
             .unwrap();
 
-        // Should normalize timestamp but NOT detect ports in the time
         assert_eq!(line1.normalized, "<TIMESTAMP> Connection failed");
         assert!(
             line1
@@ -2788,7 +2345,6 @@ mod tests {
         );
         assert!(!line1.tokens.iter().any(|t| matches!(t, Token::Port(_))));
 
-        // Test that actual ports ARE detected
         let line2 = normalizer
             .normalize_line("Connection to localhost:8080 failed".to_string())
             .unwrap();
@@ -2796,7 +2352,6 @@ mod tests {
         assert_eq!(line2.normalized, "Connection to localhost:<PORT> failed");
         assert!(line2.tokens.iter().any(|t| matches!(t, Token::Port(8080))));
 
-        // Test that IP:port combinations work
         let line3 = normalizer
             .normalize_line("Connection to 192.168.1.1:3000 failed".to_string())
             .unwrap();
@@ -2805,7 +2360,6 @@ mod tests {
         assert!(line3.tokens.iter().any(|t| matches!(t, Token::IPv4(_))));
         assert!(line3.tokens.iter().any(|t| matches!(t, Token::Port(3000))));
 
-        // Test that IPv6:port combinations work
         let line4 = normalizer
             .normalize_line("Connection to [2001:db8::1]:8080 failed".to_string())
             .unwrap();
@@ -2814,8 +2368,6 @@ mod tests {
         assert!(line4.tokens.iter().any(|t| matches!(t, Token::IPv6(_))));
         assert!(line4.tokens.iter().any(|t| matches!(t, Token::Port(8080))));
     }
-
-    // --- similarity_score direct tests (mutant kills) ---
 
     #[test]
     fn test_similarity_score_identical() {
@@ -2849,7 +2401,6 @@ mod tests {
             .normalize_line("ERROR conn timeout".to_string())
             .unwrap();
         let score = normalizer.similarity_score(&a, &b);
-        // 2 of 3 tokens shared: 2*2/(3+3) = 66.7
         assert!(
             (score - 200.0 / 3.0).abs() < 1e-9,
             "Expected 66.7, got {score}"
@@ -2858,8 +2409,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_tolerates_token_insertion() {
-        // The motivating bug for the LCS metric: one token inserted at the
-        // front used to cascade into a near-zero positional score.
         let normalizer = Normalizer::new(Config::default());
         let a = normalizer
             .normalize_line("ERROR: conn refused to backend xyz".to_string())
@@ -2868,7 +2417,6 @@ mod tests {
             .normalize_line("node1 ERROR: conn refused to backend xyz".to_string())
             .unwrap();
         let score = normalizer.similarity_score(&a, &b);
-        // 6 shared tokens of 6+7: 2*6/13 = 92.3
         assert!(
             score > 90.0,
             "insertion-shifted line should score high, got {score}"
@@ -2877,8 +2425,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_common_prefix_not_enough() {
-        // Long shared prefix with diverging tails must NOT score near 100 —
-        // merging these would lose distinct messages.
         let normalizer = Normalizer::new(Config::default());
         let a = normalizer
             .normalize_line("svc api gateway east db conn pool exhausted".to_string())
@@ -2887,7 +2433,6 @@ mod tests {
             .normalize_line("svc api gateway east tls handshake err peer".to_string())
             .unwrap();
         let score = normalizer.similarity_score(&a, &b);
-        // 4 shared of 8+8 tokens: 50.0
         assert!(
             (score - 50.0).abs() < 1e-9,
             "diverging tails should score 50, got {score}"
@@ -2900,7 +2445,6 @@ mod tests {
         let short = normalizer.normalize_line("ab".to_string()).unwrap();
         let long = normalizer.normalize_line("abcdefghij".to_string()).unwrap();
         let score = normalizer.similarity_score(&short, &long);
-        // ratio = 2/10 = 0.2, below 0.7 threshold → returns 0.2 * 100 = 20.0
         assert!(
             (score - 20.0).abs() < f64::EPSILON,
             "Expected 20.0 (ratio rejection), got {score}"
@@ -2923,8 +2467,6 @@ mod tests {
         let normalizer = Normalizer::new(Config::default());
         let ten_chars = normalizer.normalize_line("abcdefghij".to_string()).unwrap();
 
-        // 7/10 = 0.7, exactly at threshold → NOT rejected → token comparison:
-        // single differing tokens share nothing → 0.0
         let seven_match = normalizer.normalize_line("abcdefg".to_string()).unwrap();
         let score = normalizer.similarity_score(&seven_match, &ten_chars);
         assert!(
@@ -2932,7 +2474,6 @@ mod tests {
             "At boundary (0.7), token comparison applies. Got {score}"
         );
 
-        // 6/10 = 0.6, below threshold → rejected early → returns 0.6*100 = 60.0
         let six_match = normalizer.normalize_line("abcdef".to_string()).unwrap();
         let score_below = normalizer.similarity_score(&six_match, &ten_chars);
         assert!(
@@ -2940,8 +2481,6 @@ mod tests {
             "Below boundary, should return ratio*100=60.0. Got {score_below}"
         );
 
-        // 7 chars but last differs → ratio=0.7, NOT rejected → token
-        // comparison: differing single tokens share nothing → 0.0
         let seven_mismatch = normalizer.normalize_line("abcdefz".to_string()).unwrap();
         let score_mismatch = normalizer.similarity_score(&seven_mismatch, &ten_chars);
         assert!(
@@ -2949,7 +2488,6 @@ mod tests {
             "At boundary with mismatch, token comparison gives 0.0. Got {score_mismatch}"
         );
 
-        // 7 chars, none match → ratio=0.7, NOT rejected, char comparison: 0/10 = 0.0
         let seven_none = normalizer.normalize_line("xyzxyzx".to_string()).unwrap();
         let score_none = normalizer.similarity_score(&seven_none, &ten_chars);
         assert!(
@@ -2968,20 +2506,14 @@ mod tests {
             .normalize_line("alpha beta gamma delta epsilon zeta eta theta iota XXXXX".to_string())
             .unwrap();
         let score = normalizer.similarity_score(&a, &b);
-        // 9 of 10 tokens shared: 2*9/20 = 90.0
         assert!(
             (score - 90.0).abs() < f64::EPSILON,
             "Expected 90.0, got {score}"
         );
     }
 
-    // --- similarity_score edge cases for uncaught mutants ---
-
     #[test]
     fn test_similarity_score_empty_vs_nonempty() {
-        // Kills mutant: max_len == 0 → max_len != 0
-        // With one empty and one non-empty, max_len > 0, min_len = 0
-        // length_ratio = 0/5 = 0.0 < 0.7 → returns 0.0
         let normalizer = Normalizer::new(Config::default());
         let empty = LogLine::new(String::new(), String::new(), vec![], 0);
         let nonempty = LogLine::new("hello".into(), "hello".into(), vec![], 1);
@@ -2994,31 +2526,21 @@ mod tests {
 
     #[test]
     fn test_similarity_score_min_max_not_swapped() {
-        // Kills mutant: min_len ↔ max_len swap in length_ratio calculation
-        // len1=3, len2=10: ratio should be 3/10=0.3, NOT 10/3=3.33
         let normalizer = Normalizer::new(Config::default());
         let short = LogLine::new("abc".into(), "abc".into(), vec![], 0);
         let long = LogLine::new("abcdefghij".into(), "abcdefghij".into(), vec![], 1);
         let score = normalizer.similarity_score(&short, &long);
-        // ratio = 3/10 = 0.3 < 0.7 → returns 0.3 * 100 = 30.0
         assert!(
             (score - 30.0).abs() < f64::EPSILON,
             "3/10 ratio should give 30.0, got {score}"
         );
     }
 
-    /// Token count that reaches the positional byte fallback: past
-    /// MAX_MULTISET_TOKENS, where the hashes are no longer kept. Between
-    /// MAX_SIMILARITY_TOKENS and this the multiset path handles the line.
     const BYTE_FALLBACK_TOKENS: usize = crate::patterns::MAX_MULTISET_TOKENS + 1;
 
     #[test]
     fn test_similarity_score_byte_fallback_division_direction() {
-        // Exercises the byte-overlap fallback. Kills mutant: `/ max_len` →
-        // `* max_len` or `+ max_len`.
         let normalizer = Normalizer::new(Config::default());
-        // `"a "` per token, so the prefix is exactly 2 bytes per token and
-        // matches positionally; an equally long differing tail makes it 50%.
         let prefix_bytes = BYTE_FALLBACK_TOKENS * 2;
         let half_match = |c: char| {
             let mut s: String = std::iter::repeat_n("a ", BYTE_FALLBACK_TOKENS).collect();
@@ -3040,12 +2562,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_byte_fallback_uneven_ratio() {
-        // Byte fallback with a 3/4 positional match. Kills the `==` → `!=`
-        // mutant in the fallback loop (a 50/50 split is invariant under that
-        // inversion, this is not).
-        //
-        // matching = 2 bytes/token prefix + 2 shared bytes; the differing tail
-        // is a third of that, which puts matching/total at exactly 3/4.
         let matching = BYTE_FALLBACK_TOKENS * 2 + 2;
         assert!(
             matching.is_multiple_of(3),
@@ -3068,12 +2584,9 @@ mod tests {
 
     #[test]
     fn test_similarity_score_whitespace_only_uses_byte_fallback() {
-        // Zero tokens on both sides must take the byte fallback, not the
-        // empty-LCS path (which would score 0 or divide by zero).
         let normalizer = Normalizer::new(Config::default());
         let score =
             normalizer.similarity_score(&raw_line("   ".into(), 0), &raw_line("    ".into(), 1));
-        // 3 of 4 bytes match positionally: 75.0
         assert!(
             (score - 75.0).abs() < f64::EPSILON,
             "whitespace-only lines should byte-compare to 75.0, got {score}"
@@ -3082,15 +2595,11 @@ mod tests {
 
     #[test]
     fn test_similarity_score_one_side_whitespace_only() {
-        // One side tokenless, the other not: must take the byte fallback in
-        // BOTH argument orders (kills `n1 > 0`/`n2 > 0` → `>=` mutants,
-        // which would route into the LCS path and score 0).
         let normalizer = Normalizer::new(Config::default());
         let blank = || raw_line("    ".into(), 0);
         let lead = || raw_line("a   ".into(), 1);
         for (x, y) in [(blank(), lead()), (lead(), blank())] {
             let score = normalizer.similarity_score(&x, &y);
-            // 3 of 4 bytes match positionally: 75.0
             assert!(
                 (score - 75.0).abs() < f64::EPSILON,
                 "tokenless side should byte-compare to 75.0, got {score}"
@@ -3100,8 +2609,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_token_reorder_partial() {
-        // Rotated token order: LCS("alpha beta gamma", "gamma alpha beta")
-        // is 2, not 3 — pins the DP recurrence (prev[j+1] vs prev[j]).
         let normalizer = Normalizer::new(Config::default());
         let score = normalizer.similarity_score(
             &raw_line("alpha beta gamma".into(), 0),
@@ -3115,8 +2622,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_at_max_token_capacity() {
-        // Exactly 64 tokens exercises the full DP row width; an off-by-one
-        // in the row arrays panics here.
         let mk = |last: &str| {
             let mut s: String = std::iter::repeat_n("tok ", 63).collect();
             s.push_str(last);
@@ -3124,7 +2629,6 @@ mod tests {
         };
         let normalizer = Normalizer::new(Config::default());
         let score = normalizer.similarity_score(&raw_line(mk("aaa"), 0), &raw_line(mk("bbb"), 1));
-        // 63 of 64 tokens shared: 2*63/128 = 98.4375
         assert!(
             (score - 98.4375).abs() < 1e-9,
             "63/64 shared tokens should give 98.4375, got {score}"
@@ -3140,7 +2644,6 @@ mod tests {
             vec![],
             42,
         );
-        // same hash = shortcircuit to true
         let b = LogLine::new(
             "not similar at all really".into(),
             "not similar at all really".into(),
@@ -3152,8 +2655,6 @@ mod tests {
             "same hash should shortcircuit to similar"
         );
     }
-
-    // --- normalize_line short-circuit tests (mutant kills) ---
 
     #[test]
     fn test_normalize_ips_only_flag() {
@@ -3191,8 +2692,6 @@ mod tests {
         );
     }
 
-    // ---- normalize_line: boolean condition tests ----
-
     #[test]
     fn normalize_line_json_disabled_no_detection() {
         let config = Config {
@@ -3201,7 +2700,6 @@ mod tests {
         };
         let n = Normalizer::new(config);
         let line = n.normalize_line(r"&Event{Type: Warning}".into()).unwrap();
-        // With JSON detection disabled, Event objects should NOT be detected
         assert!(
             !line.tokens.iter().any(|t| matches!(t, Token::Json(_))),
             "JSON detection should be disabled"
@@ -3210,7 +2708,6 @@ mod tests {
 
     #[test]
     fn structured_detection_brace_only() {
-        // Input with { but no = — should still trigger structured detection
         let n = Normalizer::new(Config::default());
         let line = n
             .normalize_line(r#"{"level":"error","component":"web","msg":"fail"}"#.into())
@@ -3226,13 +2723,10 @@ mod tests {
 
     #[test]
     fn structured_detection_equals_only() {
-        // Input with = but no { — should still trigger the structured/KV detection path
-        // The || ensures both branches (contains '{') and (contains '=') individually pass
         let n = Normalizer::new(Config::default());
         let line = n
             .normalize_line("level=error component=web msg=fail".into())
             .unwrap();
-        // Either StructuredMessage or KeyValuePair tokens indicate the = path was taken
         assert!(
             line.tokens.iter().any(|t| matches!(
                 t,
@@ -3243,12 +2737,8 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: normalize_timestamps=false with colon input ----
-
     #[test]
     fn normalize_timestamps_disabled_with_colon_input() {
-        // Kills mutant: `self.config.normalize_timestamps && text.contains(':')` → `||`
-        // If mutated to ||, timestamps would be detected even when disabled
         let config = Config {
             normalize_timestamps: false,
             ..Config::default()
@@ -3262,8 +2752,6 @@ mod tests {
             "Timestamps should NOT be detected when normalize_timestamps=false"
         );
     }
-
-    // ---- Mutant-killing: normalize_emails=false (line 43) ----
 
     #[test]
     fn normalize_emails_disabled_no_detection() {
@@ -3282,31 +2770,17 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: quoted string detection (line 173) ----
-
     #[test]
     fn quoted_detection_single_quote_only() {
-        // Input with ' but no " — should still trigger quoted string detection path
-        // Kills: || with && on `contains('"') || contains('\'')`
         let n = Normalizer::new(Config::default());
         let line = n
             .normalize_line("mount 'very-long-volume-name-that-exceeds-threshold-ok' done".into())
             .unwrap();
-        // The ' path should be entered (if || is correct, either quote type suffices)
-        // Just verify no panic — the detection may or may not produce tokens
         let _ = line;
     }
 
-    // ---- Mutant-killing: normalize_json=false with brace input ----
-
     #[test]
     fn normalize_json_disabled_with_brace_input() {
-        // Note: this mutant (normalize.rs:59) is excluded via .cargo/mutants.toml
-        // because PathDetector (step 3) already replaces &Event{} with <EVENT_OBJECT>
-        // before JsonDetector (step 4) ever runs. The normalize_json guard is
-        // structurally unreachable — an equivalent mutant.
-        //
-        // This test verifies JsonDetector itself works in isolation.
         let (_, direct_tokens) = crate::patterns::json::JsonDetector::detect_and_replace(
             "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
         );
@@ -3315,10 +2789,6 @@ mod tests {
             "JsonDetector should detect Event objects: {direct_tokens:?}"
         );
     }
-
-    // ---- Mutant-killing: --disable-patterns guards at the Normalizer boundary ----
-    // Each test uses an input that provably triggers its detector (default on),
-    // then asserts the corresponding token type disappears when the guard is off.
 
     fn run(config_mut: impl FnOnce(&mut Config), input: &str) -> LogLine {
         let mut config = Config::default();
@@ -3378,8 +2848,6 @@ mod tests {
 
     #[test]
     fn normalize_key_value_disabled_suppresses_structured_logfmt_tokens() {
-        // Pins the logfmt half of the StructuredMessage gate. The detector
-        // demonstrably fires on this input when called directly...
         let input = "level=info component=api-gateway msg=ready";
         let (_, direct) =
             crate::patterns::structured::StructuredMessageDetector::detect_and_replace(input);
@@ -3389,8 +2857,6 @@ mod tests {
                 .any(|t| matches!(t, Token::StructuredMessage { .. })),
             "detector itself must fire on {input:?}, got {direct:?}"
         );
-        // ...so with key-value (and json) disabled, the pipeline must not
-        // invoke it: no StructuredMessage token may appear.
         let off = run(
             |c| {
                 c.normalize_key_value = false;
@@ -3449,9 +2915,6 @@ mod tests {
 
     #[test]
     fn normalize_quoted_disabled_suppresses_quoted_tokens() {
-        // A quoted instance name is what the detector tokenises; a quoted
-        // sentence stays literal by design (lessence-7lj), so the probe must
-        // be a name, not prose.
         let input = "message \"redis-sentinel-wiki\" done";
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_quoted = false, input);
@@ -3519,8 +2982,6 @@ mod tests {
             r#"127.0.0.1 - - [25/Dec/2023:10:15:30 +0000] "POST /api/login HTTP/1.1" 401 256"#;
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_http_status = false, input);
-        // Disabling a detector does not erase an identity the anchor still
-        // matches; class visibility is independent of token collection.
         assert!(off.normalized.contains("<HTTP_STATUS_4XX>"));
         assert!(
             on.tokens
@@ -3538,33 +2999,20 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: similarity_score division vs multiplication ----
-
     #[test]
     fn similarity_score_division_not_multiplication() {
-        // Kills mutant: `min_len as f64 / max_len as f64` → `*`
-        // Use strings where:
-        //   division: 3/10 = 0.3 < 0.7 → returns 30.0 (quick reject)
-        //   multiplication: 3*10 = 30.0 > 0.7 → falls through to char comparison
-        // The char comparison for "xyz" vs "abcdefghij" (0 matching bytes) → 0.0
-        // So: division returns 30.0, multiplication returns 0.0
         let normalizer = Normalizer::new(Config::default());
         let short = LogLine::new("xyz".into(), "xyz".into(), vec![], 0);
         let long = LogLine::new("abcdefghij".into(), "abcdefghij".into(), vec![], 1);
         let score = normalizer.similarity_score(&short, &long);
-        // With /: ratio = 3/10 = 0.3 < 0.7 → returns 30.0
-        // With *: ratio = 30.0 > 0.7 → char comparison (0 matching) → 0.0
         assert!(
             score > 20.0,
             "3/10 ratio should give 30.0, got {score} (if 0.0, division was mutated to *)"
         );
     }
 
-    // --- token cache / cheap-reject machinery (new in 0.4.5) ---
-
     #[test]
     fn test_multiset_intersection_counts_multiplicity() {
-        // Duplicates count once per matched pair, not once per value.
         assert_eq!(
             Normalizer::multiset_intersection(&[1, 2, 2, 3], &[2, 2, 4]),
             2
@@ -3580,29 +3028,18 @@ mod tests {
 
     #[test]
     fn test_multiset_intersection_advance_arms() {
-        // Kills swapped Less/Greater advances: the smaller side must be the
-        // one skipped or the late match is lost.
         assert_eq!(Normalizer::multiset_intersection(&[1, 2, 3, 4], &[4]), 1);
         assert_eq!(Normalizer::multiset_intersection(&[4], &[1, 2, 3, 4]), 1);
     }
 
     #[test]
     fn test_multiset_intersection_asymmetric_duplicates() {
-        // On a match BOTH pointers must advance, or the single 5 on the
-        // other side gets counted against every duplicate.
         assert_eq!(Normalizer::multiset_intersection(&[5, 5], &[5, 9]), 1);
         assert_eq!(Normalizer::multiset_intersection(&[5, 9], &[5, 5]), 1);
     }
 
     #[test]
     fn test_are_similar_float_boundary_58_of_100() {
-        // The single (threshold, token-total) combination in the whole
-        // domain where the float score rounds BELOW an exactly-met integer
-        // threshold: LCS 29 of 100 total tokens, threshold 58 —
-        // (2.0*29/100)*100.0 evaluates to 57.999…, so similarity_score says
-        // "not similar" and are_similar's needed-LCS step-up loop must agree
-        // (kills mutants that weaken or delete that loop).
-        // Letters only, so no pattern detector rewrites the tokens.
         let words = |prefix: char, from: usize, to: usize| -> Vec<String> {
             (from..to)
                 .map(|i| {
@@ -3612,9 +3049,6 @@ mod tests {
                 })
                 .collect()
         };
-        // 30 shared tokens with two adjacent ones swapped in b: the token
-        // MULTISETS share 30, so the intersection bound passes (60 ≥ 58)
-        // and the step-up loop is actually reached — while the LCS is 29.
         let mut a_toks = words('s', 0, 30);
         a_toks.extend(words('x', 30, 50));
         let mut b_toks = words('s', 0, 30);
@@ -3638,9 +3072,6 @@ mod tests {
             "are_similar must agree with the score path at the float boundary"
         );
 
-        // Positive twin: same shape WITHOUT the swap → LCS 30, score 60 ≥
-        // 58 → similar. The needed-LCS loop still runs (need 29 → 30), so a
-        // corrupted loop body that inflates or wraps `need` flips this one.
         let mut c_toks = words('s', 0, 30);
         c_toks.extend(words('z', 30, 50));
         let c = normalizer.normalize_line(c_toks.join(" ")).unwrap();
@@ -3652,10 +3083,6 @@ mod tests {
 
     #[test]
     fn test_are_similar_whitespace_fallback_agrees() {
-        // Whitespace-only lines have no similarity tokens, so are_similar
-        // must fall back to the byte-positional score path — in both
-        // argument orders, with the comparison direction matching
-        // similarity_score >= threshold ("   " vs "  x" scores 66.7).
         let config = Config {
             threshold: 50,
             ..Config::default()
@@ -3676,9 +3103,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_max_token_dp_bounds() {
-        // Two 64-token lines (exactly MAX_SIMILARITY_TOKENS, not overflow)
-        // with zero shared tokens force the full-width DP: the rolling rows
-        // must be sized MAX+1 or the final-column access panics.
         let mk = |prefix: char| -> String {
             (0..64)
                 .map(|i| {
@@ -3701,16 +3125,10 @@ mod tests {
 
     #[test]
     fn test_token_lcs_suffix_window_stays_in_bounds() {
-        // Shorter line is entirely prefix+suffix of the longer one: the
-        // suffix scan must stop at min_n - p or it walks past the start of
-        // the shorter token list (index underflow). Trailing spaces keep
-        // the byte lengths within the 0.7 length-ratio gate without adding
-        // tokens.
         let normalizer = Normalizer::new(Config::default());
         let a = raw_line("ccc ccc ccc         ".to_string(), 1);
         let b = raw_line("ccc ccc xxx ccc ccc ccc".to_string(), 2);
         let score = normalizer.similarity_score(&a, &b);
-        // LCS = 3 of 3+6 tokens: 2*3/9 = 66.67
         assert!(
             (score - 200.0 / 3.0).abs() < 1e-9,
             "expected 66.67, got {score}"
@@ -3719,30 +3137,19 @@ mod tests {
 
     #[test]
     fn test_are_similar_agrees_with_score_exhaustively() {
-        // Ground truth: are_similar(a, b) ⇔ similarity_score(a, b) >= T.
-        // Sweep a structured family of synthetic lines (varying token
-        // counts, shared prefixes/suffixes/middles, shuffles, duplicates)
-        // against several thresholds. Any mutant that changes a decision in
-        // the threshold-aware fast path (length-ratio branch, multiset
-        // bound, needed-LCS computation, DP early-exit) must disagree with
-        // the score path on some pair in this family.
         let vocab = [
             "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
             "lambda", "mu",
         ];
         let mut lines: Vec<String> = Vec::new();
         for n in 1..=12usize {
-            // Plain prefix of the vocabulary, length n.
             lines.push(vocab[..n].join(" "));
-            // Same length but the middle token replaced.
             let mut mid = vocab[..n].to_vec();
             mid[n / 2] = "XXXXX";
             lines.push(mid.join(" "));
-            // Same length, reversed (same multiset, low LCS).
             let mut rev = vocab[..n].to_vec();
             rev.reverse();
             lines.push(rev.join(" "));
-            // Disjoint tokens of the same count.
             lines.push(vec!["zzz"; n].join(" "));
         }
 
@@ -3774,9 +3181,6 @@ mod tests {
 
     #[test]
     fn test_similarity_score_middle_token_diff_keeps_suffix() {
-        // Common prefix AND suffix around one differing middle token: the
-        // suffix trim must contribute to the LCS. 7 of 8 tokens shared:
-        // 2*7/16 = 87.5.
         let normalizer = Normalizer::new(Config::default());
         let a = normalizer
             .normalize_line("alpha beta gamma delta epsilon zeta eta theta".to_string())
@@ -3793,10 +3197,6 @@ mod tests {
 
     #[test]
     fn test_are_similar_exactly_at_threshold() {
-        // LCS 8 of 10 tokens each → score exactly 80. The threshold-aware
-        // fast path in are_similar must agree with similarity_score on the
-        // boundary in both directions (kills off-by-one mutants in the
-        // needed-LCS computation and the multiset reject).
         let a_text = "alpha beta gamma delta epsilon zeta eta theta iota kappa";
         let b_text = "alpha beta gamma delta epsilon zeta eta theta AAAAA BBBBB";
 
@@ -3832,8 +3232,6 @@ mod tests {
 
     #[test]
     fn test_are_similar_agrees_with_score_on_disjoint_tokens() {
-        // Same-length lines with zero shared tokens: the multiset bound
-        // rejects without a DP, and that decision must match the score path.
         let normalizer = Normalizer::new(Config::default());
         let a = normalizer
             .normalize_line("alpha beta gamma delta".to_string())
@@ -3845,19 +3243,12 @@ mod tests {
         assert!(normalizer.similarity_score(&a, &b) < f64::from(Config::default().threshold));
     }
 
-    // ---- anchors ----
-
     fn normalize(line: &str) -> LogLine {
         Normalizer::new(Config::default())
             .normalize_line(line.to_string())
             .unwrap()
     }
 
-    /// Two NetBox access lines differing only in the endpoint. Normalization
-    /// erases both paths to `<PATH>`, leaving one token of difference out of
-    /// eight — comfortably similar at any default-ish threshold. Without an
-    /// anchor these folded into one group whose representative claimed an
-    /// endpoint that most of its lines never touched.
     #[test]
     fn anchor_separates_different_endpoints() {
         let normalizer = Normalizer::new(Config::default());
@@ -3873,16 +3264,12 @@ mod tests {
             "different endpoints, different anchors"
         );
         assert!(!normalizer.are_similar(&login, &admin));
-        // Without the anchor these would have been judged similar.
         assert!(
             normalizer.similarity_score(&login, &admin) >= f64::from(Config::default().threshold),
             "the point of the anchor is that similarity alone does not separate these"
         );
     }
 
-    /// The same endpoint with different object ids is one route, so folding
-    /// must still happen. This is the direction that costs compression if it
-    /// goes wrong: every web log would fragment per id.
     #[test]
     fn anchor_keeps_one_route_together() {
         let normalizer = Normalizer::new(Config::default());
@@ -3897,9 +3284,6 @@ mod tests {
         assert!(normalizer.are_similar(&first, &second));
     }
 
-    /// A digit run inside a segment is an id too — `product_1` and `product_2`
-    /// are one route. Treating the whole segment as literal cost 11 points of
-    /// compression on the nginx corpus.
     #[test]
     fn anchor_collapses_digits_inside_a_segment() {
         let a = normalize(
@@ -3911,7 +3295,6 @@ mod tests {
         assert_eq!(a.anchor, b.anchor);
     }
 
-    /// A query string is per-request data, not route identity.
     #[test]
     fn anchor_ignores_the_query_string() {
         let a = normalize(
@@ -3923,9 +3306,6 @@ mod tests {
         assert_eq!(a.anchor, b.anchor);
     }
 
-    /// Two GPUs failing the same way are two failures, not one. Normalization
-    /// keeps only the bus byte of the address, so these differ in two tokens
-    /// out of twenty and merged before.
     #[test]
     fn anchor_separates_pci_devices() {
         let normalizer = Normalizer::new(Config::default());
@@ -3940,8 +3320,6 @@ mod tests {
         assert!(!normalizer.are_similar(&first, &second));
     }
 
-    /// Two mentions of the same device anchor alike, so repeated warnings for
-    /// one GPU still fold.
     #[test]
     fn anchor_matches_for_the_same_pci_device() {
         let normalizer = Normalizer::new(Config::default());
@@ -3956,8 +3334,6 @@ mod tests {
         assert!(normalizer.are_similar(&first, &second));
     }
 
-    /// The same klog message from two call sites is two events. Only the
-    /// `file.go:line` token differs, so similarity alone would merge them.
     #[test]
     fn anchor_separates_klog_call_sites() {
         let normalizer = Normalizer::new(Config::default());
@@ -3976,8 +3352,6 @@ mod tests {
         );
     }
 
-    /// One call site stays one call site whatever the pid, the time or the
-    /// line's other variable parts.
     #[test]
     fn anchor_keeps_one_klog_call_site_together() {
         let normalizer = Normalizer::new(Config::default());
@@ -3991,9 +3365,6 @@ mod tests {
         assert!(normalizer.are_similar(&first, &second));
     }
 
-    /// Two units failing are two incidents. The corpus had 8 rke2-agent
-    /// failures absorbed into 103,328 containerd ones under a template that
-    /// named rke2-agent.
     #[test]
     fn anchor_separates_systemd_units() {
         let normalizer = Normalizer::new(Config::default());
@@ -4016,8 +3387,6 @@ mod tests {
         assert_eq!(agent.anchor, again.anchor, "same unit, same anchor");
     }
 
-    /// A message *about* a unit is not the unit speaking: `Starting
-    /// containerd.service - ...` carries no anchor and folds as before.
     #[test]
     fn anchor_ignores_messages_about_units() {
         let line = normalize(
@@ -4026,8 +3395,6 @@ mod tests {
         assert_eq!(line.anchor, 0);
     }
 
-    /// auditd's `type=` is the record kind; two kinds with near-identical
-    /// bodies are still two kinds.
     #[test]
     fn anchor_separates_audit_record_types() {
         let acq = normalize(
@@ -4041,7 +3408,6 @@ mod tests {
             "type=CRED_ACQ msg=audit(1481077300.101:530): pid=3020 uid=0 auid=0 ses=2 msg='op=PAM:setcred acct=\"root\" exe=\"/usr/sbin/cron\" hostname=? addr=? terminal=cron res=success'",
         );
         assert_eq!(acq.anchor, acq2.anchor, "same type, same anchor");
-        // `type=` must open the line: a key=value elsewhere is not a record type.
         let prose = normalize("event type=CRED_ACQ msg=audit(1.0:1): done");
         assert_eq!(prose.anchor, 0);
     }
@@ -4054,7 +3420,6 @@ mod tests {
         assert_ne!(yes.anchor, no.anchor);
         assert!(yes.normalized.contains("success=yes"));
         assert!(no.normalized.contains("success=no"));
-        // The outcome is identity, not the particular return value or timestamp.
         let another = normalize(
             "type=SYSCALL msg=audit(1789430999.456:912): arch=c000003e syscall=42 success=yes exit=4",
         );
@@ -4102,7 +3467,6 @@ mod tests {
         assert!(numeric_name.normalized.contains("--http1234-port="));
     }
 
-    /// Most lines carry no anchor at all and must group exactly as before.
     #[test]
     fn lines_without_anchors_are_untouched() {
         let plain = normalize(
@@ -4121,9 +3485,6 @@ mod tests {
         assert!(normalizer.are_similar(&plain, &other));
     }
 
-    /// A unit whose name carries an instance id — a container scope, a pod
-    /// volume mount — is one unit kind. The corpus has 555 `cri-containerd-
-    /// <hash>.scope` units; anchoring each one is the PCI-inventory mistake.
     #[test]
     fn anchor_names_the_unit_kind_not_the_instance() {
         let a = normalize(
@@ -4135,8 +3496,6 @@ mod tests {
         assert_eq!(a.anchor, b.anchor, "same unit kind");
         assert_ne!(a.anchor, 0);
 
-        // A mount unit is named after what it mounts: the message is the
-        // identity there, so it carries no anchor and folds by similarity.
         let mount = normalize(
             "Sep 14 06:58:42 oryx systemd[1]: var-lib-kubelet-pods-f27aee6d\\x2d4bc2\\x2d43f0\\x2d9be3\\x2d7a1b2c3d4e5f-volumes-kubernetes.io\\x7eprojected-kube\\x2dapi\\x2daccess\\x2dvmch5.mount: Deactivated successfully.",
         );
@@ -4161,9 +3520,6 @@ mod tests {
         assert_eq!(session.anchor, session2.anchor, "digit runs collapse");
     }
 
-    /// The anchor is folded into the line hash, so the folder's exact-hash
-    /// group index cannot attach a line to a group with a different anchor
-    /// without ever consulting `are_similar`.
     #[test]
     fn anchor_is_folded_into_the_line_hash() {
         let login = normalize(
@@ -4182,10 +3538,6 @@ mod tests {
         );
     }
 
-    // ---- overflow lines: multiset instead of byte positions ----
-
-    /// Build a line of `n` whitespace tokens whose 4th token is `state`, so
-    /// the head differs when `state` does and the tail is identical.
     fn wide_line(state: &str, n: usize) -> String {
         let tail: Vec<String> = (0..n).map(|i| format!("f{i}=v{i}")).collect();
         format!("evt one two {state} {}", tail.join(" "))
@@ -4193,18 +3545,10 @@ mod tests {
 
     #[test]
     fn overflow_lines_fold_like_short_ones() {
-        // Regression for the token-overflow cliff: two lines differing in one
-        // value folded when short and split when long, because past
-        // MAX_SIMILARITY_TOKENS the comparison became positional bytes, which
-        // one length change knocks out of alignment. Nothing about the
-        // difference changes with the length of the identical tail, so the
-        // verdict must not either.
         let normalizer = Normalizer::new(Config::default());
         let short = |s: &str| normalizer.normalize_line(wide_line(s, 10)).unwrap();
         let long = |s: &str| normalizer.normalize_line(wide_line(s, 200)).unwrap();
 
-        // Same head, one differing payload token — the head check is not what
-        // is under test here.
         assert!(
             normalizer.are_similar(&short("same alpha"), &short("same bravo")),
             "short lines differing in one payload token fold"
@@ -4217,10 +3561,6 @@ mod tests {
 
     #[test]
     fn overflow_lines_keep_distinct_messages_apart() {
-        // The multiset is order-insensitive, so a large shared payload can
-        // outvote the few words that say what a record IS. A real Rancher log
-        // merged 18 "Updating TLS secret for ..." lines into an "Active TLS
-        // secret ..." group before the ordered head check went in.
         let normalizer = Normalizer::new(Config::default());
         let active = normalizer.normalize_line(wide_line("Active", 200)).unwrap();
         let updating = normalizer
@@ -4234,9 +3574,6 @@ mod tests {
 
     #[test]
     fn overflow_similarity_is_order_insensitive_in_the_payload() {
-        // What the multiset buys: a value changing length mid-record shifts
-        // every byte after it, which is exactly what defeated the positional
-        // comparison. The head is identical here, so only the payload differs.
         let normalizer = Normalizer::new(Config::default());
         let a = normalizer
             .normalize_line(format!("evt one two same {}", "x ".repeat(100)))
@@ -4249,10 +3586,6 @@ mod tests {
 
     #[test]
     fn lines_past_the_multiset_bound_keep_the_byte_fallback() {
-        // Past MAX_MULTISET_TOKENS the hashes are not kept, so the positional
-        // path still runs. Truncating the hash set instead would let two
-        // records agreeing only on their first few thousand tokens score as
-        // identical.
         let huge = crate::patterns::MAX_MULTISET_TOKENS + 10;
         let normalizer = Normalizer::new(Config::default());
         let line = normalizer.normalize_line(wide_line("up", huge)).unwrap();
@@ -4302,9 +3635,6 @@ mod anchor_tests_2026_08_29 {
             "another workload, same container name"
         );
         assert_ne!(first.anchor, fourth.anchor, "another container");
-        // The split above must be visible on the line, not just in the
-        // anchor: a template read alone must not claim two workloads share
-        // it (CLAUDE.local.md: templates are claims).
         assert_eq!(first.normalized, second.normalized);
         assert!(
             first
@@ -4519,24 +3849,17 @@ mod syslog_host_tests_2026_08_29 {
     }
 }
 
-/// Threshold 0 admits unanchored pairs without shared tokens (lessence-e8v). The needed-LCS seed in
-/// `are_similar` is `ceil((threshold * total) / 200)`; with the product
-/// replaced by a sum it becomes `ceil(total / 200) >= 1` at threshold 0,
-/// and two equal-length lines that share no token — LCS 0 — would be
-/// refused. Written against the survivor at the seed line; a hypothesis
-/// until that mutant fails.
 #[cfg(test)]
 mod threshold_zero_2026_09_17 {
     use super::*;
 
     #[test]
-    #[allow(clippy::float_cmp)] // Disjoint tokens have an exactly zero LCS score.
+    #[allow(clippy::float_cmp)]
     fn at_threshold_zero_disjoint_unanchored_lines_are_similar() {
         let normalizer = Normalizer::new(Config {
             threshold: 0,
             ..Config::default()
         });
-        // Plain words only: no detector fires, no anchor, distinct hashes.
         let a = normalizer
             .normalize_line("alpha bravo charlie delta".to_string())
             .unwrap();
@@ -4550,15 +3873,11 @@ mod threshold_zero_2026_09_17 {
             normalizer.are_similar(&a, &b),
             "threshold 0 must accept a pair with nothing in common"
         );
-        // and the default threshold still refuses them
         let strict = Normalizer::new(Config::default());
         assert!(!strict.are_similar(&a, &b));
     }
 }
 
-/// The 23 normalize.rs survivors of the release mutation sweep that a
-/// lib test can reach (lessence-e8v). Each test names its candidates; the
-/// mapping is a hypothesis until the mutants fail.
 #[cfg(test)]
 mod e8v_normalize_2026_09_17 {
     use super::*;
@@ -4573,13 +3892,8 @@ mod e8v_normalize_2026_09_17 {
         normalize_with(Config::default(), line)
     }
 
-    /// 49:73: the CPU-quantity prefilter must fire on lowercase `cpu`
-    /// alone; a narrowed gate would let `500m` fall through to the
-    /// minute-duration pass.
     #[test]
     fn a_lowercase_cpu_field_reaches_the_cpu_quantity_pass() {
-        // As a key-value pair: if the early CPU pass is skipped, the
-        // key-value pass consumes the value first and the quantity is lost.
         let line = normalize("resources cpu=500m memory=256Mi");
         assert!(
             line.normalized.contains("<CPU_QUANTITY>"),
@@ -4593,10 +3907,6 @@ mod e8v_normalize_2026_09_17 {
         );
     }
 
-    /// 179:39: the structured detector is enabled by either half. Through
-    /// the pipeline only the JSON half is reachable (the key-value pass
-    /// rewrites logfmt first), so with key-value disabled a JSON record
-    /// must still yield its structured token.
     #[test]
     fn a_json_record_is_still_structured_with_key_value_disabled() {
         let cfg = Config {
@@ -4616,8 +3926,6 @@ mod e8v_normalize_2026_09_17 {
         );
     }
 
-    /// 181:32, 181:78: each half of the structured prefilter is gated by
-    /// its own flag; a disabled half must not run on its shape.
     #[test]
     fn a_disabled_structured_half_does_not_run_on_its_shape() {
         let no_json = Config {
@@ -4651,18 +3959,12 @@ mod e8v_normalize_2026_09_17 {
         );
     }
 
-    /// 124:17: a kernel-uptime line never enters the syslog host pass, even
-    /// when its third word ends in a colon like a program tag.
     #[test]
     fn a_kernel_uptime_line_has_no_syslog_host() {
         let line = normalize("[    5.450000] usb usb1: New USB bus registered");
         assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
     }
 
-    /// 170:29: the log-module detector runs only on bracketed lines. A
-    /// bracket-free `facility.level daemon:` line that carries an indicator
-    /// word (`ERROR`) and a known daemon would match the syslog pattern if
-    /// the gate let it through; today it does not, and this pins that.
     #[test]
     fn a_bracket_free_module_shape_is_left_alone() {
         for line in [
@@ -4685,30 +3987,18 @@ mod e8v_normalize_2026_09_17 {
         }
     }
 
-    /// 220:21: an escaped quote inside a quoted value does not end the
-    /// value, so a `=` after it is still quoted. The string opens the line
-    /// so no unquoted assignment precedes it, and the escaped quote is
-    /// unbalanced so a toggle would flip the state.
     #[test]
     fn an_escaped_quote_does_not_end_a_quoted_value() {
         assert!(!has_unquoted_eq(r#""a \"b c=d""#));
         assert!(has_unquoted_eq(r#""a b" c=d"#));
     }
 
-    /// 349:41: the PCI prefilter looks at the byte after a dot; a line
-    /// whose first byte is a dot must not index before the start.
     #[test]
     fn a_leading_dot_with_a_colon_does_not_panic_the_pci_prefilter() {
         let line = normalize(".5 a:b done");
         assert!(!line.normalized.is_empty());
     }
 
-    /// 516:5, 519:17, 519:20, 520:17, 520:20, 521:17, 522:17: the
-    /// `facility.level` shape is two non-empty lowercase labels and
-    /// nothing else. Through the pipeline only the true shape and a
-    /// trailing-dot word reach the syslog host pass (a dotted lookalike is
-    /// taken as a host by the network pass first), so the lookalikes are
-    /// judged on the function itself.
     #[test]
     fn a_facility_level_word_is_not_a_host_but_lookalikes_are() {
         let shape = normalize("Aug 29 08:40:15 daemon.info syslogd: started");
@@ -4731,8 +4021,6 @@ mod e8v_normalize_2026_09_17 {
         }
     }
 
-    /// 533:30, 536:27: a word carrying `:` alone is not a host candidate,
-    /// and a word that merely ends in `>` still is.
     #[test]
     fn a_colon_word_is_not_a_host_and_a_trailing_bracket_does_not_disqualify() {
         let colon = normalize("Aug 29 08:40:15 gw:1 kernel: link up");
@@ -4741,8 +4029,6 @@ mod e8v_normalize_2026_09_17 {
         assert!(angle.normalized.contains("<HOST>"), "{}", angle.normalized);
     }
 
-    /// 727:30, 729:17: a five-letter or eight-letter human word is not a
-    /// generated segment; only the random alphabet is.
     #[test]
     fn human_words_of_generated_lengths_stay_in_the_pod_skeleton() {
         assert_eq!(pod_skeleton("web-nginx-x7k2q"), "web-nginx");
@@ -4750,12 +4036,8 @@ mod e8v_normalize_2026_09_17 {
         assert_eq!(pod_skeleton("web-x7k2q-x7k2q"), "web");
     }
 
-    /// 1035:35: a lowercase `method=` alone must reach the method anchor,
-    /// so two requests with different methods hash to different anchors.
     #[test]
     fn a_lowercase_method_field_alone_reaches_the_method_anchor() {
-        // A method turns the path into a protected route, rendered as its
-        // skeleton rather than tokenised as a path.
         let line = normalize(r#"method=GET path="/api/v1/items" status=200"#);
         assert!(!line.normalized.contains("<PATH>"), "{}", line.normalized);
         assert!(line.normalized.contains("/api/"), "{}", line.normalized);
@@ -4766,16 +4048,11 @@ mod e8v_normalize_2026_09_17 {
         assert!(is_route_shaped("/srv/data"));
         assert!(is_route_shaped("https://a.example/x"));
         assert!(!is_route_shaped("relative/dir"));
-        // a scheme is there, and it is letters
         assert!(!is_route_shaped("://a.example/x"));
         assert!(!is_route_shaped("h2c-1://a.example/x"));
-        // on a line the byte gate lets through, a path key over a relative
-        // value anchors nothing
         assert_eq!(normalize("x path=relative/dir/file to=/srv y").anchor, 0);
     }
 
-    /// `line` normalized with `later` sitting just after `earlier`, and
-    /// just before it; every other detector stays where it is.
     fn either_side(line: &str, later: &str, earlier: &str) -> (String, String) {
         let mut order: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
         let from = order.iter().position(|e| e.name == later).unwrap();
@@ -4806,10 +4083,6 @@ mod e8v_normalize_2026_09_17 {
         }
     }
 
-    /// Slow (every corpus line under every pair of detectors): runs in the
-    /// `slow` profile, before a release. A pair whose order changes a corpus
-    /// line and that no `after` declares is a rule nobody wrote down: add it
-    /// to the later entry with an invented line of the same shape.
     #[test]
     fn every_order_dependence_on_a_corpus_line_is_declared() {
         let mut lines: Vec<String> = Vec::new();
@@ -4819,8 +4092,6 @@ mod e8v_normalize_2026_09_17 {
             let path = entry.unwrap().path();
             if path.extension().is_some_and(|e| e == "log") {
                 let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
-                // The longest lines hold two thirds of the corpora's bytes
-                // in two percent of their lines; they are left out.
                 lines.extend(text.lines().filter(|l| l.len() <= 2000).map(str::to_string));
             }
         }
@@ -4834,8 +4105,6 @@ mod e8v_normalize_2026_09_17 {
         let table: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
         let mut undeclared = Vec::new();
         for later in 1..table.len() {
-            // `prev` holds each line with `later` sitting just after
-            // table[k]; moving it one place up changes only that pair.
             let mut prev: Vec<String> = lines.iter().map(|l| run(l, &table)).collect();
             for k in (0..later).rev() {
                 let mut order = table.clone();
@@ -4884,7 +4153,6 @@ mod e8v_normalize_2026_09_17 {
             order.swap(at(a), at(b));
             order_complaints(&order)
         };
-        // hashes and UUIDs change places: hashes now also sit above network
         assert_eq!(
             swapped("uuid", "hash"),
             vec![
@@ -4892,7 +4160,6 @@ mod e8v_normalize_2026_09_17 {
                 "`hash` must come after `network`"
             ]
         );
-        // quoted strings and names change places
         assert_eq!(
             swapped("name", "quoted"),
             vec![
@@ -4906,7 +4173,6 @@ mod e8v_normalize_2026_09_17 {
             order_complaints(&twice),
             vec!["`quoted` is in the table twice"]
         );
-        // an entry whose earlier ones are not in the table at all
         let lone = [&DETECTOR_ORDER[at("uuid")]];
         assert_eq!(
             order_complaints(&lone),
@@ -4924,7 +4190,6 @@ mod e8v_normalize_2026_09_17 {
         assert!(!gate(false, "t", "line", || false));
     }
 
-    /// The check is compiled into test builds only.
     #[cfg(debug_assertions)]
     #[test]
     #[should_panic(expected = "turned away a line its pattern matches")]
@@ -4940,14 +4205,12 @@ mod e8v_normalize_2026_09_17 {
             found,
             vec![(7, "/api/a"), (33, "https://a.example/b"), (59, "/c")]
         );
-        // with a method on the line the quoted ones belong to the method rule
         let found: Vec<_> = field_routes(line, true).collect();
         assert_eq!(found, vec![(7, "/api/a")]);
     }
 
     #[test]
     fn a_line_with_no_route_field_shape_stops_at_the_byte_gate() {
-        // a quoted path that follows neither `=` nor `:`
         assert!(!may_hold_route_field(r#"opened "/srv/data" for path"#));
         assert!(!may_hold_route_field(r#"path, "/srv/data""#));
         assert!(!may_hold_route_field("path = relative"));
@@ -4982,8 +4245,6 @@ mod e8v_normalize_2026_09_17 {
     #[test]
     fn a_file_named_by_an_id_keeps_only_an_extension_written_as_one() {
         assert_eq!(render_route("/files/0011aabb.snap"), "/files/<ID>.snap");
-        // `7z` does not start with a letter, `tar-gz` is not alphanumeric:
-        // neither is an extension, so the segment is not an id
         assert_eq!(render_route("/files/0011aabb.7z"), "/files/<N>aabb.<N>z");
         assert_eq!(
             render_route("/files/0011aabb.tar-gz"),
@@ -4993,7 +4254,6 @@ mod e8v_normalize_2026_09_17 {
 
     #[test]
     fn an_http_method_field_makes_any_quoted_path_field_a_route() {
-        // `items/42` is not written as a route; the method makes it one
         let items = normalize(r#"method=GET path="items/42" y"#);
         let orders = normalize(r#"method=GET path="orders/42" y"#);
         assert_ne!(items.anchor, orders.anchor);
@@ -5009,8 +4269,6 @@ mod e8v_normalize_2026_09_17 {
         );
     }
 
-    /// 1341:68: two tokens with the same small-int tail shape are one
-    /// token to the similarity metric, so lines differing only there fold.
     #[test]
     fn tokens_with_the_same_small_int_tail_shape_are_equal() {
         let normalizer = Normalizer::new(Config::default());
@@ -5031,10 +4289,6 @@ mod e8v_normalize_2026_09_17 {
     }
 }
 
-/// Past MAX_SIMILARITY_TOKENS the decision is the token multiset, not the
-/// byte-positional score (lessence-e8v normalize 1352:9). A long line whose
-/// one early value grows shifts every byte after it: the bag still agrees,
-/// the positions do not.
 #[cfg(test)]
 mod e8v_multiset_2026_09_18 {
     use super::*;
@@ -5067,13 +4321,10 @@ mod e8v_multiset_2026_09_18 {
             ))
             .unwrap();
         assert!(short.sim().sorted_hashes().len() > crate::patterns::MAX_SIMILARITY_TOKENS);
-        // Under the mutant both are_similar and similarity_score fall back
-        // to positional byte overlap, which the 23-byte shift defeats.
         assert!(n.are_similar(&short, &long));
     }
 }
 
-// For a fixed normalized-text hash, distinct anchors must remain distinct.
 fn mix_anchor_hash(base_hash: u64, anchor: u64) -> u64 {
     base_hash ^ anchor.wrapping_mul(0x9E37_79B9_7F4A_7C15)
 }

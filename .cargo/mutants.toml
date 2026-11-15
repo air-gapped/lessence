@@ -21,10 +21,10 @@ exclude_re = [
     # lessence-e8v: absorb adds two nonempty group counts before this guard.
     # The sum is at least two; checked overflow traps before either guard.
     'replace match guard self\.count > 1 with true in PatternGroup::absorb$',
-    '^src/folder/mod\.rs:496:38: replace > with >= in PatternGroup::absorb$',
+    '^src/folder/mod\.rs:346:38: replace > with >= in PatternGroup::absorb$',
     # unit_spans emits each PCI match as a whole atom. Its cuts preserve PCI
     # word boundaries, so any isolated match has both start=0 and end=len.
-    '^src/folder/mod\.rs:2016:45: replace && with \|\| in varying_spans$',
+    '^src/folder/mod\.rs:1415:45: replace && with \|\| in varying_spans$',
 
     # --- 0.4.5 similarity-cache equivalents ---
     # from_normalized: the s.len() > u32::MAX guard needs a > 4 GiB string
@@ -34,34 +34,34 @@ exclude_re = [
     # flush_oldest_safe_group: the map entry equal to the removed index is
     # deleted on the line above, so > vs >= over the remaining values is
     # indistinguishable.
-    '^src/folder/mod\.rs:3872:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
+    '^src/folder/mod\.rs:2860:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
     # token_lcs prefix/suffix trims and the early-exit bound are exact
     # optimizations: disabling a trim (< → == / >) or loosening the bound
     # (- → + / /) can never change the returned LCS or decision, only speed.
-    '^src/normalize\.rs:1837:17: replace < with (==|>) in Normalizer::token_lcs$',
-    '^src/normalize\.rs:1848:17: replace < with (==|>) in Normalizer::token_lcs$',
-    '^src/normalize\.rs:1871:42: replace - with \+ in Normalizer::token_lcs$',
-    '^src/normalize\.rs:1871:46: replace - with (\+|/) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1459:17: replace < with (==|>) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1468:17: replace < with (==|>) in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1489:42: replace - with \+ in Normalizer::token_lcs$',
+    '^src/normalize\.rs:1489:46: replace - with (\+|/) in Normalizer::token_lcs$',
     # are_similar multiset bound: these mutations push the bound above any
     # admissible threshold (<= 100) so the reject never fires — decisions
     # unchanged, only the DP shortcut is lost.
-    '^src/normalize\.rs:1927:21: replace \* with \+ in Normalizer::are_similar$',
-    '^src/normalize\.rs:1927:66: replace / with \* in Normalizer::are_similar$',
-    '^src/normalize\.rs:1927:75: replace \* with \+ in Normalizer::are_similar$',
+    '^src/normalize\.rs:1535:21: replace \* with \+ in Normalizer::are_similar$',
+    '^src/normalize\.rs:1535:66: replace / with \* in Normalizer::are_similar$',
+    '^src/normalize\.rs:1535:75: replace \* with \+ in Normalizer::are_similar$',
     # are_similar needed-LCS seed: ceil((T*total)/200) is only a starting
     # point — division by total (>= 2) can only undershoot it, and the
     # step-up loop walks `need` to the same authoritative value. Addition
     # is NOT equivalent at threshold 0; keep that mutant testable. The
     # bounds above need exact locations because their * -> + mutations
     # share a function name with this non-equivalent seed mutation.
-    '^src/normalize\.rs:1939:40: replace \* with / in Normalizer::are_similar$',
+    '^src/normalize\.rs:1539:40: replace \* with / in Normalizer::are_similar$',
 
     # lessence-e8v: widened prefilters only add inert detector calls.
     # cpu_quantities and the bracket detector repeat their own guards;
     # PCI_ADDRESS itself requires both the colon and the dot-digit shape.
     # (The first two are DETECTOR_ORDER closures: pinned, no function name.)
-    '^src/normalize\.rs:83:51: replace && with \|\|$',
-    '^src/normalize\.rs:266:29: replace && with \|\|$',
+    '^src/normalize\.rs:44:51: replace && with \|\|$',
+    '^src/normalize\.rs:212:29: replace && with \|\|$',
     'replace && with \|\| in pci_addresses$',
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
@@ -69,10 +69,10 @@ exclude_re = [
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.
-    '^src/folder/mod\.rs:1569:54: replace \+ with \* in align_exact$',
+    '^src/folder/mod\.rs:1067:54: replace \+ with \* in align_exact$',
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
-    '^src/folder/mod\.rs:2229:85: replace < with <= in cli_option_units$',
+    '^src/folder/mod\.rs:1589:85: replace < with <= in cli_option_units$',
 
     # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
     # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded
@@ -125,7 +125,7 @@ exclude_re = [
     # --- code changed since v0.8.1 ---
     # At lines.len() == 2, pop-last, truncate(1), push-last restores the
     # same two lines, so `> 2` and `>= 2` keep identical member lists.
-    '^src/folder/mod\.rs:416:63: replace > with >= in PatternGroup::retained_rejoin$',
+    '^src/folder/mod\.rs:280:63: replace > with >= in PatternGroup::retained_rejoin$',
     # RollupComputer uses positive k (production default 7). At len == k,
     # pop-rarest, truncate(k-1), push-rarest is the identity on the sorted
     # vector.
@@ -133,5 +133,5 @@ exclude_re = [
     # align_banded reads a row only through `value`, at cells inside both
     # the band and the table, and the row's j loop writes every such cell
     # before it is read: the value `here` is filled with is never read.
-    '^src/folder/mod\.rs:1614:19: delete - in align_banded$',
+    '^src/folder/mod\.rs:1096:19: delete - in align_banded$',
 ]
