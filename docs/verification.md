@@ -209,8 +209,10 @@ test by accident and `make release-check` always runs all of them.
   exit 1 on a staged file named like a security working document, on an
   added line of Markdown or of the issue export that describes a weakness,
   on a commit message that does, and on an added line or message holding a
-  string from the local, untracked `.private-names`. `--commit REV` runs the
-  same checks on an existing commit.
+  string from the local, untracked `.private-names` or `.blocklist`, both
+  read from the main checkout so a linked worktree uses them too.
+- `pre-push`: `scripts/check-public-text.sh --outgoing` runs the same
+  checks on every commit the push would send, then `make ci`.
 
 ## Corpus-dependent tests
 

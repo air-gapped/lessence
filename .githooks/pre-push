@@ -17,5 +17,9 @@ else
     NC=''
 fi
 
+# Commits made in a linked worktree and merged by fast-forward never met
+# the commit hooks of this checkout, so every outgoing commit is read here.
+scripts/check-public-text.sh --outgoing
+
 printf "%spre-push:%s running make ci...\n" "$BLUE" "$NC"
 make ci

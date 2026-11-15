@@ -14,6 +14,8 @@
 #   scripts/check-public-text.sh --staged          what `git commit` would publish
 #   scripts/check-public-text.sh --message FILE    a commit message
 #   scripts/check-public-text.sh --commit REV      one existing commit
+#   scripts/check-public-text.sh --outgoing        every commit a push would
+#                                                  send (pre-push hook stdin)
 #
 # What to do when it stops you: write the material in your private notes
 # and commit only what the code now does, in neutral words ("mask values
@@ -23,6 +25,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+
+# The two lists are untracked, so a linked worktree does not have them: they
+# are read from the main checkout, wherever this runs.
+MAIN="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+LISTS=("$MAIN/.blocklist" "$MAIN/.private-names")
 
 if [ "${OWNER_APPROVED_PUBLIC_SECURITY_TEXT:-}" = "1" ]; then
     exit 0
@@ -66,8 +73,14 @@ check_added_prose() {
 # stdin: a unified diff. Counts added lines, in any file, that hold a
 # string from .private-names.
 check_added_private_names() {
-    [ -f .private-names ] || { echo 0; return; }
-    grep -E '^\+' | grep -vE '^\+\+\+ ' | grep -cFf <(grep -vE '^(#|$)' .private-names) || true
+    local patterns
+    patterns=$(cat "${LISTS[@]}" 2>/dev/null | grep -vE '^(#|$)' || true)
+    if [ -z "$patterns" ]; then
+        cat >/dev/null
+        echo 0
+        return
+    fi
+    grep -E '^\+' | grep -vE '^\+\+\+ ' | grep -cFf <(printf '%s\n' "$patterns") || true
 }
 
 check_message() {
@@ -78,12 +91,12 @@ check_message() {
         complain "the commit message contains \"$word\"; describe the fix, not the hole"
     fi
     local list
-    for list in .blocklist .private-names; do
+    for list in "${LISTS[@]}"; do
         [ -f "$list" ] || continue
         while IFS= read -r pattern || [ -n "$pattern" ]; do
             case "$pattern" in ""|\#*) continue ;; esac
             if printf '%s\n' "$text" | grep -v '^#' | grep -qF "$pattern"; then
-                complain "the commit message contains a string from $list"
+                complain "the commit message contains a string from $(basename "$list")"
             fi
         done < "$list"
     done
@@ -91,7 +104,7 @@ check_message() {
 
 report_private_names() {
     if [ "$1" -gt 0 ]; then
-        complain "$1 added line(s) name a place from .private-names; say \"private notes\" and leave the location out"
+        complain "$1 added line(s) hold a string from .blocklist or .private-names; take the private name or location out"
     fi
 }
 
@@ -105,6 +118,23 @@ case "${1:-}" in
     --message)
         check_message "$(cat "$2")"
         ;;
+    --outgoing)
+        # stdin: the lines git gives a pre-push hook.
+        zero=0000000000000000000000000000000000000000
+        while read -r _ local_sha _ remote_sha; do
+            [ "$local_sha" = "$zero" ] && continue
+            if [ "$remote_sha" = "$zero" ]; then
+                revs=$(git rev-list "$local_sha" --not --remotes)
+            else
+                revs=$(git rev-list "$remote_sha..$local_sha")
+            fi
+            for rev in $revs; do
+                if ! "$0" --commit "$rev"; then
+                    complain "commit $(git log -1 --format='%h %s' "$rev" | cut -c1-70) must not be pushed"
+                fi
+            done
+        done
+        ;;
     --commit)
         check_names < <(git show --format= --name-only --diff-filter=ACMR "$2")
         added=$(git show --format= -U0 --diff-filter=ACMR "$2" | check_added_prose)
@@ -113,7 +143,7 @@ case "${1:-}" in
         check_message "$(git show -s --format=%B "$2")"
         ;;
     *)
-        echo "usage: $0 --staged | --message FILE | --commit REV" >&2
+        echo "usage: $0 --staged | --message FILE | --commit REV | --outgoing" >&2
         exit 2
         ;;
 esac
