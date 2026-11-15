@@ -5627,7 +5627,7 @@ fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     assert_eq!(full.template, "job <VARIES> done");
     assert_eq!(retained.template, full.template);
     let state = retained.retained.take().unwrap();
-    assert!(state.varies_unknown);
+    assert!(state.slot_widened_after_counting);
     let rollup = computer.finalize_retained(state, &retained.template, texts[0]);
     // the two counted as `30:01` / `31:02` can no longer be told apart
     // from what they were, so no count is claimed
@@ -5638,11 +5638,11 @@ fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     computer.merge_retained(
         &mut into,
         RetainedState {
-            varies_unknown: true,
+            slot_widened_after_counting: true,
             ..RetainedState::default()
         },
     );
-    assert!(into.varies_unknown);
+    assert!(into.slot_widened_after_counting);
 }
 
 #[test]
@@ -6031,25 +6031,36 @@ fn retained_merge_keeps_known_values_from_capped_sets() {
         let mut from = RetainedState::default();
         into.per_type.insert(
             "UUID",
-            (Accumulator::Values(["a".into()].into()), old_capped),
+            TypeValues {
+                values: Accumulator::Values(["a".into()].into()),
+                capped: old_capped,
+            },
         );
-        into.per_type
-            .insert("NUMBER", (Accumulator::Hashes([1].into()), old_capped));
+        into.per_type.insert(
+            "NUMBER",
+            TypeValues {
+                values: Accumulator::Hashes([1].into()),
+                capped: old_capped,
+            },
+        );
         from.per_type.insert(
             "UUID",
-            (
-                Accumulator::Values(["b".into(), "c".into()].into()),
-                incoming_capped,
-            ),
+            TypeValues {
+                values: Accumulator::Values(["b".into(), "c".into()].into()),
+                capped: incoming_capped,
+            },
         );
         from.per_type.insert(
             "NUMBER",
-            (Accumulator::Hashes([2, 3].into()), incoming_capped),
+            TypeValues {
+                values: Accumulator::Hashes([2, 3].into()),
+                capped: incoming_capped,
+            },
         );
         computer.merge_retained(&mut into, from);
-        for (acc, capped) in into.per_type.values() {
+        for TypeValues { values, capped } in into.per_type.values() {
             assert_eq!(
-                acc.len(),
+                values.len(),
                 3,
                 "retain known values even when the union is incomplete"
             );
@@ -6065,22 +6076,26 @@ fn retained_merge_caps_new_values_but_not_duplicates_at_capacity() {
         let mut state = RetainedState::default();
         state.per_type.insert(
             "UUID",
-            (
-                Accumulator::Values(values.iter().map(ToString::to_string).collect()),
-                false,
-            ),
+            TypeValues {
+                values: Accumulator::Values(values.iter().map(ToString::to_string).collect()),
+                capped: false,
+            },
         );
         state
     };
     let mut into = state(&["a", "b", "c"]);
     computer.merge_retained(&mut into, state(&["a", "b", "c"]));
     assert!(
-        !into.per_type["UUID"].1,
+        !into.per_type["UUID"].capped,
         "no new distinct value was dropped"
     );
     let mut into = state(&["z"]);
     computer.merge_retained(&mut into, state(&["c", "b", "a"]));
-    let (Accumulator::Values(known), capped) = &into.per_type["UUID"] else {
+    let TypeValues {
+        values: Accumulator::Values(known),
+        capped,
+    } = &into.per_type["UUID"]
+    else {
         panic!("value set")
     };
     assert!(*capped);
@@ -8387,7 +8402,7 @@ fn an_opened_slot_counts_the_members_already_held_as_absent() {
     assert_eq!(state.varies.len(), 2);
     assert_eq!(state.varies[0].counts, HashMap::from([("x".into(), 3)]));
     assert_eq!(state.varies[1].counts, HashMap::from([(ABSENT.into(), 3)]));
-    assert!(!state.varies_unknown);
+    assert!(!state.slot_widened_after_counting);
     // right after `a`: the first
     let mut state = held();
     rc.accumulate_new_varies(template, &units, &[open(1)], &mut state);

@@ -72,13 +72,27 @@ struct PatternGroup {
 
 #[derive(Debug, Default)]
 struct RetainedState {
-    per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+    per_type: PerType,
     varies: SlotCounts,
     positional_members: usize,
     realign: BTreeMap<String, usize>,
     realign_capped: bool,
-    varies_unknown: bool,
+    slot_widened_after_counting: bool,
 }
+
+impl RetainedState {
+    fn varies_counts_known(&self) -> bool {
+        !self.realign_capped && !self.slot_widened_after_counting
+    }
+}
+
+#[derive(Debug)]
+struct TypeValues {
+    values: Accumulator,
+    capped: bool,
+}
+
+type PerType = BTreeMap<&'static str, TypeValues>;
 
 #[derive(Debug, Default)]
 struct VariesCounts {
@@ -1588,6 +1602,31 @@ fn slot_opening(
     })
 }
 
+impl Edit {
+    fn span(&self) -> (usize, usize) {
+        match *self {
+            Edit::Vary { at, len } => (at, len),
+            Edit::Open { at, .. } => (at, 0),
+        }
+    }
+}
+
+fn edits_ascend_one_per_unit(units: &[(usize, usize)], edits: &[Edit]) -> bool {
+    let ascend = edits.windows(2).all(|w| w[0].span().0 <= w[1].span().0);
+    let varied_units: Vec<Option<usize>> = edits
+        .iter()
+        .filter_map(|edit| match *edit {
+            Edit::Vary { at, .. } => Some(
+                units
+                    .iter()
+                    .position(|&(start, width)| start <= at && at < start + width),
+            ),
+            Edit::Open { .. } => None,
+        })
+        .collect();
+    ascend && varied_units.windows(2).all(|w| w[0] < w[1])
+}
+
 fn apply_edits(template: &mut String, edits: &[Edit]) {
     for edit in edits.iter().rev() {
         match edit {
@@ -2081,6 +2120,46 @@ impl Accumulator {
             Self::Hashes(_) => Self::Hashes(HashSet::new()),
         }
     }
+
+    fn merge_sorted(&mut self, other: Self, cap: usize) -> bool {
+        debug_assert_eq!(
+            std::mem::discriminant(self),
+            std::mem::discriminant(&other),
+            "a token type keeps its values the same way in every group"
+        );
+        match (self, other) {
+            (Self::Values(into), Self::Values(from)) => merge_sorted_within_cap(into, from, cap),
+            (Self::Hashes(into), Self::Hashes(from)) => merge_sorted_within_cap(into, from, cap),
+            _ => false,
+        }
+    }
+}
+
+fn insert_within_cap<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, value: T, cap: usize) -> bool {
+    if set.len() >= cap && !set.contains(&value) {
+        return false;
+    }
+    set.insert(value);
+    true
+}
+
+fn merge_sorted_within_cap<T: Ord + std::hash::Hash>(
+    into: &mut HashSet<T>,
+    from: HashSet<T>,
+    cap: usize,
+) -> bool {
+    let mut from: Vec<T> = from.into_iter().collect();
+    from.sort_unstable();
+    for value in from {
+        if into.contains(&value) {
+            continue;
+        }
+        if into.len() >= cap {
+            return true;
+        }
+        into.insert(value);
+    }
+    false
 }
 
 struct RollupComputer {
@@ -2107,11 +2186,7 @@ impl RollupComputer {
         self
     }
 
-    fn accumulate_tokens(
-        &self,
-        lines: &[LogLine],
-        per_type: &mut BTreeMap<&'static str, (Accumulator, bool)>,
-    ) {
+    fn accumulate_tokens(&self, lines: &[LogLine], per_type: &mut PerType) {
         let capacity_hint = lines.len().min(self.distinct_cap);
 
         for line in lines {
@@ -2123,42 +2198,32 @@ impl RollupComputer {
                 let name = token_type_name(token);
                 let sample_worthy = is_sample_worthy(token);
 
-                let entry = per_type.entry(name).or_insert_with(|| {
-                    (
-                        if sample_worthy {
-                            Accumulator::Values(HashSet::with_capacity(capacity_hint))
-                        } else {
-                            Accumulator::Hashes(HashSet::with_capacity(capacity_hint))
-                        },
-                        false,
-                    )
+                let entry = per_type.entry(name).or_insert_with(|| TypeValues {
+                    values: if sample_worthy {
+                        Accumulator::Values(HashSet::with_capacity(capacity_hint))
+                    } else {
+                        Accumulator::Hashes(HashSet::with_capacity(capacity_hint))
+                    },
+                    capped: false,
                 });
 
-                if entry.1 {
+                if entry.capped {
                     continue;
                 }
 
-                match &mut entry.0 {
+                let kept = match &mut entry.values {
                     Accumulator::Values(s) => {
                         let mut v = token_value_string(token);
                         if let Some(masked) = secrets.as_ref().and_then(|x| x.mask(&v)) {
                             v = masked;
                         }
-                        if s.len() >= self.distinct_cap && !s.contains(&v) {
-                            entry.1 = true;
-                        } else {
-                            s.insert(v);
-                        }
+                        insert_within_cap(s, v, self.distinct_cap)
                     }
                     Accumulator::Hashes(s) => {
-                        let v = hash_token_value(token);
-                        if s.len() >= self.distinct_cap && !s.contains(&v) {
-                            entry.1 = true;
-                        } else {
-                            s.insert(v);
-                        }
+                        insert_within_cap(s, hash_token_value(token), self.distinct_cap)
                     }
-                }
+                };
+                entry.capped = !kept;
             }
         }
     }
@@ -2271,14 +2336,16 @@ impl RollupComputer {
         edits: &[Edit],
         state: &mut RetainedState,
     ) {
+        debug_assert!(
+            edits_ascend_one_per_unit(units, edits),
+            "a slot's index counts the slots made before it, so edits must ascend, \
+             at most one inside each template unit: {edits:?}"
+        );
         let mut made = 0;
         for edit in edits {
-            let (at, len) = match *edit {
-                Edit::Vary { at, len } => (at, len),
-                Edit::Open { at, .. } => (at, 0),
-            };
+            let (at, len) = edit.span();
             if template[at..at + len].contains(VARIES_MARK) {
-                state.varies_unknown = true;
+                state.slot_widened_after_counting = true;
                 continue;
             }
             let index = made
@@ -2318,7 +2385,7 @@ impl RollupComputer {
     }
 
     fn compute(&self, group: &PatternGroup) -> GroupRollup {
-        let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
+        let mut per_type = PerType::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
         let mut varies = SlotCounts::new();
         self.accumulate_varies(&group.lines, group.template(), &mut varies);
@@ -2347,7 +2414,7 @@ impl RollupComputer {
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
-        if state.realign_capped || state.varies_unknown {
+        if !state.varies_counts_known() {
             state.varies = (0..slot_count(template))
                 .map(|_| VariesCounts {
                     capped: true,
@@ -2367,48 +2434,21 @@ impl RollupComputer {
     fn merge_retained(&self, into: &mut RetainedState, from: RetainedState) {
         into.positional_members += from.positional_members;
         into.realign_capped |= from.realign_capped;
-        into.varies_unknown |= from.varies_unknown;
+        into.slot_widened_after_counting |= from.slot_widened_after_counting;
         for (form, n) in from.realign {
             self.retain_realign_form(into, &form, n);
         }
-        for (name, (acc, capped)) in from.per_type {
-            let entry = into
-                .per_type
-                .entry(name)
-                .or_insert_with(|| (Accumulator::empty_like(&acc), false));
-            if capped {
-                entry.1 = true;
-            }
-            match (&mut entry.0, acc) {
-                (Accumulator::Values(s), Accumulator::Values(other)) => {
-                    let mut other: Vec<_> = other.into_iter().collect();
-                    other.sort_unstable();
-                    for v in other {
-                        if s.contains(&v) {
-                            continue;
-                        }
-                        if s.len() >= self.distinct_cap {
-                            entry.1 = true;
-                            break;
-                        }
-                        s.insert(v);
-                    }
-                }
-                (Accumulator::Hashes(s), Accumulator::Hashes(other)) => {
-                    let mut other: Vec<_> = other.into_iter().collect();
-                    other.sort_unstable();
-                    for v in other {
-                        if s.contains(&v) {
-                            continue;
-                        }
-                        if s.len() >= self.distinct_cap {
-                            entry.1 = true;
-                            break;
-                        }
-                        s.insert(v);
-                    }
-                }
-                _ => {}
+        for (name, from_type) in from.per_type {
+            let entry = into.per_type.entry(name).or_insert_with(|| TypeValues {
+                values: Accumulator::empty_like(&from_type.values),
+                capped: false,
+            });
+            entry.capped |= from_type.capped;
+            if entry
+                .values
+                .merge_sorted(from_type.values, self.distinct_cap)
+            {
+                entry.capped = true;
             }
         }
         for (i, slot) in from.varies.into_iter().enumerate() {
@@ -2422,16 +2462,16 @@ impl RollupComputer {
 
     fn finalize(
         &self,
-        per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+        per_type: PerType,
         varies: SlotCounts,
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
         let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(seed_key));
         let mut out: GroupRollup = BTreeMap::new();
-        for (name, (acc, capped)) in per_type {
-            let distinct_count = acc.len();
-            let samples = match acc {
+        for (name, TypeValues { values, capped }) in per_type {
+            let distinct_count = values.len();
+            let samples = match values {
                 Accumulator::Values(s) => {
                     let mut distinct: Vec<String> = s.into_iter().collect();
                     distinct.sort();
