@@ -7691,3 +7691,58 @@ fn a_summary_top_limit_does_not_change_lines_saved() {
         "every summary row counts toward lines_saved, shown or not"
     );
 }
+
+const START_ON_NODE: [&str; 4] = [
+    r#"failed to start "db" on node "n1""#,
+    r#"failed to start "cache" on node "n2""#,
+    r#"failed to start "db" on node "n2""#,
+    r#"failed to start "cache" on node "n1""#,
+];
+
+fn every_order(lines: &[&'static str]) -> Vec<Vec<&'static str>> {
+    if lines.len() <= 1 {
+        return vec![lines.to_vec()];
+    }
+    let mut orders = Vec::new();
+    for (i, &head) in lines.iter().enumerate() {
+        let mut rest = lines.to_vec();
+        rest.remove(i);
+        for mut tail in every_order(&rest) {
+            tail.insert(0, head);
+            orders.push(tail);
+        }
+    }
+    orders
+}
+
+fn assert_one_group_in_every_order(lines: &[&'static str], orders_expected: usize) {
+    let orders = every_order(lines);
+    assert_eq!(orders.len(), orders_expected);
+    for order in orders {
+        let mut f = make_folder();
+        for line in &order {
+            f.process_line(line).unwrap();
+        }
+        assert_eq!(
+            f.buffer.len(),
+            1,
+            "a line both slots cover joins whatever the order: {order:?}"
+        );
+        assert_eq!(
+            f.buffer[0].count(),
+            lines.len(),
+            "the one group holds every line: {order:?}"
+        );
+        assert_eq!(f.buffer[0].lines.len(), lines.len());
+    }
+}
+
+#[test]
+fn three_lines_two_quoted_slots_fold_to_one_group_in_every_order() {
+    assert_one_group_in_every_order(&START_ON_NODE[..3], 6);
+}
+
+#[test]
+fn four_lines_two_quoted_slots_fold_to_one_group_in_every_order() {
+    assert_one_group_in_every_order(&START_ON_NODE, 24);
+}

@@ -1890,6 +1890,9 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> Option<usize> {
             Some(j) => {
                 matched_b[j] = true;
                 if x != ub[j] {
+                    if component_names_differ(x, ub[j]) {
+                        return None;
+                    }
                     diffs += unit_diffs(x, ub[j]);
                 }
             }
@@ -1904,6 +1907,34 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> Option<usize> {
                 .filter(|(u, m)| !**m && lone_unit(u, &ua))
                 .count(),
     )
+}
+
+fn named_component(w: &str) -> Option<(&str, &str)> {
+    let at = w.rfind("-<")?;
+    let (component, tail) = (&w[..at], &w[at + 1..]);
+    let close = tail.find('>')?;
+    let placeholder = &tail[1..close];
+    let is_placeholder = !placeholder.is_empty()
+        && placeholder
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b == b'_');
+    let bare = component
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic())
+        && component
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    (is_placeholder && bare).then_some((component, tail))
+}
+
+fn component_names_differ(a: &str, b: &str) -> bool {
+    match (named_component(a), named_component(b)) {
+        (Some((ours, our_tail)), Some((theirs, their_tail))) => {
+            our_tail == their_tail && ours != theirs
+        }
+        _ => false,
+    }
 }
 
 fn within_plain_word_allowance(a: &str, b: &str) -> bool {
@@ -2567,6 +2598,9 @@ impl PatternFolder {
             if let Some(line_no) = distill_line_no {
                 self.buffer[index].member_line_nos.push(line_no);
             }
+            if !edits.is_empty() && !self.config.group_sink.is_distilling() {
+                self.absorb_groups_the_slots_cover(index);
+            }
         } else {
             let nearest = self
                 .config
@@ -2591,6 +2625,56 @@ impl PatternFolder {
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
         }
+    }
+
+    fn absorb_groups_the_slots_cover(&mut self, mut widened: usize) {
+        let mut at = 0;
+        while at < self.buffer.len() {
+            let Some(template) = (at != widened)
+                .then(|| self.template_covering(widened, at))
+                .flatten()
+            else {
+                at += 1;
+                continue;
+            };
+            let (keep, gone) = (at.min(widened), at.max(widened));
+            let mut merged = self.buffer.remove(gone);
+            merged.template.clone_from(&template);
+            let survivor = &mut self.buffer[keep];
+            survivor.slot_units = Some(unit_spans(&template));
+            survivor.template = template;
+            survivor.absorb(merged);
+            for index in self.group_index.values_mut() {
+                if *index == gone {
+                    *index = keep;
+                } else if *index > gone {
+                    *index -= 1;
+                }
+            }
+            widened = keep;
+            at = 0;
+        }
+    }
+
+    fn template_covering(&self, widened: usize, other: usize) -> Option<String> {
+        let host = &self.buffer[widened];
+        let guest = &self.buffer[other];
+        let founder = guest.first();
+        let mut founder_units = None;
+        let covered = host.joins_through_slots(founder, &mut founder_units, self.config.threshold)
+            && within_plain_word_allowance(&founder.normalized, &host.first().normalized);
+        if !covered {
+            return None;
+        }
+        let mut template = host.template.clone();
+        let mut seen: HashSet<u64> = HashSet::with_capacity(guest.lines.len());
+        for line in &guest.lines {
+            if seen.insert(line.hash) {
+                let edits = template_edits(&template, &line.normalized)?;
+                apply_edits(&mut template, &edits);
+            }
+        }
+        Some(template)
     }
 
     fn distill_take(&mut self, group: &PatternGroup, members: usize) {
