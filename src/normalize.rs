@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use crate::config::Config;
 use crate::patterns::{
-    LogLine, MAX_SIMILARITY_TOKENS, SimTok, SimTokens, Token,
+    AnchorSentinel, LogLine, MAX_SIMILARITY_TOKENS, SimTok, SimTokens, Token,
     bracket_context::BracketContextDetector, duration::DurationDetector,
     email::EmailPatternDetector, hash::HashDetector, http_status::HttpStatusDetector, is_small_int,
     json::JsonDetector, key_value::KeyValueDetector, kubernetes::KubernetesDetector,
@@ -915,6 +915,13 @@ impl AnchorRender {
             Self::Exact | Self::KlogCallSite | Self::PciAddress => text.to_string(),
         }
     }
+
+    fn sentinel(&self) -> AnchorSentinel {
+        match self {
+            Self::KlogCallSite => AnchorSentinel::KlogCallSite,
+            _ => AnchorSentinel::Opaque,
+        }
+    }
 }
 
 struct ProtectedAnchors<'a> {
@@ -1231,12 +1238,7 @@ fn protect_anchored_spans<'a>(
             continue;
         }
         result.push_str(&original[cursor..start]);
-        let kind = if matches!(render, AnchorRender::KlogCallSite) {
-            'K'
-        } else {
-            'A'
-        };
-        let sentinel = format!("\u{0}{kind}{i}\u{0}");
+        let sentinel = render.sentinel().text(i);
         covering_is_literal = matches!(
             render,
             AnchorRender::Exact | AnchorRender::KlogCallSite | AnchorRender::PciAddress

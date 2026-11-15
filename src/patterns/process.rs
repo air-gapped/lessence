@@ -1,4 +1,4 @@
-use super::Token;
+use super::{AnchorSentinel, Token};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -27,11 +27,15 @@ static THREAD_NAME_REGEX: LazyLock<Regex> =
 // The klog header's pid column: `E0910 00:02:39.914326       1 status.go:71]`.
 // By the time this runs the timestamp and the call site are placeholders;
 // the number between them is a pid whatever its digit count (`1` in a
-// container, `114343` on a node), so the slot says so. `\0K<index>\0`
-// is the normalizer's protected klog call-site sentinel; it carries the
-// same grammar while the original site is kept for visible rendering.
+// container, `114343` on a node), so the slot says so. A protected klog
+// call site (`AnchorSentinel::KlogCallSite`) carries the same grammar while
+// the original site is kept for visible rendering.
 static KLOG_PID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(<TIMESTAMP>\s+)(\d+)( (?:[A-Za-z0-9_]+\.go:<LINE>|\x00K\d+\x00)\])").unwrap()
+    Regex::new(&format!(
+        r"(<TIMESTAMP>\s+)(\d+)( (?:[A-Za-z0-9_]+\.go:<LINE>|{}\d+\x00)\])",
+        regex::escape(AnchorSentinel::KlogCallSite.start())
+    ))
+    .unwrap()
 });
 
 pub struct ProcessDetector;
@@ -41,7 +45,7 @@ impl ProcessDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        if result.contains(".go:<LINE>]") || result.contains("\0K") {
+        if result.contains(".go:<LINE>]") || result.contains(AnchorSentinel::KlogCallSite.start()) {
             super::fold_matches(&mut result, &mut tokens, &KLOG_PID_REGEX, |caps| {
                 Some((
                     Token::Pid(caps[2].parse().unwrap_or(0)),
@@ -183,6 +187,31 @@ mod tests {
         }
         let (r, _) = ProcessDetector::detect_and_replace("<TIMESTAMP> 1 status.go:<LINE>] x 1 y");
         assert_eq!(r, "<TIMESTAMP> <PID> status.go:<LINE>] x 1 y");
+    }
+
+    #[test]
+    fn only_a_klog_call_site_sentinel_reads_as_a_call_site() {
+        let line = |sentinel: AnchorSentinel| {
+            ProcessDetector::detect_and_replace(&format!(
+                "<TIMESTAMP>    3310 {}] done",
+                sentinel.text(4)
+            ))
+            .0
+        };
+        assert_eq!(
+            line(AnchorSentinel::KlogCallSite),
+            format!(
+                "<TIMESTAMP>    <PID> {}] done",
+                AnchorSentinel::KlogCallSite.text(4)
+            )
+        );
+        assert_eq!(
+            line(AnchorSentinel::Opaque),
+            format!(
+                "<TIMESTAMP>    3310 {}] done",
+                AnchorSentinel::Opaque.text(4)
+            )
+        );
     }
 
     #[test]

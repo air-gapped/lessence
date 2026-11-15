@@ -560,6 +560,30 @@ pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
     "kt", "swift", "cs", "ex", "exs", "erl", "hrl", "scala", "clj", "lua", "pl", "sh", "m", "mm",
 ];
 
+/// The placeholder the normalizer puts over an anchored span while the
+/// detectors run, so none of them can consume it: `\0<kind><index>\0`.
+/// `ProcessDetector` reads a klog call-site placeholder as the
+/// `file.go:<LINE>` it stands for, so the pid column in front of it still
+/// folds; every other anchor is opaque to every detector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnchorSentinel {
+    KlogCallSite,
+    Opaque,
+}
+
+impl AnchorSentinel {
+    pub(crate) const fn start(self) -> &'static str {
+        match self {
+            Self::KlogCallSite => "\0K",
+            Self::Opaque => "\0A",
+        }
+    }
+
+    pub(crate) fn text(self, index: usize) -> String {
+        format!("{}{index}\0", self.start())
+    }
+}
+
 /// Does `name` end in `.<ext>` for a source extension?
 pub(crate) fn is_source_file_name(name: &str) -> bool {
     name.rsplit_once('.')
