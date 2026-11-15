@@ -32,7 +32,7 @@ walks the table:
 8. **Hashes** — MD5, SHA1, SHA256, SHA512 (`patterns/hash.rs`)
 9. **Process IDs** — PIDs, thread IDs (`patterns/process.rs`)
 10. **Syslog host** — the positional host field between a normalized timestamp and a program tag (`replace_syslog_host`, `normalize.rs`); gated by the FQDN flag
-11. **Kubernetes** — namespaces, pods, volumes (`patterns/kubernetes.rs`)
+11. **Kubernetes** — namespaces, pods, volumes (`patterns/kubernetes.rs`). A `*name`/`*Name` field (`filename=`, `podName:`) is judged on its own value, whatever else the line says: it folds to `<K8S_NAME>` only when the value is compound (a `-`, `.`, `/`, `_` or digit) and not already one placeholder; a bare word (`levelname=ERROR`) stays literal
 12. **HTTP Status** — status codes (`patterns/http_status.rs`)
 13. **Bracket Context** — `[proxy]`-style context tags, a chain of them as one `<BRACKET_CONTEXT>` (`patterns/bracket_context.rs`). A level (`[error]`, `[NOTICE]`) is never a context: it stays literal and splits a chain. "Is this a level" is `briefing::word_to_level`, the crate's one level vocabulary — do not add a second list
 14. **Key-Value** — `key=value` pairs; the key and separator stay and only the value folds (`timeout=<KEY_VALUE>`). `level` is not a foldable key (`patterns/key_value.rs`)

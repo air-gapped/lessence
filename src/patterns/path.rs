@@ -85,8 +85,7 @@ type PathPass = fn(&mut String, &mut Vec<Token>, Option<SyslogProgramTag>);
 pub struct PathDetector;
 
 impl PathDetector {
-    const PASSES_FULL_URL_BEFORE_FILE_PATH: [PathPass; 7] = [
-        Self::fold_event_object_meta,
+    const PASSES_FULL_URL_BEFORE_FILE_PATH: [PathPass; 6] = [
         Self::fold_source_line_numbers,
         Self::fold_full_urls,
         Self::fold_file_paths,
@@ -96,9 +95,16 @@ impl PathDetector {
     ];
 
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
+        Self::detect_and_replace_with(text, true)
+    }
+
+    pub fn detect_and_replace_with(text: &str, event_objects: bool) -> (String, Vec<Token>) {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
         let tag = Self::syslog_program_tag_span(text);
+        if event_objects {
+            Self::fold_event_object_meta(&mut result, &mut tokens, tag);
+        }
         for pass in Self::PASSES_FULL_URL_BEFORE_FILE_PATH {
             pass(&mut result, &mut tokens, tag);
         }

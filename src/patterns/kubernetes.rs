@@ -60,27 +60,29 @@ pub struct KubernetesDetector;
 
 impl KubernetesDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        if !Self::has_kubernetes_indicators(text) {
-            return (text.to_string(), Vec::new());
-        }
-
         let mut tokens = Vec::new();
-        let result = Self::normalize_group_versions(text, &mut tokens);
+        let mut result = if Self::has_kubernetes_indicators(text) {
+            let result = Self::normalize_group_versions(text, &mut tokens);
 
-        let (result, pod_tokens) = Self::normalize_pod_names(result);
-        tokens.extend(pod_tokens);
+            let (result, pod_tokens) = Self::normalize_pod_names(result);
+            tokens.extend(pod_tokens);
 
-        let (result, ns_tokens) = Self::normalize_namespaces(result);
-        tokens.extend(ns_tokens);
+            let (result, ns_tokens) = Self::normalize_namespaces(result);
+            tokens.extend(ns_tokens);
 
-        let (result, vol_tokens) = Self::normalize_volume_names(result);
-        tokens.extend(vol_tokens);
+            let (result, vol_tokens) = Self::normalize_volume_names(result);
+            tokens.extend(vol_tokens);
 
-        let (result, plugin_tokens) = Self::normalize_plugin_types(result);
-        tokens.extend(plugin_tokens);
+            let (result, plugin_tokens) = Self::normalize_plugin_types(result);
+            tokens.extend(plugin_tokens);
+            result
+        } else {
+            text.to_string()
+        };
 
-        let (result, name_field_tokens) = Self::normalize_name_fields(result);
-        tokens.extend(name_field_tokens);
+        if result.contains("ame") {
+            Self::normalize_name_fields(&mut result, &mut tokens);
+        }
 
         (result, tokens)
     }
@@ -194,39 +196,29 @@ impl KubernetesDetector {
         (result, tokens)
     }
 
-    fn normalize_name_fields(text: String) -> (String, Vec<Token>) {
-        let mut result = text;
-        let mut tokens = Vec::new();
-
+    fn normalize_name_fields(result: &mut String, tokens: &mut Vec<Token>) {
         for re in NAME_FIELD_REGEXES.iter() {
-            let captures: Vec<_> = re.captures_iter(&result).collect();
-            for capture in captures {
-                if let Some(value) = capture.get(2) {
-                    tokens.push(Token::KubernetesName(value.as_str().to_string()));
-                }
-            }
-            result = re
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let field_name = caps.get(1).unwrap().as_str();
-                    let full_match = caps.get(0).unwrap().as_str();
-                    if full_match.contains('=') {
-                        if full_match.contains('"') {
-                            format!("{field_name}=\"<K8S_NAME>\"")
-                        } else {
-                            format!("{field_name}=<K8S_NAME>")
-                        }
-                    } else {
-                        if full_match.contains('"') {
-                            format!("{field_name}: \"<K8S_NAME>\"")
-                        } else {
-                            format!("{field_name}:<K8S_NAME>")
-                        }
-                    }
+            super::fold_matches(result, tokens, re, |caps| {
+                let value = caps.get(2).unwrap();
+                Self::is_compound_name(value.as_str()).then(|| {
+                    (
+                        Token::KubernetesName(value.as_str().to_string()),
+                        Self::replace_capture_by_position(caps, Some(value), "<K8S_NAME>"),
+                    )
                 })
-                .to_string();
+            });
         }
+    }
 
-        (result, tokens)
+    fn is_compound_name(value: &str) -> bool {
+        let one_placeholder = value.len() > 2
+            && value.starts_with('<')
+            && value.ends_with('>')
+            && !value[1..value.len() - 1].contains(['<', '>']);
+        !one_placeholder
+            && value
+                .bytes()
+                .any(|b| b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'/' | b'_'))
     }
 }
 
@@ -278,6 +270,84 @@ mod tests {
             ],
             "a name field is recorded as a name, never as a namespace"
         );
+    }
+
+    #[test]
+    fn a_bare_word_name_value_stays_literal_whatever_the_line_says() {
+        for line in [
+            "job finished levelname=ERROR",
+            "job finished levelname=ERROR via podman",
+            r#"pod phase: podName: "Running""#,
+            r#"app appName="kuard" ready"#,
+        ] {
+            let (r, tokens) = KubernetesDetector::detect_and_replace(line);
+            assert_eq!(r, line, "a bare word is the event's own word: {line}");
+            assert!(
+                !tokens.iter().any(|t| matches!(t, Token::KubernetesName(_))),
+                "{line}: {tokens:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_compound_name_value_folds_with_or_without_a_kubernetes_word() {
+        let cases = [
+            (
+                "upload done filename=report.txt",
+                "upload done filename=<K8S_NAME>",
+                "report.txt",
+            ),
+            (
+                "upload done filename=report.txt via podman",
+                "upload done filename=<K8S_NAME> via podman",
+                "report.txt",
+            ),
+            (
+                "reload endpointName=shop/web-b2 ok",
+                "reload endpointName=<K8S_NAME> ok",
+                "shop/web-b2",
+            ),
+            (
+                "reload endpointName=kube-ops/web-a1 ok",
+                "reload endpointName=<K8S_NAME> ok",
+                "kube-ops/web-a1",
+            ),
+            (
+                r#"host hostName: "node_3" up"#,
+                r#"host hostName: "<K8S_NAME>" up"#,
+                "node_3",
+            ),
+            (
+                "worker workerName:w7 up",
+                "worker workerName:<K8S_NAME> up",
+                "w7",
+            ),
+        ];
+        for (input, expected, value) in cases {
+            let (r, tokens) = KubernetesDetector::detect_and_replace(input);
+            assert_eq!(r, expected, "input: {input}");
+            assert_eq!(
+                tokens,
+                vec![Token::KubernetesName(value.into())],
+                "input: {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_name_value_that_is_one_placeholder_is_left_alone() {
+        for line in [
+            r#"host hostName="<IP_ADDR>" up"#,
+            r#"host hostName: "<K8S_NAME>" up"#,
+        ] {
+            let (r, tokens) = KubernetesDetector::detect_and_replace(line);
+            assert_eq!(r, line, "{line}");
+            assert!(tokens.is_empty(), "{line}: {tokens:?}");
+        }
+        let (r, tokens) =
+            KubernetesDetector::detect_and_replace(r#"host hostName="<IP_ADDR>-b" up"#);
+        assert_eq!(r, r#"host hostName="<K8S_NAME>" up"#);
+        assert_eq!(tokens, vec![Token::KubernetesName("<IP_ADDR>-b".into())]);
     }
 
     #[test]

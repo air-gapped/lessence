@@ -5053,3 +5053,28 @@ reply response="12 ok" key=alpha
 ##FROM invented lines
 sync done x a=1, b=2 took 5
 sync done x a=1 took 5
+
+##CASE lessence-enl groups=2
+##WHY a bare-word value in a name field never folds, whatever else the line says
+##FROM invented lines
+job finished levelname=ERROR via podman
+job finished levelname=INFO via podman
+
+##CASE lessence-enl groups=1
+##WHY a name field folds on its own value's shape, not on a word in that value
+##FROM cilium shape, invented values
+level=info msg="Reloaded program" endpointName=kube-ops/web-a1 subsys=daemon
+level=info msg="Reloaded program" endpointName=shop/web-b2 subsys=daemon
+
+##CASE lessence-enl groups=1
+##WHY a filename folds with or without a Kubernetes word on the line
+##FROM invented lines
+upload done filename=report.txt
+upload done filename=invoice.txt
+
+##CASE lessence-enl template_absent=<EVENT_OBJECT>
+##WHY --disable-patterns json really disables the event-object fold
+##FROM invented kubelet-style lines
+##FLAGS --disable-patterns json
+I1102 10:00:01 event.go:12] &Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}
+I1102 10:00:02 event.go:12] &Event{ObjectMeta:{web-b.29c1  default    0 map[] []},Reason:Pulled}

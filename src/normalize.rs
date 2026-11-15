@@ -69,7 +69,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         enabled: |c| c.normalize_paths,
         only_when: None,
         prefilter: None,
-        run: |_, s| PathDetector::detect_and_replace(s),
+        run: |n, s| PathDetector::detect_and_replace_with(s, n.config.normalize_json),
     },
     DetectorEntry {
         name: "json",
@@ -330,7 +330,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             ("cpu-quantity", r#"{"cpu":"750m","wait":"40m"}"#),
             (
                 "path",
-                r#"profile="unconfined" name="libvirt-d10f7a21-c572-4cab-95a9-51ad8f00f121//passt" pid=2415"#,
+                r#"profile="unconfined" label="libvirt-d10f7a21-c572-4cab-95a9-51ad8f00f121//passt" pid=2415"#,
             ),
             (
                 "uuid",
