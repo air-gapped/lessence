@@ -51,6 +51,11 @@ check_names() {
         if printf '%s\n' "$name" | grep -qiE "$DOCUMENT_NAMES"; then
             complain "$name is a security working document by name; it stays out of the repo"
         fi
+        case "$name" in
+            *.proptest-regressions)
+                complain "$name: a property-test failure file holds the failing input; move it out of the tree and keep it in the private notes"
+                ;;
+        esac
     done
 }
 

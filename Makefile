@@ -4,15 +4,19 @@
 
 .PHONY: ci fmt clippy doc build test deny mutants-pins comment-budget docs install clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
-       gate release-check distill
+       gate release-check distill hooks-selftest
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
 #---------------------------------------------------------------------------
 
 ## ci: Run the full CI pipeline locally (same as GitHub Actions)
-ci: fmt clippy doc test deny mutants-pins comment-budget
+ci: fmt clippy doc test deny mutants-pins comment-budget hooks-selftest
 	@echo "✓ All CI checks passed"
+
+## hooks-selftest: The edit and stop guards deny and allow what they should
+hooks-selftest:
+	@scripts/hooks-selftest.sh
 
 ## fmt: Check formatting (cargo fmt --check)
 fmt:

@@ -25,6 +25,28 @@
             "statusMessage": "One build at a time"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/scripts/edit-guard.sh\"",
+            "timeout": 10,
+            "statusMessage": "Workers edit src and tests"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/scripts/stop-guard.sh\"",
+            "timeout": 10
+          }
+        ]
       }
     ]
   }
