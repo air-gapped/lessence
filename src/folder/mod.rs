@@ -25,7 +25,11 @@ fn is_credential_value(text: &str, match_start: usize, value: &str) -> bool {
         .strip_prefix(['"', '\''])
         .and_then(|v| v.strip_suffix(['"', '\'']))
         .unwrap_or(value);
-    bare.len() >= MIN_CREDENTIAL_VALUE && !text[..match_start].ends_with('/')
+    bare.len() >= MIN_CREDENTIAL_VALUE && !key_is_a_url_path_segment(text, match_start)
+}
+
+fn key_is_a_url_path_segment(text: &str, key_start: usize) -> bool {
+    text[..key_start].ends_with('/')
 }
 
 pub(crate) fn credential_spans(text: &str) -> Vec<std::ops::Range<usize>> {
@@ -68,13 +72,27 @@ struct PatternGroup {
 
 #[derive(Debug, Default)]
 struct RetainedState {
-    per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+    per_type: PerType,
     varies: SlotCounts,
     positional_members: usize,
     realign: BTreeMap<String, usize>,
     realign_capped: bool,
-    varies_unknown: bool,
+    slot_widened_after_counting: bool,
 }
+
+impl RetainedState {
+    fn varies_counts_known(&self) -> bool {
+        !self.realign_capped && !self.slot_widened_after_counting
+    }
+}
+
+#[derive(Debug)]
+struct TypeValues {
+    values: Accumulator,
+    capped: bool,
+}
+
+type PerType = BTreeMap<&'static str, TypeValues>;
 
 #[derive(Debug, Default)]
 struct VariesCounts {
@@ -94,9 +112,7 @@ fn slot_mut(slots: &mut SlotCounts, i: usize) -> &mut VariesCounts {
 
 impl VariesCounts {
     fn rank(value: &str) -> u64 {
-        let mut h = FNV_OFFSET;
-        fnv1a_fold(&mut h, value.as_bytes());
-        h
+        fnv1a(value.as_bytes())
     }
 
     fn add(&mut self, value: &str, n: usize, cap: usize) {
@@ -231,16 +247,17 @@ impl PatternGroup {
         if line.hash == self.first().hash {
             return Some(Vec::new());
         }
-        varying_spans(&self.template, &line.normalized)
+        template_edits(&self.template, &line.normalized)
     }
 
     fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
-        self.mark_varying_words(edits);
+        self.apply_template_edits(edits);
         self.assert_claim_holds(&line.normalized);
         self.lines.push(line);
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
         self.count += 1;
+        self.assert_members_held();
     }
 
     fn retained_rejoin(
@@ -262,11 +279,14 @@ impl PatternGroup {
                     state,
                 );
             }
-            apply_edits(&mut self.template, edits);
-            template_units = unit_spans(&self.template);
-            self.slot_units = Some(template_units.clone());
+            self.apply_template_edits(edits);
+            template_units = self
+                .slot_units
+                .clone()
+                .expect("a template with edits applied has slot units");
         }
         self.assert_claim_holds(&line.normalized);
+        let held_every_member = self.holds_every_member();
         self.count += 1;
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
@@ -275,7 +295,7 @@ impl PatternGroup {
             let template = VariesSlots::new(&self.template, &template_units);
             rollup_computer.accumulate_retained_varies(&line, &line_units, &template, state);
         }
-        if self.lines.len() + 1 == self.count {
+        if held_every_member {
             self.lines.push(line);
             if self.count >= min_collapse && self.lines.len() > 2 {
                 let last = self.lines.pop().expect("pushed above");
@@ -285,6 +305,20 @@ impl PatternGroup {
         } else {
             self.lines[1] = line;
         }
+        self.assert_members_held();
+    }
+
+    fn holds_every_member(&self) -> bool {
+        self.lines.len() == self.count
+    }
+
+    fn assert_members_held(&self) {
+        debug_assert!(
+            self.holds_every_member() || (1..=2).contains(&self.lines.len()),
+            "a group holds every member or only its first and last: {} held of {}",
+            self.lines.len(),
+            self.count
+        );
     }
 
     fn absorb(
@@ -317,6 +351,7 @@ impl PatternGroup {
                 self.lines.append(&mut other_lines);
                 self.lines.push(own_last);
             }
+            self.assert_members_held();
             return;
         }
 
@@ -346,9 +381,10 @@ impl PatternGroup {
             Some(last) if self.count > 1 => vec![first, last],
             _ => vec![first],
         };
+        self.assert_members_held();
     }
 
-    fn mark_varying_words(&mut self, edits: &[Edit]) {
+    fn apply_template_edits(&mut self, edits: &[Edit]) {
         if edits.is_empty() {
             return;
         }
@@ -433,7 +469,7 @@ pub struct PatternFolder {
     pub(super) sanitizer: Option<Sanitizer>,
     config: Config,
     normalizer: Normalizer,
-    thread_pool: Option<rayon::ThreadPool>,
+    detection: LineDetection,
     buffer: Vec<PatternGroup>,
     group_index: ahash::AHashMap<u64, usize>,
     stats: FoldingStats,
@@ -460,13 +496,26 @@ pub struct PatternFolder {
     json_retention_cap_hits: usize,
 }
 
-#[allow(clippy::large_enum_variant)]
+enum LineDetection {
+    Inline,
+    GlobalPool,
+    SizedPool(rayon::ThreadPool),
+}
+
 enum Retention {
     Kept,
-    Declined(PatternGroup),
+    Declined(Box<PatternGroup>),
 }
 
 pub const RETAINED_TEMPLATE_CAP: usize = 16_384;
+
+const BATCH_LINES: usize = 10_000;
+
+const LIVE_GROUP_LIMIT: usize = 1000;
+
+const EVICTION_DISTANCE: usize = 100;
+
+pub const TOP_SHOWS_EVERY_GROUP: usize = 0;
 
 #[derive(Debug, Default)]
 pub struct FoldingStats {
@@ -718,9 +767,8 @@ struct TimeRange {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename = "group")]
 struct GroupRecord {
-    #[serde(rename = "type")]
-    record_type: &'static str,
     id: usize,
     count: usize,
     token_types: Vec<&'static str>,
@@ -734,9 +782,8 @@ struct GroupRecord {
 }
 
 #[derive(Serialize)]
+#[serde(tag = "type", rename = "summary")]
 struct SummaryRecord {
-    #[serde(rename = "type")]
-    record_type: &'static str,
     #[serde(flatten)]
     stats: StatsJson,
     #[serde(flatten)]
@@ -875,6 +922,12 @@ fn token_value_string(token: &Token) -> String {
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0100_0000_01b3;
 
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET;
+    fnv1a_fold(&mut h, bytes);
+    h
+}
+
 fn fnv1a_fold(h: &mut u64, bytes: &[u8]) {
     for &b in bytes {
         *h ^= u64::from(b);
@@ -969,37 +1022,69 @@ fn shows_every_unit(template: &str, member: &str) -> bool {
         .map(|&(at, len)| &member[at..at + len])
         .collect();
     let n = words.len();
-    let mut shown = vec![false; n + 1];
-    shown[n] = true;
-    let mut here = vec![false; n + 1];
+    let mut read_shows_from = vec![false; n + 1];
+    read_shows_from[n] = true;
+    let mut unit_shows_from = vec![false; n + 1];
     for &(at, len) in unit_spans(template).iter().rev() {
         let unit = &template[at..at + len];
         if unit == VARIES_MARK {
-            here[n] = shown[n];
-            for j in (0..n).rev() {
-                here[j] = shown[j] || here[j + 1];
-            }
+            bare_slot_shows(&read_shows_from, &mut unit_shows_from);
         } else if let Some((first, last)) = unit.find(VARIES_MARK).zip(unit.rfind(VARIES_MARK)) {
             let (before, after) = (&unit[..first], &unit[last + VARIES_MARK.len()..]);
-            let mut later = false;
-            here[n] = false;
-            for j in (0..n).rev() {
-                let word = words[j];
-                let ends_here = word.len() >= before.len() + after.len()
-                    && word.ends_with(after)
-                    && shown[j + 1];
-                here[j] = word.starts_with(before) && (ends_here || later);
-                later |= word.ends_with(after) && shown[j + 1];
-            }
+            slot_with_text_shows(
+                &words,
+                before,
+                after,
+                &read_shows_from,
+                &mut unit_shows_from,
+            );
         } else {
-            here[n] = false;
-            for j in (0..n).rev() {
-                here[j] = words[j] == unit && shown[j + 1];
-            }
+            literal_shows(&words, unit, &read_shows_from, &mut unit_shows_from);
         }
-        std::mem::swap(&mut shown, &mut here);
+        std::mem::swap(&mut read_shows_from, &mut unit_shows_from);
     }
-    shown[0]
+    read_shows_from[0]
+}
+
+fn bare_slot_shows(read_shows_from: &[bool], unit_shows_from: &mut [bool]) {
+    let n = read_shows_from.len() - 1;
+    unit_shows_from[n] = read_shows_from[n];
+    for j in (0..n).rev() {
+        unit_shows_from[j] = read_shows_from[j] || unit_shows_from[j + 1];
+    }
+}
+
+fn slot_with_text_shows(
+    words: &[&str],
+    before: &str,
+    after: &str,
+    read_shows_from: &[bool],
+    unit_shows_from: &mut [bool],
+) {
+    let n = words.len();
+    let mut later = false;
+    unit_shows_from[n] = false;
+    for j in (0..n).rev() {
+        let word = words[j];
+        let ends_here = word.len() >= before.len() + after.len()
+            && word.ends_with(after)
+            && read_shows_from[j + 1];
+        unit_shows_from[j] = word.starts_with(before) && (ends_here || later);
+        later |= word.ends_with(after) && read_shows_from[j + 1];
+    }
+}
+
+fn literal_shows(
+    words: &[&str],
+    unit: &str,
+    read_shows_from: &[bool],
+    unit_shows_from: &mut [bool],
+) {
+    let n = words.len();
+    unit_shows_from[n] = false;
+    for j in (0..n).rev() {
+        unit_shows_from[j] = words[j] == unit && read_shows_from[j + 1];
+    }
 }
 
 fn reads_as(template: &str, member: &str) -> bool {
@@ -1073,31 +1158,58 @@ fn align_exact(left: &[&str], right: &[&str]) -> Vec<Option<usize>> {
     out
 }
 
+const OUTSIDE_BAND: i32 = -1;
+
+struct Band {
+    low: isize,
+    width: usize,
+    cols: usize,
+}
+
+impl Band {
+    fn new(rows: usize, cols: usize, band: usize) -> Self {
+        Self {
+            low: cols.min(rows) as isize - rows as isize - band as isize,
+            width: rows.abs_diff(cols) + 2 * band + 1,
+            cols,
+        }
+    }
+
+    fn diagonal(&self, i: usize, j: usize) -> Option<usize> {
+        let k = j as isize - i as isize - self.low;
+        (0..self.width as isize).contains(&k).then_some(k as usize)
+    }
+
+    fn cell_in_row(&self, i: usize, j: usize) -> usize {
+        debug_assert!(self.columns(i).contains(&j));
+        (j as isize - i as isize - self.low) as usize
+    }
+
+    fn columns(&self, i: usize) -> std::ops::RangeInclusive<usize> {
+        let first = (i as isize + self.low).max(0) as usize;
+        let last =
+            (i as isize + self.low + self.width as isize - 1).min(self.cols as isize) as usize;
+        first..=last
+    }
+}
+
 fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>> {
     let (rows, cols) = (left.len(), right.len());
     debug_assert!(rows.abs_diff(cols) <= band && (rows != cols || band > 0));
-    let low = cols.min(rows) as isize - rows as isize - band as isize;
-    let width = rows.abs_diff(cols) + 2 * band + 1;
-    let at = |i: usize, j: usize| -> Option<usize> {
-        let k = j as isize - i as isize - low;
-        (0..width as isize).contains(&k).then_some(k as usize)
-    };
-    let mut below = vec![-1i32; width];
-    let mut here = vec![-1i32; width];
-    for (k, cell) in below.iter_mut().enumerate() {
-        let j = rows as isize + low + k as isize;
-        if (0..=cols as isize).contains(&j) {
-            *cell = 0;
-        }
+    let band = Band::new(rows, cols, band);
+    let width = band.width;
+    let mut below = vec![OUTSIDE_BAND; width];
+    let mut here = vec![OUTSIDE_BAND; width];
+    for j in band.columns(rows) {
+        below[band.cell_in_row(rows, j)] = 0;
     }
     let mut down = vec![0u64; (rows * width).div_ceil(64)];
-    let value = |row: &[i32], i: usize, j: usize| at(i, j).map_or(-1, |k| row[k]);
+    let value =
+        |row: &[i32], i: usize, j: usize| band.diagonal(i, j).map_or(OUTSIDE_BAND, |k| row[k]);
     for i in (0..rows).rev() {
-        here.fill(-1);
-        let first = (i as isize + low).max(0) as usize;
-        let last = (i as isize + low + width as isize - 1).min(cols as isize) as usize;
-        for j in (first..=last).rev() {
-            let k = (j as isize - i as isize - low) as usize;
+        here.fill(OUTSIDE_BAND);
+        for j in band.columns(i).rev() {
+            let k = band.cell_in_row(i, j);
             here[k] = if j == cols {
                 0
             } else if left[i] == right[j] {
@@ -1121,7 +1233,7 @@ fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>
             i += 1;
             j += 1;
         } else {
-            let bit = i * width + at(i, j).expect("the walk stays inside the band");
+            let bit = i * width + band.diagonal(i, j).expect("the walk stays inside the band");
             if (down[bit / 64] >> (bit % 64)) & 1 == 1 {
                 i += 1;
             } else {
@@ -1132,19 +1244,31 @@ fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>
     out
 }
 
+fn is_field_delimiter(b: u8) -> bool {
+    matches!(b, b'=' | b':' | b'[' | b'(')
+}
+
+fn is_closing_bracket(b: u8) -> bool {
+    matches!(b, b']' | b')')
+}
+
+fn after_last_field_delimiter(bytes: &[u8]) -> usize {
+    bytes
+        .iter()
+        .rposition(|&b| is_field_delimiter(b))
+        .map_or(0, |i| i + 1)
+}
+
 fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
     let (rb, wb) = (r.as_bytes(), w.as_bytes());
     let common = rb.iter().zip(wb).take_while(|(x, y)| x == y).count();
     let common = common.min(r.len() - 1).min(w.len() - 1);
-    let prefix = rb[..common]
-        .iter()
-        .rposition(|&b| matches!(b, b'=' | b':' | b'[' | b'('))
-        .map_or(0, |i| i + 1);
+    let prefix = after_last_field_delimiter(&rb[..common]);
     let mut suffix = 0;
     while prefix + suffix + 1 < rb.len()
         && prefix + suffix + 1 < wb.len()
         && rb[rb.len() - 1 - suffix] == wb[wb.len() - 1 - suffix]
-        && matches!(rb[rb.len() - 1 - suffix], b']' | b')')
+        && is_closing_bracket(rb[rb.len() - 1 - suffix])
     {
         suffix += 1;
     }
@@ -1158,10 +1282,7 @@ fn kept_affixes(prefix: &str, suffix: &str, w: &str) -> (usize, usize) {
         pb.len()
     } else {
         let common = common.min(wb.len().saturating_sub(1));
-        pb[..common]
-            .iter()
-            .rposition(|&b| matches!(b, b'=' | b':' | b'[' | b'('))
-            .map_or(0, |i| i + 1)
+        after_last_field_delimiter(&pb[..common])
     };
     let mut q = 0;
     while q < sb.len() && p + q + 1 < wb.len() && sb[sb.len() - 1 - q] == wb[wb.len() - 1 - q] {
@@ -1185,10 +1306,16 @@ fn unpaired_quote(r: &str, from: usize, to: usize) -> bool {
 }
 
 fn balance_quotes(r: &str, w: &str, p: usize, q: usize) -> (usize, usize) {
-    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
-    if !odd(p, q) {
+    if !unpaired_quote(r, p, r.len() - q) {
         return (p, q);
     }
+    closing_quote_joins_suffix(r, w, p, q)
+        .or_else(|| opening_quote_joins_prefix(r, w, p, q))
+        .unwrap_or_else(|| slot_covers_quoted_value(r, p, q))
+}
+
+fn closing_quote_joins_suffix(r: &str, w: &str, p: usize, q: usize) -> Option<(usize, usize)> {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
     let (rb, wb) = (r.as_bytes(), w.as_bytes());
     let mut inner = q;
     while let Some(quote) = r[p..r.len() - inner].rfind('"').map(|at| p + at) {
@@ -1199,40 +1326,48 @@ fn balance_quotes(r: &str, w: &str, p: usize, q: usize) -> (usize, usize) {
         };
         let keep = r.len() - quote;
         if quote == p || wb.len() <= p + keep || !w.ends_with(&r[quote..]) {
-            break;
+            return None;
         }
         inner = keep;
         if !odd(p, inner) {
             while p + inner + 1 < rb.len()
                 && p + inner + 1 < wb.len()
                 && rb[rb.len() - 1 - inner] == wb[wb.len() - 1 - inner]
-                && matches!(rb[rb.len() - 1 - inner], b']' | b')')
+                && is_closing_bracket(rb[rb.len() - 1 - inner])
             {
                 inner += 1;
             }
-            return (p, inner);
+            return Some((p, inner));
         }
     }
+    None
+}
+
+fn opening_quote_joins_prefix(r: &str, w: &str, p: usize, q: usize) -> Option<(usize, usize)> {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
+    let wb = w.as_bytes();
     let mut inner = p;
     while let Some(quote) = r[inner..r.len() - q].find('"').map(|at| inner + at) {
         let keep = quote + 1;
         if keep >= r.len() - q || wb.len() <= keep + q || !w.starts_with(&r[..keep]) {
-            break;
+            return None;
         }
         inner = keep;
         if !odd(inner, q) {
-            return (inner, q);
+            return Some((inner, q));
         }
     }
+    None
+}
+
+fn slot_covers_quoted_value(r: &str, p: usize, q: usize) -> (usize, usize) {
+    let odd = |p: usize, q: usize| unpaired_quote(r, p, r.len() - q);
     let mut outer = p;
     while odd(outer, q) {
         let Some(quote) = r[..outer].rfind('"') else {
             break;
         };
-        outer = r[..quote]
-            .bytes()
-            .rposition(|b| matches!(b, b'=' | b':' | b'[' | b'('))
-            .map_or(0, |i| i + 1);
+        outer = after_last_field_delimiter(&r.as_bytes()[..quote]);
     }
     if !odd(outer, q) {
         (outer, q)
@@ -1248,24 +1383,35 @@ fn slot_affix(r: &str) -> Option<(&str, &str)> {
     Some((&r[..k], &r[k + VARIES_MARK.len()..]))
 }
 
-type Unshown = Vec<(usize, (usize, usize))>;
+type MemberUnits = (usize, usize);
 
-fn unit_ranges(
-    tmpl: &[&str],
-    mem: &[&str],
-    aligned: &[Option<usize>],
-) -> (Vec<Option<(usize, usize)>>, Unshown) {
+#[derive(Debug, PartialEq)]
+struct UnshownRun {
+    before_unit: usize,
+    member_units: MemberUnits,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct UnitRanges {
+    stands_for: Vec<Option<MemberUnits>>,
+    unshown: Vec<UnshownRun>,
+}
+
+fn unit_ranges(tmpl: &[&str], mem: &[&str], aligned: &[Option<usize>]) -> UnitRanges {
     fn resolve(
         tmpl: &[&str],
         mem: &[&str],
         (t0, t1): (usize, usize),
-        (m0, m1): (usize, usize),
-        out: &mut [Option<(usize, usize)>],
-        unshown: &mut Unshown,
+        (m0, m1): MemberUnits,
+        out: &mut [Option<MemberUnits>],
+        unshown: &mut Vec<UnshownRun>,
     ) {
         if t0 == t1 {
             if m0 < m1 {
-                unshown.push((t0, (m0, m1)));
+                unshown.push(UnshownRun {
+                    before_unit: t0,
+                    member_units: (m0, m1),
+                });
             }
             return;
         }
@@ -1290,23 +1436,21 @@ fn unit_ranges(
                 resolve(tmpl, mem, (t0, i), (m0, j), out, unshown);
                 resolve(tmpl, mem, (i + 1, t1), (j + 1, m1), out, unshown);
             } else if tmpl[t0..t1].iter().all(|&r| r == VARIES_MARK) {
-                for (n, i) in (t0..t1).enumerate() {
-                    let from = (m0 + n).min(m1);
-                    let to = if i + 1 == t1 { m1 } else { (from + 1).min(m1) };
-                    out[i] = Some((from, to));
-                }
+                read_in_order_into_bare_slots((t0, t1), (m0, m1), out);
             }
         }
     }
-    let mut out: Vec<Option<(usize, usize)>> =
-        aligned.iter().map(|a| a.map(|j| (j, j + 1))).collect();
-    let mut unshown = Unshown::new();
+    let mut out: Vec<Option<MemberUnits>> = aligned.iter().map(|a| a.map(|j| (j, j + 1))).collect();
+    let mut unshown = Vec::new();
     let mut i = 0;
     let mut from = 0;
     while i < aligned.len() {
         if let Some(j) = aligned[i] {
             if from < j {
-                unshown.push((i, (from, j)));
+                unshown.push(UnshownRun {
+                    before_unit: i,
+                    member_units: (from, j),
+                });
             }
             from = j + 1;
             i += 1;
@@ -1326,9 +1470,27 @@ fn unit_ranges(
         from = to;
     }
     if from < mem.len() {
-        unshown.push((aligned.len(), (from, mem.len())));
+        unshown.push(UnshownRun {
+            before_unit: aligned.len(),
+            member_units: (from, mem.len()),
+        });
     }
-    (out, unshown)
+    UnitRanges {
+        stands_for: out,
+        unshown,
+    }
+}
+
+fn read_in_order_into_bare_slots(
+    (t0, t1): (usize, usize),
+    (m0, m1): MemberUnits,
+    out: &mut [Option<MemberUnits>],
+) {
+    for (n, i) in (t0..t1).enumerate() {
+        let from = (m0 + n).min(m1);
+        let to = if i + 1 == t1 { m1 } else { (from + 1).min(m1) };
+        out[i] = Some((from, to));
+    }
 }
 
 fn range_text<'m>(member: &'m str, spans: &[(usize, usize)], (c, d): (usize, usize)) -> &'m str {
@@ -1342,11 +1504,17 @@ fn range_text<'m>(member: &'m str, spans: &[(usize, usize)], (c, d): (usize, usi
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Edit {
-    Vary { at: usize, len: usize },
-    Open { at: usize, text: String },
+    Vary {
+        at: usize,
+        len: usize,
+    },
+    Open {
+        at: usize,
+        unit_with_separator: String,
+    },
 }
 
-fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
+fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
     let spans = unit_spans(template);
     let member_spans = unit_spans(member);
     let tmpl: Vec<&str> = spans
@@ -1361,24 +1529,26 @@ fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
         return None;
     }
     let aligned = align_words(&tmpl, &mem);
-    let (ranges, unshown) = if tmpl.len() == mem.len() {
-        (Vec::new(), Unshown::new())
+    let UnitRanges {
+        stands_for: ranges,
+        unshown,
+    } = if tmpl.len() == mem.len() {
+        UnitRanges::default()
     } else {
         unit_ranges(&tmpl, &mem, &aligned)
     };
     let mut unshown = unshown.into_iter().peekable();
     let mut edits = Vec::new();
-    let mut same_pci_identity = None;
-    let mut same_option_identity = None;
+    let mut shared_atoms = SharedAtoms::new(template, member);
     for i in 0..=spans.len() {
-        while let Some((_, run)) = unshown.next_if(|&(t, _)| t == i) {
+        while let Some(run) = unshown.next_if(|run| run.before_unit == i) {
             edits.push(slot_opening(
                 template,
                 &spans,
                 member,
                 &member_spans,
                 i,
-                run,
+                run.member_units,
             )?);
         }
         let Some(&(at, len)) = spans.get(i) else {
@@ -1410,26 +1580,7 @@ fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
             }
             continue;
         }
-        if crate::normalize::pci_addresses(r)
-            .next()
-            .is_some_and(|m| m.start() == 0 && m.end() == r.len())
-            && *same_pci_identity.get_or_insert_with(|| {
-                crate::normalize::pci_addresses(template)
-                    .map(|m| m.as_str())
-                    .eq(crate::normalize::pci_addresses(member).map(|m| m.as_str()))
-            })
-        {
-            continue;
-        }
-        if crate::normalize::cli_option_names(r)
-            .next()
-            .is_some_and(|m| m.start() == 0 && m.end() == r.len())
-            && *same_option_identity.get_or_insert_with(|| {
-                crate::normalize::cli_option_names(template)
-                    .map(|m| m.as_str())
-                    .eq(crate::normalize::cli_option_names(member).map(|m| m.as_str()))
-            })
-        {
+        if shared_atoms.keeps(r) {
             continue;
         }
         let partner = aligned[i].or_else(|| match ranges.get(i).copied().flatten() {
@@ -1446,6 +1597,50 @@ fn varying_spans(template: &str, member: &str) -> Option<Vec<Edit>> {
         });
     }
     Some(edits)
+}
+
+struct SharedAtoms<'a> {
+    template: &'a str,
+    member: &'a str,
+    same_pci_addresses: Option<bool>,
+    same_option_names: Option<bool>,
+}
+
+impl<'a> SharedAtoms<'a> {
+    fn new(template: &'a str, member: &'a str) -> Self {
+        Self {
+            template,
+            member,
+            same_pci_addresses: None,
+            same_option_names: None,
+        }
+    }
+
+    fn keeps(&mut self, unit: &str) -> bool {
+        use crate::normalize::{cli_option_names, pci_addresses};
+        let (template, member) = (self.template, self.member);
+        (is_whole_atom(pci_addresses(unit), unit)
+            && *self
+                .same_pci_addresses
+                .get_or_insert_with(|| same_atoms(pci_addresses(template), pci_addresses(member))))
+            || (is_whole_atom(cli_option_names(unit), unit)
+                && *self.same_option_names.get_or_insert_with(|| {
+                    same_atoms(cli_option_names(template), cli_option_names(member))
+                }))
+    }
+}
+
+fn is_whole_atom<'s>(mut atoms: impl Iterator<Item = regex::Match<'s>>, unit: &str) -> bool {
+    atoms
+        .next()
+        .is_some_and(|m| m.start() == 0 && m.end() == unit.len())
+}
+
+fn same_atoms<'s>(
+    ours: impl Iterator<Item = regex::Match<'s>>,
+    theirs: impl Iterator<Item = regex::Match<'s>>,
+) -> bool {
+    ours.map(|m| m.as_str()).eq(theirs.map(|m| m.as_str()))
 }
 
 fn slot_opening(
@@ -1472,12 +1667,12 @@ fn slot_opening(
     Some(if parts_apart && text.strip_prefix(before) == Some(after) {
         Edit::Open {
             at: between.start + before.len(),
-            text: VARIES_MARK.to_string(),
+            unit_with_separator: VARIES_MARK.to_string(),
         }
     } else if t == 0 {
         Edit::Open {
             at: between.end,
-            text: format!(
+            unit_with_separator: format!(
                 "{VARIES_MARK}{}",
                 if after.is_empty() { " " } else { after }
             ),
@@ -1485,7 +1680,7 @@ fn slot_opening(
     } else {
         Edit::Open {
             at: between.start,
-            text: format!(
+            unit_with_separator: format!(
                 "{}{VARIES_MARK}",
                 if before.is_empty() { " " } else { before }
             ),
@@ -1493,11 +1688,39 @@ fn slot_opening(
     })
 }
 
+impl Edit {
+    fn span(&self) -> (usize, usize) {
+        match *self {
+            Edit::Vary { at, len } => (at, len),
+            Edit::Open { at, .. } => (at, 0),
+        }
+    }
+}
+
+fn edits_ascend_one_per_unit(units: &[(usize, usize)], edits: &[Edit]) -> bool {
+    let ascend = edits.windows(2).all(|w| w[0].span().0 <= w[1].span().0);
+    let varied_units: Vec<Option<usize>> = edits
+        .iter()
+        .filter_map(|edit| match *edit {
+            Edit::Vary { at, .. } => Some(
+                units
+                    .iter()
+                    .position(|&(start, width)| start <= at && at < start + width),
+            ),
+            Edit::Open { .. } => None,
+        })
+        .collect();
+    ascend && varied_units.windows(2).all(|w| w[0] < w[1])
+}
+
 fn apply_edits(template: &mut String, edits: &[Edit]) {
     for edit in edits.iter().rev() {
         match edit {
             Edit::Vary { at, len } => template.replace_range(*at..at + len, VARIES_MARK),
-            Edit::Open { at, text } => template.insert_str(*at, text),
+            Edit::Open {
+                at,
+                unit_with_separator,
+            } => template.insert_str(*at, unit_with_separator),
         }
     }
 }
@@ -1602,6 +1825,15 @@ fn cli_option_units(s: &str, units: Vec<(usize, usize)>) -> Vec<(usize, usize)> 
     ranges.sort_unstable_by_key(|range| range.start);
     boundaries.sort_unstable();
     boundaries.dedup();
+    split_units_at(s, units, &ranges, &boundaries)
+}
+
+fn split_units_at(
+    s: &str,
+    units: Vec<(usize, usize)>,
+    ranges: &[std::ops::Range<usize>],
+    boundaries: &[usize],
+) -> Vec<(usize, usize)> {
     let mut split = Vec::with_capacity(units.len() + boundaries.len());
     let (mut range_index, mut boundary_index) = (0, 0);
     for (at, len) in units {
@@ -1644,34 +1876,11 @@ pub(super) fn unit_spans(s: &str) -> Vec<(usize, usize)> {
                 })
                 .collect();
             boundaries.dedup();
-            let mut split = Vec::with_capacity(units.len() + requests.len() * 5);
-            let (mut request_index, mut boundary_index) = (0, 0);
-            for (at, len) in units {
-                while request_index < requests.len() && requests[request_index].0.end() <= at {
-                    request_index += 1;
-                }
-                if request_index == requests.len() || requests[request_index].0.start() >= at + len
-                {
-                    split.push((at, len));
-                    continue;
-                }
-                for (word_at, word_len) in word_spans(&s[at..at + len]) {
-                    let start = at + word_at;
-                    let end = start + word_len;
-                    let mut cursor = start;
-                    while boundary_index < boundaries.len() && boundaries[boundary_index] <= start {
-                        boundary_index += 1;
-                    }
-                    while boundary_index < boundaries.len() && boundaries[boundary_index] < end {
-                        let boundary = boundaries[boundary_index];
-                        split.push((cursor, boundary - cursor));
-                        cursor = boundary;
-                        boundary_index += 1;
-                    }
-                    split.push((cursor, end - cursor));
-                }
-            }
-            units = split;
+            let ranges: Vec<_> = requests
+                .iter()
+                .map(|(request, _)| request.range())
+                .collect();
+            units = split_units_at(s, units, &ranges, &boundaries);
         }
     }
     units = cli_option_units(s, units);
@@ -1757,6 +1966,25 @@ fn first_difference_may_vary(template: &str, line: &str) -> bool {
     true
 }
 
+enum SlotReading {
+    Same,
+    QuotedValueInsideSlot,
+    OtherQuotedValue,
+}
+
+fn read_through_slots(template_unit: &str, line_unit: &str) -> Option<SlotReading> {
+    if template_unit == line_unit {
+        return Some(SlotReading::Same);
+    }
+    let around = quoted_value(line_unit)?;
+    match slot_affix(template_unit) {
+        Some(kept) => (around == kept).then_some(SlotReading::QuotedValueInsideSlot),
+        None => {
+            (quoted_value(template_unit) == Some(around)).then_some(SlotReading::OtherQuotedValue)
+        }
+    }
+}
+
 fn joins_through_slots(
     template: &str,
     template_units: &[(usize, usize)],
@@ -1769,31 +1997,18 @@ fn joins_through_slots(
     }
     let mut diffs = 0usize;
     for (&(ta, tl), &(la, ll)) in template_units.iter().zip(line_units) {
-        let t = &template[ta..ta + tl];
-        let m = &line[la..la + ll];
-        if t == m {
-            continue;
+        match read_through_slots(&template[ta..ta + tl], &line[la..la + ll]) {
+            None => return false,
+            Some(SlotReading::OtherQuotedValue) => diffs += 1,
+            Some(SlotReading::Same | SlotReading::QuotedValueInsideSlot) => {}
         }
-        let Some(around) = quoted_value(m) else {
-            return false;
-        };
-        if let Some((prefix, suffix)) = slot_affix(t) {
-            if around == (prefix, suffix) {
-                continue;
-            }
-            return false;
-        }
-        if quoted_value(t) != Some(around) {
-            return false;
-        }
-        diffs += 1;
     }
     let n = template_units.len();
     let agree = (n - diffs) as f64 / n as f64 * 100.0;
     agree >= f64::from(threshold)
 }
 
-pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
+pub(super) fn plain_word_diffs(a: &str, b: &str) -> Option<usize> {
     let differs =
         |x: &str, y: &str| !(letters(x).eq(letters(y)) || (data_shaped(x) && data_shaped(y)));
     let lone = |x: &str| letters(x).next().is_some() && !data_shaped(x);
@@ -1806,7 +2021,7 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
         .map(|(at, len)| &b[at..at + len])
         .collect();
     if !alignable(ua.len(), ub.len()) {
-        return MAX_PLAIN_WORD_DIFFS + 1;
+        return None;
     }
     let aligned = align_words(&ua, &ub);
     let unit_diffs = |x: &str, y: &str| -> usize {
@@ -1841,17 +2056,21 @@ pub(super) fn plain_word_diffs(a: &str, b: &str) -> usize {
             None => {}
         }
     }
-    diffs
-        + ub.iter()
-            .zip(&matched_b)
-            .filter(|(u, m)| !**m && lone_unit(u, &ua))
-            .count()
+    Some(
+        diffs
+            + ub.iter()
+                .zip(&matched_b)
+                .filter(|(u, m)| !**m && lone_unit(u, &ua))
+                .count(),
+    )
+}
+
+fn within_plain_word_allowance(a: &str, b: &str) -> bool {
+    plain_word_diffs(a, b).is_some_and(|diffs| diffs <= MAX_PLAIN_WORD_DIFFS)
 }
 
 fn seed_for_group(normalized: &str) -> u64 {
-    let mut h = FNV_OFFSET;
-    fnv1a_fold(&mut h, normalized.as_bytes());
-    h
+    fnv1a(normalized.as_bytes())
 }
 
 #[cfg(test)]
@@ -1987,6 +2206,46 @@ impl Accumulator {
             Self::Hashes(_) => Self::Hashes(HashSet::new()),
         }
     }
+
+    fn merge_sorted(&mut self, other: Self, cap: usize) -> bool {
+        debug_assert_eq!(
+            std::mem::discriminant(self),
+            std::mem::discriminant(&other),
+            "a token type keeps its values the same way in every group"
+        );
+        match (self, other) {
+            (Self::Values(into), Self::Values(from)) => merge_sorted_within_cap(into, from, cap),
+            (Self::Hashes(into), Self::Hashes(from)) => merge_sorted_within_cap(into, from, cap),
+            _ => false,
+        }
+    }
+}
+
+fn insert_within_cap<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, value: T, cap: usize) -> bool {
+    if set.len() >= cap && !set.contains(&value) {
+        return false;
+    }
+    set.insert(value);
+    true
+}
+
+fn merge_sorted_within_cap<T: Ord + std::hash::Hash>(
+    into: &mut HashSet<T>,
+    from: HashSet<T>,
+    cap: usize,
+) -> bool {
+    let mut from: Vec<T> = from.into_iter().collect();
+    from.sort_unstable();
+    for value in from {
+        if into.contains(&value) {
+            continue;
+        }
+        if into.len() >= cap {
+            return true;
+        }
+        into.insert(value);
+    }
+    false
 }
 
 struct RollupComputer {
@@ -2013,11 +2272,7 @@ impl RollupComputer {
         self
     }
 
-    fn accumulate_tokens(
-        &self,
-        lines: &[LogLine],
-        per_type: &mut BTreeMap<&'static str, (Accumulator, bool)>,
-    ) {
+    fn accumulate_tokens(&self, lines: &[LogLine], per_type: &mut PerType) {
         let capacity_hint = lines.len().min(self.distinct_cap);
 
         for line in lines {
@@ -2029,42 +2284,32 @@ impl RollupComputer {
                 let name = token_type_name(token);
                 let sample_worthy = is_sample_worthy(token);
 
-                let entry = per_type.entry(name).or_insert_with(|| {
-                    (
-                        if sample_worthy {
-                            Accumulator::Values(HashSet::with_capacity(capacity_hint))
-                        } else {
-                            Accumulator::Hashes(HashSet::with_capacity(capacity_hint))
-                        },
-                        false,
-                    )
+                let entry = per_type.entry(name).or_insert_with(|| TypeValues {
+                    values: if sample_worthy {
+                        Accumulator::Values(HashSet::with_capacity(capacity_hint))
+                    } else {
+                        Accumulator::Hashes(HashSet::with_capacity(capacity_hint))
+                    },
+                    capped: false,
                 });
 
-                if entry.1 {
+                if entry.capped {
                     continue;
                 }
 
-                match &mut entry.0 {
+                let kept = match &mut entry.values {
                     Accumulator::Values(s) => {
                         let mut v = token_value_string(token);
                         if let Some(masked) = secrets.as_ref().and_then(|x| x.mask(&v)) {
                             v = masked;
                         }
-                        if s.len() >= self.distinct_cap && !s.contains(&v) {
-                            entry.1 = true;
-                        } else {
-                            s.insert(v);
-                        }
+                        insert_within_cap(s, v, self.distinct_cap)
                     }
                     Accumulator::Hashes(s) => {
-                        let v = hash_token_value(token);
-                        if s.len() >= self.distinct_cap && !s.contains(&v) {
-                            entry.1 = true;
-                        } else {
-                            s.insert(v);
-                        }
+                        insert_within_cap(s, hash_token_value(token), self.distinct_cap)
                     }
-                }
+                };
+                entry.capped = !kept;
             }
         }
     }
@@ -2112,9 +2357,9 @@ impl RollupComputer {
             let masked;
             let range = match aligned[i] {
                 Some(j) => Some((j, j + 1)),
-                None => {
-                    ranges.get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned).0)[i]
-                }
+                None => ranges
+                    .get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned).stands_for)
+                    [i],
             };
             let value = match range.filter(|&(from, to)| from < to) {
                 Some(range) => {
@@ -2177,14 +2422,16 @@ impl RollupComputer {
         edits: &[Edit],
         state: &mut RetainedState,
     ) {
+        debug_assert!(
+            edits_ascend_one_per_unit(units, edits),
+            "a slot's index counts the slots made before it, so edits must ascend, \
+             at most one inside each template unit: {edits:?}"
+        );
         let mut made = 0;
         for edit in edits {
-            let (at, len) = match *edit {
-                Edit::Vary { at, len } => (at, len),
-                Edit::Open { at, .. } => (at, 0),
-            };
+            let (at, len) = edit.span();
             if template[at..at + len].contains(VARIES_MARK) {
-                state.varies_unknown = true;
+                state.slot_widened_after_counting = true;
                 continue;
             }
             let index = made
@@ -2224,7 +2471,7 @@ impl RollupComputer {
     }
 
     fn compute(&self, group: &PatternGroup) -> GroupRollup {
-        let mut per_type: BTreeMap<&'static str, (Accumulator, bool)> = BTreeMap::new();
+        let mut per_type = PerType::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
         let mut varies = SlotCounts::new();
         self.accumulate_varies(&group.lines, group.template(), &mut varies);
@@ -2253,7 +2500,7 @@ impl RollupComputer {
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
-        if state.realign_capped || state.varies_unknown {
+        if !state.varies_counts_known() {
             state.varies = (0..slot_count(template))
                 .map(|_| VariesCounts {
                     capped: true,
@@ -2273,48 +2520,21 @@ impl RollupComputer {
     fn merge_retained(&self, into: &mut RetainedState, from: RetainedState) {
         into.positional_members += from.positional_members;
         into.realign_capped |= from.realign_capped;
-        into.varies_unknown |= from.varies_unknown;
+        into.slot_widened_after_counting |= from.slot_widened_after_counting;
         for (form, n) in from.realign {
             self.retain_realign_form(into, &form, n);
         }
-        for (name, (acc, capped)) in from.per_type {
-            let entry = into
-                .per_type
-                .entry(name)
-                .or_insert_with(|| (Accumulator::empty_like(&acc), false));
-            if capped {
-                entry.1 = true;
-            }
-            match (&mut entry.0, acc) {
-                (Accumulator::Values(s), Accumulator::Values(other)) => {
-                    let mut other: Vec<_> = other.into_iter().collect();
-                    other.sort_unstable();
-                    for v in other {
-                        if s.contains(&v) {
-                            continue;
-                        }
-                        if s.len() >= self.distinct_cap {
-                            entry.1 = true;
-                            break;
-                        }
-                        s.insert(v);
-                    }
-                }
-                (Accumulator::Hashes(s), Accumulator::Hashes(other)) => {
-                    let mut other: Vec<_> = other.into_iter().collect();
-                    other.sort_unstable();
-                    for v in other {
-                        if s.contains(&v) {
-                            continue;
-                        }
-                        if s.len() >= self.distinct_cap {
-                            entry.1 = true;
-                            break;
-                        }
-                        s.insert(v);
-                    }
-                }
-                _ => {}
+        for (name, from_type) in from.per_type {
+            let entry = into.per_type.entry(name).or_insert_with(|| TypeValues {
+                values: Accumulator::empty_like(&from_type.values),
+                capped: false,
+            });
+            entry.capped |= from_type.capped;
+            if entry
+                .values
+                .merge_sorted(from_type.values, self.distinct_cap)
+            {
+                entry.capped = true;
             }
         }
         for (i, slot) in from.varies.into_iter().enumerate() {
@@ -2328,16 +2548,16 @@ impl RollupComputer {
 
     fn finalize(
         &self,
-        per_type: BTreeMap<&'static str, (Accumulator, bool)>,
+        per_type: PerType,
         varies: SlotCounts,
         template: &str,
         seed_key: &str,
     ) -> GroupRollup {
         let mut rng = ChaCha8Rng::seed_from_u64(seed_for_group(seed_key));
         let mut out: GroupRollup = BTreeMap::new();
-        for (name, (acc, capped)) in per_type {
-            let distinct_count = acc.len();
-            let samples = match acc {
+        for (name, TypeValues { values, capped }) in per_type {
+            let distinct_count = values.len();
+            let samples = match values {
                 Accumulator::Values(s) => {
                     let mut distinct: Vec<String> = s.into_iter().collect();
                     distinct.sort();
@@ -2418,11 +2638,98 @@ fn slot_count(template: &str) -> usize {
         .count()
 }
 
+type MemberIndexes = std::collections::BTreeSet<usize>;
+
+fn members_that_moved_the_template(group: &PatternGroup) -> MemberIndexes {
+    let mut chosen = MemberIndexes::new();
+    let mut template = group.lines[0].normalized.clone();
+    chosen.insert(0);
+    for (idx, line) in group.lines.iter().enumerate().skip(1) {
+        if line.hash == group.lines[0].hash {
+            continue;
+        }
+        let edits = template_edits(&template, &line.normalized).unwrap_or_default();
+        if edits.is_empty() {
+            continue;
+        }
+        apply_edits(&mut template, &edits);
+        chosen.insert(idx);
+    }
+    chosen
+}
+
+struct DistinctForms {
+    count: usize,
+    past_the_kept_forms: Vec<usize>,
+}
+
+fn one_member_per_form(group: &PatternGroup, chosen: &mut MemberIndexes) -> DistinctForms {
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut past_the_kept_forms: Vec<usize> = Vec::new();
+    for (idx, line) in group.lines.iter().enumerate() {
+        if !seen.insert(line.hash) {
+            continue;
+        }
+        if seen.len() <= DISTILL_FORMS {
+            chosen.insert(idx);
+        } else if seen.len() <= ROLLUP_DISTINCT_CAP + 1 {
+            past_the_kept_forms.push(idx);
+        } else {
+            break;
+        }
+    }
+    DistinctForms {
+        count: seen.len(),
+        past_the_kept_forms,
+    }
+}
+
+fn keep_members_with_unseen_token_types(group: &PatternGroup, chosen: &mut MemberIndexes) {
+    let mut types_seen: std::collections::BTreeSet<&'static str> = chosen
+        .iter()
+        .flat_map(|&i| group.lines[i].tokens.iter().map(token_type_name))
+        .collect();
+    for (idx, line) in group.lines.iter().enumerate() {
+        if line
+            .tokens
+            .iter()
+            .any(|t| !types_seen.contains(token_type_name(t)))
+        {
+            types_seen.extend(line.tokens.iter().map(token_type_name));
+            chosen.insert(idx);
+        }
+    }
+}
+
+fn keep_earliest_members_until(held: usize, members: usize, chosen: &mut MemberIndexes) {
+    for idx in 0..held {
+        if chosen.len() >= members {
+            break;
+        }
+        chosen.insert(idx);
+    }
+}
+
+struct SummaryRows {
+    display: Vec<(usize, String)>,
+    total_patterns: usize,
+    was_capped: bool,
+    fit_truncated: usize,
+}
+
+pub struct TopGroups {
+    pub shown: Vec<(usize, String)>,
+    pub total_groups: usize,
+    pub coverage_pct: usize,
+    pub fit_truncated: usize,
+}
+
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let sanitizer = config.sanitizer();
         let normalizer = Normalizer::new(config.clone());
-        let thread_pool = match config.thread_count {
+        let detection = match config.thread_count {
+            Some(1) => LineDetection::Inline,
             Some(requested) if requested > 1 => {
                 let cores = std::thread::available_parallelism().map_or(8, usize::from);
                 let n = requested.min(cores);
@@ -2432,23 +2739,23 @@ impl PatternFolder {
                     );
                 }
                 match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
-                    Ok(pool) => Some(pool),
+                    Ok(pool) => LineDetection::SizedPool(pool),
                     Err(e) => {
                         eprintln!(
                             "lessence: could not create a {n}-thread pool ({e}); \
                              falling back to the default thread pool"
                         );
-                        None
+                        LineDetection::GlobalPool
                     }
                 }
             }
-            _ => None,
+            _ => LineDetection::GlobalPool,
         };
 
         Self {
             config,
             normalizer,
-            thread_pool,
+            detection,
             buffer: Vec::new(),
             group_index: ahash::AHashMap::new(),
             stats: FoldingStats::default(),
@@ -2534,37 +2841,17 @@ impl PatternFolder {
         location: Option<LineLocation>,
     ) -> Result<Option<String>> {
         self.stats.total_lines += 1;
-        self.position_counter += 1;
-
-        if self.config.thread_count != Some(1) {
-            self.batch_buffer.push(line.to_string());
-            if let Some(location) = location {
-                self.batch_locations.push(location);
-            }
-
-            if self.batch_buffer.len() >= 10_000 {
-                self.process_batch()?;
-            }
-
-            return Ok(None);
+        if matches!(self.detection, LineDetection::Inline) {
+            let normalized_line = self.normalizer.normalize_line(line.to_string())?;
+            return self.place_line(normalized_line, location);
         }
-
-        let normalized_line = self.normalizer.normalize_line(line.to_string())?;
-
-        if !normalized_line.tokens.is_empty() {
-            self.stats.patterns_detected += 1;
-            self.count_pattern_types(&normalized_line.tokens);
+        self.batch_buffer.push(line.to_string());
+        if let Some(location) = location {
+            self.batch_locations.push(location);
         }
-        self.stats
-            .record_briefing_line(&normalized_line.tokens, line);
-        let epoch = self.stats.record_span(&normalized_line.tokens);
-
-        self.cluster_line_timed(normalized_line, location, epoch);
-
-        if self.should_flush_buffer() {
-            return self.flush_oldest_safe_group();
+        if self.batch_buffer.len() >= BATCH_LINES {
+            self.process_batch()?;
         }
-
         Ok(None)
     }
 
@@ -2623,10 +2910,10 @@ impl PatternFolder {
                     .filter_map(|key| {
                         let group = self.retained.get(&key)?;
                         if !(self.normalizer.are_similar(&normalized_line, group.first())
-                            && plain_word_diffs(
+                            && within_plain_word_allowance(
                                 &normalized_line.normalized,
                                 &group.first().normalized,
-                            ) <= MAX_PLAIN_WORD_DIFFS)
+                            ))
                         {
                             return None;
                         }
@@ -2653,8 +2940,10 @@ impl PatternFolder {
                                 threshold,
                             ));
                     similar
-                        && plain_word_diffs(&normalized_line.normalized, &first.normalized)
-                            <= MAX_PLAIN_WORD_DIFFS
+                        && within_plain_word_allowance(
+                            &normalized_line.normalized,
+                            &first.normalized,
+                        )
                         && group
                             .edits_for(&normalized_line)
                             .map(|found| edits = found)
@@ -2720,6 +3009,7 @@ impl PatternFolder {
             self.buffer.push(group);
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
+            self.assert_one_key_space(rep_hash);
         }
     }
 
@@ -2760,68 +3050,21 @@ impl PatternFolder {
             return;
         }
 
-        let mut chosen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut chosen = members_that_moved_the_template(group);
+        let forms = one_member_per_form(group, &mut chosen);
+        keep_members_with_unseen_token_types(group, &mut chosen);
+        keep_earliest_members_until(group.lines.len(), members, &mut chosen);
 
-        let mut template = group.lines[0].normalized.clone();
-        chosen.insert(0);
-        for (idx, line) in group.lines.iter().enumerate().skip(1) {
-            if line.hash == group.lines[0].hash {
-                continue;
-            }
-            let edits = varying_spans(&template, &line.normalized).unwrap_or_default();
-            if edits.is_empty() {
-                continue;
-            }
-            apply_edits(&mut template, &edits);
-            chosen.insert(idx);
-        }
-
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut overflow: Vec<usize> = Vec::new();
-        for (idx, line) in group.lines.iter().enumerate() {
-            if !seen.insert(line.hash) {
-                continue;
-            }
-            if seen.len() <= DISTILL_FORMS {
-                chosen.insert(idx);
-            } else if seen.len() <= ROLLUP_DISTINCT_CAP + 1 {
-                overflow.push(idx);
-            } else {
-                break;
-            }
-        }
-
-        let mut types_seen: std::collections::BTreeSet<&'static str> = chosen
-            .iter()
-            .flat_map(|&i| group.lines[i].tokens.iter().map(token_type_name))
-            .collect();
-        for (idx, line) in group.lines.iter().enumerate() {
-            if line
-                .tokens
-                .iter()
-                .any(|t| !types_seen.contains(token_type_name(t)))
-            {
-                types_seen.extend(line.tokens.iter().map(token_type_name));
-                chosen.insert(idx);
-            }
-        }
-
-        for idx in 0..group.lines.len() {
-            if chosen.len() >= members {
-                break;
-            }
-            chosen.insert(idx);
-        }
-
-        record.distinct_forms = seen.len();
+        record.distinct_forms = forms.count;
         record.kept = chosen
             .iter()
             .filter_map(|i| group.member_line_nos.get(*i).copied())
             .collect();
         record.kept.sort_unstable();
 
-        if seen.len() > ROLLUP_DISTINCT_CAP && record.avg_bytes <= DISTILL_CHEAP_LINE_BYTES {
-            record.capping_extra = overflow
+        if forms.count > ROLLUP_DISTINCT_CAP && record.avg_bytes <= DISTILL_CHEAP_LINE_BYTES {
+            record.capping_extra = forms
+                .past_the_kept_forms
                 .iter()
                 .filter_map(|i| group.member_line_nos.get(*i).copied())
                 .collect();
@@ -2837,13 +3080,12 @@ impl PatternFolder {
         }
 
         let current_position = self.position_counter;
-        let safe_distance = 100;
 
         let mut oldest_index = None;
         let mut oldest_position = usize::MAX;
 
         for (i, group) in self.buffer.iter().enumerate() {
-            let is_old_enough = current_position - group.position > safe_distance;
+            let is_old_enough = current_position - group.position > EVICTION_DISTANCE;
             let is_ready = group.should_collapse(self.config.min_collapse) || is_old_enough;
 
             if is_ready && group.position < oldest_position {
@@ -2879,15 +3121,23 @@ impl PatternFolder {
         Ok(None)
     }
 
+    fn assert_one_key_space(&self, founding_hash: u64) {
+        debug_assert!(
+            !(self.group_index.contains_key(&founding_hash)
+                && self.retained.contains_key(&founding_hash)),
+            "a founding hash keys a live group or a retained one, never both"
+        );
+    }
+
     fn retain_evicted_group(&mut self, mut group: PatternGroup) -> Retention {
         if self.config.distill.is_some() {
-            return Retention::Declined(group);
+            return Retention::Declined(Box::new(group));
         }
         let key = group.first().hash;
         let already_retained = self.retained.contains_key(&key);
         if !already_retained && self.retained.len() >= RETAINED_TEMPLATE_CAP {
             self.json_retention_cap_hits += 1;
-            return Retention::Declined(group);
+            return Retention::Declined(Box::new(group));
         }
         let state = self.rollup_computer.seed(&group);
         let first = group.first().clone();
@@ -2899,10 +3149,12 @@ impl PatternFolder {
             };
         }
         group.retained = Some(state);
+        group.assert_members_held();
         if !already_retained {
             self.retained_index.insert(group.first());
         }
         self.retained.insert(key, group);
+        self.assert_one_key_space(key);
         Retention::Kept
     }
 
@@ -2910,7 +3162,7 @@ impl PatternFolder {
         &mut self,
         top_n: Option<usize>,
         fit_budget: Option<usize>,
-    ) -> Result<(Vec<(usize, String)>, usize, bool, usize)> {
+    ) -> Result<SummaryRows> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
@@ -2937,18 +3189,22 @@ impl PatternFolder {
         use crate::config::DEFAULT_SUMMARY_CAP;
 
         let (limit, was_capped, fit_truncated) = match (top_n, fit_budget) {
-            (Some(n), _) if n > 0 => (n, false, 0),
+            (Some(n), _) if n != TOP_SHOWS_EVERY_GROUP => (n, false, 0),
             (_, Some(budget)) if total_patterns > budget => {
                 let show = budget.saturating_sub(1);
                 (show, false, total_patterns - show)
             }
-            (Some(0), _) | (_, Some(_)) => (total_patterns, false, 0),
+            (Some(TOP_SHOWS_EVERY_GROUP), _) | (_, Some(_)) => (total_patterns, false, 0),
             _ => (DEFAULT_SUMMARY_CAP, total_patterns > DEFAULT_SUMMARY_CAP, 0),
         };
         sorted.truncate(limit);
-        let display = sorted;
 
-        Ok((display, total_patterns, was_capped, fit_truncated))
+        Ok(SummaryRows {
+            display: sorted,
+            total_patterns,
+            was_capped,
+            fit_truncated,
+        })
     }
 
     fn fix_timeline_grid(&mut self) {
@@ -3013,11 +3269,19 @@ impl PatternFolder {
         n: usize,
         fit_budget: Option<usize>,
         cap_is_summary: bool,
-    ) -> Result<(Vec<(usize, String)>, usize, usize, usize)> {
+    ) -> Result<TopGroups> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
-        let n = if n == 0 { usize::MAX } else { n };
+        debug_assert!(
+            self.retained.is_empty(),
+            "a ranked run never evicts, so every group is still in the live buffer"
+        );
+        let n = if n == TOP_SHOWS_EVERY_GROUP {
+            usize::MAX
+        } else {
+            n
+        };
         self.fix_timeline_grid();
 
         let previously_formatted = self.next_json_id;
@@ -3087,24 +3351,28 @@ impl PatternFolder {
             self.json_omitted_by_fit += fit_truncated;
         }
 
-        Ok((
-            output,
+        Ok(TopGroups {
+            shown: output,
             total_groups,
-            if total_input_lines > 0 {
+            coverage_pct: if total_input_lines > 0 {
                 (lines_covered as f64 / total_input_lines as f64 * 100.0) as usize
             } else {
                 0
             },
             fit_truncated,
-        ))
+        })
     }
 
     fn should_flush_buffer(&self) -> bool {
-        if self.config.summary || self.config.top_n.is_some() || self.config.explain {
-            return false;
-        }
-        const CONSTITUTIONAL_FLUSH_THRESHOLD: usize = 1000;
-        self.buffer.len() > CONSTITUTIONAL_FLUSH_THRESHOLD
+        self.evicts_to_bound_memory() && self.buffer.len() > LIVE_GROUP_LIMIT
+    }
+
+    fn evicts_to_bound_memory(&self) -> bool {
+        matches!(self.detection, LineDetection::Inline) && !self.reads_every_group_after_the_run()
+    }
+
+    fn reads_every_group_after_the_run(&self) -> bool {
+        self.config.summary || self.config.top_n.is_some() || self.config.explain
     }
 
     fn count_pattern_types(&mut self, tokens: &[Token]) {
@@ -3124,14 +3392,9 @@ impl PatternFolder {
         let locations = std::mem::take(&mut self.batch_locations);
         debug_assert!(locations.is_empty() || locations.len() == batch.len());
         let processed_lines = self.parallel_pattern_detection(&batch)?;
-        let batch_start = self.position_counter.saturating_sub(batch.len());
-
         for (index, processed_line) in processed_lines.into_iter().enumerate() {
-            let location = locations
-                .get(index)
-                .copied()
-                .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, batch_start + index + 1));
-            self.sequential_clustering_at(processed_line, Some(location))?;
+            let evicted = self.place_line(processed_line, locations.get(index).copied())?;
+            debug_assert!(evicted.is_none(), "only the inline path evicts");
         }
         Ok(())
     }
@@ -3145,9 +3408,13 @@ impl PatternFolder {
                 .map(|line| self.normalizer.normalize_line(line.clone()))
                 .collect::<Result<Vec<_>, _>>()
         };
-        let processed_lines: Vec<LogLine> = match &self.thread_pool {
-            Some(pool) => pool.install(detect)?,
-            None => detect()?,
+        let processed_lines: Vec<LogLine> = match &self.detection {
+            LineDetection::SizedPool(pool) => pool.install(detect)?,
+            LineDetection::GlobalPool => detect()?,
+            LineDetection::Inline => lines
+                .iter()
+                .map(|line| self.normalizer.normalize_line(line.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
         };
 
         Ok(processed_lines)
@@ -3155,14 +3422,15 @@ impl PatternFolder {
 
     #[cfg(test)]
     fn sequential_clustering(&mut self, normalized_line: LogLine) -> Result<()> {
-        self.sequential_clustering_at(normalized_line, None)
+        self.place_line(normalized_line, None).map(drop)
     }
 
-    fn sequential_clustering_at(
+    fn place_line(
         &mut self,
         normalized_line: LogLine,
         location: Option<LineLocation>,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
+        self.position_counter += 1;
         if !normalized_line.tokens.is_empty() {
             self.stats.patterns_detected += 1;
             self.count_pattern_types(&normalized_line.tokens);
@@ -3173,7 +3441,10 @@ impl PatternFolder {
 
         self.cluster_line_timed(normalized_line, location, epoch);
 
-        Ok(())
+        if self.should_flush_buffer() {
+            return self.flush_oldest_safe_group();
+        }
+        Ok(None)
     }
 
     pub fn get_stats(&self) -> &FoldingStats {

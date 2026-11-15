@@ -329,7 +329,11 @@ fn summary_retains_all_groups_past_flush_threshold() {
         let out = folder.process_line(&eviction_word(i)).unwrap();
         assert!(out.is_none(), "ranked mode must not stream evictions");
     }
-    let (display, total_patterns, _, _) = folder.prepare_summary(Some(0), None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns,
+        ..
+    } = folder.prepare_summary(Some(0), None).unwrap();
     assert_eq!(total_patterns, 1_100, "every group must survive to ranking");
     assert_eq!(display.len(), 1_100);
 }
@@ -344,7 +348,11 @@ fn top_n_retains_all_groups_past_flush_threshold() {
     for i in 0..1_100 {
         folder.process_line(&eviction_word(i)).unwrap();
     }
-    let (output, total_groups, _, _) = folder.finish_top_n(5, None, false).unwrap();
+    let TopGroups {
+        shown: output,
+        total_groups,
+        ..
+    } = folder.finish_top_n(5, None, false).unwrap();
     assert_eq!(total_groups, 1_100, "denominator must count every group");
     assert_eq!(output.len(), 5);
 }
@@ -565,6 +573,38 @@ fn explain_retains_a_recurring_group_past_flush_threshold() {
 
 /// Deterministic 6-letter words: single-token lines that never group with
 /// each other (zero shared tokens → similarity score 0).
+#[test]
+fn only_the_inline_path_evicts_and_both_paths_fold_the_same_records() {
+    let run = |thread_count| {
+        let mut f = PatternFolder::new(Config {
+            thread_count,
+            output_format: "json".to_string(),
+            min_collapse: 3,
+            ..Config::default()
+        });
+        let mut output = Vec::new();
+        for round in 0..3 {
+            output.extend(f.process_line("gateway heartbeat ok node=edge-01").unwrap());
+            for i in 0..800 {
+                let line = format!("filler event {}", eviction_word(round * 800 + i));
+                output.extend(f.process_line(&line).unwrap());
+            }
+        }
+        f.process_batch().unwrap();
+        let retained = f.retained.len();
+        output.extend(f.finish().unwrap());
+        (retained, output)
+    };
+    let (inline_retained, inline) = run(Some(1));
+    let (batch_retained, batch) = run(None);
+    assert!(
+        inline_retained > 0,
+        "2,403 distinct lines overflow the buffer"
+    );
+    assert_eq!(batch_retained, 0, "the batch path holds every group");
+    assert_eq!(batch, inline, "and the two render the same records");
+}
+
 fn eviction_word(i: usize) -> String {
     let mut s = String::new();
     let mut x = i;
@@ -2725,7 +2765,12 @@ fn finish_top_n_derives_json_group_completeness() {
             .unwrap();
         }
     }
-    let (shown, total, _coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
+    let TopGroups {
+        shown,
+        total_groups: total,
+        fit_truncated,
+        ..
+    } = f.finish_top_n(3, Some(2), false).unwrap();
     assert_eq!(total, 4);
     assert_eq!(shown.len(), 1);
     assert_eq!(fit_truncated, 2);
@@ -2753,7 +2798,11 @@ fn summary_keeps_groups_that_share_a_template_but_not_an_anchor() {
         line.anchor = anchor;
         f.buffer.push(PatternGroup::new(line, pos));
     }
-    let (shown, total, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display: shown,
+        total_patterns: total,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert_eq!(total, 2);
     assert_eq!(shown.len(), 2);
 }
@@ -2773,7 +2822,12 @@ fn finish_top_n_coverage_counts_only_the_groups_shown_after_fit() {
             .unwrap();
         }
     }
-    let (shown, _total, coverage, fit_truncated) = f.finish_top_n(3, Some(2), false).unwrap();
+    let TopGroups {
+        shown,
+        coverage_pct: coverage,
+        fit_truncated,
+        ..
+    } = f.finish_top_n(3, Some(2), false).unwrap();
     assert_eq!(shown.len(), 1);
     assert_eq!(fit_truncated, 2);
     assert_eq!(coverage, 40);
@@ -2793,7 +2847,12 @@ fn finish_top_n_summary_cap_classifies_omissions() {
             .unwrap();
         }
     }
-    let (shown, total, _coverage, fit_truncated) = f.finish_top_n(1, None, true).unwrap();
+    let TopGroups {
+        shown,
+        total_groups: total,
+        fit_truncated,
+        ..
+    } = f.finish_top_n(1, None, true).unwrap();
     assert_eq!((shown.len(), total, fit_truncated), (1, 3, 0));
 
     let mut buf = Vec::new();
@@ -3341,7 +3400,11 @@ fn finish_top_n_returns_sorted_by_count() {
     f.process_line("unique log entry with no pattern match")
         .unwrap();
 
-    let (top, total_groups, _coverage, _) = f.finish_top_n(2, None, false).unwrap();
+    let TopGroups {
+        shown: top,
+        total_groups,
+        ..
+    } = f.finish_top_n(2, None, false).unwrap();
     assert_eq!(top.len(), 2, "should return top 2");
     assert!(
         top[0].0 >= top[1].0,
@@ -3359,7 +3422,7 @@ fn finish_top_n_returns_correct_total_groups() {
     f.process_line("line B with 10.0.0.2").unwrap();
     f.process_line("line C with something else entirely different")
         .unwrap();
-    let (_top, total_groups, _coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups { total_groups, .. } = f.finish_top_n(10, None, false).unwrap();
     assert!(total_groups >= 1, "should have at least 1 group");
 }
 
@@ -3367,7 +3430,7 @@ fn finish_top_n_returns_correct_total_groups() {
 fn finish_top_n_n_exceeds_groups() {
     let mut f = make_folder();
     f.process_line("only one line 10.0.0.1").unwrap();
-    let (top, _total, _coverage, _) = f.finish_top_n(100, None, false).unwrap();
+    let TopGroups { shown: top, .. } = f.finish_top_n(100, None, false).unwrap();
     // Should return all groups (1 or more), not crash
     assert!(!top.is_empty());
 }
@@ -3379,7 +3442,10 @@ fn finish_top_n_coverage_percentage() {
     for _ in 0..10 {
         f.process_line("2024-01-01 ERROR same 10.0.0.1").unwrap();
     }
-    let (_top, _total, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 100, "single group covering all lines = 100%");
 }
 
@@ -3432,7 +3498,11 @@ fn prepare_summary_merges_identical_groups() {
         make_line("error <IP>", vec![Token::IPv4("10.0.0.2".into())]),
         2,
     ));
-    let (display, total_patterns, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert_eq!(total_patterns, 1, "identical normalized text should merge");
     assert_eq!(display[0].0, 2, "merged count should be 1+1=2");
 }
@@ -3448,7 +3518,7 @@ fn prepare_summary_accumulates_counts() {
     g2.add_line(make_line("err <IP>", vec![]), 11);
     f.buffer.push(g1);
     f.buffer.push(g2);
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert_eq!(display[0].0, 5, "merged count should be 3+2=5");
 }
 
@@ -3485,7 +3555,7 @@ fn prepare_summary_sorts_descending() {
         big.add_line(make_line("big", vec![]), 11 + i);
     }
     f.buffer.push(big);
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert!(display[0].0 >= display[1].0, "should sort descending");
 }
 
@@ -3498,7 +3568,11 @@ fn prepare_summary_top_n_limits() {
             i + 1,
         ));
     }
-    let (display, total, _, _) = f.prepare_summary(Some(3), None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns: total,
+        ..
+    } = f.prepare_summary(Some(3), None).unwrap();
     assert_eq!(display.len(), 3, "top_n=3 should return 3");
     assert_eq!(total, 10, "total_patterns should be 10");
 }
@@ -3512,7 +3586,7 @@ fn prepare_summary_top_zero_shows_all() {
             i + 1,
         ));
     }
-    let (display, _, _, _) = f.prepare_summary(Some(0), None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(Some(0), None).unwrap();
     assert_eq!(display.len(), 5, "top_n=0 should show all");
 }
 
@@ -3525,7 +3599,11 @@ fn prepare_summary_default_cap_at_30() {
             i + 1,
         ));
     }
-    let (display, _, was_capped, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert_eq!(display.len(), 30, "default cap should be 30");
     assert!(was_capped, "should indicate capping");
 }
@@ -3539,7 +3617,11 @@ fn prepare_summary_fit_budget_limits() {
             i + 1,
         ));
     }
-    let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(None, Some(5)).unwrap();
     assert_eq!(display.len(), 4, "fit_budget=5 → show 4 (budget-1)");
     assert_eq!(fit_truncated, 16, "should report 16 remaining");
 }
@@ -3554,7 +3636,7 @@ fn prepare_summary_flushes_batch_buffer() {
     });
     f.process_line("2024-01-01 ERROR test 10.0.0.1").unwrap();
     assert!(!f.batch_buffer.is_empty(), "should have buffered line");
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert!(!display.is_empty(), "should have processed batch");
 }
 
@@ -3903,7 +3985,11 @@ fn prepare_summary_exactly_30_not_capped() {
             i + 1,
         ));
     }
-    let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert!(!was_capped, "exactly 30 should not be capped");
     assert_eq!(display.len(), 30);
 }
@@ -3917,7 +4003,11 @@ fn prepare_summary_31_is_capped() {
             i + 1,
         ));
     }
-    let (display, _total, was_capped, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(None, None).unwrap();
     assert!(was_capped, "31 should be capped");
     assert_eq!(display.len(), 30);
 }
@@ -3931,7 +4021,11 @@ fn prepare_summary_top_zero_no_cap_50() {
             i + 1,
         ));
     }
-    let (display, _total, was_capped, _) = f.prepare_summary(Some(0), None).unwrap();
+    let SummaryRows {
+        display,
+        was_capped,
+        ..
+    } = f.prepare_summary(Some(0), None).unwrap();
     assert!(!was_capped);
     assert_eq!(display.len(), 50);
 }
@@ -3945,7 +4039,11 @@ fn prepare_summary_fit_budget_10_of_50() {
             i + 1,
         ));
     }
-    let (display, _total, _was_capped, fit_truncated) = f.prepare_summary(None, Some(10)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(None, Some(10)).unwrap();
     assert!(display.len() <= 10);
     assert!(fit_truncated > 0);
 }
@@ -3958,7 +4056,10 @@ fn prepare_summary_fit_budget_10_of_50() {
 fn finish_top_n_zero_input_lines() {
     let mut f = make_folder();
     f.stats.total_lines = 0;
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 0);
 }
 
@@ -4016,7 +4117,12 @@ fn prepare_summary_returns_nonempty_for_nonempty_buffer() {
     let mut f = make_folder();
     f.buffer
         .push(PatternGroup::new(make_line("error", vec![]), 1));
-    let (display, total, was_capped, fit_truncated) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows {
+        display,
+        total_patterns: total,
+        was_capped,
+        fit_truncated,
+    } = f.prepare_summary(None, None).unwrap();
     assert!(
         !display.is_empty(),
         "should return entries for non-empty buffer"
@@ -4037,7 +4143,11 @@ fn prepare_summary_top_zero_fit_budget_exact_boundary() {
         ));
     }
     // top=0 + budget=5: sorted.len() == budget, NOT > budget → no truncation
-    let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(5)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(Some(0), Some(5)).unwrap();
     assert_eq!(display.len(), 5);
     assert_eq!(fit_truncated, 0, "exact fit should not truncate");
 }
@@ -4052,7 +4162,11 @@ fn prepare_summary_top_zero_fit_budget_over() {
         ));
     }
     // top=0 + budget=3: sorted.len() > budget → truncate
-    let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(3)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(Some(0), Some(3)).unwrap();
     assert_eq!(display.len(), 2); // budget.saturating_sub(1) = 2
     assert_eq!(fit_truncated, 3); // 5 - 2 = 3 remaining
 }
@@ -4068,7 +4182,11 @@ fn prepare_summary_top_zero_fit_budget_one() {
         ));
     }
     // budget=1, saturating_sub(1) = 0 → show 0 patterns, remaining = 5
-    let (display, _, _, fit_truncated) = f.prepare_summary(Some(0), Some(1)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(Some(0), Some(1)).unwrap();
     assert_eq!(display.len(), 0);
     assert_eq!(fit_truncated, 5);
 }
@@ -4084,7 +4202,11 @@ fn prepare_summary_fit_budget_exact() {
         ));
     }
     // fit_budget=5, sorted.len()=5 → NOT > budget → no truncation
-    let (display, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+    let SummaryRows {
+        display,
+        fit_truncated,
+        ..
+    } = f.prepare_summary(None, Some(5)).unwrap();
     assert_eq!(display.len(), 5);
     assert_eq!(fit_truncated, 0);
 }
@@ -4154,7 +4276,11 @@ fn finish_top_n_flushes_batch_buffer() {
     // Put lines in batch_buffer (simulating unprocessed batch)
     f.batch_buffer.push("error one".to_string());
     f.batch_buffer.push("error two".to_string());
-    let (output, total, _, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        shown: output,
+        total_groups: total,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     // Should have flushed and processed the batch
     assert!(f.batch_buffer.is_empty(), "batch should be flushed");
     assert!(total > 0 || output.is_empty()); // processed something
@@ -4190,7 +4316,10 @@ fn finish_top_n_coverage_50_percent() {
         group.add_line(make_line("error", vec![]), i + 1);
     }
     f.buffer.push(group);
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 50, "50/100 lines = 50% coverage");
 }
 
@@ -4746,7 +4875,7 @@ fn prepare_summary_fit_truncated_zero_when_under_budget() {
         ));
     }
     // budget=10, only 3 patterns → fit_truncated = 0
-    let (_, _, _, fit_truncated) = f.prepare_summary(None, Some(10)).unwrap();
+    let SummaryRows { fit_truncated, .. } = f.prepare_summary(None, Some(10)).unwrap();
     assert_eq!(
         fit_truncated, 0,
         "3 patterns within budget=10 should have fit_truncated=0"
@@ -4763,7 +4892,7 @@ fn prepare_summary_fit_truncated_nonzero_when_over_budget() {
         ));
     }
     // budget=5, 10 patterns → fit_truncated > 0
-    let (_, _, _, fit_truncated) = f.prepare_summary(None, Some(5)).unwrap();
+    let SummaryRows { fit_truncated, .. } = f.prepare_summary(None, Some(5)).unwrap();
     assert!(
         fit_truncated > 0,
         "10 patterns with budget=5 should have fit_truncated > 0, got {fit_truncated}"
@@ -4783,7 +4912,10 @@ fn finish_top_n_zero_total_lines_zero_coverage() {
     // because total_input_lines is 0
     f.buffer
         .push(PatternGroup::new(make_line("error", vec![]), 1));
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(
         coverage, 0,
         "zero total_input_lines should produce 0% coverage"
@@ -4799,7 +4931,10 @@ fn finish_top_n_nonzero_total_lines_nonzero_coverage() {
         group.add_line(make_line("error", vec![]), i + 1);
     }
     f.buffer.push(group);
-    let (_, _, coverage, _) = f.finish_top_n(10, None, false).unwrap();
+    let TopGroups {
+        coverage_pct: coverage,
+        ..
+    } = f.finish_top_n(10, None, false).unwrap();
     assert_eq!(coverage, 100, "10/10 lines should be 100% coverage");
 }
 
@@ -4928,7 +5063,7 @@ fn summary_masks_pii_when_enabled() {
             .process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
-    let (display, _, _, _) = f.prepare_summary(None, None).unwrap();
+    let SummaryRows { display, .. } = f.prepare_summary(None, None).unwrap();
     assert!(!display.is_empty());
     for (_, representative) in &display {
         assert!(
@@ -5039,10 +5174,9 @@ fn new_sizes_thread_pool_from_explicit_thread_count() {
         thread_count: Some(3),
         ..Config::default()
     });
-    let pool = f
-        .thread_pool
-        .as_ref()
-        .expect("thread_count=Some(3) must build a dedicated pool");
+    let LineDetection::SizedPool(pool) = &f.detection else {
+        panic!("thread_count=Some(3) must build a dedicated pool");
+    };
     let cores = std::thread::available_parallelism().map_or(8, usize::from);
     assert_eq!(
         pool.current_num_threads(),
@@ -5059,10 +5193,9 @@ fn new_caps_thread_pool_at_available_parallelism() {
         thread_count: Some(999_999),
         ..Config::default()
     });
-    let pool = f
-        .thread_pool
-        .as_ref()
-        .expect("huge thread_count must still build a (capped) pool");
+    let LineDetection::SizedPool(pool) = &f.detection else {
+        panic!("huge thread_count must still build a (capped) pool");
+    };
     let cores = std::thread::available_parallelism().map_or(8, usize::from);
     assert_eq!(
         pool.current_num_threads(),
@@ -5078,7 +5211,7 @@ fn new_builds_no_pool_for_single_threaded_mode() {
         ..Config::default()
     });
     assert!(
-        f.thread_pool.is_none(),
+        matches!(f.detection, LineDetection::Inline),
         "Some(1) is the sequential path and must not build a pool"
     );
 }
@@ -5090,7 +5223,7 @@ fn new_builds_no_pool_for_auto_detect_mode() {
         ..Config::default()
     });
     assert!(
-        f.thread_pool.is_none(),
+        matches!(f.detection, LineDetection::GlobalPool),
         "None means rayon's global default pool, not a dedicated one"
     );
 }
@@ -5276,7 +5409,7 @@ fn repeated_option_names_survive_arguments_of_different_lengths() {
         r#"{"msg":"depot --mode alpha --mode gamma","note":"steady"}"#,
         r#"{"msg":"depot --mode alpha extra --mode delta","note":"steady"}"#,
     ] {
-        let edits = varying_spans(&template, member).unwrap();
+        let edits = template_edits(&template, member).unwrap();
         apply_edits(&mut template, &edits);
         assert_eq!(template.matches("--mode").count(), 2, "{template}");
         assert!(template.ends_with(r#"","note":"steady"}"#), "{template}");
@@ -5454,7 +5587,7 @@ fn a_slot_against_a_member_of_another_length_is_rechecked_in_its_gap() {
 /// `template` with every span `member` turns into `<VARIES>` replaced.
 fn marked(template: &str, member: &str) -> String {
     let mut t = template.to_string();
-    apply_edits(&mut t, &varying_spans(template, member).unwrap());
+    apply_edits(&mut t, &template_edits(template, member).unwrap());
     t
 }
 
@@ -5594,7 +5727,7 @@ fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     assert_eq!(full.template, "job <VARIES> done");
     assert_eq!(retained.template, full.template);
     let state = retained.retained.take().unwrap();
-    assert!(state.varies_unknown);
+    assert!(state.slot_widened_after_counting);
     let rollup = computer.finalize_retained(state, &retained.template, texts[0]);
     // the two counted as `30:01` / `31:02` can no longer be told apart
     // from what they were, so no count is claimed
@@ -5605,11 +5738,11 @@ fn a_retained_slot_that_widens_has_the_same_template_and_unknown_counts() {
     computer.merge_retained(
         &mut into,
         RetainedState {
-            varies_unknown: true,
+            slot_widened_after_counting: true,
             ..RetainedState::default()
         },
     );
-    assert!(into.varies_unknown);
+    assert!(into.slot_widened_after_counting);
 }
 
 #[test]
@@ -5623,18 +5756,18 @@ fn two_sentence_words_apart_is_another_event() {
             "1:S 28 Aug <NUMBER> <TIMESTAMP> * Synchronization with replica <FQDN>:<PORT> succeeded",
             "1:S 28 Aug <NUMBER> <TIMESTAMP> * Connection with replica <FQDN>:<PORT> lost."
         ),
-        2
+        Some(2)
     );
     assert_eq!(
         plain_word_diffs("user alice from <IP>", "user bob from <IP>"),
-        1
+        Some(1)
     );
     assert_eq!(
         plain_word_diffs(
             "Fork CoW for RDB: current <SIZE>",
             "Fork CoW for AOF rewrite: current <SIZE>"
         ),
-        3
+        Some(3)
     );
     // Values are not sentence words: quoted, typed, keyed with structure,
     // numbers, placeholders.
@@ -5643,19 +5776,22 @@ fn two_sentence_words_apart_is_another_event() {
             r#"Failed to watch *v1.Node: nodes is forbidden: cannot list resource "nodes""#,
             r#"Failed to watch *v1.Pod: pods is forbidden: cannot list resource "pods""#
         ),
-        1
+        Some(1)
     );
     assert_eq!(
         plain_word_diffs(
             r#"{"controller": "triggerauthentication", "controllerKind": "TriggerAuthentication"}"#,
             r#"{"controller": "scaledjob", "controllerKind": "ScaledJob"}"#
         ),
-        0
+        Some(0)
     );
-    assert_eq!(plain_word_diffs("GPS mode 3 -> 2", "GPS mode 2 -> 3"), 0);
+    assert_eq!(
+        plain_word_diffs("GPS mode 3 -> 2", "GPS mode 2 -> 3"),
+        Some(0)
+    );
     assert_eq!(
         plain_word_diffs("x k8s:app=virt-handler y", "x k8s:app=traefik y"),
-        0
+        Some(0)
     );
     // A JSON sentence's words are sentence words: the key goes, the word stays.
     assert_eq!(
@@ -5663,7 +5799,7 @@ fn two_sentence_words_apart_is_another_event() {
             r#"{"msg":"finished scheduled compaction"}"#,
             r#"{"msg":"storing new hash"}"#
         ),
-        3
+        Some(3)
     );
 
     let mut f = make_folder();
@@ -5732,7 +5868,7 @@ fn request_route_survives_repeated_method_and_version_variation() {
         r#"request="PUT /health HTTP/3" done"#,
         r#"request="GET /health HTTP/1" done"#,
     ] {
-        let edits = varying_spans(&template, member).unwrap();
+        let edits = template_edits(&template, member).unwrap();
         apply_edits(&mut template, &edits);
         assert_eq!(template, r#"request="<VARIES> /health HTTP/<VARIES>" done"#);
     }
@@ -5995,25 +6131,36 @@ fn retained_merge_keeps_known_values_from_capped_sets() {
         let mut from = RetainedState::default();
         into.per_type.insert(
             "UUID",
-            (Accumulator::Values(["a".into()].into()), old_capped),
+            TypeValues {
+                values: Accumulator::Values(["a".into()].into()),
+                capped: old_capped,
+            },
         );
-        into.per_type
-            .insert("NUMBER", (Accumulator::Hashes([1].into()), old_capped));
+        into.per_type.insert(
+            "NUMBER",
+            TypeValues {
+                values: Accumulator::Hashes([1].into()),
+                capped: old_capped,
+            },
+        );
         from.per_type.insert(
             "UUID",
-            (
-                Accumulator::Values(["b".into(), "c".into()].into()),
-                incoming_capped,
-            ),
+            TypeValues {
+                values: Accumulator::Values(["b".into(), "c".into()].into()),
+                capped: incoming_capped,
+            },
         );
         from.per_type.insert(
             "NUMBER",
-            (Accumulator::Hashes([2, 3].into()), incoming_capped),
+            TypeValues {
+                values: Accumulator::Hashes([2, 3].into()),
+                capped: incoming_capped,
+            },
         );
         computer.merge_retained(&mut into, from);
-        for (acc, capped) in into.per_type.values() {
+        for TypeValues { values, capped } in into.per_type.values() {
             assert_eq!(
-                acc.len(),
+                values.len(),
                 3,
                 "retain known values even when the union is incomplete"
             );
@@ -6029,22 +6176,26 @@ fn retained_merge_caps_new_values_but_not_duplicates_at_capacity() {
         let mut state = RetainedState::default();
         state.per_type.insert(
             "UUID",
-            (
-                Accumulator::Values(values.iter().map(ToString::to_string).collect()),
-                false,
-            ),
+            TypeValues {
+                values: Accumulator::Values(values.iter().map(ToString::to_string).collect()),
+                capped: false,
+            },
         );
         state
     };
     let mut into = state(&["a", "b", "c"]);
     computer.merge_retained(&mut into, state(&["a", "b", "c"]));
     assert!(
-        !into.per_type["UUID"].1,
+        !into.per_type["UUID"].capped,
         "no new distinct value was dropped"
     );
     let mut into = state(&["z"]);
     computer.merge_retained(&mut into, state(&["c", "b", "a"]));
-    let (Accumulator::Values(known), capped) = &into.per_type["UUID"] else {
+    let TypeValues {
+        values: Accumulator::Values(known),
+        capped,
+    } = &into.per_type["UUID"]
+    else {
         panic!("value set")
     };
     assert!(*capped);
@@ -6409,7 +6560,10 @@ fn a_top_omission_alone_makes_groups_and_the_run_incomplete() {
     for _ in 0..3 {
         f.process_line("bravo event").unwrap();
     }
-    let (_shown, total, _coverage, _fit) = f.finish_top_n(1, None, false).unwrap();
+    let TopGroups {
+        total_groups: total,
+        ..
+    } = f.finish_top_n(1, None, false).unwrap();
     assert_eq!(total, 2);
     let v = summary_json(&f);
     let c = &v["completeness"];
@@ -6651,20 +6805,17 @@ fn long_lines_count_plain_word_diffs_through_the_band() {
         }
         w.join(" ")
     };
-    assert_eq!(plain_word_diffs(&line, &with(&["zone=k2/west"])), 0);
-    assert_eq!(plain_word_diffs(&with(&["zone=k2/west"]), &line), 0);
-    assert_eq!(plain_word_diffs(&line, &with(&["stalled"])), 1);
+    assert_eq!(plain_word_diffs(&line, &with(&["zone=k2/west"])), Some(0));
+    assert_eq!(plain_word_diffs(&with(&["zone=k2/west"]), &line), Some(0));
+    assert_eq!(plain_word_diffs(&line, &with(&["stalled"])), Some(1));
     let values: Vec<String> = (0..=ALIGN_BAND).map(|i| format!("t{i}=v/{i}")).collect();
     let values: Vec<&str> = values.iter().map(String::as_str).collect();
-    assert_eq!(plain_word_diffs(&line, &with(&values[..ALIGN_BAND])), 0);
     assert_eq!(
-        plain_word_diffs(&line, &with(&values)),
-        MAX_PLAIN_WORD_DIFFS + 1
+        plain_word_diffs(&line, &with(&values[..ALIGN_BAND])),
+        Some(0)
     );
-    assert_eq!(
-        plain_word_diffs(&with(&values), &line),
-        MAX_PLAIN_WORD_DIFFS + 1
-    );
+    assert_eq!(plain_word_diffs(&line, &with(&values)), None);
+    assert_eq!(plain_word_diffs(&with(&values), &line), None);
 }
 
 /// The template a long member is folded into marks what that member lacks.
@@ -6785,17 +6936,17 @@ fn units_cut_requests_options_and_pci_addresses_out_whole() {
 /// words), 1580/1592 (a lone unit the other line has elsewhere).
 #[test]
 fn plain_word_diffs_count_sentence_words_not_values() {
-    assert_eq!(plain_word_diffs("user alice", "user bob"), 1);
-    assert_eq!(plain_word_diffs("user alice", "user 10.0.0.1"), 1);
-    assert_eq!(plain_word_diffs("peer 10.0.0.1", "peer 10.0.0.2"), 0);
-    assert_eq!(plain_word_diffs("p q", "p q x.y"), 0);
-    assert_eq!(plain_word_diffs("p q", "p q q"), 0);
-    assert_eq!(plain_word_diffs("p q", "p q r"), 1);
-    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a b c""#), 1);
-    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a c""#), 1);
+    assert_eq!(plain_word_diffs("user alice", "user bob"), Some(1));
+    assert_eq!(plain_word_diffs("user alice", "user 10.0.0.1"), Some(1));
+    assert_eq!(plain_word_diffs("peer 10.0.0.1", "peer 10.0.0.2"), Some(0));
+    assert_eq!(plain_word_diffs("p q", "p q x.y"), Some(0));
+    assert_eq!(plain_word_diffs("p q", "p q q"), Some(0));
+    assert_eq!(plain_word_diffs("p q", "p q r"), Some(1));
+    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a b c""#), Some(1));
+    assert_eq!(plain_word_diffs(r#"m="a b""#, r#"m="a c""#), Some(1));
     assert_eq!(
         plain_word_diffs("Fork CoW for RDB", "Fork CoW for AOF rewrite"),
-        3
+        Some(3)
     );
 }
 
@@ -6972,8 +7123,8 @@ fn word_alignment_drops_a_left_word_to_reach_a_later_match() {
 /// elsewhere is not a difference.
 #[test]
 fn a_repeated_left_unit_is_not_a_plain_word_diff() {
-    assert_eq!(plain_word_diffs("p q q", "p q"), 0);
-    assert_eq!(plain_word_diffs("p q x.y", "p q"), 0);
+    assert_eq!(plain_word_diffs("p q q", "p q"), Some(0));
+    assert_eq!(plain_word_diffs("p q x.y", "p q"), Some(0));
 }
 
 /// unit_spans 1477/1489/1520/1527, cli_option_units 1410-1449: the exact
@@ -7366,7 +7517,12 @@ fn fit_budget_equal_to_group_count_keeps_every_entry() {
     let mut f = make_folder_json();
     f.process_line("alpha").unwrap();
     f.process_line("bravo charlie delta").unwrap();
-    let (out, total, _, truncated) = f.finish_top_n(2, Some(2), false).unwrap();
+    let TopGroups {
+        shown: out,
+        total_groups: total,
+        fit_truncated: truncated,
+        ..
+    } = f.finish_top_n(2, Some(2), false).unwrap();
     assert_eq!(total, 2);
     assert_eq!(out.len(), 2);
     assert_eq!(truncated, 0);
@@ -7391,9 +7547,10 @@ fn converging_groups_from_one_batch_end_on_the_true_last_member() {
     }
     f.process_batch().unwrap();
     assert_eq!(f.buffer.len(), 2);
-    // Grouping position stays batch-granular, but every line carries its
-    // own line number, so the two groups do not tie on where they ended.
-    assert_eq!(f.buffer[0].position, f.buffer[1].position);
+    // Every line of a batch takes its own position, as it would one at a
+    // time, and carries its own line number, so the two groups tie on
+    // neither where they began nor where they ended.
+    assert!(f.buffer[0].position < f.buffer[1].position);
     assert_ne!(f.buffer[0].last_line_no, f.buffer[1].last_line_no);
     let out = f.finish().unwrap();
     assert_eq!(out.len(), 1);
@@ -7814,10 +7971,10 @@ fn units_in_a_gap_pair_in_order_when_both_sides_have_as_many() {
     let aligned = [Some(0), None, None, Some(3)];
     assert_eq!(
         unit_ranges(&tmpl, &mem, &aligned),
-        (
-            vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))],
-            vec![]
-        )
+        UnitRanges {
+            stands_for: vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))],
+            unshown: vec![]
+        }
     );
 }
 
@@ -7827,7 +7984,10 @@ fn a_gap_at_the_end_of_the_template_reads_the_rest_of_the_member() {
     let mem = ["a", "p", "q"];
     assert_eq!(
         unit_ranges(&tmpl, &mem, &[Some(0), None]),
-        (vec![Some((0, 1)), Some((1, 3))], vec![])
+        UnitRanges {
+            stands_for: vec![Some((0, 1)), Some((1, 3))],
+            unshown: vec![]
+        }
     );
 }
 
@@ -8152,11 +8312,11 @@ fn a_line_its_groups_template_is_false_of_stops_a_test_build() {
     group.add_line(make_line("user bob@test.com logged in", vec![]), 2);
 }
 
-/// `varying_spans` for a member the template can be made to show, each
+/// `template_edits` for a member the template can be made to show, each
 /// edit as the span it turns into `<VARIES>`, and an opened slot as the
 /// empty span where it goes in.
 fn spans_of(template: &str, member: &str) -> Vec<(usize, usize)> {
-    varying_spans(template, member)
+    template_edits(template, member)
         .expect("the member can be shown")
         .into_iter()
         .map(|edit| match edit {
@@ -8237,7 +8397,7 @@ fn two_long_lines_too_unlike_to_align_call_for_no_edit() {
     let words: Vec<String> = (0..300).map(|i| format!("w{i}")).collect();
     let template = words.join(" ");
     let longer = format!("{template} {}", words[..=ALIGN_BAND].join(" "));
-    assert_eq!(varying_spans(&template, &longer), None);
+    assert_eq!(template_edits(&template, &longer), None);
 }
 
 #[test]
@@ -8245,7 +8405,7 @@ fn a_slot_opens_only_where_the_run_is_set_apart_on_both_lines() {
     let open = |at: usize, text: &str| {
         Some(Edit::Open {
             at,
-            text: text.to_string(),
+            unit_with_separator: text.to_string(),
         })
     };
     let member = ("a b c", [(0, 1), (2, 1), (4, 1)]);
@@ -8318,7 +8478,7 @@ fn a_slot_goes_between_the_separators_the_template_shares_with_the_member() {
         slot_opening("a {}", &[(0, 1)], "a {x}", &[(0, 1), (3, 1)], 1, (1, 2)),
         Some(Edit::Open {
             at: 3,
-            text: VARIES_MARK.into()
+            unit_with_separator: VARIES_MARK.into()
         })
     );
     assert_eq!(
@@ -8345,7 +8505,7 @@ fn an_opened_slot_counts_the_members_already_held_as_absent() {
     };
     let open = |at: usize| Edit::Open {
         at,
-        text: " <VARIES>".into(),
+        unit_with_separator: " <VARIES>".into(),
     };
     // right after the slot `k=<VARIES>`, which ends at 12: the second slot
     let mut state = held();
@@ -8353,7 +8513,7 @@ fn an_opened_slot_counts_the_members_already_held_as_absent() {
     assert_eq!(state.varies.len(), 2);
     assert_eq!(state.varies[0].counts, HashMap::from([("x".into(), 3)]));
     assert_eq!(state.varies[1].counts, HashMap::from([(ABSENT.into(), 3)]));
-    assert!(!state.varies_unknown);
+    assert!(!state.slot_widened_after_counting);
     // right after `a`: the first
     let mut state = held();
     rc.accumulate_new_varies(template, &units, &[open(1)], &mut state);

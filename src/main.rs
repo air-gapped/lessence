@@ -445,8 +445,12 @@ fn main() -> Result<()> {
 
     // Handle top-N mode: sort all groups by frequency and emit top N
     if let Some(n) = config.top_n {
-        let (groups_to_show, total_groups, coverage_pct, fit_truncated) =
-            folder.finish_top_n(n, fit_budget, json_summary_default_cap)?;
+        let lessence::folder::TopGroups {
+            shown: groups_to_show,
+            total_groups,
+            coverage_pct,
+            fit_truncated,
+        } = folder.finish_top_n(n, fit_budget, json_summary_default_cap)?;
         let json_output = use_json_output;
 
         for (count, formatted) in &groups_to_show {

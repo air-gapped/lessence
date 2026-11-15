@@ -21,10 +21,7 @@ exclude_re = [
     # lessence-e8v: absorb adds two nonempty group counts before this guard.
     # The sum is at least two; checked overflow traps before either guard.
     'replace match guard self\.count > 1 with true in PatternGroup::absorb$',
-    '^src/folder/mod\.rs:346:38: replace > with >= in PatternGroup::absorb$',
-    # unit_spans emits each PCI match as a whole atom. Its cuts preserve PCI
-    # word boundaries, so any isolated match has both start=0 and end=len.
-    '^src/folder/mod\.rs:1415:45: replace && with \|\| in varying_spans$',
+    '^src/folder/mod\.rs:381:38: replace > with >= in PatternGroup::absorb$',
 
     # --- 0.4.5 similarity-cache equivalents ---
     # from_normalized: the s.len() > u32::MAX guard needs a > 4 GiB string
@@ -34,7 +31,7 @@ exclude_re = [
     # flush_oldest_safe_group: the map entry equal to the removed index is
     # deleted on the line above, so > vs >= over the remaining values is
     # indistinguishable.
-    '^src/folder/mod\.rs:2859:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
+    '^src/folder/mod\.rs:3101:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
     # token_lcs prefix/suffix trims and the early-exit bound are exact
     # optimizations: disabling a trim (< → == / >) or loosening the bound
     # (- → + / /) can never change the returned LCS or decision, only speed.
@@ -65,14 +62,14 @@ exclude_re = [
     'replace && with \|\| in pci_addresses$',
     # At format_total == 0, nonnegative dominant_count < 0.0 is false
     # regardless of the first guard, so mixed remains false.
-    '^src/folder/render\.rs:508:34: replace > with >= in PatternFolder::build_briefing$',
+    '^src/folder/render\.rs:510:34: replace > with >= in PatternFolder::build_briefing$',
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.
-    '^src/folder/mod\.rs:1067:54: replace \+ with \* in align_exact$',
+    '^src/folder/mod\.rs:1152:54: replace \+ with \* in align_exact$',
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
-    '^src/folder/mod\.rs:1589:85: replace < with <= in cli_option_units$',
+    '^src/folder/mod\.rs:1812:85: replace < with <= in cli_option_units$',
 
     # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
     # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded
@@ -125,13 +122,9 @@ exclude_re = [
     # --- code changed since v0.8.1 ---
     # At lines.len() == 2, pop-last, truncate(1), push-last restores the
     # same two lines, so `> 2` and `>= 2` keep identical member lists.
-    '^src/folder/mod\.rs:280:63: replace > with >= in PatternGroup::retained_rejoin$',
+    '^src/folder/mod\.rs:300:63: replace > with >= in PatternGroup::retained_rejoin$',
     # RollupComputer uses positive k (production default 7). At len == k,
     # pop-rarest, truncate(k-1), push-rarest is the identity on the sorted
     # vector.
     'replace > with >= in RollupComputer::varies_entry$',
-    # align_banded reads a row only through `value`, at cells inside both
-    # the band and the table, and the row's j loop writes every such cell
-    # before it is read: the value `here` is filled with is never read.
-    '^src/folder/mod\.rs:1096:19: delete - in align_banded$',
 ]
