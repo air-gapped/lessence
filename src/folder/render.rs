@@ -1,70 +1,120 @@
-//! Rendering: finished fold results -> bytes, for every output mode.
-//!
-//! This module owns the entire "render a finished group set plus run
-//! metadata" surface: the text fold output, the JSONL group and summary
-//! records, the --summary lines, the markdown document, and both stats
-//! reports. The folding engine in `mod.rs` produces groups as data; the
-//! methods here are the only place that data becomes output. Invariants
-//! held here, in one place:
-//!
-//! 1. PII masking (--sanitize-pii) is applied by the renderer, so every
-//!    mode masks -- not just text.
-//! 2. `lines_saved` / `compression_ratio` have a single definition (the
-//!    text-fold arithmetic: a collapsed group preserves 3 lines), shared
-//!    by the text footer, --stats-json, the JSONL summary record, and
-//!    the markdown report.
-
 use super::{
-    BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup, LineRef,
-    LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD, Result, StatsJson,
-    SummaryRecord, TimeRange, Token, VariationCompleteness, Write, first_timestamp_in,
-    group_epoch_range, io, render_compact_marker_with, token_type_name,
+    BTreeMap, Completeness, Count, Duration, GroupCompleteness, GroupRecord, GroupRollup,
+    IngestReport, LineRef, LogLine, PatternFolder, PatternGroup, ROLLUP_TEXT_SAMPLE_THRESHOLD,
+    Result, StatsJson, SummaryRecord, TimeRange, Token, VariationCompleteness, Write,
+    first_timestamp_in, group_epoch_range, io, render_compact_marker_with, token_type_name,
 };
+use crate::config::{GroupSink, LINES_A_COLLAPSED_GROUP_SHOWS};
 use crate::run_metadata::RunMetadata;
 use crate::sanitize::Sanitizer;
 use serde::Serialize;
 
+const LINES_AN_ESSENCE_GROUP_SHOWS: usize = 1;
+const SUMMARY_ELLIPSIS: &str = "...";
+const SUMMARY_MIN_WIDTH_WORTH_TRUNCATING_TO: usize = 20;
+const FRAGMENTED_BY_RETENTION_CAP_IS_ZERO_SINCE_RETENTION_WAS_REMOVED_AND_STAYS_FOR_SCHEMA_STABILITY:
+    usize = 0;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub(super) struct Masked(String);
+
+impl Masked {
+    pub(super) fn line(sanitizer: Option<&Sanitizer>, line: &str, tokens: &[Token]) -> Self {
+        Self(Sanitizer::masked(sanitizer, line, tokens))
+    }
+
+    fn essence_text(sanitizer: Option<&Sanitizer>, normalized: &str) -> Self {
+        Self(sanitizer.map_or_else(|| normalized.to_string(), |z| z.mask_text(normalized)))
+    }
+
+    pub(super) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(super) fn into_string(self) -> String {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(transparent)]
+pub(super) struct MaskedRollup(GroupRollup);
+
+impl MaskedRollup {
+    fn new(mut rollup: GroupRollup, sanitizer: Option<&Sanitizer>) -> Self {
+        if let Some(z) = sanitizer {
+            mask_rollup_pii(&mut rollup, z);
+        }
+        Self(rollup)
+    }
+
+    fn entries(&self) -> &GroupRollup {
+        &self.0
+    }
+}
+
+pub(super) struct Rendered {
+    pub(super) text: String,
+    pub(super) collapsed: bool,
+}
+
+pub(super) enum Dispatched {
+    Shown(Rendered),
+    RecordedForDistill,
+}
+
+#[cfg(test)]
+impl Dispatched {
+    pub(super) fn expect_shown(self) -> Rendered {
+        match self {
+            Self::Shown(rendered) => rendered,
+            Self::RecordedForDistill => panic!("a distill run renders no group"),
+        }
+    }
+}
+
+pub struct MarkdownEntry {
+    text: String,
+    folded: bool,
+}
+
+pub struct SummaryRequest {
+    pub top_n: Option<usize>,
+    pub fit_budget: Option<usize>,
+    pub max_width: Option<usize>,
+}
+
 impl PatternFolder {
-    /// Format a group for the configured output mode.
-    ///
-    /// Rollup metadata is computed unconditionally here — regardless of
-    /// output format — so that the perf gate applies uniformly to both
-    /// text and JSON modes. This is the single insertion point for the
-    /// feature's flush-time cost. Text mode (Phase 4) renders a richer
-    /// compact marker from the rollup; JSON mode (Phase 3) serialises
-    /// the rollup as the `variation` field.
-    ///
-    /// Groups smaller than `min_collapse` skip the rollup entirely —
-    /// there's no useful variation summary to report for a group of one
-    /// or two lines, and the allocation cost of building empty
-    /// accumulators dominated flush-time overhead in parallel mode
-    /// before this guard was added. The `variation` field in JSON mode
-    /// remains present (as an empty `{}`) so the schema shape is
-    /// unchanged; only the compute cost is skipped.
-    pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<String> {
-        // The single point every finalised group passes through, once per
-        // group, at the end of the run (the final drain, or --top N's
-        // ranking pass).
-        //
-        // --sanitize-pii applies here too: the briefing's top-templates
-        // list is another output surface, and an unmasked template would
-        // leak the exact secret/email the rest of the run redacts.
-        let briefing_template = self.maybe_mask_pii(group.template(), &group.first().tokens);
+    pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<Dispatched> {
+        let briefing_template = self.mask_shown(group.template(), &group.first().tokens);
         let (first_epoch, last_epoch) = group_epoch_range(group);
         self.stats.template_counts.record(
-            &briefing_template,
+            briefing_template.as_str(),
             group.count(),
             first_epoch,
             last_epoch,
         );
 
-        // --distill emits input lines, not rendered groups: record which
-        // members the distillation keeps and skip formatting entirely.
-        if let Some(members) = self.config.distill {
-            self.distill_take(group, members);
-            return Ok(String::new());
+        if let GroupSink::RecordDistillMembers { members_per_group } = self.config.group_sink {
+            self.distill_take(group, members_per_group);
+            return Ok(Dispatched::RecordedForDistill);
         }
-        let mut rollup = if group.count() >= self.config.min_collapse {
+        let rollup = self.rollup_unless_too_small_to_collapse(group);
+        let rendered = if self.is_json_output() {
+            Rendered {
+                text: self.format_group_json(group, rollup)?,
+                collapsed: false,
+            }
+        } else {
+            self.format_group(group, &rollup)?
+        };
+        self.stats.output_lines += rendered.text.lines().count();
+        Ok(Dispatched::Shown(rendered))
+    }
+
+    fn rollup_unless_too_small_to_collapse(&mut self, group: &PatternGroup) -> MaskedRollup {
+        let rollup = if group.should_collapse(self.config.min_collapse) {
             self.rollup_computer.compute(group)
         } else {
             if self.is_json_output() {
@@ -72,36 +122,22 @@ impl PatternFolder {
             }
             BTreeMap::new()
         };
-        // PII masking applies to rollup samples in every mode: the text
-        // compact marker and the JSON `variation` field both surface raw
-        // sample values, so both must mask.
-        if let Some(z) = &self.sanitizer {
-            mask_rollup_pii(&mut rollup, z);
-        }
-        if self.is_json_output() {
-            self.format_group_json(group, rollup)
-        } else {
-            self.format_group(group, &rollup)
-        }
+        self.masked_rollup(rollup)
     }
 
-    /// Serialise one group as a JSONL record. Returns a single JSON object
-    /// string **without** a trailing newline — the caller's `writeln!`
-    /// supplies it. This matches `format_group`'s text-mode contract so the
-    /// main loop's output path works uniformly for both formats.
-    ///
-    /// `output_lines` is updated by the *caller* (same as `format_group`
-    /// via `formatted.lines().count()`) so both formatting paths keep
-    /// stats coherent with no double-counting.
+    pub(super) fn masked_rollup(&self, rollup: GroupRollup) -> MaskedRollup {
+        MaskedRollup::new(rollup, self.sanitizer.as_ref())
+    }
+
     pub(super) fn format_group_json(
         &mut self,
         group: &PatternGroup,
-        variation: GroupRollup,
+        variation: MaskedRollup,
     ) -> Result<String> {
         let id = self.next_json_id;
         self.next_json_id += 1;
 
-        for entry in variation.values() {
+        for entry in variation.entries().values() {
             let omitted = entry.distinct_count.saturating_sub(entry.samples.len());
             if entry.capped {
                 self.json_capped_entries += 1;
@@ -112,16 +148,8 @@ impl PatternFolder {
             self.json_omitted_values_lower_bound += omitted;
         }
 
-        // `collapsed_groups` and `lines_saved` share one definition with
-        // every other output mode: a collapsed group preserves 3 lines
-        // (first + marker + last), exactly as the text renderer counts.
-        // Agents cross-check the JSONL summary record against --stats-json
-        // and the text footer, so the numbers must agree; the per-record
-        // `count` field is the ground truth for any other arithmetic.
         self.account_savings(group);
 
-        // Collect unique token type names from first and last lines.
-        // BTreeSet gives us deterministic sorted output for free.
         let mut token_types: std::collections::BTreeSet<&'static str> =
             std::collections::BTreeSet::new();
         for t in &group.first().tokens {
@@ -135,18 +163,15 @@ impl PatternFolder {
             id,
             count: group.count(),
             token_types: token_types.into_iter().collect(),
-            // Detectors tokenize emails out of the normalized text, but
-            // credential values they don't tokenize survive in it — mask
-            // this field like first/last, not just the raw lines.
-            normalized: self.maybe_mask_pii(group.template(), &group.first().tokens),
+            normalized: self.mask_shown(group.template(), &group.first().tokens),
             first: LineRef {
                 source: self.source_name(group.first_source_id),
-                line: self.maybe_mask_pii(&group.first().original, &group.first().tokens),
+                line: self.mask_shown(&group.first().original, &group.first().tokens),
                 line_no: group.first_line_no,
             },
             last: LineRef {
                 source: self.source_name(group.last_source_id),
-                line: self.maybe_mask_pii(&group.last().original, &group.last().tokens),
+                line: self.mask_shown(&group.last().original, &group.last().tokens),
                 line_no: group.last_line_no,
             },
             time_range: {
@@ -171,123 +196,109 @@ impl PatternFolder {
         Ok(serde_json::to_string(&record)?)
     }
 
-    /// The group's timeline on the log-wide grid, once that grid is fixed
-    /// at the end of input. `first_seen` is the group's first raw stamp:
-    /// a date in the bunched clause carries a year only when it does.
     fn timeline_view(
         &self,
         group: &PatternGroup,
         first_seen: Option<&str>,
     ) -> Option<super::timeline::TimelineView> {
         let grid = self.stats.timeline_grid.as_ref()?;
-        let dated = first_seen.is_none_or(crate::briefing::carries_year);
-        group.timeline.view(grid, dated)
+        let first_stamp_carries_year = first_seen.is_none_or(crate::briefing::carries_year);
+        group.timeline.view(grid, first_stamp_carries_year)
     }
 
-    /// What a group saves; see [`Self::account_count`].
     fn account_savings(&mut self, group: &PatternGroup) {
         self.account_count(group.count());
     }
 
-    /// The one definition of what a group of `count` lines saves (invariant
-    /// 2 above), shared by the text, JSON and summary renderers so every
-    /// mode reports the same `lines_saved` for the same fold. A collapsed
-    /// group (`count >= min_collapse`, as `PatternGroup::should_collapse`)
-    /// preserves 3 lines (first + marker + last); in essence mode a group is
-    /// shown once, so every further member is saved. `saturating_sub` guards
-    /// a directly-constructed Config (the CLI floor is 3, but
-    /// `Config.min_collapse` is a public field) that lets a 2-line group
-    /// reach here and underflow count - 3.
     fn account_count(&mut self, count: usize) {
         if self.config.essence_mode {
-            self.stats.lines_saved += count.saturating_sub(1);
+            self.stats.lines_saved += count.saturating_sub(LINES_AN_ESSENCE_GROUP_SHOWS);
         } else if count >= self.config.min_collapse {
             self.stats.collapsed_groups += 1;
-            self.stats.lines_saved += count.saturating_sub(3);
+            self.stats.lines_saved += count.saturating_sub(LINES_A_COLLAPSED_GROUP_SHOWS);
         }
     }
 
-    #[cfg_attr(test, mutants::skip)] // PII masking interactions with essence_mode create equivalent mutants: sanitize_pii && !essence_mode branch is hard to distinguish from replacing the whole conditional
     pub(super) fn format_group(
         &mut self,
         group: &PatternGroup,
-        rollup: &GroupRollup,
-    ) -> Result<String> {
+        rollup: &MaskedRollup,
+    ) -> Result<Rendered> {
         self.account_savings(group);
-        if group.should_collapse(self.config.min_collapse) && !self.config.essence_mode {
-            // Phase 4: when the rollup has any worthwhile content, render
-            // the richer compact marker directly. Otherwise fall through
-            // to the legacy `format_collapsed_line` path — this applies
-            // to small groups whose rollup was skipped (see
-            // `format_group_dispatch`), keeping behaviour unchanged for
-            // that code path.
-            let collapsed_line = if !rollup.is_empty() {
-                let first_ts = first_timestamp_in(&group.first().tokens);
-                let last_ts = first_timestamp_in(&group.last().tokens);
-                let clause = self
-                    .timeline_view(group, first_ts.as_deref())
-                    .and_then(|v| v.bunched)
-                    .map(|b| b.clause());
-                render_compact_marker_with(
-                    group.count() - 2,
-                    rollup,
-                    first_ts.as_deref(),
-                    last_ts.as_deref(),
-                    clause.as_deref(),
-                    ROLLUP_TEXT_SAMPLE_THRESHOLD,
-                )
-            } else {
-                self.format_collapsed_line(
-                    group.first(),
-                    group.last(),
-                    group.count() - 2, // Don't count first and last in collapse count
-                )
-            };
-
-            // Format output: first line, collapsed summary, last line. This
-            // branch never runs in essence mode (see the condition above),
-            // so the lines shown are the original text, with optional PII
-            // masking.
-            let mut result = String::new();
-            let first_line_output =
-                self.maybe_mask_pii(&group.first().original, &group.first().tokens);
-            result.push_str(&first_line_output);
-            result.push('\n');
-            result.push_str(&collapsed_line);
-
-            // Only add last line if it's different from first
-            if group.count() > 1 {
-                result.push('\n');
-                let last_line_output =
-                    self.maybe_mask_pii(&group.last().original, &group.last().tokens);
-                result.push_str(&last_line_output);
+        let rendered = if self.config.essence_mode {
+            Rendered {
+                text: self.format_essence(group),
+                collapsed: false,
             }
-
-            Ok(result)
+        } else if group.should_collapse(self.config.min_collapse) {
+            Rendered {
+                text: self.format_collapsed(group, rollup),
+                collapsed: true,
+            }
         } else {
-            // Output lines individually
-            let mut result = String::new();
-
-            if self.config.essence_mode {
-                // In essence mode, show only the first occurrence of each unique pattern
-                let line_text = self.maybe_mask_pii(group.template(), &group.first().tokens);
-                result.push_str(&line_text);
-            } else {
-                // Standard mode: output all lines individually (with optional PII masking)
-                for (i, line) in group.lines.iter().enumerate() {
-                    if i > 0 {
-                        result.push('\n');
-                    }
-
-                    let line_output = self.maybe_mask_pii(&line.original, &line.tokens);
-                    result.push_str(&line_output);
-                }
+            Rendered {
+                text: self.format_every_line(group),
+                collapsed: false,
             }
-            Ok(result)
-        }
+        };
+        Ok(rendered)
     }
 
-    /// Format a single summary line, optionally truncating to `max_width`.
+    fn format_essence(&self, group: &PatternGroup) -> String {
+        self.mask_shown(group.template(), &group.first().tokens)
+            .into_string()
+    }
+
+    fn format_collapsed(&self, group: &PatternGroup, rollup: &MaskedRollup) -> String {
+        let first_ts = first_timestamp_in(&group.first().tokens);
+        let last_ts = first_timestamp_in(&group.last().tokens);
+        let clause = self
+            .timeline_view(group, first_ts.as_deref())
+            .and_then(|v| v.bunched)
+            .map(|b| b.clause());
+        let marker = if rollup.entries().is_empty() {
+            self.format_marker_for_a_group_without_rollup_entries(
+                group.first(),
+                group.last(),
+                group.hidden_members(),
+            )
+        } else {
+            render_compact_marker_with(
+                group.hidden_members(),
+                rollup.entries(),
+                first_ts.as_deref(),
+                last_ts.as_deref(),
+                clause.as_deref(),
+                ROLLUP_TEXT_SAMPLE_THRESHOLD,
+            )
+        };
+
+        let mut result = self
+            .mask_shown(&group.first().original, &group.first().tokens)
+            .into_string();
+        result.push('\n');
+        result.push_str(&marker);
+        if group.count() > 1 {
+            result.push('\n');
+            result.push_str(
+                self.mask_shown(&group.last().original, &group.last().tokens)
+                    .as_str(),
+            );
+        }
+        result
+    }
+
+    fn format_every_line(&self, group: &PatternGroup) -> String {
+        let mut result = String::new();
+        for (i, line) in group.lines.iter().enumerate() {
+            if i > 0 {
+                result.push('\n');
+            }
+            result.push_str(self.mask_shown(&line.original, &line.tokens).as_str());
+        }
+        result
+    }
+
     pub(super) fn format_summary_line(
         count: usize,
         representative: &str,
@@ -296,15 +307,13 @@ impl PatternFolder {
         let prefix = format!("[{count}x] ");
         match max_width {
             Some(width) if prefix.len() + representative.len() > width => {
-                let avail = width.saturating_sub(prefix.len() + 3); // 3 for "..."
-                if avail > 20 {
-                    // Snap the byte budget down to a UTF-8 char boundary so a
-                    // multibyte char straddling `avail` can't panic the slice.
+                let avail = width.saturating_sub(prefix.len() + SUMMARY_ELLIPSIS.len());
+                if avail > SUMMARY_MIN_WIDTH_WORTH_TRUNCATING_TO {
                     let mut end = avail;
                     while !representative.is_char_boundary(end) {
                         end -= 1;
                     }
-                    format!("{prefix}{}...", &representative[..end])
+                    format!("{prefix}{}{SUMMARY_ELLIPSIS}", &representative[..end])
                 } else {
                     format!("{prefix}{representative}")
                 }
@@ -313,7 +322,6 @@ impl PatternFolder {
         }
     }
 
-    /// Format the coverage message for stderr.
     pub(super) fn format_coverage_message(
         shown_count: usize,
         total_patterns: usize,
@@ -337,42 +345,32 @@ impl PatternFolder {
         }
     }
 
-    /// Finish processing and output a one-line-per-pattern summary sorted by frequency.
-    /// Uses the parallel pipeline for normalization, then merges groups with identical
-    /// normalized text and displays representative original lines.
-    #[cfg_attr(test, mutants::skip)] // Thin I/O wrapper: writes to stdout/stderr which cannot be captured in unit tests without refactoring
     pub fn finish_summary(
         &mut self,
-        top_n: Option<usize>,
-        fit_budget: Option<usize>,
+        request: &SummaryRequest,
+        ingest_report: &IngestReport,
+        failed_sources: usize,
+        out: &mut impl Write,
+        err: &mut impl Write,
     ) -> Result<()> {
         let super::SummaryRows {
             display,
             total_patterns,
             was_capped,
             fit_truncated,
-        } = self.prepare_summary(top_n, fit_budget)?;
+        } = self.prepare_summary(request.top_n, request.fit_budget)?;
         let shown_count = display.len();
         self.account_summary(&display);
 
-        // Detect terminal width for summary truncation (unlimited when piped)
-        use std::io::IsTerminal;
-        let max_width: Option<usize> = if std::io::stdout().is_terminal() {
-            terminal_size::terminal_size().map(|(w, _)| w.0 as usize)
-        } else {
-            None
-        };
-
-        // Output: one line per pattern with representative original line.
-        // Like every other stdout path, a broken pipe (e.g. `| head`) is a
-        // clean exit, not an error.
-        let stdout = io::stdout();
-        let mut handle = stdout.lock();
         let mut write_line = |s: String| -> Result<()> {
-            crate::output::write_or_exit_on_closed_pipe(&mut handle, format_args!("{s}\n"))
+            crate::output::write_or_exit_on_closed_pipe(out, format_args!("{s}\n"))
         };
         for (count, representative) in &display {
-            write_line(Self::format_summary_line(*count, representative, max_width))?;
+            write_line(Self::format_summary_line(
+                *count,
+                representative,
+                request.max_width,
+            ))?;
         }
 
         if fit_truncated > 0 {
@@ -381,25 +379,32 @@ impl PatternFolder {
             ))?;
         }
 
-        // Coverage info on stderr
         let shown_lines: usize = display.iter().map(|(c, _)| c).sum();
-        eprintln!(
+        writeln!(
+            err,
             "{}",
             Self::format_coverage_message(
                 shown_count,
                 total_patterns,
                 shown_lines,
-                self.stats.total_lines,
+                self.records_read_before_continuations_are_counted(),
                 was_capped,
             )
-        );
+        )?;
 
+        self.absorb_ingest_report(ingest_report, failed_sources);
         Ok(())
     }
 
-    /// Count what a `--summary` run shows, so its `--stats-json` agrees with
-    /// `--top N` and the default run: one printed line per entry, and each
-    /// entry's count saved by the arithmetic every mode shares.
+    fn records_read_before_continuations_are_counted(&self) -> usize {
+        debug_assert_eq!(
+            self.stats.continuation_lines_absorbed, 0,
+            "the summary's coverage line counts records shown against records read, so it is \
+             written before the ingest report adds the continuation lines to the statistics"
+        );
+        self.stats.total_lines
+    }
+
     pub(super) fn account_summary(&mut self, display: &[(usize, String)]) {
         for (count, _) in display {
             self.account_count(*count);
@@ -407,10 +412,6 @@ impl PatternFolder {
         self.stats.output_lines += display.len();
     }
 
-    /// Emit the terminal summary record for a JSONL stream. Called once,
-    /// after the main loop and `finish()` have drained all groups.
-    /// Writes to `writer` (stdout in the main binary path) and ends with
-    /// a trailing newline so the JSONL stream terminates cleanly.
     pub fn print_summary_json(&self, writer: &mut impl io::Write, elapsed: Duration) -> Result<()> {
         let record = SummaryRecord {
             stats: self.build_stats_json(elapsed),
@@ -441,7 +442,8 @@ impl PatternFolder {
                         omitted_by_top: Count::exact(self.json_omitted_by_top),
                         omitted_by_summary_cap: Count::exact(self.json_omitted_by_summary_cap),
                         omitted_by_fit: Count::exact(self.json_omitted_by_fit),
-                        fragmented_by_retention_cap: 0,
+                        fragmented_by_retention_cap:
+                            FRAGMENTED_BY_RETENTION_CAP_IS_ZERO_SINCE_RETENTION_WAS_REMOVED_AND_STAYS_FOR_SCHEMA_STABILITY,
                     },
                     variation_values: VariationCompleteness {
                         complete: variation_complete,
@@ -465,9 +467,6 @@ impl PatternFolder {
         Ok(())
     }
 
-    /// Build the run's orientation briefing (src/briefing.rs) from
-    /// accumulated stats. Shared by the text footer, `--preflight`, and
-    /// `--explain`'s summary record.
     pub(super) fn build_briefing(&self) -> crate::briefing::Briefing {
         use crate::briefing::{Briefing, FormatSniff, Levels, Span};
 
@@ -488,15 +487,13 @@ impl PatternFolder {
             .unwrap_or(("plain", 0));
         let mixed = format_total > 0 && (dominant_count as f64) < (format_total as f64) * 0.9;
 
-        // Every input record must be represented in the template map exactly
-        // once (by member count), unless the 8192-template cap was hit. A
-        // continuation line `--frame-continuations` folded into the record
-        // above it is an input line but not a record of its own.
         debug_assert!(
             stats.template_counts.is_truncated()
                 || stats.template_counts.total_members()
                     == total_lines - stats.continuation_lines_absorbed,
-            "template_counts must account for every input record: {} != {}",
+            "template_counts must count every input record exactly once unless its template cap \
+             was hit; a continuation line --frame-continuations folded into the record above it \
+             is an input line but not a record of its own: {} != {}",
             stats.template_counts.total_members(),
             total_lines - stats.continuation_lines_absorbed
         );
@@ -510,8 +507,6 @@ impl PatternFolder {
                 },
             ));
 
-        // Duration/histogram both need the span as epoch seconds; compute
-        // once and share.
         let span_epochs = match (&stats.span_first, &stats.span_last) {
             (Some(first), Some(last)) => crate::briefing::span_epochs(first, last),
             _ => None,
@@ -567,7 +562,6 @@ impl PatternFolder {
         Ok(())
     }
 
-    /// Build the JSON stats structure (testable, no I/O).
     pub(super) fn build_stats_json(&self, elapsed: Duration) -> StatsJson {
         let compression_ratio = self.stats.compression_ratio();
 
@@ -583,16 +577,12 @@ impl PatternFolder {
         }
     }
 
-    #[cfg_attr(test, mutants::skip)] // Writes to stderr, cannot verify in unit tests without refactoring
-    pub fn print_stats_json(&self, elapsed: Duration) -> Result<()> {
+    pub fn print_stats_json(&self, elapsed: Duration, writer: &mut impl Write) -> Result<()> {
         let stats_json = self.build_stats_json(elapsed);
-        let stderr = io::stderr();
-        let mut handle = stderr.lock();
-        serde_json::to_writer(&mut handle, &stats_json)?;
-        writeln!(handle)?;
+        serde_json::to_writer(&mut *writer, &stats_json)?;
+        writeln!(writer)?;
         Ok(())
     }
-    /// Emit the pretty-printed --preflight JSON report: the run's briefing.
     pub fn print_preflight_json<W: Write>(&self, writer: &mut W) -> Result<()> {
         #[derive(Serialize)]
         struct Preflight {
@@ -613,14 +603,9 @@ impl PatternFolder {
         Ok(())
     }
 
-    /// Emit the markdown document for the whole run. Group entries were
-    /// buffered by the fold path into `markdown_entries`; this renders
-    /// the header from run stats and wraps every entry in a code fence.
-    pub fn emit_markdown<W: Write>(&self, writer: &mut W) -> Result<()> {
+    pub fn emit_markdown<W: Write>(&self, entries: &[MarkdownEntry], writer: &mut W) -> Result<()> {
         let original_lines = self.stats.total_lines;
         let compressed_lines = self.stats.output_lines;
-        // Same definition as every other mode: lines saved by folding
-        // over total input lines.
         let compression_ratio = self.stats.compression_ratio();
 
         let mut write_line = |s: String| -> Result<()> {
@@ -641,30 +626,28 @@ impl PatternFolder {
         ))?;
         write_line("## Compressed Logs\n".to_string())?;
 
-        for (i, output) in self.markdown_entries.iter().enumerate() {
-            // Untrusted log content always goes inside a fence whose
-            // backtick run is longer than any run in the content, so it
-            // cannot break out and inject markdown/HTML structure.
-            if output.contains('+') && output.contains("similar") {
+        for (i, entry) in entries.iter().enumerate() {
+            if entry.folded {
                 write_line(format!("### Entry {} (Folded)\n", i + 1))?;
-                write_line(format!("{}\n", markdown_code_fence(output)))?;
-            } else {
-                write_line(format!("{}\n", markdown_code_fence(output)))?;
             }
+            write_line(format!("{}\n", markdown_code_fence(&entry.text)))?;
         }
         Ok(())
     }
 
-    /// Legacy collapsed-line marker for groups whose rollup was skipped
-    /// (small groups; see `format_group_dispatch`). Rendering concern,
-    /// moved here from the normalizer.
-    pub(super) fn format_collapsed_line(
+    pub(super) fn markdown_entry(rendered: Rendered) -> MarkdownEntry {
+        MarkdownEntry {
+            text: rendered.text,
+            folded: rendered.collapsed,
+        }
+    }
+
+    pub(super) fn format_marker_for_a_group_without_rollup_entries(
         &self,
         first: &LogLine,
         last: &LogLine,
         count: usize,
     ) -> String {
-        // Compact format: [+N similar, varying: TYPE]
         let variation_types = self.summarize_variation_types(&first.tokens, &last.tokens);
         if variation_types.is_empty() {
             format!("[+{count} similar]")
@@ -677,10 +660,6 @@ impl PatternFolder {
         }
     }
 
-    /// Which token kinds differ in value between a group's first and last
-    /// line — the "varying: ..." list of the compact marker. Labels and
-    /// comparable values are projections of the token taxonomy
-    /// (`Token::facts` / `Token::value_string`).
     pub(super) fn summarize_variation_types(
         &self,
         first_tokens: &[Token],
@@ -688,8 +667,6 @@ impl PatternFolder {
     ) -> Vec<String> {
         let mut types = std::collections::BTreeSet::new();
 
-        // Kinds with `variation_compares_values == false` vary by
-        // presence, not by value, so they compare under a fixed value.
         let get_token_info = |token: &Token| -> (&'static str, String) {
             let facts = token.facts();
             let value = if facts.variation_compares_values {
@@ -700,7 +677,6 @@ impl PatternFolder {
             (facts.display_label, value)
         };
 
-        // Create maps of token types to values for first and last
         let mut first_values: std::collections::BTreeMap<&str, Vec<String>> =
             std::collections::BTreeMap::new();
         let mut last_values: std::collections::BTreeMap<&str, Vec<String>> =
@@ -716,7 +692,6 @@ impl PatternFolder {
             last_values.entry(token_type).or_default().push(value);
         }
 
-        // Find token types that actually vary between first and last
         let all_types: std::collections::BTreeSet<&str> = first_values
             .keys()
             .chain(last_values.keys())
@@ -727,7 +702,6 @@ impl PatternFolder {
             let first_vals = first_values.get(token_type).cloned().unwrap_or_default();
             let last_vals = last_values.get(token_type).cloned().unwrap_or_default();
 
-            // If the sets of values differ, this token type varies
             if first_vals != last_vals {
                 types.insert(token_type.to_string());
             }
@@ -736,33 +710,23 @@ impl PatternFolder {
         types.into_iter().collect()
     }
 
-    /// Apply PII masking to a line when the run asks for it. Outside
-    /// essence mode the full pass runs (emails via tokens, then the
-    /// credential rules). Essence mode shows normalized text, which
-    /// already tokenises emails out — but credential values are not
-    /// tokens and survive normalization, so the credential rules must
-    /// still run there.
-    fn maybe_mask_pii(&self, line: &str, tokens: &[Token]) -> String {
-        match &self.sanitizer {
-            None => line.to_string(),
-            // Essence mode has already tokenised emails, hosts and
-            // addresses out of the line; what survives normalization is
-            // found by scanning the text.
-            Some(z) if self.config.essence_mode => z.mask_text(line),
-            Some(z) => z.mask_line(line, tokens),
+    fn mask_shown(&self, text: &str, tokens: &[Token]) -> Masked {
+        if self.config.essence_mode {
+            Masked::essence_text(self.sanitizer.as_ref(), text)
+        } else {
+            Masked::line(self.sanitizer.as_ref(), text, tokens)
         }
     }
 }
 
-/// Mask PII inside rollup samples. The EMAIL entry's own samples collapse
-/// to the mask token; every other sample is masked the way a full line is,
-/// with those entity values among the values it looks for, so a sample
-/// that quotes one (a path holding an address, a message naming a host)
-/// masks it wherever it stands whole, and no output field can leak what
-/// the line renderer would have masked.
 fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
+    let entity_values = entity_values_in_rollup(rollup, z);
+    mask_rollup_samples(rollup, z, &entity_values);
+}
+
+fn entity_values_in_rollup(rollup: &GroupRollup, z: &Sanitizer) -> Vec<Token> {
     let mut values: Vec<Token> = Vec::new();
-    for (name, entry) in rollup.iter() {
+    for (name, entry) in rollup {
         if z.rollup_entity(name).is_some() {
             values.extend(
                 entry
@@ -772,6 +736,10 @@ fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
             );
         }
     }
+    values
+}
+
+fn mask_rollup_samples(rollup: &mut GroupRollup, z: &Sanitizer, entity_values: &[Token]) {
     for (name, entry) in rollup.iter_mut() {
         match z.rollup_entity(name) {
             Some((crate::sanitize::Action::Redact, class)) => {
@@ -785,13 +753,12 @@ fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
                 }
             }
             None => {
-                // a multi-slot VARIES entry carries each slot's own samples
                 let slots = entry.slots.iter_mut().flatten();
                 for sample in std::iter::once(&mut entry.samples)
                     .chain(slots.map(|slot| &mut slot.samples))
                     .flatten()
                 {
-                    *sample = z.mask_line(sample, &values);
+                    *sample = z.mask_line(sample, entity_values);
                 }
             }
         }
@@ -822,19 +789,34 @@ fn markdown_code_fence(content: &str) -> String {
 mod fence_tests {
     use super::markdown_code_fence;
 
-    /// The fence is three backticks for content without any, and always
-    /// one longer than the longest run inside the content, so the content
-    /// cannot close it (kills the constant-return, `==` → `!=`, `+=` and
-    /// `+ 1` → `* 1` mutants).
     #[test]
     fn the_fence_is_always_longer_than_any_run_in_the_content() {
-        assert_eq!(markdown_code_fence("abc"), "```\nabc\n```");
+        assert_eq!(
+            markdown_code_fence("abc"),
+            "```\nabc\n```",
+            "content without backticks gets a fence of three"
+        );
         let one = markdown_code_fence("a`b");
-        assert!(one.starts_with("```\n"), "{one}");
-        assert!(!one.starts_with("````"), "{one}");
+        assert!(
+            one.starts_with("```\n"),
+            "three is the minimum fence: {one}"
+        );
+        assert!(
+            !one.starts_with("````"),
+            "a run of one needs no longer fence than three: {one}"
+        );
         let four = markdown_code_fence("````");
-        assert!(four.starts_with("`````\n"), "{four}");
-        assert!(!four.starts_with("``````"), "{four}");
-        assert!(four.ends_with("\n`````"), "{four}");
+        assert!(
+            four.starts_with("`````\n"),
+            "one longer than the longest run, so the content cannot close it: {four}"
+        );
+        assert!(
+            !four.starts_with("``````"),
+            "exactly one longer, not more: {four}"
+        );
+        assert!(
+            four.ends_with("\n`````"),
+            "the closing fence matches the opening one: {four}"
+        );
     }
 }

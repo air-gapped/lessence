@@ -2,21 +2,18 @@ use super::{AnchorSentinel, Token};
 use regex::Regex;
 use std::sync::LazyLock;
 
-// A pid in brackets: the syslog tag `sshd[1234]:`, a line-leading `[1234]`,
-// or an explicit `[pid=1234]`. Any other `word[N]` — `slot[2]`, `sta_cnt[5]`,
-// `GENPLL[5]`, `round[1]`, `disk[0]`, `Total BSS[35]`, `FWLOG: [119464107]`
-// — is an index or a count and stays what it is.
-static PID_TAG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([A-Za-z0-9_./-])\[(\d+)\]:").unwrap());
-static PID_LEADING_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(\d+)\]").unwrap());
-static PID_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[pid=(\d+)\]").unwrap());
-static PID_EQUALS_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpid=(\d+)\b").unwrap());
-// Requires a process name attached to the parens — sshd(1234), nginx(42) —
-// so free-standing counts like "retry attempt (3)" are left alone.
-static PID_PAREN_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b([a-zA-Z][a-zA-Z0-9_.-]*)\((\d+)\)").unwrap());
+const MAX_LINUX_PID: u32 = 4_194_304;
 
-// Thread ID patterns
+static SYSLOG_PID_TAG: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?P<tag>[A-Za-z0-9_./-])\[(?P<pid>\d+)\]:").unwrap());
+static LEADING_PID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[(?P<pid>\d+)\]").unwrap());
+static PID_FIELD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[pid=(?P<pid>\d+)\]").unwrap());
+static PID_EQUALS_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bpid=(?P<pid>\d+)\b").unwrap());
+static PROCESS_NAME_PAREN_PID: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b(?P<process>[a-zA-Z][a-zA-Z0-9_.-]*)\((?P<pid>\d+)\)").unwrap()
+});
+
 static THREAD_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bThread-(\d+)\b").unwrap());
 static TID_HEX_REGEX: LazyLock<Regex> =
@@ -24,15 +21,12 @@ static TID_HEX_REGEX: LazyLock<Regex> =
 static THREAD_NAME_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[thread:([a-zA-Z0-9_-]+)\]").unwrap());
 
-// The klog header's pid column: `E0910 00:02:39.914326       1 status.go:71]`.
-// By the time this runs the timestamp and the call site are placeholders;
-// the number between them is a pid whatever its digit count (`1` in a
-// container, `114343` on a node), so the slot says so. A protected klog
-// call site (`AnchorSentinel::KlogCallSiteVisibleToPid`) carries the same grammar while
-// the original site is kept for visible rendering.
+const KLOG_GO_CALL_SITE: &str = r"[A-Za-z0-9_]+\.go:<LINE>";
+const FOLDED_KLOG_CALL_SITE_END: &str = ".go:<LINE>]";
+
 static KLOG_PID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"(<TIMESTAMP>\s+)(\d+)( (?:[A-Za-z0-9_]+\.go:<LINE>|{}\d+\x00)\])",
+        r"(?P<timestamp><TIMESTAMP>\s+)(?P<pid>\d+)(?P<call_site> (?:{KLOG_GO_CALL_SITE}|{}\d+\x00)\])",
         regex::escape(AnchorSentinel::KlogCallSiteVisibleToPid.start())
     ))
     .unwrap()
@@ -45,70 +39,34 @@ impl ProcessDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        if result.contains(".go:<LINE>]")
+        if result.contains(FOLDED_KLOG_CALL_SITE_END)
             || result.contains(AnchorSentinel::KlogCallSiteVisibleToPid.start())
         {
             super::fold_matches(&mut result, &mut tokens, &KLOG_PID_REGEX, |caps| {
                 Some((
-                    Token::Pid(caps[2].parse().unwrap_or(0)),
-                    format!("{}<PID>{}", &caps[1], &caps[3]),
+                    Token::Pid(caps["pid"].parse().unwrap_or(0)),
+                    format!("{}<PID>{}", &caps["timestamp"], &caps["call_site"]),
                 ))
             });
         }
 
-        // A placeholder replaces the number and nothing else: `sshd[1234]:`
-        // becomes `sshd[<PID>]:`; only an input that said `pid=` keeps it.
-        for (regex, group, form) in [
-            (&*PID_TAG_REGEX, 2, "${1}[<PID>]:"),
-            (&*PID_LEADING_REGEX, 1, "[<PID>]"),
-            (&*PID_FIELD_REGEX, 1, "[pid=<PID>]"),
+        for (regex, form) in [
+            (&*SYSLOG_PID_TAG, "${tag}[<PID>]:"),
+            (&*LEADING_PID, "[<PID>]"),
+            (&*PID_FIELD, "[pid=<PID>]"),
         ] {
-            for cap in regex.captures_iter(&result) {
-                if let Ok(pid) = cap[group].parse::<u32>()
-                    && Self::is_likely_pid(pid)
-                {
-                    tokens.push(Token::Pid(pid));
-                }
-            }
-            // The same gate as the token, as PID_PAREN has: `worker[0]:`
-            // is not a pid, and replacing it anyway left a `<PID>` with no
-            // value behind it.
-            result = regex
-                .replace_all(&result, |caps: &regex::Captures| {
-                    if Self::is_pid_text(&caps[group]) {
-                        let mut out = String::new();
-                        caps.expand(form, &mut out);
-                        out
-                    } else {
-                        caps[0].to_string()
-                    }
-                })
-                .to_string();
+            super::fold_matches(&mut result, &mut tokens, regex, |caps| {
+                let pid = Self::likely_pid(&caps["pid"])?;
+                let mut replacement = String::new();
+                caps.expand(form, &mut replacement);
+                Some((Token::Pid(pid), replacement))
+            });
         }
 
-        // PID with equals like pid=12345
-        for cap in PID_EQUALS_REGEX.captures_iter(&result) {
-            let pid_str = cap.get(1).unwrap().as_str();
-            if let Ok(pid) = pid_str.parse::<u32>()
-                && Self::is_likely_pid(pid)
-                && !tokens
-                    .iter()
-                    .any(|t| matches!(t, Token::Pid(p) if *p == pid))
-            {
-                tokens.push(Token::Pid(pid));
-            }
-        }
-        result = PID_EQUALS_REGEX
-            .replace_all(&result, |caps: &regex::Captures| {
-                if Self::is_pid_text(&caps[1]) {
-                    "pid=<PID>".to_string()
-                } else {
-                    caps[0].to_string()
-                }
-            })
-            .to_string();
+        Self::fold_pids_once(&mut result, &mut tokens, &PID_EQUALS_REGEX, |_| {
+            "pid=<PID>".to_string()
+        });
 
-        // Thread-specific patterns
         for cap in THREAD_ID_REGEX.captures_iter(&result) {
             let thread_str = cap.get(1).unwrap().as_str();
             tokens.push(Token::ThreadID(format!("Thread-{thread_str}")));
@@ -131,42 +89,37 @@ impl ProcessDetector {
             .replace_all(&result, "[thread:<TID>]")
             .to_string();
 
-        // Handle process(1234)-style PIDs. The token push and the text
-        // replacement share the is_likely_pid gate, so a rejected match is
-        // left untouched instead of being rewritten anyway.
-        for cap in PID_PAREN_REGEX.captures_iter(&result) {
-            let pid_str = cap.get(2).unwrap().as_str();
-            if let Ok(pid) = pid_str.parse::<u32>()
-                && Self::is_likely_pid(pid)
-                && !tokens
-                    .iter()
-                    .any(|t| matches!(t, Token::Pid(p) if *p == pid))
-            {
-                tokens.push(Token::Pid(pid));
-            }
-        }
-        result = PID_PAREN_REGEX
-            .replace_all(&result, |caps: &regex::Captures| {
-                match caps[2].parse::<u32>() {
-                    Ok(pid) if Self::is_likely_pid(pid) => format!("{}(<PID>)", &caps[1]),
-                    _ => caps[0].to_string(),
-                }
-            })
-            .to_string();
+        Self::fold_pids_once(&mut result, &mut tokens, &PROCESS_NAME_PAREN_PID, |caps| {
+            format!("{}(<PID>)", &caps["process"])
+        });
 
         (result, tokens)
     }
 
-    /// A captured digit run that is a pid by the same test the token uses.
-    fn is_pid_text(digits: &str) -> bool {
-        digits.parse::<u32>().is_ok_and(Self::is_likely_pid)
+    fn fold_pids_once(
+        text: &mut String,
+        tokens: &mut Vec<Token>,
+        regex: &Regex,
+        replacement: impl Fn(&regex::Captures) -> String,
+    ) {
+        let mut found = Vec::new();
+        super::fold_matches(text, &mut found, regex, |caps| {
+            let pid = Self::likely_pid(&caps["pid"])?;
+            Some((Token::Pid(pid), replacement(caps)))
+        });
+        for token in found {
+            if !tokens.contains(&token) {
+                tokens.push(token);
+            }
+        }
+    }
+
+    fn likely_pid(digits: &str) -> Option<u32> {
+        digits.parse().ok().filter(|&pid| Self::is_likely_pid(pid))
     }
 
     fn is_likely_pid(pid: u32) -> bool {
-        // PIDs are typically in a reasonable range
-        // Avoid very small numbers that are likely not PIDs
-        // and very large numbers that exceed typical OS limits
-        (1..=4_194_304).contains(&pid) // 2^22, typical Linux max PID
+        (1..=MAX_LINUX_PID).contains(&pid)
     }
 }
 
@@ -174,7 +127,6 @@ impl ProcessDetector {
 mod tests {
     use super::*;
 
-    /// The klog pid column is a pid whether it reads `1` or `114343`.
     #[test]
     fn klog_pid_column_is_a_pid_whatever_its_digits() {
         for n in ["1", "114343"] {
@@ -189,6 +141,21 @@ mod tests {
         }
         let (r, _) = ProcessDetector::detect_and_replace("<TIMESTAMP> 1 status.go:<LINE>] x 1 y");
         assert_eq!(r, "<TIMESTAMP> <PID> status.go:<LINE>] x 1 y");
+    }
+
+    #[test]
+    fn the_klog_pid_column_needs_the_timestamp_and_call_site_already_folded() {
+        for (line, missing) in [
+            (
+                "I1102 09:10:00.000004    3310 mounter.go:<LINE>] done",
+                "timestamp",
+            ),
+            ("<TIMESTAMP>    3310 mounter.go:51] done", "call site"),
+        ] {
+            let (r, t) = ProcessDetector::detect_and_replace(line);
+            assert_eq!(r, line, "no folded {missing}");
+            assert!(t.is_empty(), "no folded {missing}: {t:?}");
+        }
     }
 
     #[test]
@@ -253,14 +220,12 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_pid_ranges() {
+    fn zero_is_not_a_pid() {
         let text = "Error code: 0";
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
-        assert_eq!(result, "Error code: 0"); // Should not replace 0 as PID
+        assert_eq!(result, "Error code: 0");
         assert_eq!(tokens.len(), 0);
     }
-
-    // ---- is_likely_pid: boundary tests ----
 
     #[test]
     fn pid_zero_rejected() {
@@ -274,21 +239,17 @@ mod tests {
 
     #[test]
     fn pid_max_accepted() {
-        assert!(ProcessDetector::is_likely_pid(4_194_304));
+        assert_eq!(MAX_LINUX_PID, 1 << 22);
+        assert!(ProcessDetector::is_likely_pid(MAX_LINUX_PID));
     }
 
     #[test]
     fn pid_over_max_rejected() {
-        assert!(!ProcessDetector::is_likely_pid(4_194_305));
+        assert!(!ProcessDetector::is_likely_pid(MAX_LINUX_PID + 1));
     }
-
-    // ---- Mutant-killing: dedup checks (delete ! on lines 49, 88, 104) ----
 
     #[test]
     fn pid_dedup_no_duplicate_tokens() {
-        // Kills mutant: `!tokens.iter().any(...)` → `tokens.iter().any(...)`
-        // Input has pid=12345 appearing in BOTH bracket and equals forms.
-        // The dedup check should prevent the same PID from being added twice.
         let text = "[pid=12345] restart with pid=12345 active";
         let (_result, tokens) = ProcessDetector::detect_and_replace(text);
         let pid_count = tokens
@@ -297,29 +258,24 @@ mod tests {
             .count();
         assert_eq!(
             pid_count, 1,
-            "PID 12345 should appear exactly once (dedup), got {pid_count}"
+            "one pid in bracket and equals forms gives one token, got {pid_count}"
         );
     }
 
     #[test]
-    fn numeric_id_dedup_no_duplicate_tokens() {
-        // The generic numeric ID pattern (id=NNN) should not duplicate PIDs
-        // that were already found by the bracket or equals patterns.
+    fn an_id_field_is_not_a_pid() {
         let text = "[pid=12345] and id=12345 duplicate";
-        let (_result, tokens) = ProcessDetector::detect_and_replace(text);
-        let pid_count = tokens
-            .iter()
-            .filter(|t| matches!(t, Token::Pid(12345)))
-            .count();
+        let (result, tokens) = ProcessDetector::detect_and_replace(text);
+        assert_eq!(result, "[pid=<PID>] and id=12345 duplicate");
         assert_eq!(
-            pid_count, 1,
-            "PID 12345 should appear exactly once across patterns, got {pid_count}"
+            tokens,
+            vec![Token::Pid(12345)],
+            "only the pid field is a pid; id= stays"
         );
     }
 
     #[test]
     fn paren_pid_dedup_no_duplicate_tokens() {
-        // The parentheses PID pattern (NNN) should not duplicate PIDs.
         let text = "pid=12345 process (12345) running";
         let (_result, tokens) = ProcessDetector::detect_and_replace(text);
         let pid_count = tokens
@@ -342,24 +298,26 @@ mod tests {
 
     #[test]
     fn paren_numbers_in_prose_left_alone() {
-        // Free-standing parenthesized numbers are counts, not PIDs.
         let text = "retry attempt (3) failed, exiting with code (137) after (1024) bytes";
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
-        assert_eq!(result, text);
+        assert_eq!(
+            result, text,
+            "a number in parentheses with no name attached is a count"
+        );
         assert!(tokens.is_empty(), "no PID tokens expected, got {tokens:?}");
     }
 
     #[test]
     fn paren_pid_out_of_range_left_alone() {
-        // 0 and > 2^22 fail is_likely_pid — text must stay untouched too.
         let text = "worker(0) and worker(9999999) idle";
         let (result, tokens) = ProcessDetector::detect_and_replace(text);
-        assert_eq!(result, text);
+        assert_eq!(
+            result, text,
+            "0 and anything over 2^22 fail is_likely_pid, and the text stays"
+        );
         assert!(tokens.is_empty(), "no PID tokens expected, got {tokens:?}");
     }
 
-    /// Every pid shape shares the gate: a number that is not a pid stays,
-    /// and a `<PID>` always has a token behind it.
     #[test]
     fn every_pid_shape_leaves_a_non_pid_alone() {
         for text in [
@@ -376,7 +334,11 @@ mod tests {
         let (result, tokens) =
             ProcessDetector::detect_and_replace("sshd[1234]: [77] [pid=88] pid=99 x");
         assert_eq!(result, "sshd[<PID>]: [77] [pid=<PID>] pid=<PID> x");
-        assert_eq!(tokens.len(), 3);
+        assert_eq!(
+            tokens.len(),
+            result.matches("<PID>").count(),
+            "every <PID> has a token behind it: {tokens:?}"
+        );
     }
 }
 

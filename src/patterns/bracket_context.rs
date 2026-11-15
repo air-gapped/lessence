@@ -2,11 +2,9 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// Single bracket context: [error], [info], [upstream]
 static SINGLE_BRACKET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([a-zA-Z][a-zA-Z0-9_.-]*)\]").unwrap());
 
-// Chained bracket contexts: [error] [mod_jk], [info] [upstream] [cluster]
 static CHAINED_BRACKET_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:\[([a-zA-Z][a-zA-Z0-9_.-]*)\]\s*){2,}").unwrap());
 
@@ -14,60 +12,44 @@ pub struct BracketContextDetector;
 
 impl BracketContextDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no square brackets
-        if !Self::has_bracket_indicators(text) {
+        if !Self::contains_bracket_pair(text) {
             return (text.to_string(), Vec::new());
         }
 
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Apply bracket context detection in order of priority
         Self::apply_chained_bracket_pattern(&mut result, &mut tokens);
         Self::apply_single_bracket_pattern(&mut result, &mut tokens);
 
         (result, tokens)
     }
 
-    /// A square bracket pair somewhere on the line. Nothing else on the
-    /// line is consulted: `[2001:db8::1]`, `array[index]`, `[param=v]`,
-    /// `[1 + 2]` and `[0-9]` are each rejected bracket by bracket (a colon,
-    /// `=`, space or leading digit is outside the context shape, and
-    /// `index` is no context), so a line holding one of them still folds
-    /// its `[proxy]`. Those substrings used to switch the detector off for
-    /// the whole line (lessence-enl).
-    pub(crate) fn has_bracket_indicators(text: &str) -> bool {
+    pub(crate) fn contains_bracket_pair(text: &str) -> bool {
         text.contains('[') && text.contains(']')
     }
 
     fn apply_chained_bracket_pattern(text: &mut String, tokens: &mut Vec<Token>) {
         let folded = CHAINED_BRACKET_REGEX.replace_all(text, |caps: &regex::Captures| {
-            Self::fold_chain(caps.get(0).unwrap().as_str(), tokens)
+            Self::fold_context_runs_between_levels(caps.get(0).unwrap().as_str(), tokens)
         });
         if let std::borrow::Cow::Owned(s) = folded {
             *text = s;
         }
     }
 
-    /// One chain of brackets. A level (`[error]`, `[NOTICE]`) is the
-    /// event's severity, not a context: it stays on the line and splits
-    /// the chain. Each remaining run of two or more brackets that holds a
-    /// logging context becomes one `<BRACKET_CONTEXT>`; a run of one is
-    /// left for the single-bracket pass. `[error] [proxy] upstream gone`
-    /// and `[info] [proxy] upstream gone` are two events.
-    fn fold_chain(chain: &str, tokens: &mut Vec<Token>) -> String {
-        // (start, context) per bracket; brackets in a chain are separated
-        // by whitespace only, so a bracket's span runs to the next start.
+    fn fold_context_runs_between_levels(chain: &str, tokens: &mut Vec<Token>) -> String {
         let items: Vec<(usize, &str)> = SINGLE_BRACKET_REGEX
             .captures_iter(chain)
             .map(|c| (c.get(0).unwrap().start(), c.get(1).unwrap().as_str()))
             .collect();
-        let end_of = |i: usize| items.get(i + 1).map_or(chain.len(), |next| next.0);
+        let bracket_span_through_separator =
+            |i: usize| items.get(i + 1).map_or(chain.len(), |next| next.0);
         let mut out = String::with_capacity(chain.len());
         let mut i = 0;
         while i < items.len() {
             if Self::is_level(items[i].1) {
-                out.push_str(&chain[items[i].0..end_of(i)]);
+                out.push_str(&chain[items[i].0..bracket_span_through_separator(i)]);
                 i += 1;
                 continue;
             }
@@ -75,17 +57,16 @@ impl BracketContextDetector {
             while j < items.len() && !Self::is_level(items[j].1) {
                 j += 1;
             }
-            let run = &chain[items[i].0..end_of(j - 1)];
+            let run = &chain[items[i].0..bracket_span_through_separator(j - 1)];
             let contexts: Vec<String> = items[i..j]
                 .iter()
                 .map(|(_, ctx)| ctx.to_lowercase())
                 .collect();
             if contexts.len() >= 2 && Self::are_logging_contexts(&contexts) {
                 tokens.push(Token::BracketContext(contexts));
-                // the placeholder replaces the brackets, not the space
-                // after them
+                let trailing_whitespace = &run[run.trim_end().len()..];
                 out.push_str("<BRACKET_CONTEXT>");
-                out.push_str(&run[run.trim_end().len()..]);
+                out.push_str(trailing_whitespace);
             } else {
                 out.push_str(run);
             }
@@ -109,20 +90,13 @@ impl BracketContextDetector {
             .to_string();
     }
 
-    /// A severity word, by the briefing's own level recogniser — the one
-    /// level vocabulary in the crate, so a word the level statistics count
-    /// is a word this detector leaves on the line.
     fn is_level(context: &str) -> bool {
         crate::briefing::word_to_level(context.as_bytes()).is_some()
     }
 
-    /// A bracket that names where an event came from (`[proxy]`,
-    /// `[mod_jk]`). A level is never one: `[error]` and `[info]` are what
-    /// happened, and folding them made an error and an info one event.
     fn is_logging_context(context: &str) -> bool {
         let lower_context = context.to_lowercase();
 
-        // Common logging components
         let log_components = [
             "upstream",
             "downstream",
@@ -147,7 +121,6 @@ impl BracketContextDetector {
             "session",
         ];
 
-        // Apache/Nginx modules
         let web_modules = [
             "mod_jk",
             "mod_ssl",
@@ -161,40 +134,32 @@ impl BracketContextDetector {
             "http",
         ];
 
-        // NOTE: Kubernetes contexts removed to prevent pattern theft
-        // These should be handled by KubernetesDetector instead
-
-        // System components
         let system_contexts = [
             "kernel", "systemd", "init", "cron", "syslog", "audit", "security", "firewall",
             "network", "storage", "memory",
         ];
 
-        // Whole words only: a substring test made `[domain]` and
-        // `[remainder]` contexts (they contain `main`), `[score]` one
-        // (`core`) and `[events]` one (`event`), and then all of them one
-        // `<BRACKET_CONTEXT>` group.
-        log_components.contains(&lower_context.as_str()) ||
-        web_modules.contains(&lower_context.as_str()) ||
-        system_contexts.contains(&lower_context.as_str()) ||
-        // Pattern-based detection
-        lower_context.ends_with("_service") ||
-        lower_context.ends_with("_manager") ||
-        lower_context.ends_with("_client") ||
-        lower_context.ends_with("_server") ||
-        lower_context.starts_with("mod_") ||
-        lower_context.starts_with("ngx_")
+        log_components.contains(&lower_context.as_str())
+            || web_modules.contains(&lower_context.as_str())
+            || system_contexts.contains(&lower_context.as_str())
+            || lower_context.ends_with("_service")
+            || lower_context.ends_with("_manager")
+            || lower_context.ends_with("_client")
+            || lower_context.ends_with("_server")
+            || lower_context.starts_with("mod_")
+            || lower_context.starts_with("ngx_")
     }
 
     fn are_logging_contexts(contexts: &[String]) -> bool {
-        // At least one should be a recognized logging context
-        contexts.iter().any(|ctx| Self::is_logging_context(ctx)) &&
-        // None should be obvious non-logging patterns
-        !contexts.iter().any(|ctx| {
-            ctx.chars().all(|c| c.is_ascii_digit()) ||  // [123]
-            ctx.contains(':') ||                        // [2001:db8]
-            ctx.len() == 1                             // [a]
-        })
+        contexts.iter().any(|ctx| Self::is_logging_context(ctx))
+            && !contexts.iter().any(|ctx| Self::is_non_context_shape(ctx))
+    }
+
+    fn is_non_context_shape(ctx: &str) -> bool {
+        let all_digits = ctx.chars().all(|c| c.is_ascii_digit());
+        let has_colon = ctx.contains(':');
+        let one_char = ctx.len() == 1;
+        all_digits || has_colon || one_char
     }
 }
 
@@ -202,8 +167,6 @@ impl BracketContextDetector {
 mod tests {
     use super::*;
 
-    /// A chain of contexts folds to one placeholder; the space after the
-    /// last bracket belongs to the sentence.
     #[test]
     fn chained_brackets_keep_the_space_after_them() {
         let (r, _) =
@@ -211,8 +174,6 @@ mod tests {
         assert_eq!(r, "<BRACKET_CONTEXT> OK (DoH) - rtt: 4ms");
     }
 
-    /// A level is the event's severity, not a context: it stays literal,
-    /// alone or in a chain, whatever its case.
     #[test]
     fn a_bracketed_level_stays_on_the_line() {
         for line in [
@@ -228,8 +189,6 @@ mod tests {
         }
     }
 
-    /// `[error] [proxy]` and `[info] [proxy]` are two events: the level
-    /// splits the chain and stays, the context beside it still folds.
     #[test]
     fn a_level_in_a_chain_stays_and_the_context_folds() {
         let (r, tokens) =
@@ -248,18 +207,19 @@ mod tests {
             ])]
         );
 
-        // a level between two contexts splits them into two runs of one
         let (r, _) =
             BracketContextDetector::detect_and_replace("[proxy] [error] [upstream] upstream gone");
         assert_eq!(
-            r,
-            "<BRACKET_CONTEXT> [error] <BRACKET_CONTEXT> upstream gone"
+            r, "<BRACKET_CONTEXT> [error] <BRACKET_CONTEXT> upstream gone",
+            "a level between two contexts splits them into two runs of one"
         );
 
-        // a chain whose only recognised word is the level folds nothing
         let (r, tokens) =
             BracketContextDetector::detect_and_replace("[NOTICE] [cloudflare] OK (DoH)");
-        assert_eq!(r, "[NOTICE] [cloudflare] OK (DoH)");
+        assert_eq!(
+            r, "[NOTICE] [cloudflare] OK (DoH)",
+            "a chain whose only recognised word is the level folds nothing"
+        );
         assert!(tokens.is_empty());
     }
 
@@ -296,13 +256,15 @@ mod tests {
     }
 
     #[test]
-    fn test_systemd_contexts() {
+    fn a_systemd_unit_bracket_is_not_a_context() {
         let systemd_line = "systemd[1]: [info] [unit] Starting network service";
         let (result, tokens) = BracketContextDetector::detect_and_replace(systemd_line);
 
-        if !tokens.is_empty() {
-            assert!(result.contains("<BRACKET_CONTEXT>"));
-        }
+        assert_eq!(
+            result, systemd_line,
+            "[info] is a level and [unit] is no context word"
+        );
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 
     #[test]
@@ -323,45 +285,38 @@ mod tests {
     }
 
     #[test]
-    fn test_mixed_bracket_types() {
+    fn only_square_brackets_are_contexts() {
         let mixed_line = "[proxy] Processing (failed) with {result: null}";
-        let (_result, tokens) = BracketContextDetector::detect_and_replace(mixed_line);
+        let (result, tokens) = BracketContextDetector::detect_and_replace(mixed_line);
 
-        // Should only detect square brackets [proxy], not () or {}
-        assert_eq!(tokens.len(), 1);
-        if let Token::BracketContext(contexts) = &tokens[0] {
-            assert_eq!(contexts[0], "proxy");
-        }
+        assert_eq!(
+            result,
+            "<BRACKET_CONTEXT> Processing (failed) with {result: null}"
+        );
+        assert_eq!(tokens, vec![Token::BracketContext(vec!["proxy".into()])]);
     }
-
-    // ---- has_bracket_indicators: per-condition tests ----
 
     #[test]
     fn bracket_ind_requires_open_bracket() {
-        // Has ] but not [
-        assert!(!BracketContextDetector::has_bracket_indicators(
+        assert!(!BracketContextDetector::contains_bracket_pair(
             "error] happened"
         ));
     }
 
     #[test]
     fn bracket_ind_requires_close_bracket() {
-        // Has [ but not ]
-        assert!(!BracketContextDetector::has_bracket_indicators(
+        assert!(!BracketContextDetector::contains_bracket_pair(
             "[error happened"
         ));
     }
 
     #[test]
     fn bracket_ind_positive() {
-        assert!(BracketContextDetector::has_bracket_indicators(
+        assert!(BracketContextDetector::contains_bracket_pair(
             "[error] happened"
         ));
     }
 
-    /// A non-context bracket is rejected on its own shape and stays
-    /// literal; it no longer switches the detector off for its line, so a
-    /// `[proxy]` beside it folds as it does anywhere else (lessence-enl).
     #[test]
     fn a_non_context_bracket_does_not_veto_its_line() {
         for (line, folded) in [
@@ -385,30 +340,35 @@ mod tests {
                 "<BRACKET_CONTEXT> kubelet started",
             ),
         ] {
-            assert!(BracketContextDetector::has_bracket_indicators(line));
+            assert!(BracketContextDetector::contains_bracket_pair(line));
             assert_eq!(BracketContextDetector::detect_and_replace(line).0, folded);
         }
     }
 
     #[test]
     fn test_context_classification() {
-        // a level is never a context (see a_bracketed_level_stays_on_the_line)
-        assert!(!BracketContextDetector::is_logging_context("error"));
-        assert!(!BracketContextDetector::is_logging_context("NOTICE"));
+        assert!(
+            !BracketContextDetector::is_logging_context("error"),
+            "a level is never a context"
+        );
+        assert!(
+            !BracketContextDetector::is_logging_context("NOTICE"),
+            "a level is never a context"
+        );
         assert!(BracketContextDetector::is_level("NOTICE"));
         assert!(BracketContextDetector::is_level("err"));
         assert!(!BracketContextDetector::is_level("proxy"));
         assert!(BracketContextDetector::is_logging_context("upstream"));
         assert!(BracketContextDetector::is_logging_context("mod_ssl"));
-        // "kubelet" is no longer a logging context - it's handled by KubernetesDetector
-        assert!(!BracketContextDetector::is_logging_context("kubelet"));
+        assert!(
+            !BracketContextDetector::is_logging_context("kubelet"),
+            "kubelet is the KubernetesDetector's, not a bracket context"
+        );
 
         assert!(!BracketContextDetector::is_logging_context("123"));
         assert!(!BracketContextDetector::is_logging_context("2001:db8"));
         assert!(!BracketContextDetector::is_logging_context("a"));
     }
-
-    // ---- is_logging_context: per-branch tests ----
 
     #[test]
     fn logging_ctx_system_context() {
@@ -465,8 +425,6 @@ mod tests {
         assert!(!BracketContextDetector::is_logging_context("zzz_random"));
     }
 
-    // ---- are_logging_contexts: per-condition tests ----
-
     #[test]
     fn are_logging_ctxs_valid() {
         assert!(BracketContextDetector::are_logging_contexts(&[
@@ -505,28 +463,75 @@ mod tests {
         ]));
     }
 
-    // ---- Mutant-killing: apply_chained_bracket_pattern inner logic ----
-
     #[test]
-    fn chained_brackets_require_two_contexts() {
-        // Kills mutant on contexts.len() >= 2
-        // Single bracket should NOT trigger chained pattern
+    fn a_single_context_folds_through_the_single_pass() {
         let (result, tokens) =
             BracketContextDetector::detect_and_replace("[proxy] something failed");
-        // Single bracket should trigger single pattern, not chained
         assert!(!tokens.is_empty(), "should detect [proxy]");
         assert!(result.contains("<BRACKET_CONTEXT>"));
-        // the run after a level is a chain of its own, one token
         let (_, tokens) = BracketContextDetector::detect_and_replace("[warn] [zzz] [proxy] x");
         assert_eq!(
             tokens,
-            vec![Token::BracketContext(vec!["zzz".into(), "proxy".into()])]
+            vec![Token::BracketContext(vec!["zzz".into(), "proxy".into()])],
+            "the run after a level is a chain of its own, one token"
         );
     }
 
     #[test]
+    fn chained_pass_runs_before_single_pass() {
+        let line = "[proxy] [upstream] gone";
+        let (r, tokens) = BracketContextDetector::detect_and_replace(line);
+        assert_eq!(r, "<BRACKET_CONTEXT> gone");
+        assert_eq!(
+            tokens,
+            vec![Token::BracketContext(vec![
+                "proxy".into(),
+                "upstream".into()
+            ])]
+        );
+        let mut single_first = line.to_string();
+        let mut single_tokens = Vec::new();
+        BracketContextDetector::apply_single_bracket_pattern(&mut single_first, &mut single_tokens);
+        BracketContextDetector::apply_chained_bracket_pattern(
+            &mut single_first,
+            &mut single_tokens,
+        );
+        assert_eq!(
+            single_first, "<BRACKET_CONTEXT> <BRACKET_CONTEXT> gone",
+            "the single pass first folds the chain bracket by bracket"
+        );
+    }
+
+    #[test]
+    fn whole_word_contexts_reject_substrings() {
+        for word in ["domain", "remainder", "score", "events"] {
+            assert!(!BracketContextDetector::is_logging_context(word), "{word}");
+            let line = format!("[{word}] value");
+            assert_eq!(BracketContextDetector::detect_and_replace(&line).0, line);
+        }
+    }
+
+    #[test]
+    fn every_word_the_level_statistics_count_stays_literal() {
+        for word in [
+            "error", "err", "NOTICE", "Warning", "warn", "info", "debug", "fatal",
+        ] {
+            assert!(
+                crate::briefing::word_to_level(word.as_bytes()).is_some(),
+                "{word} is a level to the briefing"
+            );
+            assert!(BracketContextDetector::is_level(word), "{word}");
+            let line = format!("[{word}] [proxy] [upstream] x");
+            assert_eq!(
+                BracketContextDetector::detect_and_replace(&line).0,
+                format!("[{word}] <BRACKET_CONTEXT> x"),
+                "{word}"
+            );
+        }
+    }
+
+    #[test]
     fn chained_brackets_with_logging_contexts() {
-        // Kills mutant on are_logging_contexts check
         let (result, tokens) =
             BracketContextDetector::detect_and_replace("[proxy] [upstream] request failed");
         assert!(
@@ -544,11 +549,8 @@ mod tests {
 
     #[test]
     fn chained_brackets_non_logging_not_replaced() {
-        // Non-logging bracket chains should NOT be replaced
-        // But both must be recognized logging contexts. "zzz" is not.
         let input = "[zzz] [qqq] something";
         let (result, tokens) = BracketContextDetector::detect_and_replace(input);
-        // Neither zzz nor qqq is a logging context, so no chained detection
         let chained = tokens.iter().any(|t| {
             if let Token::BracketContext(ctxs) = t {
                 ctxs.len() >= 2
@@ -560,17 +562,11 @@ mod tests {
             !chained,
             "non-logging chains should not be detected: {tokens:?}"
         );
-        // Single brackets might still be detected or not
-        let _ = result;
+        assert_eq!(result, input);
     }
 
-    // ---- Mutant-killing: is_logging_context suffix patterns (line ~203) ----
-
     #[test]
-    fn logging_ctx_service_suffix_detected() {
-        // Kills mutant: `|| with &&` on ends_with("_service")
-        // "my_service" is not in log_components, web_modules, or system_contexts
-        // It only matches via the suffix pattern
+    fn custom_service_is_a_context_only_by_its_suffix() {
         assert!(BracketContextDetector::is_logging_context("custom_service"));
     }
 
@@ -590,8 +586,7 @@ mod tests {
     }
 
     #[test]
-    fn logging_ctx_mod_prefix_detected() {
-        // Not in the web_modules array directly, but starts_with("mod_")
+    fn mod_custom_is_a_context_only_by_its_prefix() {
         assert!(BracketContextDetector::is_logging_context("mod_custom"));
     }
 

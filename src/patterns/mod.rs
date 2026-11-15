@@ -452,6 +452,12 @@ pub(crate) fn is_source_file_name(name: &str) -> bool {
         .is_some_and(|(_, ext)| SOURCE_EXTENSIONS.contains(&ext))
 }
 
+pub(crate) static EVENT_OBJECT_META: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"&Event\{ObjectMeta:\{[^}]*\}")
+            .expect("Failed to compile event object regex")
+    });
+
 pub(crate) fn fold_matches(
     text: &mut String,
     tokens: &mut Vec<Token>,
@@ -476,6 +482,68 @@ pub(crate) fn fold_matches(
     let folded = regex.replace_all(text, Fold { tokens, recognise });
     if let std::borrow::Cow::Owned(s) = folded {
         *text = s;
+    }
+}
+
+pub(crate) const SYSTEMD_UNIT_TYPES: &[&str] = &[
+    "service",
+    "socket",
+    "device",
+    "mount",
+    "automount",
+    "swap",
+    "target",
+    "path",
+    "timer",
+    "slice",
+    "scope",
+];
+
+pub(crate) fn is_systemd_unit_type(word: &str) -> bool {
+    SYSTEMD_UNIT_TYPES.contains(&word)
+}
+
+pub(crate) fn is_designator(word: &str) -> bool {
+    let letters = word.bytes().take_while(u8::is_ascii_alphabetic).count();
+    letters >= 2 && word.bytes().skip(letters).all(|b| b.is_ascii_digit())
+}
+
+#[cfg(test)]
+mod shared_word_shapes {
+    use super::*;
+
+    #[test]
+    fn a_designator_is_two_or_more_letters_then_only_digits() {
+        for word in ["ed25519", "sha256", "ipv6", "AES128", "ED25519"] {
+            assert!(is_designator(word), "{word}");
+        }
+        for word in ["a1", "1abc", "ab1c", "F9009C60", "c420064480", ""] {
+            assert!(!is_designator(word), "{word}");
+        }
+    }
+
+    #[test]
+    fn the_unit_types_are_every_systemd_unit_type() {
+        let mut types = SYSTEMD_UNIT_TYPES.to_vec();
+        types.sort_unstable();
+        assert_eq!(
+            types,
+            [
+                "automount",
+                "device",
+                "mount",
+                "path",
+                "scope",
+                "service",
+                "slice",
+                "socket",
+                "swap",
+                "target",
+                "timer"
+            ]
+        );
+        assert!(is_systemd_unit_type("automount"));
+        assert!(!is_systemd_unit_type("com"));
     }
 }
 

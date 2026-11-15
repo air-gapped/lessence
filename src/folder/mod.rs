@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{self, Write};
 use std::time::Duration;
 
-use crate::config::Config;
+use crate::config::{Config, OutputFormat};
 use crate::ingest::IngestReport;
 use crate::normalize::Normalizer;
 use crate::patterns::{LogLine, StatsBucket, Token, word_spans};
@@ -319,6 +319,10 @@ impl PatternGroup {
     fn count(&self) -> usize {
         self.count
     }
+
+    fn hidden_members(&self) -> usize {
+        self.count() - 2
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -352,7 +356,6 @@ pub struct PatternFolder {
     batch_buffer: Vec<String>,
     batch_locations: Vec<LineLocation>,
     sources: Vec<String>,
-    markdown_entries: Vec<String>,
     next_json_id: usize,
     input_facts: InputFacts,
     json_groups_emitted: usize,
@@ -612,7 +615,7 @@ struct PatternHits {
 #[derive(Serialize)]
 struct LineRef {
     source: Option<String>,
-    line: String,
+    line: Masked,
     line_no: usize,
 }
 
@@ -634,11 +637,11 @@ struct GroupRecord {
     id: usize,
     count: usize,
     token_types: Vec<&'static str>,
-    normalized: String,
+    normalized: Masked,
     first: LineRef,
     last: LineRef,
     time_range: TimeRange,
-    variation: GroupRollup,
+    variation: MaskedRollup,
     #[serde(skip_serializing_if = "Option::is_none")]
     nearest: Option<Nearest>,
 }
@@ -2410,7 +2413,6 @@ impl PatternFolder {
             batch_buffer: Vec::new(),
             batch_locations: Vec::new(),
             sources: Vec::new(),
-            markdown_entries: Vec::new(),
             next_json_id: 0,
             input_facts: InputFacts::default(),
             json_groups_emitted: 0,
@@ -2458,11 +2460,11 @@ impl PatternFolder {
     }
 
     fn is_json_output(&self) -> bool {
-        matches!(self.config.output_format.as_str(), "json" | "jsonl")
+        self.config.output_format == OutputFormat::Json
     }
 
     fn is_markdown_output(&self) -> bool {
-        self.config.output_format.as_str() == "markdown"
+        self.config.output_format == OutputFormat::Markdown
     }
 
     pub fn process_line(&mut self, line: &str) -> Result<()> {
@@ -2539,8 +2541,8 @@ impl PatternFolder {
 
         let distill_line_no = self
             .config
-            .distill
-            .is_some()
+            .group_sink
+            .is_distilling()
             .then(|| location.map_or(self.position_counter, |l| l.line_no));
 
         if let Some(index) = match_index {
@@ -2653,11 +2655,12 @@ impl PatternFolder {
         for group in &self.buffer {
             let key = (group.template().to_string(), group.first().anchor);
             let count = group.count();
-            let representative = if let Some(z) = &self.sanitizer {
-                z.mask_line(&group.first().original, &group.first().tokens)
-            } else {
-                group.first().original.clone()
-            };
+            let representative = Masked::line(
+                self.sanitizer.as_ref(),
+                &group.first().original,
+                &group.first().tokens,
+            )
+            .into_string();
             merged
                 .entry(key)
                 .and_modify(|(c, _)| *c += count)
@@ -2668,7 +2671,7 @@ impl PatternFolder {
         sorted.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
         let total_patterns = sorted.len();
-        use crate::config::DEFAULT_SUMMARY_CAP;
+        use crate::config::DEFAULT_SUMMARY_TOP;
 
         let (limit, was_capped, fit_truncated) = match (top_n, fit_budget) {
             (Some(n), _) if n != TOP_SHOWS_EVERY_GROUP => (n, false, 0),
@@ -2677,7 +2680,7 @@ impl PatternFolder {
                 (show, false, total_patterns - show)
             }
             (Some(TOP_SHOWS_EVERY_GROUP), _) | (_, Some(_)) => (total_patterns, false, 0),
-            _ => (DEFAULT_SUMMARY_CAP, total_patterns > DEFAULT_SUMMARY_CAP, 0),
+            _ => (DEFAULT_SUMMARY_TOP, total_patterns > DEFAULT_SUMMARY_TOP, 0),
         };
         sorted.truncate(limit);
 
@@ -2698,6 +2701,34 @@ impl PatternFolder {
     }
 
     pub fn finish(&mut self) -> Result<Vec<String>> {
+        debug_assert!(
+            !self.is_markdown_output(),
+            "a markdown run finishes with finish_markdown: its entries become one document"
+        );
+        Ok(self
+            .drain_rendered()?
+            .into_iter()
+            .map(|rendered| rendered.text)
+            .collect())
+    }
+
+    pub fn drain_into_briefing(&mut self) -> Result<()> {
+        self.drain_rendered().map(drop)
+    }
+
+    pub fn finish_markdown(&mut self) -> Result<Vec<MarkdownEntry>> {
+        debug_assert!(
+            self.is_markdown_output(),
+            "finish_markdown is the finish of a markdown run"
+        );
+        Ok(self
+            .drain_rendered()?
+            .into_iter()
+            .map(Self::markdown_entry)
+            .collect())
+    }
+
+    fn drain_rendered(&mut self) -> Result<Vec<Rendered>> {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
@@ -2711,12 +2742,8 @@ impl PatternFolder {
         let groups = self.merge_converged(groups);
 
         for group in groups {
-            let formatted = self.format_group_dispatch(&group)?;
-            self.stats.output_lines += formatted.lines().count();
-            if self.is_markdown_output() {
-                self.markdown_entries.push(formatted);
-            } else {
-                output.push(formatted);
+            if let Dispatched::Shown(rendered) = self.format_group_dispatch(&group)? {
+                output.push(rendered);
             }
         }
         if self.is_json_output() {
@@ -2727,7 +2754,7 @@ impl PatternFolder {
     }
 
     fn merge_converged(&self, groups: Vec<PatternGroup>) -> Vec<PatternGroup> {
-        if self.config.distill.is_some() || groups.len() < 2 {
+        if self.config.group_sink.is_distilling() || groups.len() < 2 {
             return groups;
         }
         let mut by_claim: HashMap<(String, u64), usize> = HashMap::with_capacity(groups.len());
@@ -2784,11 +2811,12 @@ impl PatternFolder {
             } else {
                 let (first_epoch, last_epoch) = group_epoch_range(&group);
                 self.stats.template_counts.record(
-                    &Sanitizer::masked(
+                    Masked::line(
                         self.sanitizer.as_ref(),
                         group.template(),
                         &group.first().tokens,
-                    ),
+                    )
+                    .as_str(),
                     group.count(),
                     first_epoch,
                     last_epoch,
@@ -2798,9 +2826,9 @@ impl PatternFolder {
 
         let mut output = Vec::new();
         for (count, group) in top_groups {
-            let formatted = self.format_group_dispatch(&group)?;
-            self.stats.output_lines += formatted.lines().count();
-            output.push((count, formatted));
+            if let Dispatched::Shown(rendered) = self.format_group_dispatch(&group)? {
+                output.push((count, rendered.text));
+            }
         }
 
         let fit_truncated = match fit_budget {
@@ -2917,6 +2945,9 @@ impl PatternFolder {
 
 mod render;
 mod timeline;
+
+use render::{Dispatched, Masked, MaskedRollup, Rendered};
+pub use render::{MarkdownEntry, SummaryRequest};
 
 #[cfg(test)]
 mod tests;

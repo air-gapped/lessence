@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::GroupSink;
 use crate::patterns::HashType;
 
 fn make_line(normalized: &str, tokens: Vec<Token>) -> LogLine {
@@ -259,7 +260,7 @@ fn top_n_counts_every_group_of_a_wide_log() {
 fn a_wide_log_conserves_total_count_and_never_duplicates_a_template() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        output_format: "json".to_string(),
+        output_format: OutputFormat::Json,
         min_collapse: 3,
         ..Config::default()
     });
@@ -347,7 +348,7 @@ fn the_thread_count_does_not_change_the_records_of_a_wide_log() {
     let run = |thread_count| {
         let mut f = PatternFolder::new(Config {
             thread_count,
-            output_format: "json".to_string(),
+            output_format: OutputFormat::Json,
             min_collapse: 3,
             ..Config::default()
         });
@@ -398,7 +399,7 @@ fn a_wide_log_preserves_founder_order_and_nontransitive_membership() {
         let mut folder = PatternFolder::new(Config {
             explain,
             thread_count: Some(1),
-            output_format: "json".into(),
+            output_format: OutputFormat::Json,
             ..Config::default()
         });
         for _ in 0..3 {
@@ -1686,7 +1687,9 @@ fn explain_off_emits_no_nearest_field() {
     f.process_line("totally unrelated").unwrap();
     assert!(f.buffer[1].nearest.is_none());
     let group = f.buffer.pop().unwrap();
-    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     assert!(!json.contains("nearest"), "{json}");
 }
 
@@ -1875,7 +1878,7 @@ fn make_folder_json() -> PatternFolder {
     PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        output_format: "json".to_string(),
+        output_format: OutputFormat::Json,
         ..Config::default()
     })
 }
@@ -1891,7 +1894,9 @@ fn format_group_json_below_min_collapse_no_stats_change() {
         ],
     );
     assert_eq!(group.count(), 2);
-    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     assert_eq!(
         f.stats.collapsed_groups, 0,
         "count 2 is below min_collapse 3"
@@ -1913,7 +1918,9 @@ fn format_group_json_at_min_collapse_updates_stats() {
         ],
     );
     assert_eq!(group.count(), 3);
-    let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let _ = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     assert_eq!(f.stats.collapsed_groups, 1);
     assert_eq!(
         f.stats.lines_saved, 0,
@@ -1930,7 +1937,9 @@ fn format_group_json_at_min_collapse_updates_stats() {
             vec![Token::IPv4("10.0.0.5".into())],
         ],
     );
-    let _ = f.format_group_json(&bigger, BTreeMap::new()).unwrap();
+    let _ = f
+        .format_group_json(&bigger, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     assert_eq!(f.stats.collapsed_groups, 2);
     assert_eq!(f.stats.lines_saved, 2, "5 - 3, as text mode counts");
 }
@@ -1940,7 +1949,7 @@ fn format_group_json_essence_mode_saves_like_text_mode() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         min_collapse: 3,
-        output_format: "json".to_string(),
+        output_format: OutputFormat::Json,
         essence_mode: true,
         ..Config::default()
     });
@@ -1952,7 +1961,9 @@ fn format_group_json_essence_mode_saves_like_text_mode() {
             vec![Token::IPv4("10.0.0.3".into())],
         ],
     );
-    let _ = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let _ = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     assert_eq!(
         f.stats.collapsed_groups, 0,
         "essence_mode should skip collapsed_groups"
@@ -1967,8 +1978,12 @@ fn format_group_json_essence_mode_saves_like_text_mode() {
 fn format_group_json_id_increments() {
     let mut f = make_folder_json();
     let group = make_group("line", vec![vec![]]);
-    let json0 = f.format_group_json(&group, BTreeMap::new()).unwrap();
-    let json1 = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json0 = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
+    let json1 = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     let v0: serde_json::Value = serde_json::from_str(&json0).unwrap();
     let v1: serde_json::Value = serde_json::from_str(&json1).unwrap();
     assert_eq!(v0["id"], 0);
@@ -1985,7 +2000,9 @@ fn format_group_json_token_types_sorted() {
             Token::IPv4("10.0.0.1".into()),
         ]],
     );
-    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     let types: Vec<&str> = v["token_types"]
         .as_array()
@@ -2008,7 +2025,9 @@ fn format_group_json_time_range_from_timestamps() {
             vec![Token::Timestamp("2024-01-01T01:00:00Z".into())],
         ],
     );
-    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(
         v["time_range"]["first_seen"].as_str().unwrap(),
@@ -2024,7 +2043,9 @@ fn format_group_json_time_range_from_timestamps() {
 fn format_group_json_record_type_is_group() {
     let mut f = make_folder_json();
     let group = make_group("line", vec![vec![]]);
-    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    let json = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(v["type"], "group");
 }
@@ -2033,8 +2054,11 @@ fn format_group_json_record_type_is_group() {
 fn a_group_record_opens_with_the_head_the_report_index_reads() {
     let mut f = make_folder_json();
     let group = make_group("line", vec![vec![], vec![]]);
-    f.format_group_json(&group, BTreeMap::new()).unwrap();
-    let json = f.format_group_json(&group, BTreeMap::new()).unwrap();
+    f.format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
+    let json = f
+        .format_group_json(&group, f.masked_rollup(BTreeMap::new()))
+        .unwrap();
     assert_eq!(
         crate::overview::writer_group_head(&json),
         Some((1, 2)),
@@ -2258,7 +2282,7 @@ fn absorb_ingest_report_sets_input_completeness() {
 fn format_group_dispatch_text_mode_emits_no_json() {
     let mut f = make_folder();
     let group = make_group("hello", vec![vec![]]);
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap().expect_shown().text;
     assert!(
         serde_json::from_str::<serde_json::Value>(&output).is_err(),
         "text mode output should not be JSON"
@@ -2269,7 +2293,7 @@ fn format_group_dispatch_text_mode_emits_no_json() {
 fn format_group_dispatch_json_mode_emits_valid_json() {
     let mut f = make_folder_json();
     let group = make_group("hello", vec![vec![]]);
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap().expect_shown().text;
     let v: serde_json::Value = serde_json::from_str(&output).unwrap();
     assert_eq!(v["type"], "group");
 }
@@ -2382,7 +2406,10 @@ fn format_group_below_min_collapse_outputs_all_lines() {
     let mut f = make_folder();
     let group = make_group("error connecting", vec![vec![], vec![]]);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(
         lines.len(),
@@ -2403,7 +2430,10 @@ fn format_group_at_min_collapse_collapses() {
         ],
     );
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("similar"),
         "collapsed output should contain 'similar', got: {output}"
@@ -2416,7 +2446,10 @@ fn format_group_single_line_no_collapse() {
     let mut f = make_folder();
     let group = make_group("hello", vec![vec![]]);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(!output.contains("similar"));
     assert_eq!(output, "hello");
 }
@@ -2434,7 +2467,10 @@ fn format_group_essence_mode_uses_normalized() {
         vec![vec![Token::IPv4("10.0.0.1".into())]],
     );
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(output, "normalized <IP>");
 }
 
@@ -2453,7 +2489,10 @@ fn format_group_pii_masking_masks_emails() {
     line.original = "user alice@test.com logged in".to_string();
     let group = PatternGroup::new(line, 1);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("<EMAIL>"),
         "PII masking should replace email with <EMAIL>, got: {output}"
@@ -2660,7 +2699,10 @@ fn format_group_collapsed_lines_saved_count() {
         ],
     );
     let rollup = BTreeMap::new();
-    let _ = f.format_group(&group, &rollup).unwrap();
+    let _ = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed: saved = 5-3 = 2");
 }
 
@@ -2676,7 +2718,10 @@ fn format_group_collapsed_at_min_saves_zero() {
         ],
     );
     let rollup = BTreeMap::new();
-    let _ = f.format_group(&group, &rollup).unwrap();
+    let _ = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         f.stats.lines_saved, 0,
         "3 lines at min_collapse: saved = 3-3 = 0"
@@ -2699,7 +2744,10 @@ fn format_group_essence_mode_lines_saved() {
         ],
     );
     let rollup = BTreeMap::new();
-    let _ = f.format_group(&group, &rollup).unwrap();
+    let _ = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         f.stats.lines_saved, 1,
         "essence mode: 2 lines → saved = 2-1 = 1"
@@ -2717,7 +2765,10 @@ fn format_group_no_collapse_no_lines_saved() {
         ],
     );
     let rollup = BTreeMap::new();
-    let _ = f.format_group(&group, &rollup).unwrap();
+    let _ = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(f.stats.lines_saved, 0, "below min_collapse: no lines saved");
 }
 
@@ -2734,7 +2785,10 @@ fn format_group_collapsed_output_has_three_sections() {
         ],
     );
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     let lines: Vec<&str> = output.lines().collect();
     assert_eq!(
         lines.len(),
@@ -2993,7 +3047,7 @@ fn format_group_dispatch_computes_rollup_for_collapsible() {
         ],
     );
     assert_eq!(group.count(), 4);
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap().expect_shown().text;
     assert!(
         output.contains("ipv4"),
         "a collapsible group gets the rollup marker, which names ipv4; the legacy marker does not, got: {output}"
@@ -3372,7 +3426,7 @@ fn format_group_dispatch_below_min_collapse_no_rollup() {
             vec![Token::IPv4("10.0.0.2".into())],
         ],
     );
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap().expect_shown().text;
     assert!(
         !output.contains("similar"),
         "count 2 is below min_collapse 3: the raw lines print: {output}"
@@ -3392,7 +3446,7 @@ fn format_group_dispatch_at_min_collapse_computes_rollup() {
             vec![Token::IPv4("10.0.0.5".into())],
         ],
     );
-    let output = f.format_group_dispatch(&group).unwrap();
+    let output = f.format_group_dispatch(&group).unwrap().expect_shown().text;
     assert!(
         output.contains("ipv4"),
         "count 5 takes the rollup path, whose marker names ipv4; the legacy one does not: {output}"
@@ -3546,7 +3600,18 @@ fn finish_summary_accounts_only_the_rows_a_fit_budget_shows() {
             i + 1,
         ));
     }
-    f.finish_summary(None, Some(3)).unwrap();
+    f.finish_summary(
+        &SummaryRequest {
+            top_n: None,
+            fit_budget: Some(3),
+            max_width: None,
+        },
+        &IngestReport::default(),
+        0,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    )
+    .unwrap();
     assert_eq!(
         f.stats.output_lines, 2,
         "a fit budget of 3 over 10 patterns prints budget - 1 rows"
@@ -3610,7 +3675,7 @@ fn finish_top_n_coverage_50_percent() {
 }
 
 #[test]
-fn format_group_empty_rollup_uses_legacy() {
+fn format_group_with_an_empty_rollup_writes_the_marker_for_a_group_without_rollup_entries() {
     let mut f = make_folder();
     let group = make_group(
         "error <IP>",
@@ -3621,10 +3686,13 @@ fn format_group_empty_rollup_uses_legacy() {
         ],
     );
     let empty_rollup = BTreeMap::new();
-    let output = f.format_group(&group, &empty_rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(empty_rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("similar"),
-        "an empty rollup takes the format_collapsed_line path: {output}"
+        "an empty rollup takes format_marker_for_a_group_without_rollup_entries: {output}"
     );
 }
 
@@ -3640,7 +3708,10 @@ fn format_group_nonempty_rollup_uses_compact() {
         ],
     );
     let rollup = f.rollup_computer.compute(&group);
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("ipv4"),
         "a non-empty rollup takes the compact marker path, which names ipv4: {output}"
@@ -3661,7 +3732,8 @@ fn format_group_lines_saved_arithmetic() {
         ],
     );
     let rollup = BTreeMap::new();
-    f.format_group(&group, &rollup).unwrap();
+    f.format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap();
     assert_eq!(f.stats.lines_saved, 2, "5 lines collapsed saves 5 - 3 = 2");
 }
 
@@ -3683,7 +3755,10 @@ fn format_group_pii_masking_only_in_non_essence() {
         ],
     );
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("***@***") || !output.contains("test@example.com"),
         "PII should be masked in non-essence mode: {output}"
@@ -3695,7 +3770,10 @@ fn format_group_single_line_no_last() {
     let mut f = make_folder();
     let group = make_group("single line", vec![vec![]]);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         output.lines().count(),
         1,
@@ -3708,7 +3786,10 @@ fn format_group_two_lines_has_last() {
     let mut f = make_folder();
     let group = make_group("error msg", vec![vec![], vec![]]);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.lines().count() >= 2,
         "two lines should show both: {output}"
@@ -3733,7 +3814,10 @@ fn format_group_essence_identical_suppresses_last() {
         ],
     );
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     let line_count = output.lines().count();
     assert!(
         line_count <= 2,
@@ -3773,11 +3857,17 @@ fn format_group_rollup_path_vs_legacy_path_output_differs() {
         !rollup.is_empty(),
         "rollup should be non-empty for varied IPs"
     );
-    let output_with_rollup = f1.format_group(&group, &rollup).unwrap();
+    let output_with_rollup = f1
+        .format_group(&group, &f1.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
 
     let mut f2 = make_folder();
     let empty_rollup = BTreeMap::new();
-    let output_legacy = f2.format_group(&group, &empty_rollup).unwrap();
+    let output_legacy = f2
+        .format_group(&group, &f2.masked_rollup(empty_rollup.clone()))
+        .unwrap()
+        .text;
 
     assert_ne!(
         output_with_rollup, output_legacy,
@@ -3799,7 +3889,10 @@ fn format_group_collapsed_marker_exact_count_legacy() {
         ],
     );
     let empty_rollup = BTreeMap::new();
-    let output = f.format_group(&group, &empty_rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(empty_rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("+3 similar"),
         "5 lines with empty rollup: marker should say +3 similar (5-2=3), got: {output}"
@@ -3821,7 +3914,10 @@ fn format_group_collapsed_marker_exact_count_rollup() {
         ],
     );
     let rollup = f.rollup_computer.compute(&group);
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("+4 similar"),
         "6 lines with rollup: marker should say +4 similar (6-2=4), got: {output}"
@@ -3845,7 +3941,10 @@ fn format_group_pii_plus_essence_masks_the_template() {
     line.original = "user alice@test.com logged in".to_string();
     let group = PatternGroup::new(line, 1);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(output, "user <EMAIL> logged in");
 }
 
@@ -3858,7 +3957,10 @@ fn format_group_single_line_group_has_no_last_line() {
     });
     let group = make_group("single", vec![vec![]]);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         output.lines().count(),
         1,
@@ -3882,7 +3984,10 @@ fn format_group_count_4_collapsed_has_last_line() {
     group.add_line(line3, 3);
     group.add_line(line4, 4);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     let line_count = output.lines().count();
     assert!(
         line_count >= 3,
@@ -3907,7 +4012,10 @@ fn format_group_non_essence_different_first_last_shows_both() {
     group.add_line(line2, 2);
     group.add_line(line3, 3);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         output.contains("error connecting to C"),
         "non-essence collapsed with different first/last should show last: {output}"
@@ -3924,7 +4032,10 @@ fn format_group_non_essence_same_first_last_still_shows_last() {
     group.add_line(line2, 2);
     group.add_line(line3, 3);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     let line_count = output.lines().count();
     assert_eq!(
         line_count, 3,
@@ -3958,7 +4069,10 @@ fn format_group_pii_masks_last_line_in_non_essence() {
     group.add_line(line2, 2);
     group.add_line(line3, 3);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert!(
         !output.contains("last@test.com"),
         "last line email should be masked with PII in non-essence mode: {output}"
@@ -3986,7 +4100,10 @@ fn format_group_pii_masks_the_essence_line() {
     let mut group = PatternGroup::new(line1, 1);
     group.add_line(line2, 2);
     let rollup = BTreeMap::new();
-    let output = f.format_group(&group, &rollup).unwrap();
+    let output = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         output, "user <EMAIL> logged in",
         "essence shows the group once, as its shared template, masked"
@@ -4003,7 +4120,10 @@ fn format_group_essence_non_collapsed_count_1_no_lines_saved() {
     });
     let group = make_group("single pattern", vec![vec![]]);
     let rollup = BTreeMap::new();
-    let _ = f.format_group(&group, &rollup).unwrap();
+    let _ = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         f.stats.lines_saved, 0,
         "essence mode count=1 should not save lines"
@@ -4026,7 +4146,10 @@ fn format_group_essence_non_collapsed_count_2_saves_lines() {
         ],
     );
     let rollup = BTreeMap::new();
-    let _ = f.format_group(&group, &rollup).unwrap();
+    let _ = f
+        .format_group(&group, &f.masked_rollup(rollup.clone()))
+        .unwrap()
+        .text;
     assert_eq!(
         f.stats.lines_saved, 1,
         "essence mode count=2 should save 1 line"
@@ -4042,7 +4165,17 @@ fn finish_summary_flushes_batch_buffer() {
     f.batch_buffer
         .push("2024-01-01 ERROR two 10.0.0.2".to_string());
     assert!(!f.batch_buffer.is_empty());
-    let result = f.finish_summary(None, None);
+    let result = f.finish_summary(
+        &SummaryRequest {
+            top_n: None,
+            fit_budget: None,
+            max_width: None,
+        },
+        &IngestReport::default(),
+        0,
+        &mut Vec::new(),
+        &mut Vec::new(),
+    );
     assert!(result.is_ok());
     assert!(
         f.batch_buffer.is_empty(),
@@ -4171,7 +4304,7 @@ fn json_records_mask_pii_when_enabled() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         sanitize_pii: true,
-        output_format: "json".to_string(),
+        output_format: OutputFormat::Json,
         ..Config::default()
     });
     for who in ["alice", "bob", "carol", "dave"] {
@@ -4225,10 +4358,10 @@ fn summary_masks_pii_when_enabled() {
 
 #[test]
 fn fold_metrics_agree_between_text_and_json_modes() {
-    let run = |format: &str| {
+    let run = |format: OutputFormat| {
         let mut f = PatternFolder::new(Config {
             thread_count: Some(1),
-            output_format: format.to_string(),
+            output_format: format,
             ..Config::default()
         });
         for i in 0..20 {
@@ -4244,8 +4377,8 @@ fn fold_metrics_agree_between_text_and_json_modes() {
         )
     };
     assert_eq!(
-        run("text"),
-        run("json"),
+        run(OutputFormat::Text),
+        run(OutputFormat::Json),
         "bit-exact ratio: both modes run one computation"
     );
 }
@@ -4253,7 +4386,7 @@ fn fold_metrics_agree_between_text_and_json_modes() {
 fn summary_record_and_stats_json_report_identical_metrics() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        output_format: "json".to_string(),
+        output_format: OutputFormat::Json,
         ..Config::default()
     });
     for i in 0..20 {
@@ -4284,20 +4417,21 @@ fn markdown_document_masks_pii_and_shares_fold_metrics() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
         sanitize_pii: true,
-        output_format: "markdown".to_string(),
+        output_format: OutputFormat::Markdown,
         ..Config::default()
     });
     for who in ["alice", "bob", "eve", "mallory"] {
         f.process_line(&format!("user {who}@example.com login failed"))
             .unwrap();
     }
-    let flushed = f.finish().unwrap();
-    assert!(
-        flushed.is_empty(),
-        "markdown mode buffers entries for the document"
+    let entries = f.finish_markdown().unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "markdown mode returns the entries the document is built from"
     );
     let mut buf = Vec::new();
-    f.emit_markdown(&mut buf).unwrap();
+    f.emit_markdown(&entries, &mut buf).unwrap();
     let doc = String::from_utf8(buf).unwrap();
     assert!(!doc.contains("example.com"), "raw email in markdown: {doc}");
     let stats = f.get_stats();
@@ -5526,13 +5660,13 @@ fn a_json_and_a_plain_line_make_the_format_mix_mixed() {
 fn an_unfolded_markdown_entry_with_a_plus_is_not_marked_folded() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        output_format: "markdown".to_string(),
+        output_format: OutputFormat::Markdown,
         ..Config::default()
     });
     f.process_line("sum a+b done").unwrap();
-    f.finish().unwrap();
+    let entries = f.finish_markdown().unwrap();
     let mut buf = Vec::new();
-    f.emit_markdown(&mut buf).unwrap();
+    f.emit_markdown(&entries, &mut buf).unwrap();
     let doc = String::from_utf8(buf).unwrap();
     assert!(doc.contains("```\nsum a+b done\n```"), "{doc}");
     assert!(!doc.contains("(Folded)"), "{doc}");
@@ -6249,7 +6383,7 @@ fn fit_budget_equal_to_group_count_keeps_every_entry() {
 fn converging_groups_from_one_batch_end_on_the_true_last_member() {
     let mut f = PatternFolder::new(Config {
         thread_count: None,
-        output_format: "json".into(),
+        output_format: OutputFormat::Json,
         ..Config::default()
     });
     let stem = "svc node ready check pass level info region east";
@@ -6343,7 +6477,9 @@ fn finishing_json_groups_counts_every_emitted_record() {
 fn distillation_keeps_converging_groups_separate_until_selection() {
     let mut f = PatternFolder::new(Config {
         thread_count: Some(1),
-        distill: Some(1),
+        group_sink: GroupSink::RecordDistillMembers {
+            members_per_group: 1,
+        },
         ..Config::default()
     });
     let stem = "svc node ready check pass level info region east";
@@ -7276,4 +7412,172 @@ fn every_member_unit_is_shown_read_unit_by_unit() {
         "nothing past the template's end is shown"
     );
     assert!(!shows_every_unit("a b", "a"));
+}
+
+#[test]
+fn a_collapsed_group_of_tokenless_lines_writes_the_bare_similar_marker() {
+    let mut f = make_folder();
+    for _ in 0..3 {
+        f.process_line("hello world").unwrap();
+    }
+    assert_eq!(
+        f.finish().unwrap(),
+        vec!["hello world\n[+1 similar]\nhello world".to_string()],
+        "a group whose rollup is empty has no tokens to name, so its marker is bare"
+    );
+}
+
+#[test]
+fn a_summary_run_saves_what_top_n_and_the_default_run_save() {
+    let lines: Vec<String> = (0..20)
+        .map(|i| format!("error connecting to 10.0.0.{i} timeout"))
+        .chain(["a line of its own".to_string()])
+        .collect();
+    let fed = || {
+        let mut f = make_folder();
+        for line in &lines {
+            f.process_line(line).unwrap();
+        }
+        f
+    };
+    let saved = |f: &PatternFolder| {
+        let s = f.build_stats_json(Duration::ZERO);
+        (s.lines_saved, s.collapsed_groups)
+    };
+    let mut default_run = fed();
+    default_run.finish().unwrap();
+    let mut top = fed();
+    top.finish_top_n(TOP_SHOWS_EVERY_GROUP, None, false)
+        .unwrap();
+    let mut summary = fed();
+    summary
+        .finish_summary(
+            &SummaryRequest {
+                top_n: None,
+                fit_budget: None,
+                max_width: None,
+            },
+            &IngestReport::default(),
+            0,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        saved(&summary),
+        saved(&default_run),
+        "--summary --stats-json must agree with the default run"
+    );
+    assert_eq!(
+        saved(&summary),
+        saved(&top),
+        "--summary --stats-json must agree with --top N"
+    );
+}
+
+#[test]
+fn the_summary_coverage_counts_records_read_before_the_ingest_report_adds_continuations() {
+    let mut f = make_folder();
+    for word in ["alpha", "beta", "gamma", "delta"] {
+        f.process_line(&format!("{word} finished")).unwrap();
+    }
+    let report = IngestReport {
+        continuation_lines_absorbed: 6,
+        ..IngestReport::default()
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    f.finish_summary(
+        &SummaryRequest {
+            top_n: Some(TOP_SHOWS_EVERY_GROUP),
+            fit_budget: None,
+            max_width: None,
+        },
+        &report,
+        0,
+        &mut out,
+        &mut err,
+    )
+    .unwrap();
+    let err = String::from_utf8(err).unwrap();
+    assert!(
+        err.contains("4 of 4 lines"),
+        "the coverage line counts the 4 records read, not the 10 input lines: {err}"
+    );
+    assert_eq!(
+        f.stats.total_lines, 10,
+        "the statistics count the continuation lines, absorbed after the summary"
+    );
+    assert_eq!(String::from_utf8(out).unwrap().lines().count(), 4);
+}
+
+#[test]
+fn stats_json_is_one_line_holding_the_built_stats() {
+    let f = make_folder();
+    let mut buf = Vec::new();
+    f.print_stats_json(Duration::from_millis(7), &mut buf)
+        .unwrap();
+    let text = String::from_utf8(buf).unwrap();
+    assert!(text.ends_with('\n'), "one JSON line: {text}");
+    assert_eq!(text.lines().count(), 1, "one JSON line: {text}");
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["elapsed_ms"], 7, "{v}");
+}
+
+#[test]
+fn a_markdown_entry_is_marked_folded_exactly_when_its_group_collapsed() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        output_format: OutputFormat::Markdown,
+        ..Config::default()
+    });
+    for _ in 0..3 {
+        f.process_line("hello world").unwrap();
+    }
+    f.process_line("a+b is similar to c").unwrap();
+    let entries = f.finish_markdown().unwrap();
+    let mut buf = Vec::new();
+    f.emit_markdown(&entries, &mut buf).unwrap();
+    let doc = String::from_utf8(buf).unwrap();
+    assert!(doc.contains("### Entry 1 (Folded)"), "{doc}");
+    assert!(
+        !doc.contains("### Entry 2 (Folded)"),
+        "a line that only says + and similar did not collapse: {doc}"
+    );
+}
+
+#[test]
+fn explain_annotates_records_and_changes_no_group() {
+    let lines = [
+        "worker 1 started job alpha",
+        "worker 2 started job beta",
+        "worker 3 started job gamma",
+        "cache miss for key users",
+        "cache miss for key orders",
+        "disk full on volume data",
+    ];
+    let run = |explain: bool| {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            output_format: OutputFormat::Json,
+            explain,
+            ..Config::default()
+        });
+        for line in lines {
+            f.process_line(line).unwrap();
+        }
+        f.finish()
+            .unwrap()
+            .iter()
+            .map(|record| {
+                let mut v: serde_json::Value = serde_json::from_str(record).unwrap();
+                v.as_object_mut().unwrap().remove("nearest");
+                v
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        run(true),
+        run(false),
+        "--explain is read-only diagnostics: folding is unchanged"
+    );
 }

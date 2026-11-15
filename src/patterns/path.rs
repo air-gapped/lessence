@@ -3,59 +3,57 @@ use std::sync::LazyLock;
 
 use super::Token;
 
-// File system paths (Unix-style) - simplified without character class issues.
-// `~` is a path character: `/volumes/kubernetes.io~projected/token`.
+const PATH_SEGMENT_CHAR: &str = r"a-zA-Z0-9_.\-~";
+
 static FILE_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(/[a-zA-Z0-9_.\-~/]+(?:\.[a-zA-Z0-9]+)?(?:/[a-zA-Z0-9_.\-~]*)*/?)")
-        .expect("Failed to compile file path regex")
+    Regex::new(&format!(
+        r"(/[{PATH_SEGMENT_CHAR}/]+(?:\.[a-zA-Z0-9]+)?(?:/[{PATH_SEGMENT_CHAR}]*)*/?)"
+    ))
+    .expect("Failed to compile file path regex")
 });
 
-// A relative path: a dot-free first segment, then more segments. Which of
-// these are paths is decided in the closure: `netpol/argocd/argocd-redis`
-// and `internal/pkg/x.go` are, `text/html` and `HTTP/1.1` are not, and
-// `docker.io/library/nginx` starts with a DNS name, not a directory.
-static RELATIVE_PATH: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b[a-zA-Z0-9_\-]+(?:/[a-zA-Z0-9_.\-~]+)+\b")
+static RELATIVE_PATH_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(r"\b[a-zA-Z0-9_\-]+(?:/[{PATH_SEGMENT_CHAR}]+)+\b"))
         .expect("Failed to compile relative path regex")
 });
 
-// URL paths (without domain)
 static URL_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"((?:/[a-zA-Z0-9_.\-~%]*)+(?:\?[a-zA-Z0-9_.\-~%&=]*)?(?:#[a-zA-Z0-9_.\-~%]*)?)")
         .expect("Failed to compile URL path regex")
 });
 
-// Full URLs with schemes (https://host/path) - capture the entire URL
 static FULL_URL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"https?://[^/\s"]+(?:/[^\s"]*)?"#).expect("Failed to compile full URL regex")
 });
 
-// Windows paths
+const SENTENCE_PUNCTUATION_AFTER_A_URL: [char; 6] = [')', ']', ',', '.', ';', '\''];
+
 static WINDOWS_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"([A-Za-z]:\\[a-zA-Z0-9_.\-\\]+(?:\\[a-zA-Z0-9_.\-]*)*\\?)")
         .expect("Failed to compile Windows path regex")
 });
 
-// Query parameters (standalone)
 static QUERY_PARAMS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\?([a-zA-Z0-9_\-]+=([^&\s]+)(&[a-zA-Z0-9_\-]+=([^&\s]+))*)")
         .expect("Failed to compile query params regex")
 });
 
-// Route parameters in paths (like /users/123/posts/456, /namespaces/kube-system/pods/pod-name)
-static ROUTE_PARAMS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"/([0-9a-fA-F]{8,}|[0-9]{3,}|[a-fA-F0-9\-]{8,})")
-        .expect("Failed to compile route params regex")
+const HEX_ID_SEGMENT: &str = "[0-9a-fA-F]{8,}";
+const NUMERIC_ID_SEGMENT: &str = "[0-9]{3,}";
+const HEX_AND_DASH_ID_SEGMENT: &str = r"[a-fA-F0-9\-]{8,}";
+
+static GENERATED_ID_SEGMENT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        "/({HEX_ID_SEGMENT}|{NUMERIC_ID_SEGMENT}|{HEX_AND_DASH_ID_SEGMENT})"
+    ))
+    .expect("Failed to compile route params regex")
 });
 
-// Variable text segments in paths (like /namespaces/NAME/serviceaccounts/NAME)
-static PATH_SEGMENTS: LazyLock<Regex> = LazyLock::new(|| {
+static URL_SEGMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"/([a-zA-Z0-9][a-zA-Z0-9\-]{2,}[a-zA-Z0-9])")
         .expect("Failed to compile path segments regex")
 });
 
-// Source file with line number pattern (like file.go:1234]); the extensions
-// are the shared `SOURCE_EXTENSIONS`.
 static SOURCE_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"([a-zA-Z_][a-zA-Z0-9_\-]*\.({})):\d+\]",
@@ -64,76 +62,99 @@ static SOURCE_LINE: LazyLock<Regex> = LazyLock::new(|| {
     .expect("Failed to compile source line regex")
 });
 
-// A syslog program tag written as a path: `/usr/libexec/xdg-desktop-portal[997798]:`.
-static SYSLOG_PATH_TAG: LazyLock<Regex> = LazyLock::new(|| {
+static SYSLOG_PROGRAM_TAG_WRITTEN_AS_A_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(/[A-Za-z0-9_./~-]+)\[\d+\]:").expect("Failed to compile syslog path tag regex")
 });
 
-// A Kubernetes Event's metadata block: `&Event{ObjectMeta:{<name>.<hash>
-// <namespace> … map[] []}`, the instance and nothing else. What follows it —
-// InvolvedObject, Reason, Message, Type — is the event and stays. Any
-// `&Event{…}` up to the first `}` used to fold, so a flat
-// `&Event{Type:Normal,Reason:Pulled,…}` and a Warning were one event.
-static EVENT_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"&Event\{ObjectMeta:\{[^}]*\}").expect("Failed to compile event object regex")
-});
+const MIN_FILE_PATH_LEN: usize = 3;
+
+#[derive(Clone, Copy, Debug)]
+struct SyslogProgramTag {
+    start: usize,
+    end: usize,
+}
+
+impl SyslogProgramTag {
+    fn overlaps(self, m: &regex::Match) -> bool {
+        m.start() < self.end && m.end() > self.start
+    }
+}
+
+type PathPass = fn(&mut String, &mut Vec<Token>, Option<SyslogProgramTag>);
 
 pub struct PathDetector;
 
 impl PathDetector {
+    const PASSES_FULL_URL_BEFORE_FILE_PATH: [PathPass; 7] = [
+        Self::fold_event_object_meta,
+        Self::fold_source_line_numbers,
+        Self::fold_full_urls,
+        Self::fold_file_paths,
+        Self::fold_relative_paths,
+        Self::fold_windows_paths,
+        Self::fold_url_paths,
+    ];
+
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
-        let tag = Self::syslog_tag_range(text);
+        let tag = Self::syslog_program_tag_span(text);
+        for pass in Self::PASSES_FULL_URL_BEFORE_FILE_PATH {
+            pass(&mut result, &mut tokens, tag);
+        }
+        (result, tokens)
+    }
 
-        // Replace Event objects first (they're more specific)
-        result = EVENT_OBJECT
-            .replace_all(&result, |caps: &regex::Captures| {
+    fn fold_event_object_meta(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        _: Option<SyslogProgramTag>,
+    ) {
+        *result = super::EVENT_OBJECT_META
+            .replace_all(result, |caps: &regex::Captures| {
                 let event = caps.get(0).unwrap().as_str();
                 tokens.push(Token::Path(event.to_string()));
                 "<EVENT_OBJECT>".to_string()
             })
             .to_string();
+    }
 
-        // An escaped flat struct (`\"{phase:Running}\"`) stays literal: its
-        // values are the event (`Running` vs `Failed`), and folding the whole
-        // struct to `<JSON_DATA>` made two outcomes one event. The detectors
-        // after this one fold what inside it they recognise (lessence-bmp).
-
-        // CLI option names are keys, not variable paths. Leave their
-        // spelling intact: erasing -t / --force can make distinct commands
-        // look like a sentence with only one differing word.
-
-        // Replace source file:line patterns (before other path detection)
-        // This normalizes file.go:1234] to file.go:<LINE>]
-        result = SOURCE_LINE
-            .replace_all(&result, |caps: &regex::Captures| {
+    fn fold_source_line_numbers(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        _: Option<SyslogProgramTag>,
+    ) {
+        *result = SOURCE_LINE
+            .replace_all(result, |caps: &regex::Captures| {
                 let matched = caps.get(0).unwrap().as_str();
                 let filename = caps.get(1).unwrap().as_str();
                 tokens.push(Token::Path(matched.to_string()));
                 format!("{filename}:<LINE>]")
             })
             .to_string();
+    }
 
-        // Replace full URLs NEXT (https://host/path) - must run before file paths
-        // Otherwise the /path part gets detected as a file path
-        result = FULL_URL
-            .replace_all(&result, |caps: &regex::Captures| {
-                // `(http://host/inform)` — the closing bracket, comma or
-                // full stop after a URL is the sentence's, not the URL's.
+    fn fold_full_urls(result: &mut String, tokens: &mut Vec<Token>, _: Option<SyslogProgramTag>) {
+        *result = FULL_URL
+            .replace_all(result, |caps: &regex::Captures| {
                 let whole = caps.get(0).unwrap().as_str();
-                let url = whole.trim_end_matches([')', ']', ',', '.', ';', '\'']);
+                let url = whole.trim_end_matches(SENTENCE_PUNCTUATION_AFTER_A_URL);
                 tokens.push(Token::Path(url.to_string()));
                 format!("<PATH>{}", &whole[url.len()..])
             })
             .to_string();
+    }
 
-        // Replace file system paths (Unix-style)
-        result = FILE_PATH
-            .replace_all(&result, |caps: &regex::Captures| {
+    fn fold_file_paths(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        tag: Option<SyslogProgramTag>,
+    ) {
+        *result = FILE_PATH
+            .replace_all(result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
                 if Self::is_likely_file_path(path)
-                    && !Self::is_glued_to_word(&result, &caps.get(0).unwrap())
+                    && !Self::is_glued_to_word(result, &caps.get(0).unwrap())
                     && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
                 {
                     tokens.push(Token::Path(path.to_string()));
@@ -143,37 +164,50 @@ impl PathDetector {
                 }
             })
             .to_string();
+    }
 
-        if result.contains('/') {
-            let folded = RELATIVE_PATH.replace_all(&result, |caps: &regex::Captures| {
-                let m = caps.get(0).unwrap();
-                if Self::is_relative_path(&result, &m) && !Self::in_syslog_tag(tag, &m) {
-                    tokens.push(Token::Path(m.as_str().to_string()));
-                    "<PATH>".to_string()
-                } else {
-                    m.as_str().to_string()
-                }
-            });
-            if let std::borrow::Cow::Owned(s) = folded {
-                result = s;
-            }
+    fn fold_relative_paths(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        tag: Option<SyslogProgramTag>,
+    ) {
+        if !result.contains('/') {
+            return;
         }
+        let folded = RELATIVE_PATH_CANDIDATE.replace_all(result, |caps: &regex::Captures| {
+            let m = caps.get(0).unwrap();
+            if Self::is_relative_path(result, &m) && !Self::in_syslog_tag(tag, &m) {
+                tokens.push(Token::Path(m.as_str().to_string()));
+                "<PATH>".to_string()
+            } else {
+                m.as_str().to_string()
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
+    }
 
-        // Replace Windows paths
-        result = WINDOWS_PATH
-            .replace_all(&result, |caps: &regex::Captures| {
+    fn fold_windows_paths(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        _: Option<SyslogProgramTag>,
+    ) {
+        *result = WINDOWS_PATH
+            .replace_all(result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
                 tokens.push(Token::Path(path.to_string()));
                 "<PATH>".to_string()
             })
             .to_string();
+    }
 
-        // Replace URL paths and query parameters
-        result = URL_PATH
-            .replace_all(&result, |caps: &regex::Captures| {
+    fn fold_url_paths(result: &mut String, tokens: &mut Vec<Token>, tag: Option<SyslogProgramTag>) {
+        *result = URL_PATH
+            .replace_all(result, |caps: &regex::Captures| {
                 let path = caps.get(1).unwrap().as_str();
                 if Self::is_likely_url_path(path)
-                    && !Self::is_glued_to_word(&result, &caps.get(0).unwrap())
+                    && !Self::is_glued_to_word(result, &caps.get(0).unwrap())
                     && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
                 {
                     let normalized = Self::normalize_url_path(path);
@@ -184,109 +218,70 @@ impl PathDetector {
                 }
             })
             .to_string();
-
-        (result, tokens)
     }
 
-    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: common dirs (/var/, /usr/, etc.) always imply has_multiple_segments, making || vs && on those conditions indistinguishable
+    fn has_multiple_segments(path: &str) -> bool {
+        path.matches('/').count() > 1
+    }
+
+    #[cfg_attr(test, mutants::skip)]
     fn is_likely_file_path(path: &str) -> bool {
-        // Must start with /
-        if !path.starts_with('/') {
-            return false;
-        }
-
-        // Exclude very short paths that might be false positives
-        if path.len() < 3 {
-            return false;
-        }
-
-        // Common file path indicators
-        let has_extension =
-            path.contains('.') && path.split('/').next_back().unwrap_or("").contains('.');
-        let has_multiple_segments = path.matches('/').count() > 1;
-        let has_common_dirs = ["/var/", "/usr/", "/etc/", "/home/", "/opt/", "/tmp/"]
-            .iter()
-            .any(|dir| path.contains(dir));
-
-        has_extension || has_multiple_segments || has_common_dirs
+        let last_segment_has_extension = path.split('/').next_back().unwrap_or("").contains('.');
+        path.starts_with('/')
+            && path.len() >= MIN_FILE_PATH_LEN
+            && (last_segment_has_extension || Self::has_multiple_segments(path))
     }
 
-    /// A slash glued to a word continues that word: `HTTP/1.1`, `curl/7.68.0`,
-    /// a Postgres LSN `6E/F9009520`, a label key `kubernetes.io/cpu-cpuid.X87`,
-    /// an image `docker.io/library/nginx`, a source file `internal/pkg/x.go`.
-    /// None of them is a path.
-    /// `/usr/libexec/xdg-desktop-portal[997798]:` — a path where a syslog
-    /// program name goes is the program's name, an identity, not a path.
-    /// The byte range of such a tag, if the line carries one, so that no
-    /// path pass takes it or a piece of it.
-    fn syslog_tag_range(text: &str) -> Option<(usize, usize)> {
-        let caps = SYSLOG_PATH_TAG.captures(text)?;
+    fn syslog_program_tag_span(text: &str) -> Option<SyslogProgramTag> {
+        let caps = SYSLOG_PROGRAM_TAG_WRITTEN_AS_A_PATH.captures(text)?;
         let m = caps.get(1)?;
-        Some((m.start(), m.end()))
+        Some(SyslogProgramTag {
+            start: m.start(),
+            end: m.end(),
+        })
     }
 
-    fn in_syslog_tag(tag: Option<(usize, usize)>, m: &regex::Match) -> bool {
-        tag.is_some_and(|(s, e)| m.start() < e && m.end() > s)
+    fn in_syslog_tag(tag: Option<SyslogProgramTag>, m: &regex::Match) -> bool {
+        tag.is_some_and(|t| t.overlaps(m))
     }
 
     fn is_glued_to_word(haystack: &str, m: &regex::Match) -> bool {
         m.start() > 0 && haystack.as_bytes()[m.start() - 1].is_ascii_alphanumeric()
     }
 
-    /// A `word/…` run is a path when it has two or more segments after the
-    /// word or ends in a file with an extension — unless it continues a
-    /// dotted name (`docker.io/library/nginx`) or is a version (`HTTP/1.1`,
-    /// `curl/7.68.0`, `Mozilla/5.0`).
     fn is_relative_path(haystack: &str, m: &regex::Match) -> bool {
-        let continues_a_name =
+        let continues_a_dotted_name =
             m.start() > 0 && matches!(haystack.as_bytes()[m.start() - 1], b'.' | b'/' | b'\\');
         let path = m.as_str();
         let rest = &path[path.find('/').unwrap_or(0)..];
-        let is_version = rest
+        let is_version_or_hex_pair = rest
             .bytes()
             .all(|b| b.is_ascii_hexdigit() || b == b'.' || b == b'/');
-        let file_like =
+        let two_segments_or_a_file =
             rest[1..].contains('/') || rest.rsplit('/').next().unwrap_or("").contains('.');
-        !continues_a_name && !is_version && file_like
+        !continues_a_dotted_name && !is_version_or_hex_pair && two_segments_or_a_file
     }
 
     fn is_likely_url_path(path: &str) -> bool {
-        // Must start with /
-        if !path.starts_with('/') {
-            return false;
-        }
+        path.starts_with('/')
+            && (path.contains('?')
+                || Self::has_multiple_segments(path)
+                || GENERATED_ID_SEGMENT.is_match(path))
+    }
 
-        // Exclude very short paths
-        if path.len() < 2 {
-            return false;
-        }
-
-        // Common URL path indicators
-        let has_api_patterns = path.contains("/api/")
-            || path.contains("/v1/")
-            || path.contains("/v2/")
-            || path.starts_with("/static/")
-            || path.starts_with("/assets/");
-        let has_query_params = path.contains('?');
-        let has_multiple_segments = path.matches('/').count() > 1;
-        let has_numeric_ids = ROUTE_PARAMS.is_match(path);
-
-        has_api_patterns || has_query_params || has_multiple_segments || has_numeric_ids
+    fn is_generated_segment(segment: &str) -> bool {
+        segment.bytes().any(|b| b.is_ascii_digit())
     }
 
     fn normalize_url_path(path: &str) -> String {
-        // First replace numeric IDs and hex IDs in path segments
-        let mut normalized = ROUTE_PARAMS.replace_all(path, "/<PATH>").to_string();
+        let mut normalized = GENERATED_ID_SEGMENT
+            .replace_all(path, "/<PATH>")
+            .to_string();
 
-        // Then a segment with a digit in it (`web-7d9f8`, `user42`) is a
-        // generated name and folds; a segment of letters and dashes is a
-        // route word and stays. A list of known words decided this before,
-        // so `/login` and `/logout` were one `/<PATH>` while `/health` was
-        // kept.
-        normalized = PATH_SEGMENTS
+        normalized = URL_SEGMENT
             .replace_all(&normalized, |caps: &regex::Captures| {
                 let segment = caps.get(1).unwrap().as_str();
-                if segment.bytes().any(|b| b.is_ascii_digit()) {
+                if Self::is_generated_segment(segment) {
                     "/<PATH>".to_string()
                 } else {
                     format!("/{segment}")
@@ -294,7 +289,6 @@ impl PathDetector {
             })
             .to_string();
 
-        // Replace query parameter values
         normalized = QUERY_PARAMS
             .replace_all(&normalized, |caps: &regex::Captures| {
                 let full_query = caps.get(1).unwrap().as_str();
@@ -360,16 +354,30 @@ mod tests {
         }
     }
 
-    // --- is_likely_file_path ---
-
     #[test]
-    fn file_path_short_rejected() {
-        assert!(!PathDetector::is_likely_file_path("/a"));
+    fn a_path_under_min_file_path_len_is_rejected() {
+        for (path, case) in [
+            ("/a", "file_path_short_rejected"),
+            ("/a", "file_path_len_under_3"),
+            ("/a", "file_path_len_exactly_2_rejected"),
+            ("/.", "two bytes with an extension dot"),
+            ("//", "two bytes with two slashes"),
+        ] {
+            assert!(
+                !PathDetector::is_likely_file_path(path),
+                "{case}: {path} is under MIN_FILE_PATH_LEN"
+            );
+        }
     }
 
     #[test]
-    fn file_path_no_leading_slash_rejected() {
-        assert!(!PathDetector::is_likely_file_path("var/log"));
+    fn a_file_path_needs_a_leading_slash() {
+        for (path, case) in [
+            ("var/log", "file_path_no_leading_slash_rejected"),
+            ("no_slash", "file_path_no_leading_slash"),
+        ] {
+            assert!(!PathDetector::is_likely_file_path(path), "{case}: {path}");
+        }
     }
 
     #[test]
@@ -382,16 +390,23 @@ mod tests {
         assert!(PathDetector::is_likely_file_path("/app/main.rs"));
     }
 
-    // --- is_likely_url_path ---
-
     #[test]
     fn url_path_api_pattern() {
         assert!(PathDetector::is_likely_url_path("/api/v1/users"));
     }
 
     #[test]
-    fn url_path_too_short() {
-        assert!(!PathDetector::is_likely_url_path("/"));
+    fn a_bare_slash_is_not_a_url_path() {
+        for case in [
+            "url_path_too_short",
+            "url_path_len_under_2",
+            "url_path_len_exactly_1_rejected",
+        ] {
+            assert!(
+                !PathDetector::is_likely_url_path("/"),
+                "{case}: one slash, no query, no id segment"
+            );
+        }
     }
 
     #[test]
@@ -404,11 +419,6 @@ mod tests {
         let test_cases = vec![
             ("Error in /var/log/app.2025-01-20.log", "Error in <PATH>"),
             ("GET /api/users/123/posts", "GET <PATH>"),
-            // "search" is a route word and stays; the query values fold
-            (
-                "Request to /search?q=test&page=5",
-                "Request to /search?q=<PATH>&page=<PATH>",
-            ),
             (r"C:\Users\john\Documents\file.txt", "<PATH>"),
         ];
 
@@ -418,16 +428,13 @@ mod tests {
         }
     }
 
-    // ---- is_likely_file_path: per-branch tests ----
-
     #[test]
-    fn file_path_no_leading_slash() {
-        assert!(!PathDetector::is_likely_file_path("no_slash"));
-    }
-
-    #[test]
-    fn file_path_len_under_3() {
-        assert!(!PathDetector::is_likely_file_path("/a"));
+    fn a_route_word_stays_while_query_values_fold() {
+        let (result, _) = PathDetector::detect_and_replace("Request to /search?q=test&page=5");
+        assert_eq!(
+            result, "Request to /search?q=<PATH>&page=<PATH>",
+            "`search` is a route word and stays; each query value folds"
+        );
     }
 
     #[test]
@@ -470,16 +477,9 @@ mod tests {
         assert!(PathDetector::is_likely_file_path("/tmp/data"));
     }
 
-    // ---- is_likely_url_path: per-branch tests ----
-
     #[test]
     fn url_path_no_leading_slash() {
         assert!(!PathDetector::is_likely_url_path("api/v1"));
-    }
-
-    #[test]
-    fn url_path_len_under_2() {
-        assert!(!PathDetector::is_likely_url_path("/"));
     }
 
     #[test]
@@ -517,131 +517,85 @@ mod tests {
         assert!(PathDetector::is_likely_url_path("/users/123/orders"));
     }
 
-    // ---- Mutant-killing: is_likely_file_path boundary & branch isolation ----
-
     #[test]
-    fn file_path_len_exactly_3_accepted() {
-        // len=3 "/ab" must pass the `< 3` guard (boundary: == should fail, <= should fail)
-        // It has no extension, no multiple segments, no common dirs, so it should
-        // actually return false (none of the three conditions are met). But it DOES
-        // pass the length guard, which is the mutant we're killing.
-        // We need a 3-char path that satisfies at least one condition.
-        // "/a." has a dot but split('/').next_back() = "a." which contains('.') -> has_extension
+    fn a_three_byte_path_passes_the_length_floor() {
         assert!(PathDetector::is_likely_file_path("/a."));
     }
 
     #[test]
-    fn file_path_len_exactly_2_rejected() {
-        // len=2 "/a" must fail the `< 3` guard
-        assert!(!PathDetector::is_likely_file_path("/a"));
-    }
-
-    #[test]
     fn file_path_has_extension_only() {
-        // has_extension=true, has_multiple_segments=false, has_common_dirs=false
-        // Single segment after /, has extension, no common dir.
-        // "/x.log" -> segments from split('/'): ["", "x.log"], matches('/').count()=1 so not >1
-        assert!(PathDetector::is_likely_file_path("/x.log"));
+        assert!(
+            PathDetector::is_likely_file_path("/x.log"),
+            "one slash, so only the extension holds"
+        );
     }
 
     #[test]
     fn file_path_has_multiple_segments_only() {
-        // has_extension=false, has_multiple_segments=true, has_common_dirs=false
-        // No extension, multiple segments, no common dir names
         assert!(PathDetector::is_likely_file_path("/foo/bar/baz"));
     }
 
     #[test]
-    fn file_path_has_common_dirs_only() {
-        // has_extension=false, has_multiple_segments=false (need only 1 slash beyond root),
-        // has_common_dirs=true
-        // "/var/x" -> matches('/').count()=2 which IS >1, so has_multiple_segments=true too.
-        // We need exactly 1 slash: that means the path is just "/var/" which contains "/var/"
-        // "/var/" -> matches('/').count()=2, still >1. Hard to isolate.
-        // Actually "/tmp/" -> contains "/tmp/", matches('/')=2 -> has_multiple_segments=true
-        // Let's verify the mutant is still killed: if || became &&, then having only
-        // common_dirs true (with multiple_segments also true) wouldn't isolate.
-        // Instead test: has_common_dirs=true but extension=false, to kill the first ||
-        assert!(PathDetector::is_likely_file_path("/var/x"));
+    fn a_common_unix_dir_is_a_path_by_its_two_slashes() {
+        assert!(
+            PathDetector::is_likely_file_path("/var/x"),
+            "no extension: the two slashes alone make it a path"
+        );
     }
 
     #[test]
     fn file_path_none_of_three_conditions() {
-        // No extension, single segment (1 slash), no common dir -> should be false
-        // Kills mutant: || replaced with && (if all were required, this proves || works
-        // by showing that ABSENCE of all three returns false)
-        assert!(!PathDetector::is_likely_file_path("/xyz"));
+        assert!(
+            !PathDetector::is_likely_file_path("/xyz"),
+            "no extension and one slash"
+        );
     }
 
-    // ---- Mutant-killing: is_likely_url_path boundary & branch isolation ----
-
     #[test]
-    fn url_path_len_exactly_2_accepted() {
-        // len=2 "/x" must pass the `< 2` guard. But then it needs to satisfy a condition.
-        // "/x" has no api patterns, no query params, matches('/').count()=1 (not >1), no numeric ids.
-        // So it returns false. The mutant is about the guard itself.
-        // We need a 2-char URL path that satisfies at least one condition.
-        // "/?" has query params -> has_query_params=true, len=2
+    fn a_bare_query_mark_is_a_url_path() {
         assert!(PathDetector::is_likely_url_path("/?"));
     }
 
     #[test]
-    fn url_path_len_exactly_1_rejected() {
-        // len=1 "/" must fail the `< 2` guard
-        assert!(!PathDetector::is_likely_url_path("/"));
-    }
-
-    #[test]
-    fn url_path_has_api_patterns_only() {
-        // has_api_patterns=true, has_query_params=false, has_multiple_segments=false(?), has_numeric_ids=false
-        // "/static/x" -> starts_with("/static/")=true, no '?', matches('/')=2 which IS >1
-        // Hard to isolate api from multiple_segments. Use "/static/" itself:
-        // matches('/')=2 -> has_multiple_segments=true. Can't avoid it with /static/.
-        // Use "/v1/" -> matches('/')=2 again.
-        // The point is: if || became &&, requiring ALL to be true would fail since
-        // has_query_params and has_numeric_ids are false. This kills the mutant.
-        assert!(PathDetector::is_likely_url_path("/v1/items"));
+    fn url_path_api_prefix_with_two_segments() {
+        assert!(
+            PathDetector::is_likely_url_path("/v1/items"),
+            "an API prefix always brings a second slash"
+        );
     }
 
     #[test]
     fn url_path_has_query_params_only() {
-        // has_api_patterns=false, has_query_params=true, has_multiple_segments=false, has_numeric_ids=false
-        // "/x?q=1" -> no api pattern, has '?', matches('/')=1 (not >1), no route params
-        assert!(PathDetector::is_likely_url_path("/x?q=1"));
+        assert!(
+            PathDetector::is_likely_url_path("/x?q=1"),
+            "one slash, no id segment: only the query holds"
+        );
     }
 
     #[test]
     fn url_path_has_multiple_segments_only() {
-        // has_api_patterns=false, has_query_params=false, has_multiple_segments=true, has_numeric_ids=false
-        // "/foo/bar" -> no api, no '?', matches('/')=2 (>1), no numeric route params
-        assert!(PathDetector::is_likely_url_path("/foo/bar"));
+        assert!(
+            PathDetector::is_likely_url_path("/foo/bar"),
+            "no query, no id segment: only the second slash holds"
+        );
     }
 
     #[test]
     fn url_path_has_numeric_ids_only() {
-        // has_api_patterns=false, has_query_params=false, has_multiple_segments=false, has_numeric_ids=true
-        // Need a path with a numeric route param but only 1 slash.
-        // ROUTE_PARAMS matches /([0-9a-fA-F]{8,}|[0-9]{3,}|[a-fA-F0-9\-]{8,})
-        // "/12345" -> matches('/').count()=1 so not multiple segments
-        // ROUTE_PARAMS: /([0-9]{3,}) matches "/12345"
-        assert!(PathDetector::is_likely_url_path("/12345"));
+        assert!(
+            PathDetector::is_likely_url_path("/12345"),
+            "one slash, no query: only the generated id segment holds"
+        );
     }
 
     #[test]
     fn url_path_segment_count_boundary() {
-        // has_multiple_segments requires matches('/').count() > 1
-        // "/x" has count=1 (not >1). Kills mutant: > replaced with <
-        assert!(!PathDetector::is_likely_url_path("/x"));
-        // "/x/y" has count=2 (>1) -> true
-        assert!(PathDetector::is_likely_url_path("/x/y"));
+        assert!(!PathDetector::is_likely_url_path("/x"), "one slash");
+        assert!(PathDetector::is_likely_url_path("/x/y"), "two slashes");
     }
 
-    // ---- Mutant-killing: normalize_url_path API segment preservation ----
-
     #[test]
-    fn normalize_url_path_preserves_api_segments() {
-        // A word segment stays whatever the word; a segment carrying a
-        // digit is a generated name and folds.
+    fn a_digit_bearing_segment_folds_and_a_word_segment_stays() {
         let result = PathDetector::normalize_url_path("/namespaces/my-ns/pods/nginx-7d9f8");
         assert_eq!(result, "/namespaces/my-ns/pods/<PATH>");
         assert_eq!(
@@ -672,10 +626,6 @@ mod tests {
         );
     }
 
-    /// A slash glued to a word continues the word — a version, a label key,
-    /// an image, a relative source file — and is never a path on its own. A
-    /// bare `http://host` is still a URL, and a path after a separator is
-    /// still a path.
     #[test]
     fn a_slash_glued_to_a_word_is_not_a_path() {
         for (input, expected) in [
@@ -695,11 +645,13 @@ mod tests {
             ("read /etc/hosts.d/x x", "read <PATH> x"),
         ] {
             let (r, _) = PathDetector::detect_and_replace(input);
-            assert_eq!(r, expected, "input: {input}");
+            assert_eq!(
+                r, expected,
+                "a slash glued to a word continues it; a bare URL or a path after a separator is still a path: {input}"
+            );
         }
     }
 
-    /// The bracket that closes a parenthesised URL survives.
     #[test]
     fn a_url_does_not_swallow_the_closing_bracket() {
         let (r, _) =
@@ -709,9 +661,6 @@ mod tests {
         assert_eq!(r, "see <PATH>. Then");
     }
 
-    /// A relative path is a path: two segments after a directory, or a
-    /// file with an extension. A MIME type, a version, a `ns/name` pair and
-    /// a DNS-qualified name are not.
     #[test]
     fn a_relative_path_is_a_path() {
         for (input, expected) in [
@@ -738,7 +687,10 @@ mod tests {
             ),
         ] {
             let (r, _) = PathDetector::detect_and_replace(input);
-            assert_eq!(r, expected, "input: {input}");
+            assert_eq!(
+                r, expected,
+                "a MIME type, a version, a ns/name pair and a DNS-qualified name are not paths: {input}"
+            );
         }
     }
 }
@@ -755,6 +707,28 @@ mod shapes_2026_08_29 {
             PathDetector::detect_and_replace("run --namespace kube-system -n foo -namespace bar");
         assert_eq!(r, "run --namespace kube-system -n foo -namespace bar");
         assert!(tokens.is_empty());
+    }
+
+    #[test]
+    fn a_cli_option_name_keeps_its_spelling() {
+        for line in ["cp --force -t src dst", "rm -rf --no-preserve-root x"] {
+            let (r, tokens) = PathDetector::detect_and_replace(line);
+            assert_eq!(r, line, "an option name is a key, not a variable path");
+            assert!(tokens.is_empty(), "{line}: {tokens:?}");
+        }
+    }
+
+    #[test]
+    fn an_escaped_flat_struct_stays_literal() {
+        let (running, t1) =
+            PathDetector::detect_and_replace(r#"state \"{phase:Running}\" rejected"#);
+        let (failed, t2) = PathDetector::detect_and_replace(r#"state \"{phase:Failed}\" rejected"#);
+        assert_eq!(
+            running, r#"state \"{phase:Running}\" rejected"#,
+            "its values are the event"
+        );
+        assert_ne!(running, failed, "Running and Failed stay two events");
+        assert!(t1.is_empty() && t2.is_empty(), "{t1:?} {t2:?}");
     }
 
     #[test]
@@ -775,10 +749,8 @@ mod shapes_2026_08_29 {
     }
 }
 
-/// The syslog-tag overlap and word-glue guards at their edges
-/// (lessence-e8v survivors 240, 244).
 #[cfg(test)]
-mod e8v_guards_2026_09_18 {
+mod syslog_tag_and_glue_edges {
     use super::*;
 
     fn m<'a>(text: &'a str, needle: &str) -> regex::Match<'a> {
@@ -790,9 +762,12 @@ mod e8v_guards_2026_09_18 {
 
     #[test]
     fn a_match_is_in_the_tag_only_when_the_spans_overlap() {
-        //            0123456789012345
         let text = "abc  tag/x  yz/w";
-        let tag = Some((5, 10));
+        let start = text.find("tag/x").unwrap();
+        let tag = Some(SyslogProgramTag {
+            start,
+            end: start + "tag/x".len(),
+        });
         assert!(PathDetector::in_syslog_tag(tag, &m(text, "tag/x")));
         assert!(PathDetector::in_syslog_tag(tag, &m(text, "g/x")));
         assert!(!PathDetector::in_syslog_tag(tag, &m(text, "abc")));

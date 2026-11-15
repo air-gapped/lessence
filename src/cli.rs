@@ -1,18 +1,8 @@
-//! CLI argument definitions — single source of truth for flags and
-//! validators. The pattern-name list derives from
-//! [`crate::config::PATTERN_REGISTRY`]. The doc-contract tests
-//! (`tests/doc_contract.rs`) derive the README's generated sections from
-//! [`command()`], so any flag change here is enforced against the shipped
-//! docs.
-
 use clap::{CommandFactory, Parser};
 use std::path::PathBuf;
 
-use crate::config::PATTERN_REGISTRY;
+use crate::config::{LINES_A_COLLAPSED_GROUP_SHOWS, OutputFormat, PATTERN_REGISTRY};
 
-/// Valid names for `--disable-patterns`, derived at compile time from
-/// [`PATTERN_REGISTRY`] — the single source of truth for the user-facing
-/// pattern groups and the detector gates they control.
 const VALID_PATTERNS_ARRAY: [&str; PATTERN_REGISTRY.len()] = {
     let mut names = [""; PATTERN_REGISTRY.len()];
     let mut i = 0;
@@ -42,9 +32,11 @@ fn validate_count(s: &str, minimum: usize, hint: &str) -> Result<usize, String> 
 }
 
 fn validate_min_collapse(s: &str) -> Result<usize, String> {
-    // A collapsed group emits first / summary / last: fewer than three
-    // input lines would expand the log and underflow lines_saved.
-    validate_count(s, 3, " (minimum meaningful folding group)")
+    validate_count(
+        s,
+        LINES_A_COLLAPSED_GROUP_SHOWS,
+        " (minimum meaningful folding group)",
+    )
 }
 
 fn validate_threads(s: &str) -> Result<usize, String> {
@@ -52,8 +44,6 @@ fn validate_threads(s: &str) -> Result<usize, String> {
 }
 
 fn validate_report_max_bytes(s: &str) -> Result<usize, String> {
-    // A zero cap can never hold a report: the run would read all its input
-    // and then fail. Refuse it before any input is read.
     match crate::config::parse_size_suffix(s)? {
         0 => Err("must be at least 1 byte (a zero cap can never hold a report)".to_string()),
         n => Ok(n),
@@ -64,22 +54,12 @@ fn validate_max_lines(s: &str) -> Result<usize, String> {
     validate_count(s, 1, "")
 }
 
-/// Validate `--format` at the CLI boundary and return the canonical
-/// spelling the mode dispatch compares against: `text`, `markdown` or
-/// `json`. Accepted aliases (`plain`, `md`, `jsonl`, any case) normalize
-/// here, once, so `--format md` and `--format JSONL` behave exactly like
-/// their canonical forms and no later check has to match an alias. Called
-/// from `main` (not a clap value_parser) so a bad value is a `lessence:`
-/// usage error with exit 2.
-pub fn validate_format(s: &str) -> anyhow::Result<String> {
-    match s.to_lowercase().as_str() {
-        "text" | "plain" => Ok("text".to_string()),
-        "markdown" | "md" => Ok("markdown".to_string()),
-        "json" | "jsonl" => Ok("json".to_string()),
-        _ => Err(anyhow::anyhow!(
+pub fn validate_format(s: &str) -> anyhow::Result<OutputFormat> {
+    OutputFormat::parse(s).ok_or_else(|| {
+        anyhow::anyhow!(
             "Invalid format '{s}'. Supported formats: text (plain), markdown (md), json, jsonl"
-        )),
-    }
+        )
+    })
 }
 
 fn validate_pattern_names(s: &str) -> Result<String, String> {
@@ -100,12 +80,6 @@ fn validate_pattern_names(s: &str) -> Result<String, String> {
     Ok(pattern)
 }
 
-/// Shown by `--version`: semver plus the build identity embedded by `build.rs`.
-///
-/// The commit and target triple are part of the version because two binaries
-/// with the same semver can differ — any commit between releases changes
-/// behaviour without bumping Cargo.toml, and the musl build allocates
-/// differently from the glibc one.
 pub const VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
@@ -115,9 +89,6 @@ pub const VERSION: &str = concat!(
     ")"
 );
 
-/// The first thing `--help` says. Written for the agent reading it, the way
-/// herdr's help is: an agent that already holds the skill must not fetch it
-/// again, and the machine-readable surface is named before the option list.
 pub const AGENT_HELP: &str = "\
 Are you an AI agent? Use these ONLY IF your task specifically asks you to.
   SKIP if a lessence skill is already in your context. Otherwise run: lessence --skill
@@ -128,8 +99,6 @@ Are you an AI agent? Use these ONLY IF your task specifically asks you to.
   overview with that path; --no-report for `tail -f` or any source without an EOF
 Humans: lessence --help-human";
 
-/// `--help-human`: the short help for a person at a terminal. The full
-/// `--help` is written for agents and is the authoritative flag list.
 pub const HELP_HUMAN: &str = "\
 lessence folds a repetitive log into its distinct events with counts, and keeps every unique line.
 
@@ -153,7 +122,6 @@ Full reference:       lessence --help   (written for coding agents; its option l
 #[derive(Parser)]
 #[command(author, version = VERSION, about, long_about = None, before_help = AGENT_HELP)]
 pub struct Cli {
-    // ---- Agent: the surface an agent reaches for first ----
     /// Print the bundled agent skill and exit: `skill` (SKILL.md, the default)
     /// or `flags` (the complete flag reference). Install with
     /// `lessence --skill > ~/.claude/skills/lessence/SKILL.md` and
@@ -183,7 +151,6 @@ pub struct Cli {
     #[arg(long, help_heading = "Agent")]
     pub stats_json: bool,
 
-    // ---- Fold: how lines become groups ----
     /// Percent of tokens two lines must share to group (0-100). Lower (e.g. 75) for more folding; raise for stricter, per-message splitting
     #[arg(long, default_value_t = crate::config::DEFAULT_THRESHOLD, value_parser = clap::value_parser!(u8).range(0..=100), help_heading = "Fold")]
     pub threshold: u8,
@@ -206,7 +173,6 @@ pub struct Cli {
     #[arg(long, help_heading = "Fold")]
     pub essence: bool,
 
-    // ---- Output: what is shown ----
     /// Disable statistics output (enabled by default)
     #[arg(
         short = 'q',
@@ -263,7 +229,6 @@ pub struct Cli {
     #[arg(long, value_name = "B", help_heading = "Output")]
     pub overview_bytes: Option<usize>,
 
-    // ---- Limits and safety ----
     /// Enable PII sanitization (mask email addresses and sensitive data, default: disabled)
     #[arg(long, help_heading = "Limits and safety")]
     pub sanitize_pii: bool,
@@ -288,7 +253,6 @@ pub struct Cli {
     #[arg(long, value_parser = validate_threads, help_heading = "Limits and safety")]
     pub threads: Option<usize>,
 
-    // ---- Developer ----
     /// Dev mode: run this other lessence binary on the same input and print
     /// only the groups that fold differently. Exit 1 if anything moved, 2 on
     /// error. Needs a FILE argument and takes no fold flags.
@@ -330,13 +294,24 @@ pub struct Cli {
     pub files: Vec<PathBuf>,
 }
 
-/// What the default text run does about its report, settled at the CLI
-/// boundary so `main` only dispatches.
 pub enum ReportPlan {
-    /// `--no-report`, or any mode other than the default text run: today's
-    /// streamed text and today's stderr briefing.
     Off,
     On(ReportSettings),
+}
+
+impl ReportPlan {
+    pub fn rendered_format(&self, requested: OutputFormat) -> OutputFormat {
+        match self {
+            Self::Off => requested,
+            Self::On(_) => OutputFormat::Json,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunShape {
+    DefaultTextRun,
+    OtherRun,
 }
 
 pub struct ReportSettings {
@@ -347,15 +322,11 @@ pub struct ReportSettings {
 }
 
 impl Cli {
-    /// The flags that shape a report belong to the default text run and
-    /// nothing else. None is silently ignored: every combination outside the
-    /// table in the contract is a usage error naming the flags involved.
-    /// `--no-report` is the exception: outside the default text run no report
-    /// is written anyway, so the request is met and it does nothing.
-    ///
-    /// `text_default` is the caller's mode decision: no `--format` other
-    /// than text, and none of the alternate output or dev modes.
-    pub fn report_plan(&self, text_default: bool) -> Result<ReportPlan, String> {
+    pub fn distilling(&self) -> bool {
+        self.distill || self.anonymize || self.anonymize_words.is_some()
+    }
+
+    pub fn report_plan(&self, run: RunShape) -> Result<ReportPlan, String> {
         use crate::overview::{DEFAULT_BYTES, DEFAULT_ENTRIES, Entries, MAX_ENTRIES};
 
         let named: Vec<&str> = [
@@ -368,7 +339,7 @@ impl Cli {
         .filter_map(|(hit, name)| hit.then_some(name))
         .collect();
 
-        if !text_default {
+        if run == RunShape::OtherRun {
             if let Some(flag) = named.first() {
                 return Err(format!(
                     "{flag} applies to the default text run, which is the only run that saves a \
@@ -376,8 +347,6 @@ impl Cli {
                      writes no report and streams every group to stdout"
                 ));
             }
-            // --no-report asks for no report, and this mode writes none: the
-            // request is already met, so it is accepted and does nothing.
             return Ok(ReportPlan::Off);
         }
 
@@ -425,10 +394,6 @@ impl Cli {
         }))
     }
 
-    /// `--diff` runs two other binaries over FILE and compares their JSON, so
-    /// it needs a real file path (stdin cannot be given to both) and takes
-    /// none of the flags that configure a fold: they would be silently
-    /// ignored. Every such combination is a usage error naming the flag.
     pub fn validate_diff(&self) -> Result<(), String> {
         if self.files.is_empty() || self.files.iter().any(|f| f.as_os_str() == "-") {
             return Err(
@@ -457,9 +422,6 @@ impl Cli {
         }
     }
 
-    /// `--distill` / `--anonymize` write a log, not a report. Every
-    /// output-mode flag would be silently ignored, so a run that asks for
-    /// both is a usage error naming the pair.
     pub fn validate_distill(&self) -> Result<(), String> {
         let conflicts = [
             (
@@ -488,10 +450,17 @@ impl Cli {
         ))
     }
 
-    /// `--preflight` prints the briefing as one JSON document and nothing
-    /// else, so every flag that shapes another output would be silently
-    /// ignored: asking for one is a usage error naming it. `-q` is accepted —
-    /// it drops a rendered briefing, and `--preflight` renders none.
+    pub fn validate_markdown(&self, format: OutputFormat) -> Result<(), String> {
+        if format == OutputFormat::Markdown
+            && (self.top.is_some() || self.summary || self.fit || self.preflight)
+        {
+            return Err("--format markdown supports only the default fold output; \
+                 drop --top/--summary/--fit/--preflight or use --format text or json"
+                .to_string());
+        }
+        Ok(())
+    }
+
     pub fn validate_preflight(&self) -> Result<(), String> {
         if !self.preflight {
             return Ok(());
@@ -517,7 +486,6 @@ fn validate_members(s: &str) -> Result<usize, String> {
     validate_count(s, 1, "")
 }
 
-/// The full clap command — single source of truth for the doc-contract tests.
 pub fn command() -> clap::Command {
     Cli::command()
 }
@@ -528,17 +496,66 @@ mod tests {
 
     #[test]
     fn validate_min_collapse_rejects_below_floor() {
-        // 2 would make a 2-line group collapse and compute
-        // lines_saved = count - 3 = 2 - 3, which underflows. The
-        // validator must reject it at the CLI boundary.
-        let err = validate_min_collapse("2").expect_err("2 must be rejected");
+        let err = validate_min_collapse("2")
+            .expect_err("2 would collapse a 2-line group and underflow lines_saved = count - 3");
         assert!(
             err.contains("at least 3"),
             "error should state the floor of 3, got: {err}"
         );
-        // The old floor and below must also be rejected.
-        assert!(validate_min_collapse("1").is_err());
-        assert!(validate_min_collapse("0").is_err());
+        assert!(
+            validate_min_collapse("1").is_err(),
+            "the old floor of 1 must be rejected too"
+        );
+        assert!(
+            validate_min_collapse("0").is_err(),
+            "below the old floor must be rejected too"
+        );
+    }
+
+    #[test]
+    fn quiet_is_accepted_with_preflight_because_preflight_renders_no_briefing_to_drop() {
+        let cli = Cli::parse_from(["lessence", "--preflight", "-q", "x.log"]);
+        assert_eq!(cli.validate_preflight(), Ok(()));
+    }
+
+    #[test]
+    fn markdown_accepts_only_the_default_fold_output() {
+        for flags in [
+            &["--top", "5"][..],
+            &["--summary"][..],
+            &["--fit"][..],
+            &["--preflight"][..],
+        ] {
+            let cli = Cli::parse_from(
+                ["lessence", "--format", "markdown"]
+                    .into_iter()
+                    .chain(flags.iter().copied()),
+            );
+            let err = cli
+                .validate_markdown(OutputFormat::Markdown)
+                .expect_err("markdown renders only the default fold output");
+            assert!(err.contains("--format markdown"), "{flags:?}: {err}");
+            assert_eq!(
+                cli.validate_markdown(OutputFormat::Text),
+                Ok(()),
+                "{flags:?} is fine outside markdown"
+            );
+        }
+        let plain = Cli::parse_from(["lessence", "--format", "markdown"]);
+        assert_eq!(plain.validate_markdown(OutputFormat::Markdown), Ok(()));
+    }
+
+    #[test]
+    fn a_report_streams_the_json_renderer_whatever_format_was_asked_for() {
+        let plan = Cli::parse_from(["lessence", "x.log"])
+            .report_plan(RunShape::DefaultTextRun)
+            .unwrap();
+        assert!(matches!(plan, ReportPlan::On(_)));
+        assert_eq!(plan.rendered_format(OutputFormat::Text), OutputFormat::Json);
+        assert_eq!(
+            ReportPlan::Off.rendered_format(OutputFormat::Text),
+            OutputFormat::Text
+        );
     }
 
     #[test]
@@ -553,31 +570,29 @@ mod tests {
         );
     }
 
-    // ---- validate_format ----
-
     #[test]
     fn format_text_and_alias() {
-        assert_eq!(validate_format("text").unwrap(), "text");
-        assert_eq!(validate_format("plain").unwrap(), "text");
+        assert_eq!(validate_format("text").unwrap(), OutputFormat::Text);
+        assert_eq!(validate_format("plain").unwrap(), OutputFormat::Text);
     }
 
     #[test]
     fn format_markdown_and_alias() {
-        assert_eq!(validate_format("markdown").unwrap(), "markdown");
-        assert_eq!(validate_format("md").unwrap(), "markdown");
+        assert_eq!(validate_format("markdown").unwrap(), OutputFormat::Markdown);
+        assert_eq!(validate_format("md").unwrap(), OutputFormat::Markdown);
     }
 
     #[test]
     fn format_json_and_alias() {
-        assert_eq!(validate_format("json").unwrap(), "json");
-        assert_eq!(validate_format("jsonl").unwrap(), "json");
+        assert_eq!(validate_format("json").unwrap(), OutputFormat::Json);
+        assert_eq!(validate_format("jsonl").unwrap(), OutputFormat::Json);
     }
 
     #[test]
     fn format_case_insensitive() {
-        assert_eq!(validate_format("TEXT").unwrap(), "text");
-        assert_eq!(validate_format("Json").unwrap(), "json");
-        assert_eq!(validate_format("MARKDOWN").unwrap(), "markdown");
+        assert_eq!(validate_format("TEXT").unwrap(), OutputFormat::Text);
+        assert_eq!(validate_format("Json").unwrap(), OutputFormat::Json);
+        assert_eq!(validate_format("MARKDOWN").unwrap(), OutputFormat::Markdown);
     }
 
     fn distilling() -> Cli {

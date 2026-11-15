@@ -2,75 +2,76 @@ use super::{HashType, Token};
 use regex::Regex;
 use std::sync::LazyLock;
 
-// MD5: 32 hex characters
-static MD5_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{32}\b").unwrap());
+const MD5_HEX_LEN: usize = 32;
+const SHA1_HEX_LEN: usize = 40;
+const SHA256_HEX_LEN: usize = 64;
+const SHA512_HEX_LEN: usize = 128;
+const GENERIC_HEX_WIDTHS: [usize; 4] = [16, 24, 48, 56];
+const MIN_SHORT_HASH_LEN: usize = 7;
+const MAX_SHORT_HASH_LEN: usize = SHA1_HEX_LEN - 1;
+const MAX_DESIGNATOR_LEN: usize = 12;
+const MIN_COLON_HEX_PAIRS: usize = 4;
 
-// SHA1: 40 hex characters
-static SHA1_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{40}\b").unwrap());
+fn hex_run(width: impl std::fmt::Display) -> Regex {
+    Regex::new(&format!(r"\b[a-fA-F0-9]{{{width}}}\b")).unwrap()
+}
 
-// SHA256: 64 hex characters
-static SHA256_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{64}\b").unwrap());
+static FIXED_HEX_WIDTHS_LONGEST_FIRST: LazyLock<Vec<(Regex, HashType)>> = LazyLock::new(|| {
+    let mut widths = vec![
+        (SHA512_HEX_LEN, HashType::SHA512),
+        (SHA256_HEX_LEN, HashType::SHA256),
+        (SHA1_HEX_LEN, HashType::SHA1),
+        (MD5_HEX_LEN, HashType::MD5),
+    ];
+    widths.extend(
+        GENERIC_HEX_WIDTHS
+            .iter()
+            .map(|&len| (len, HashType::Generic { len })),
+    );
+    widths.sort_by_key(|&(width, _)| std::cmp::Reverse(width));
+    widths
+        .into_iter()
+        .map(|(width, kind)| (hex_run(width), kind))
+        .collect()
+});
 
-// SHA512: 128 hex characters
-static SHA512_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{128}\b").unwrap());
+static DEVICE_TREE_NODE_ADDR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?P<addr>[0-9a-f]{8})(?P<node>\.[a-z])").unwrap());
 
-// A device-tree node address: eight hex digits glued to a dotted node
-// name — `3f00b880.mailbox`, `3f200000.gpio` — the same value the kernel
-// also prints as `0x3f200000`, and an address in both forms.
-static DT_ADDR_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b([0-9a-f]{8})(\.[a-z])").unwrap());
+static SHORT_HEX_RUN: LazyLock<Regex> =
+    LazyLock::new(|| hex_run(format!("{MIN_SHORT_HASH_LEN},{MAX_SHORT_HASH_LEN}")));
 
-// Git commit hash: 7-40 hex characters (but not overlapping with above)
-static GIT_HASH_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{7,39}\b").unwrap());
-
-// Generic hex strings of notable lengths (avoid short ones that might be numbers)
-static HEX_16_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{16}\b").unwrap());
-static HEX_24_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{24}\b").unwrap());
-static HEX_48_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{48}\b").unwrap());
-static HEX_56_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[a-fA-F0-9]{56}\b").unwrap());
-
-// MD5 fingerprint as ssh prints it: 16 colon-separated hex pairs.
-static MD5_COLON_REGEX: LazyLock<Regex> =
+static SSH_MD5_FINGERPRINT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b(?:[a-fA-F0-9]{2}:){15}[a-fA-F0-9]{2}\b").unwrap());
 
-// SHA256 fingerprint as ssh prints it: the label and 43 base64 characters.
-static SHA256_B64_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bSHA256:[A-Za-z0-9+/]{43}=?").unwrap());
+const SSH_SHA256_LABEL: &str = "SHA256:";
+
+static SSH_SHA256_FINGERPRINT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bSHA256:(?P<digest>[A-Za-z0-9+/]{43}=?)").unwrap());
 
 pub struct HashDetector;
 
 impl HashDetector {
-    /// A variable-length hex run only counts as a hash when it mixes
-    /// digits and letters — pure digits are numbers, pure letters are
-    /// usually ordinary words.
     fn looks_like_hash(s: &str) -> bool {
         let has_digit = s.bytes().any(|b| b.is_ascii_digit());
         let has_letter = s.bytes().any(|b| b.is_ascii_alphabetic());
-        // Letters then digits and nothing else — `ED25519`, `AES128` — is a
-        // designator, not a hash; a hash interleaves them (`F9009C60`).
-        let designator = s.len() < 12 && {
-            let letters = s.bytes().take_while(u8::is_ascii_alphabetic).count();
-            // two letters at least: `c420064480` is a Go pointer
-            letters >= 2 && s.bytes().skip(letters).all(|b| b.is_ascii_digit())
-        };
-        has_digit && has_letter && !designator
+        has_digit && has_letter && !Self::is_short_designator(s)
     }
 
-    /// Quick check: does the text contain a run of 7+ hex characters?
-    /// If not, no hash/commit SHA can exist — skip all 9 regex scans.
-    fn has_hex_run(text: &str) -> bool {
-        let mut run = 0u32;
+    fn is_short_designator(s: &str) -> bool {
+        s.len() < MAX_DESIGNATOR_LEN && super::is_designator(s)
+    }
+
+    fn is_number(s: &str) -> bool {
+        s.bytes().all(|b| b.is_ascii_digit())
+    }
+
+    fn may_hold_hex_hash(text: &str) -> bool {
+        let mut run = 0;
         for b in text.bytes() {
             if b.is_ascii_hexdigit() {
                 run += 1;
-                if run >= 7 {
+                if run >= MIN_SHORT_HASH_LEN {
                     return true;
                 }
             } else {
@@ -80,7 +81,6 @@ impl HashDetector {
         false
     }
 
-    /// Four `hh:` groups in a row: a colon-separated fingerprint (or a MAC).
     fn has_colon_hex_chain(text: &str) -> bool {
         let b = text.as_bytes();
         let mut groups = 0;
@@ -88,7 +88,7 @@ impl HashDetector {
         while i + 2 < b.len() {
             if b[i].is_ascii_hexdigit() && b[i + 1].is_ascii_hexdigit() && b[i + 2] == b':' {
                 groups += 1;
-                if groups >= 4 {
+                if groups >= MIN_COLON_HEX_PAIRS {
                     return true;
                 }
                 i += 3;
@@ -101,7 +101,9 @@ impl HashDetector {
     }
 
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        if !Self::has_hex_run(text) && !Self::has_colon_hex_chain(text) && !text.contains("SHA256:")
+        if !Self::may_hold_hex_hash(text)
+            && !Self::has_colon_hex_chain(text)
+            && !text.contains(SSH_SHA256_LABEL)
         {
             return (text.to_string(), Vec::new());
         }
@@ -109,82 +111,45 @@ impl HashDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // ssh fingerprints: the label is the input's, the digest is the token.
-        for found in SHA256_B64_REGEX.find_iter(&result) {
-            tokens.push(Token::Hash(
-                HashType::SHA256,
-                found.as_str()["SHA256:".len()..].to_string(),
-            ));
-        }
-        result = SHA256_B64_REGEX
-            .replace_all(&result, "SHA256:<HASH>")
-            .to_string();
+        super::fold_matches(&mut result, &mut tokens, &SSH_SHA256_FINGERPRINT, |caps| {
+            Some((
+                Token::Hash(HashType::SHA256, caps["digest"].to_string()),
+                format!("{SSH_SHA256_LABEL}<HASH>"),
+            ))
+        });
 
-        // Fixed-width hex runs, longest first so a SHA-512 is not eaten as
-        // eight 16-char generics. Each regex scans for tokens, then folds its
-        // own matches away before the next, shorter one runs.
-        for (regex, hash_type) in [
-            (&*MD5_COLON_REGEX, HashType::MD5),
-            (&*SHA512_REGEX, HashType::SHA512),
-            (&*SHA256_REGEX, HashType::SHA256),
-            (&*HEX_56_REGEX, HashType::Generic { len: 56 }),
-            (&*HEX_48_REGEX, HashType::Generic { len: 48 }),
-            (&*SHA1_REGEX, HashType::SHA1),
-            (&*MD5_REGEX, HashType::MD5),
-            (&*HEX_24_REGEX, HashType::Generic { len: 24 }),
-            (&*HEX_16_REGEX, HashType::Generic { len: 16 }),
-        ] {
-            // A run of the right width made of digits alone is a number —
-            // `time_micros: 1787969018585092` is an epoch, not a hash.
-            let is_number = |m: &str| m.bytes().all(|b| b.is_ascii_digit());
-            for found in regex.find_iter(&result) {
-                if !is_number(found.as_str()) {
-                    tokens.push(Token::Hash(hash_type.clone(), found.as_str().to_string()));
-                }
-            }
-            result = regex
-                .replace_all(&result, |caps: &regex::Captures| {
-                    let m = caps.get(0).unwrap().as_str();
-                    if is_number(m) {
-                        m.to_string()
-                    } else {
-                        "<HASH>".to_string()
-                    }
+        let ssh_md5 = (&*SSH_MD5_FINGERPRINT, HashType::MD5);
+        let fixed_widths = FIXED_HEX_WIDTHS_LONGEST_FIRST
+            .iter()
+            .map(|(r, k)| (r, k.clone()));
+        for (regex, hash_type) in std::iter::once(ssh_md5).chain(fixed_widths) {
+            super::fold_matches(&mut result, &mut tokens, regex, |caps| {
+                let m = &caps[0];
+                (!Self::is_number(m)).then(|| {
+                    (
+                        Token::Hash(hash_type.clone(), m.to_string()),
+                        "<HASH>".to_string(),
+                    )
                 })
-                .to_string();
+            });
         }
 
-        for cap in DT_ADDR_REGEX.captures_iter(&result) {
-            tokens.push(Token::Number(cap[1].to_string()));
-        }
-        result = DT_ADDR_REGEX.replace_all(&result, "<ADDR>${2}").to_string();
+        super::fold_matches(&mut result, &mut tokens, &DEVICE_TREE_NODE_ADDR, |caps| {
+            Some((
+                Token::Number(caps["addr"].to_string()),
+                format!("<ADDR>{}", &caps["node"]),
+            ))
+        });
 
-        // Git commit hashes (7-39 chars, after longer ones are processed).
-        // Require both a digit and a letter: pure digits are numbers
-        // (epoch timestamps, counters — left for the number detector) and
-        // pure letters are usually words that happen to be hex (defaced,
-        // beefed). The gate applies to token AND replacement.
-        for cap in GIT_HASH_REGEX.find_iter(&result) {
-            let hash_str = cap.as_str();
-            if Self::looks_like_hash(hash_str) {
-                tokens.push(Token::Hash(
-                    HashType::Generic {
-                        len: hash_str.len(),
-                    },
-                    hash_str.to_string(),
-                ));
-            }
-        }
-        result = GIT_HASH_REGEX
-            .replace_all(&result, |caps: &regex::Captures| {
-                let m = caps.get(0).unwrap().as_str();
-                if Self::looks_like_hash(m) {
-                    "<HASH>".to_string()
-                } else {
-                    m.to_string()
-                }
+        super::fold_matches(&mut result, &mut tokens, &SHORT_HEX_RUN, |caps| {
+            let m = &caps[0];
+            Self::looks_like_hash(m).then(|| {
+                (
+                    Token::Hash(HashType::Generic { len: m.len() }, m.to_string()),
+                    "<HASH>".to_string(),
+                )
             })
-            .to_string();
+        });
 
         (result, tokens)
     }
@@ -194,14 +159,15 @@ impl HashDetector {
 mod tests {
     use super::*;
 
-    /// Letters followed by digits is a designator (ED25519), not a short sha;
-    /// an interleaved run (F9009C60, an LSN) still is one.
     #[test]
-    fn upper_case_short_hex_is_a_word() {
+    fn letters_then_digits_is_a_designator_interleaved_is_a_hash() {
         assert!(!HashDetector::looks_like_hash("ED25519"));
         assert!(!HashDetector::looks_like_hash("AES128"));
         assert!(HashDetector::looks_like_hash("F9009C60"));
-        assert!(HashDetector::looks_like_hash("c420064480"));
+        assert!(
+            HashDetector::looks_like_hash("c420064480"),
+            "a Go pointer starts with one letter, so it is not a designator"
+        );
         assert!(HashDetector::looks_like_hash("3d7d8da"));
         assert!(HashDetector::looks_like_hash(
             "CE6BAEEF29234910A836A8567DB18141"
@@ -231,9 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn test_git_commit_detection() {
-        // 01K5HWDZG06WAPM00HHKC1MYZ4 contains non-hex chars (K, W, Z, P, M, Y) so
-        // it is not detected as a hash by any hex regex
+    fn a_ulid_with_non_hex_letters_is_not_a_hash() {
         let text = "commit 01K5HWDZG06WAPM00HHKC1MYZ4 merged";
         let (result, tokens) = HashDetector::detect_and_replace(text);
         assert_eq!(result, "commit 01K5HWDZG06WAPM00HHKC1MYZ4 merged");
@@ -247,8 +211,10 @@ mod tests {
         let (result, tokens) = HashDetector::detect_and_replace(text);
         assert_eq!(result, "MD5: <HASH> SHA1: <HASH>");
         assert_eq!(tokens.len(), 2);
-        // SHA1 (40 chars) is processed before MD5 (32 chars) in the detection order
-        assert!(matches!(tokens[0], Token::Hash(HashType::SHA1, _)));
+        assert!(
+            matches!(tokens[0], Token::Hash(HashType::SHA1, _)),
+            "SHA1 (40) is folded before MD5 (32): {tokens:?}"
+        );
         assert!(matches!(tokens[1], Token::Hash(HashType::MD5, _)));
     }
 
@@ -259,8 +225,6 @@ mod tests {
         assert_eq!(result, "Port 8080 is open");
         assert_eq!(tokens.len(), 0);
     }
-
-    // ---- Coverage: untested hash lengths ----
 
     #[test]
     fn detect_sha512_128_chars() {
@@ -322,47 +286,44 @@ mod tests {
         ));
     }
 
-    // ---- has_hex_run: boundary tests ----
-
     #[test]
     fn hex_run_6_chars_false() {
-        assert!(!HashDetector::has_hex_run("abcdef"));
+        assert!(!HashDetector::may_hold_hex_hash("abcdef"));
     }
 
     #[test]
     fn hex_run_7_chars_true() {
-        assert!(HashDetector::has_hex_run("abcdef0"));
+        assert!(HashDetector::may_hold_hex_hash("abcdef0"));
     }
 
     #[test]
     fn hex_run_broken_by_non_hex() {
-        assert!(!HashDetector::has_hex_run("abc_def"));
+        assert!(!HashDetector::may_hold_hex_hash("abc_def"));
     }
 
     #[test]
     fn hex_run_empty() {
-        assert!(!HashDetector::has_hex_run(""));
+        assert!(!HashDetector::may_hold_hex_hash(""));
     }
 
     #[test]
     fn generic_hash_requires_digit_and_letter() {
-        // Pure digits (epoch timestamps, counters) and pure-alpha hex
-        // words must pass through untouched.
-        for line in ["epoch 1727676930 done", "word defaced here"] {
+        for (line, reason) in [
+            ("epoch 1727676930 done", "pure digits are a number"),
+            ("word defaced here", "pure hex letters are a word"),
+        ] {
             let (result, tokens) = HashDetector::detect_and_replace(line);
-            assert_eq!(result, line);
-            assert!(
-                tokens.is_empty(),
-                "no hash expected in {line:?}: {tokens:?}"
-            );
+            assert_eq!(result, line, "{reason}");
+            assert!(tokens.is_empty(), "{reason}: {tokens:?}");
         }
-        // A real short commit hash mixes both.
         let (result, tokens) = HashDetector::detect_and_replace("commit a3f8b2c deployed");
-        assert_eq!(result, "commit <HASH> deployed");
+        assert_eq!(
+            result, "commit <HASH> deployed",
+            "a short commit hash mixes digits and letters"
+        );
         assert_eq!(tokens.len(), 1);
     }
 
-    /// An ssh fingerprint is one digest, whichever way ssh prints it.
     #[test]
     fn ssh_fingerprints_are_one_hash() {
         let (r, t) =
@@ -374,9 +335,52 @@ mod tests {
         );
         assert_eq!(r, "host SHA256:<HASH>");
         assert!(matches!(t[0], Token::Hash(HashType::SHA256, _)));
-        // a MAC is six groups, not sixteen
         let (r, _) = HashDetector::detect_and_replace("mac 00:11:22:33:44:55");
-        assert_eq!(r, "mac 00:11:22:33:44:55");
+        assert_eq!(
+            r, "mac 00:11:22:33:44:55",
+            "a MAC is six groups, not sixteen"
+        );
+    }
+
+    #[test]
+    fn a_sha512_digest_is_one_hash() {
+        let digest = "0123456789abcdef".repeat(SHA512_HEX_LEN / 16);
+        let (r, t) = HashDetector::detect_and_replace(&format!("sum {digest} ok"));
+        assert_eq!(r, "sum <HASH> ok");
+        assert_eq!(t, vec![Token::Hash(HashType::SHA512, digest)]);
+    }
+
+    #[test]
+    fn the_fixed_widths_run_longest_first() {
+        let widths: Vec<usize> = FIXED_HEX_WIDTHS_LONGEST_FIRST
+            .iter()
+            .map(|(_, kind)| match kind {
+                HashType::MD5 => MD5_HEX_LEN,
+                HashType::SHA1 => SHA1_HEX_LEN,
+                HashType::SHA256 => SHA256_HEX_LEN,
+                HashType::SHA512 => SHA512_HEX_LEN,
+                HashType::Generic { len } => *len,
+            })
+            .collect();
+        assert_eq!(widths, [128, 64, 56, 48, 40, 32, 24, 16]);
+    }
+
+    #[test]
+    fn the_short_run_reads_the_line_after_the_fixed_widths_and_addresses() {
+        let md5 = "5d41402abc4b2a76b9719d911017c592";
+        let (_, t) = HashDetector::detect_and_replace(&format!("file {md5}"));
+        assert_eq!(
+            t,
+            vec![Token::Hash(HashType::MD5, md5.to_string())],
+            "a 32-char run is an MD5, not a short run of 32"
+        );
+        let (r, t) = HashDetector::detect_and_replace("gpio 7e200000.gpio: ready");
+        assert_eq!(r, "gpio <ADDR>.gpio: ready");
+        assert_eq!(
+            t,
+            vec![Token::Number("7e200000".to_string())],
+            "a device-tree address is an address before the short run sees it"
+        );
     }
 }
 
@@ -406,10 +410,8 @@ mod shapes_2026_08_29 {
     }
 }
 
-/// Boundaries of the hash-shape and colon-chain checks (lessence-e8v
-/// survivors 58, 85-89).
 #[cfg(test)]
-mod e8v_shapes_2026_09_18 {
+mod designator_and_colon_chain_boundaries {
     use super::*;
 
     #[test]

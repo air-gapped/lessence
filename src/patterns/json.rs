@@ -1,12 +1,4 @@
-use regex::Regex;
-use std::sync::LazyLock;
-
 use super::Token;
-
-// A Kubernetes Event's metadata block only; see the copy in path.rs.
-static EVENT_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"&Event\{ObjectMeta:\{[^}]*\}").expect("Failed to compile event object regex")
-});
 
 pub struct JsonDetector;
 
@@ -15,16 +7,13 @@ impl JsonDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Replace Event objects first (they're more specific)
-        result = EVENT_OBJECT
+        result = super::EVENT_OBJECT_META
             .replace_all(&result, |caps: &regex::Captures| {
                 let event = caps.get(0).unwrap().as_str();
                 tokens.push(Token::EmbeddedJson(event.to_string()));
                 "<EVENT_OBJECT>".to_string()
             })
             .to_string();
-
-        // An escaped flat struct stays literal; see the copy in path.rs.
 
         (result, tokens)
     }
@@ -34,8 +23,6 @@ impl JsonDetector {
 mod tests {
     use super::*;
 
-    /// An escaped flat struct is the event's own words: `{phase:Running}`
-    /// and `{phase:Failed}` must not read as one `<JSON_DATA>`.
     #[test]
     fn an_escaped_flat_struct_stays_literal() {
         for input in [
@@ -51,27 +38,30 @@ mod tests {
     }
 
     #[test]
-    fn test_json_structure_detection() {
-        // EVENT_OBJECT matches an Event's metadata block; the reason and
-        // everything else after it stay.
+    fn event_object_folds_only_the_metadata_block() {
         let (result, tokens) = JsonDetector::detect_and_replace(
             "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []},Reason:Pulled}",
         );
-        assert_eq!(result, "<EVENT_OBJECT>,Reason:Pulled}");
+        assert_eq!(
+            result, "<EVENT_OBJECT>,Reason:Pulled}",
+            "the reason and everything after the metadata block stay"
+        );
         assert_eq!(tokens.len(), 1);
+    }
 
-        // An Event without that block is not folded whole.
+    #[test]
+    fn an_event_without_an_object_meta_block_is_not_folded_whole() {
         let (flat, _) = JsonDetector::detect_and_replace("&Event{Type: Warning}");
         assert!(!flat.contains("<EVENT_OBJECT>"), "{flat}");
+    }
 
-        // Plain JSON-like structures without backslash prefix are not detected
-        let non_matching_cases = vec![
+    #[test]
+    fn a_brace_struct_without_the_event_prefix_is_not_detected() {
+        for input in [
             "{volumeName: test-vol, podName: test-pod}",
             "{ObjectMeta: {name: test}}",
             "{generic: data}",
-        ];
-
-        for input in non_matching_cases {
+        ] {
             let (result, tokens) = JsonDetector::detect_and_replace(input);
             assert_eq!(result, input, "Should not match for input: {input}");
             assert!(

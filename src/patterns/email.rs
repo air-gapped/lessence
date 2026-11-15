@@ -2,69 +2,52 @@ use crate::patterns::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// RFC 5322 compliant email regex pattern with ReDoS protection
-/// Simplified pattern: uses bounded quantifiers {0,63} and {0,253} per RFC 5322 limits
-/// Validation layer (validate_email) provides defense-in-depth for edge cases
+const LOCAL_PART_MAX: usize = 64;
+const DOMAIN_MAX: usize = 255;
+const DNS_NAME_MAX: usize = 253;
+const MAX_ADDRESS_LEN: usize = LOCAL_PART_MAX + "@".len() + DOMAIN_MAX;
+
 static EMAIL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\b[a-zA-Z0-9][a-zA-Z0-9._+-]{0,63}@[a-zA-Z0-9][a-zA-Z0-9.-]{0,253}\.[a-zA-Z]{2,}\b",
-    )
+    let local_tail = LOCAL_PART_MAX - 1;
+    Regex::new(&format!(
+        r"\b[a-zA-Z0-9][a-zA-Z0-9._+-]{{0,{local_tail}}}@[a-zA-Z0-9][a-zA-Z0-9.-]{{0,{DNS_NAME_MAX}}}\.[a-zA-Z]{{2,}}\b"
+    ))
     .unwrap()
 });
 
-/// Email pattern detector for RFC 5322 compliant email addresses
 pub struct EmailPatternDetector {
     regex: Regex,
 }
 
 impl EmailPatternDetector {
-    /// Create new email pattern detector
     pub fn new() -> Result<Self, regex::Error> {
         Ok(Self {
             regex: EMAIL_REGEX.clone(),
         })
     }
 
-    /// Detect and replace email addresses in text
-    ///
-    /// Returns: (normalized_text, detected_tokens)
-    /// Replaces all valid emails with `<EMAIL>` token
     pub fn detect_and_replace(&self, text: &str) -> (String, Vec<Token>) {
         let mut tokens = Vec::new();
-        let mut normalized = text.to_string();
-
-        // Find all email matches in reverse order to preserve indices
-        let mut matches: Vec<_> = self.regex.find_iter(text).collect();
-        matches.reverse();
-
-        for email_match in matches {
-            let email = email_match.as_str();
-
-            // Additional validation beyond regex
-            if self.validate_email(email) {
-                tokens.push(Token::Email(email.to_string()));
-
-                // Replace with token in normalized text
-                normalized.replace_range(email_match.range(), "<EMAIL>");
-            }
-        }
-
-        // Reverse tokens to maintain original order
-        tokens.reverse();
-
+        let normalized = self
+            .regex
+            .replace_all(text, |caps: &regex::Captures| {
+                let email = &caps[0];
+                if self.validate_email(email) {
+                    tokens.push(Token::Email(email.to_string()));
+                    "<EMAIL>".to_string()
+                } else {
+                    email.to_string()
+                }
+            })
+            .into_owned();
         (normalized, tokens)
     }
 
-    /// Validate that a detected string is a proper email address
-    ///
-    /// Additional validation beyond regex to prevent false positives
     pub fn validate_email(&self, candidate: &str) -> bool {
-        // Length check (RFC 5321 limit)
-        if candidate.len() > 320 {
+        if candidate.len() > MAX_ADDRESS_LEN {
             return false;
         }
 
-        // Must contain exactly one @ symbol, splitting local from domain
         let Some((local, domain)) = candidate.split_once('@') else {
             return false;
         };
@@ -72,47 +55,34 @@ impl EmailPatternDetector {
             return false;
         }
 
-        // `modprobe@configfs.service` is a systemd instance unit, not a mailbox.
-        if domain.rsplit('.').next().is_some_and(|tld| {
-            matches!(
-                tld,
-                "service"
-                    | "socket"
-                    | "timer"
-                    | "mount"
-                    | "automount"
-                    | "target"
-                    | "slice"
-                    | "scope"
-                    | "path"
-                    | "device"
-                    | "swap"
-            )
-        }) {
+        if Self::is_systemd_unit_name(domain) {
             return false;
         }
 
-        // Non-empty local and domain parts
         if local.is_empty() || domain.is_empty() {
             return false;
         }
 
-        // Domain must contain at least one dot for TLD
         if !domain.contains('.') {
             return false;
         }
 
-        // Domain cannot start or end with dot
         if domain.starts_with('.') || domain.ends_with('.') {
             return false;
         }
 
-        // Local part cannot start or end with dot
         if local.starts_with('.') || local.ends_with('.') {
             return false;
         }
 
         true
+    }
+
+    fn is_systemd_unit_name(domain: &str) -> bool {
+        domain
+            .rsplit('.')
+            .next()
+            .is_some_and(super::is_systemd_unit_type)
     }
 }
 
@@ -167,23 +137,17 @@ mod tests {
     #[test]
     fn test_no_false_positives() {
         let detector = EmailPatternDetector::new().unwrap();
-        let test_cases = vec![
-            "@domain.com",       // Missing local part
-            "user@",             // Missing domain
-            "user@.com",         // Invalid domain
-            "not-an-email",      // No @ symbol
-            "user@domain@extra", // Multiple @ symbols
-            "user@domain",       // No TLD
-        ];
-
-        for case in test_cases {
+        for (case, reason) in [
+            ("@domain.com", "missing local part"),
+            ("user@", "missing domain"),
+            ("user@.com", "domain starts with a dot"),
+            ("not-an-email", "no @"),
+            ("user@domain@extra", "two @"),
+            ("user@domain", "no TLD"),
+        ] {
             let (normalized, tokens) = detector.detect_and_replace(case);
-            assert_eq!(normalized, case, "Should not modify invalid email: {case}");
-            assert_eq!(
-                tokens.len(),
-                0,
-                "Should not detect tokens for invalid email: {case}"
-            );
+            assert_eq!(normalized, case, "{reason}: {case}");
+            assert_eq!(tokens.len(), 0, "{reason}: {case}");
         }
     }
 
@@ -191,22 +155,25 @@ mod tests {
     fn test_email_validation() {
         let detector = EmailPatternDetector::new().unwrap();
 
-        // Valid emails
         assert!(detector.validate_email("user@domain.com"));
         assert!(detector.validate_email("first.last@subdomain.example.org"));
         assert!(detector.validate_email("admin+tag@company-name.co.uk"));
 
-        // Invalid emails
-        assert!(!detector.validate_email(""));
-        assert!(!detector.validate_email(&"a".repeat(321))); // Too long
-        assert!(!detector.validate_email("user@domain@extra")); // Multiple @
-        assert!(!detector.validate_email("@domain.com")); // Missing local
-        assert!(!detector.validate_email("user@")); // Missing domain
-        assert!(!detector.validate_email("user@.com")); // Invalid domain start
-        assert!(!detector.validate_email("user@domain.")); // Invalid domain end
-        assert!(!detector.validate_email(".user@domain.com")); // Invalid local start
-        assert!(!detector.validate_email("user.@domain.com")); // Invalid local end
-        assert!(!detector.validate_email("user@domain")); // No TLD
+        let too_long = "a".repeat(MAX_ADDRESS_LEN + 1);
+        for (candidate, reason) in [
+            ("", "empty"),
+            (too_long.as_str(), "too long"),
+            ("user@domain@extra", "two @"),
+            ("@domain.com", "missing local part"),
+            ("user@", "missing domain"),
+            ("user@.com", "dot at domain start"),
+            ("user@domain.", "dot at domain end"),
+            (".user@domain.com", "dot at local start"),
+            ("user.@domain.com", "dot at local end"),
+            ("user@domain", "no TLD"),
+        ] {
+            assert!(!detector.validate_email(candidate), "{reason}: {candidate}");
+        }
     }
 
     #[test]
@@ -239,66 +206,29 @@ mod tests {
         }
     }
 
-    // ---- validate_email: boundary tests ----
-
     #[test]
-    fn validate_email_exactly_320_chars() {
-        let local = "a".repeat(63);
-        let domain = format!("{}.com", "b".repeat(250));
-        let email = format!("{local}@{domain}");
-        assert!(email.len() <= 320);
+    fn the_address_length_limit_is_320() {
+        assert_eq!(MAX_ADDRESS_LEN, 320);
         let detector = EmailPatternDetector::new().unwrap();
-        assert!(detector.validate_email(&email));
+        let tld = ".com";
+        for (name, local_len, total_len, accepted) in [
+            ("63-char local, 318 in all", 63, 318, true),
+            (
+                "64-char local, one over the limit",
+                64,
+                MAX_ADDRESS_LEN + 1,
+                false,
+            ),
+            ("exactly at the limit", 50, MAX_ADDRESS_LEN, true),
+            ("one over the limit", 50, MAX_ADDRESS_LEN + 1, false),
+        ] {
+            let domain_body = "b".repeat(total_len - local_len - "@".len() - tld.len());
+            let email = format!("{}@{domain_body}{tld}", "a".repeat(local_len));
+            assert_eq!(email.len(), total_len, "{name}");
+            assert_eq!(detector.validate_email(&email), accepted, "{name}");
+        }
     }
 
-    #[test]
-    fn validate_email_321_chars_rejected() {
-        // Build a 321-char email: local@domain
-        let local = "a".repeat(64);
-        let domain_body = "b".repeat(321 - 64 - 1 - 4); // -local -@ -.com
-        let email = format!("{local}@{domain_body}.com");
-        assert!(
-            email.len() > 320,
-            "email len {} should exceed 320",
-            email.len()
-        );
-        let detector = EmailPatternDetector::new().unwrap();
-        assert!(!detector.validate_email(&email));
-    }
-
-    // ---- Mutant-killing: validate_email boundary > vs >= on length 320 ----
-
-    #[test]
-    fn validate_email_exactly_320_accepted() {
-        // Kills mutant: `> 320` → `>= 320` (line 63)
-        // Build exactly 320 chars
-        let local = "a".repeat(50);
-        let domain_needed = 320 - 50 - 1 - 4; // 265 chars for domain body
-        let domain_body = "b".repeat(domain_needed);
-        let email = format!("{local}@{domain_body}.com");
-        assert_eq!(email.len(), 320, "email len should be exactly 320");
-        let detector = EmailPatternDetector::new().unwrap();
-        assert!(
-            detector.validate_email(&email),
-            "320-char email should be accepted"
-        );
-    }
-
-    #[test]
-    fn validate_email_exactly_321_rejected() {
-        let local = "a".repeat(50);
-        let domain_needed = 321 - 50 - 1 - 4; // 266 chars
-        let domain_body = "b".repeat(domain_needed);
-        let email = format!("{local}@{domain_body}.com");
-        assert_eq!(email.len(), 321, "email len should be exactly 321");
-        let detector = EmailPatternDetector::new().unwrap();
-        assert!(
-            !detector.validate_email(&email),
-            "321-char email should be rejected"
-        );
-    }
-
-    /// `modprobe@configfs.service` is a systemd instance unit, not a mailbox.
     #[test]
     fn systemd_instance_unit_is_not_an_email() {
         let d = EmailPatternDetector::new().unwrap();
@@ -306,5 +236,17 @@ mod tests {
             d.detect_and_replace("modprobe@configfs.service: Deactivated; mail root@example.com");
         assert_eq!(r, "modprobe@configfs.service: Deactivated; mail <EMAIL>");
         assert_eq!(t.len(), 1);
+    }
+
+    #[test]
+    fn every_systemd_unit_type_is_a_unit_not_a_mailbox() {
+        let d = EmailPatternDetector::new().unwrap();
+        for unit in super::super::SYSTEMD_UNIT_TYPES {
+            let line = format!("unit proc-fs@nfsd.{unit} done");
+            let (r, t) = d.detect_and_replace(&line);
+            assert_eq!(r, line, "{unit}");
+            assert!(t.is_empty(), "{unit}: {t:?}");
+        }
+        assert!(!d.validate_email("systemd-fsck@dev-sda1.automount"));
     }
 }

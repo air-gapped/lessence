@@ -1,18 +1,43 @@
-/// Default similarity threshold in percent. Single origin for the clap
-/// default on `--threshold` and `Config::default()` — they diverged once
-/// (75 vs 85). 83 comes from the 2026-08 re-sweep under the 0.4.4 LCS
-/// matcher (r98.12/vm9): distinct HTTP status classes re-merge at ≤81
-/// and the fold cost jumps ~50% at ≥84, so 83 is the measured optimum.
 pub const DEFAULT_THRESHOLD: u8 = 83;
-/// Default minimum group size before folding (`--min-collapse`).
-pub const DEFAULT_MIN_COLLAPSE: usize = 3;
-/// Default cap on line length in bytes (`--max-line-length`, 1 MiB).
+pub const LINES_A_COLLAPSED_GROUP_SHOWS: usize = 3;
+pub const DEFAULT_MIN_COLLAPSE: usize = LINES_A_COLLAPSED_GROUP_SHOWS;
 pub const DEFAULT_MAX_LINE_LENGTH: usize = 1024 * 1024;
-/// Default output format (`--format`).
 pub const DEFAULT_OUTPUT_FORMAT: &str = "text";
-/// Patterns `--summary` shows when no `--top N` or `--fit` budget is given,
-/// in text and JSON alike.
-pub const DEFAULT_SUMMARY_CAP: usize = 30;
+pub const DEFAULT_SUMMARY_TOP: usize = 30;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputFormat {
+    #[default]
+    Text,
+    Markdown,
+    Json,
+}
+
+impl OutputFormat {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "text" | "plain" => Some(Self::Text),
+            "markdown" | "md" => Some(Self::Markdown),
+            "json" | "jsonl" => Some(Self::Json),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GroupSink {
+    #[default]
+    Render,
+    RecordDistillMembers {
+        members_per_group: usize,
+    },
+}
+
+impl GroupSink {
+    pub fn is_distilling(self) -> bool {
+        matches!(self, Self::RecordDistillMembers { .. })
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -35,35 +60,24 @@ pub struct Config {
     pub normalize_key_value: bool,
     pub normalize_quoted: bool,
     pub normalize_names: bool,
-    pub output_format: String,
+    pub output_format: OutputFormat,
     pub stats: bool,
     pub preserve_color: bool,
     pub preflight: bool,
     pub summary: bool,
-    // Constitutional CLI flags
-    pub essence_mode: bool, // --essence: timestamp removal/tokenization for temporal independence
-    pub thread_count: Option<usize>, // --threads: number of threads (1=single-threaded, None=auto-detect)
+    pub essence_mode: bool,
+    pub thread_count: Option<usize>,
 
-    // Security & ReDoS Protection (Constitutional Principle X)
-    pub max_line_length: Option<usize>, // --max-line-length: skip lines exceeding this length (default: 1MB)
-    pub max_lines: Option<usize>,       // --max-lines: stop processing after this many lines
-    pub sanitize_pii: bool, // --sanitize-pii: mask email addresses in output (default: false)
-    /// `--sanitize`: which entities are masked and how. `None` with
-    /// `sanitize_pii` set means the legacy set (email + credential, redacted).
+    pub max_line_length: Option<usize>,
+    pub max_lines: Option<usize>,
+    pub sanitize_pii: bool,
     pub sanitize: Option<crate::sanitize::Sanitizer>,
-    pub top_n: Option<usize>, // --top N: show only N most frequent patterns
-    pub stats_json: bool,     // --stats-json: emit JSON stats to stderr
-    pub fail_pattern: Option<String>, // --fail-on-pattern: exit 1 when regex matches input
-    /// --frame-continuations: attach indented continuation lines to the record
-    /// above them, so a stack trace folds as one event instead of one per frame.
+    pub top_n: Option<usize>,
+    pub stats_json: bool,
+    pub fail_pattern: Option<String>,
     pub frame_continuations: bool,
-    /// --explain: record, for every new group, the nearest existing group it
-    /// failed to join. Read-only diagnostics; folding is unchanged.
     pub explain: bool,
-    /// --distill: keep this many member lines per folded group. `Some(n)`
-    /// switches the folder from emitting formatted groups to recording
-    /// which input lines a distillation must carry (`src/distill.rs`).
-    pub distill: Option<usize>,
+    pub group_sink: GroupSink,
 }
 
 impl Default for Config {
@@ -88,42 +102,33 @@ impl Default for Config {
             normalize_key_value: true,
             normalize_quoted: true,
             normalize_names: true,
-            output_format: DEFAULT_OUTPUT_FORMAT.to_string(),
+            output_format: OutputFormat::Text,
             stats: true,
             preserve_color: false,
             preflight: false,
             summary: false,
-            // Constitutional CLI flags defaults
-            essence_mode: false, // Essence mode disabled by default
-            thread_count: None,  // Auto-detect threads by default (1=single-threaded)
+            essence_mode: false,
+            thread_count: None,
 
-            // Security defaults (Constitutional Principle X)
-            max_line_length: Some(DEFAULT_MAX_LINE_LENGTH), // 1MB default line length limit
-            max_lines: None,                                // No line count limit by default
-            sanitize_pii: false, // Disabled by default (backward compatibility)
+            max_line_length: Some(DEFAULT_MAX_LINE_LENGTH),
+            max_lines: None,
+            sanitize_pii: false,
             sanitize: None,
-            top_n: None,                // No top-N filtering by default
-            stats_json: false,          // No JSON stats by default
-            fail_pattern: None,         // No fail pattern by default
-            frame_continuations: false, // Opt-in: one record per physical line by default
+            top_n: None,
+            stats_json: false,
+            fail_pattern: None,
+            frame_continuations: false,
             explain: false,
-            distill: None,
+            group_sink: GroupSink::Render,
         }
     }
 }
 
-/// One user-facing pattern group: the `--disable-patterns` name and the
-/// detector gates it expands to. [`PATTERN_REGISTRY`] is the single source
-/// of truth for these names — the CLI name list and help text
-/// (`src/cli.rs`) and the flag-to-`Config` mapping (`src/main.rs`)
-/// both derive from it.
 pub struct PatternEntry {
-    /// User-facing name accepted by `--disable-patterns`.
     pub name: &'static str,
     set_enabled: fn(&mut Config, bool),
 }
 
-/// Every user-facing pattern group, in documentation order.
 pub const PATTERN_REGISTRY: &[PatternEntry] = &[
     PatternEntry {
         name: "timestamp",
@@ -192,8 +197,6 @@ pub const PATTERN_REGISTRY: &[PatternEntry] = &[
 ];
 
 impl Config {
-    /// The sanitizer this run masks with: the explicit `--sanitize` set, or
-    /// the legacy email + credential set when only `--sanitize-pii` is on.
     pub fn sanitizer(&self) -> Option<crate::sanitize::Sanitizer> {
         self.sanitize.clone().or_else(|| {
             self.sanitize_pii
@@ -201,12 +204,6 @@ impl Config {
         })
     }
 
-    /// Turn back on the detectors that find an entity `--sanitize` names,
-    /// whatever `--disable-patterns` said: a value is masked whole only when
-    /// a detector has made it one token, so the folded template and every
-    /// rollup sample hold its tag and never pieces of it. `host` keeps the
-    /// timestamp detector as well, since a syslog host is the word placed
-    /// after a line's timestamp.
     pub fn keep_sanitized_detectors(&mut self) {
         use crate::sanitize::Entity;
         let Some(z) = self.sanitizer() else {
@@ -220,13 +217,14 @@ impl Config {
         }
         if z.names(Entity::Host) {
             self.normalize_fqdns = true;
-            self.normalize_timestamps = true;
+            self.keep_the_timestamp_a_syslog_host_follows();
         }
     }
 
-    /// Enable or disable one user-facing pattern group by name, expanding
-    /// it to its detector gates via [`PATTERN_REGISTRY`]. Returns `false`
-    /// when the name is not a registered pattern group.
+    fn keep_the_timestamp_a_syslog_host_follows(&mut self) {
+        self.normalize_timestamps = true;
+    }
+
     pub fn set_pattern_enabled(&mut self, name: &str, enabled: bool) -> bool {
         match PATTERN_REGISTRY.iter().find(|entry| entry.name == name) {
             Some(entry) => {
@@ -265,10 +263,8 @@ pub fn parse_size_suffix(input: &str) -> Result<usize, String> {
 mod tests {
     use super::*;
 
-    /// Each named entity turns back on exactly the detectors that find it;
-    /// a run that sanitizes nothing keeps every gate as it was set.
     #[test]
-    fn a_sanitized_entity_keeps_its_detectors() {
+    fn a_sanitized_entity_turns_back_on_exactly_its_detectors_and_nothing_else() {
         let all_off = |sanitize: &[&str], pii: bool| {
             let specs: Vec<String> = sanitize.iter().map(ToString::to_string).collect();
             let mut c = Config {
@@ -288,10 +284,15 @@ mod tests {
                 c.normalize_ports || c.normalize_pids || c.normalize_paths,
             )
         };
-        assert_eq!(all_off(&[], false), (false, false, false, false, false));
+        assert_eq!(
+            all_off(&[], false),
+            (false, false, false, false, false),
+            "a run that sanitizes nothing keeps every gate as it was set"
+        );
         assert_eq!(
             all_off(&["credential"], false),
-            (false, false, false, false, false)
+            (false, false, false, false, false),
+            "credentials have no detector to turn back on"
         );
         assert_eq!(all_off(&[], true), (true, false, false, false, false));
         assert_eq!(
@@ -299,10 +300,12 @@ mod tests {
             (true, false, false, false, false)
         );
         assert_eq!(all_off(&["ip"], false), (false, true, false, false, false));
-        assert_eq!(all_off(&["host"], false), (false, false, true, true, false));
+        assert_eq!(
+            all_off(&["host"], false),
+            (false, false, true, true, false),
+            "host keeps the timestamp detector: a syslog host is the word after the timestamp"
+        );
     }
-
-    // ---- parse_size_suffix ----
 
     #[test]
     fn parse_size_plain_number() {
@@ -330,7 +333,10 @@ mod tests {
     #[test]
     fn parse_size_invalid() {
         assert!(parse_size_suffix("abc").is_err());
-        assert!(parse_size_suffix("K").is_err()); // no number before K
+        assert!(
+            parse_size_suffix("K").is_err(),
+            "no number before the suffix"
+        );
         assert!(parse_size_suffix("M").is_err());
         assert!(parse_size_suffix("G").is_err());
     }
@@ -340,12 +346,13 @@ mod tests {
         assert_eq!(parse_size_suffix("  1024  ").unwrap(), 1024);
     }
 
-    // ---- Config defaults ----
-
     #[test]
     fn default_config_values() {
         let c = Config::default();
-        // 83 is the documented CLI default; Config::default() must match it
+        assert_eq!(
+            c.threshold, DEFAULT_THRESHOLD,
+            "Config::default() must use the documented CLI default threshold"
+        );
         assert_eq!(c.threshold, 83);
         assert_eq!(c.min_collapse, 3);
         assert!(c.normalize_timestamps);
@@ -365,7 +372,7 @@ mod tests {
         assert!(c.normalize_key_value);
         assert!(c.normalize_quoted);
         assert!(c.normalize_names);
-        assert_eq!(c.output_format, "text");
+        assert_eq!(c.output_format, OutputFormat::Text);
         assert!(c.stats);
         assert!(!c.preserve_color);
         assert!(!c.preflight);
@@ -379,11 +386,7 @@ mod tests {
         assert!(c.fail_pattern.is_none());
     }
 
-    // ---- pattern registry ----
-
-    /// Names of the detector gates that are OFF after disabling `name`,
-    /// relative to the all-enabled default.
-    fn disabled_gates(name: &str) -> Vec<&'static str> {
+    fn gates_off_after_disabling(name: &str) -> Vec<&'static str> {
         let mut config = Config::default();
         assert!(
             config.set_pattern_enabled(name, false),
@@ -416,6 +419,50 @@ mod tests {
     }
 
     #[test]
+    fn the_registry_lists_pattern_names_in_documentation_order() {
+        let names: Vec<&str> = PATTERN_REGISTRY.iter().map(|entry| entry.name).collect();
+        assert_eq!(
+            names,
+            [
+                "timestamp",
+                "hash",
+                "network",
+                "uuid",
+                "email",
+                "path",
+                "duration",
+                "json",
+                "kubernetes",
+                "http-status",
+                "brackets",
+                "key-value",
+                "process",
+                "quoted-string",
+                "name",
+            ],
+            "the order is the --disable-patterns help order and the README's"
+        );
+    }
+
+    #[test]
+    fn output_formats_parse_with_their_aliases_in_any_case() {
+        for (given, want) in [
+            ("text", Some(OutputFormat::Text)),
+            ("plain", Some(OutputFormat::Text)),
+            ("TEXT", Some(OutputFormat::Text)),
+            ("markdown", Some(OutputFormat::Markdown)),
+            ("md", Some(OutputFormat::Markdown)),
+            ("MARKDOWN", Some(OutputFormat::Markdown)),
+            ("json", Some(OutputFormat::Json)),
+            ("jsonl", Some(OutputFormat::Json)),
+            ("Json", Some(OutputFormat::Json)),
+            ("xml", None),
+        ] {
+            assert_eq!(OutputFormat::parse(given), want, "--format {given}");
+        }
+    }
+
+    #[test]
     fn registry_names_are_unique() {
         let mut seen = std::collections::HashSet::new();
         for entry in PATTERN_REGISTRY {
@@ -431,7 +478,6 @@ mod tests {
     fn set_pattern_enabled_rejects_unknown_name() {
         let mut config = Config::default();
         assert!(!config.set_pattern_enabled("no-such-pattern", false));
-        // and an unknown name must leave the config untouched
         assert_eq!(
             format!("{config:?}"),
             format!("{:?}", Config::default()),
@@ -467,7 +513,7 @@ mod tests {
             "expectation table must cover every registry entry"
         );
         for (name, gates) in want {
-            let mut got = disabled_gates(name);
+            let mut got = gates_off_after_disabling(name);
             let mut expected: Vec<&str> = gates.to_vec();
             got.sort_unstable();
             expected.sort_unstable();

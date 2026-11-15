@@ -209,7 +209,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         enabled: |c| c.normalize_brackets,
         only_when: None,
         prefilter: Some(|_, _, s| {
-            s.contains('[') && BracketContextDetector::has_bracket_indicators(s)
+            s.contains('[') && BracketContextDetector::contains_bracket_pair(s)
         }),
         run: |_, s| BracketContextDetector::detect_and_replace(s),
     },

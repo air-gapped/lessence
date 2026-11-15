@@ -8,48 +8,64 @@ use super::{
     uuid::UuidDetector,
 };
 
-// Match quoted strings that contain variable content, including escaped quotes
-// This matches strings like "volume-name", "pod-name", and complex strings with \" inside
-// Pattern: " followed by any number of (non-quote OR escaped quote), followed by "
-static QUOTED_STRING_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*""#).unwrap());
+const ESCAPED_OR_PLAIN_CHAR: &str = r#"(?:[^"\\]|\\.)"#;
 
-// A DNS-1123-ish instance identifier standing alone as a whole field value:
-// "redis-sentinel-wiki", "iperf3", "argocd/iperf3". Whether such a value
-// folds must not depend on how long it happens to be (bead lessence-8jb): the
-// 25-char rule below made renaming an app change whether its lines fold.
-//
-// The leading letter excludes bare numerals and HttpStatusDetector's own bare
-// `2xx`/`5xx` output. The class excludes whitespace (prose belongs to the
-// length rule), uppercase (enum values like OK/DENIED/StatefulSet) and `<`/`>`
-// (placeholders left by the detectors that ran before this one).
-static INSTANCE_IDENT: LazyLock<Regex> =
+static QUOTED_STRING_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r#""{ESCAPED_OR_PLAIN_CHAR}*""#)).unwrap());
+
+static DNS_LABEL_LIKE_VALUE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z][a-z0-9._/-]*[a-z0-9]$").unwrap());
 
-// Two characters carry no identity worth folding.
 const MIN_IDENT_LEN: usize = 3;
 
-// autoresearch: the per-quoted-string cascade below is a pure function of the
-// quoted text, so its result can be memoized. Real corpora repeat a small set
-// of quoted field names/values millions of times (source 146: ~600k cascade
-// calls over a few hundred distinct strings). Thread-local keeps it lock-free
-// under rayon; the size/length caps bound memory on adversarial input.
-const QUOTED_CACHE_MAX_ENTRIES: usize = 8192;
-const QUOTED_CACHE_MAX_KEY_LEN: usize = 256;
-
-thread_local! {
-    static QUOTED_CACHE: std::cell::RefCell<std::collections::HashMap<String, QuotedOutcome>> =
-        std::cell::RefCell::new(std::collections::HashMap::new());
-    // The gates the cached verdicts were computed under: a run has one
-    // config, but a thread can see several (the tests), and a verdict is
-    // only valid for the gates that made it.
-    static QUOTED_CACHE_GATES: std::cell::Cell<Option<NestedGates>> =
-        const { std::cell::Cell::new(None) };
+struct TransparentQuotedMemo {
+    computed_under: Option<NestedGates>,
+    outcomes: std::collections::HashMap<String, QuotedOutcome>,
 }
 
-/// Which detectors the cascade runs inside a quoted string: the same
-/// `--disable-patterns` gates as the main pipeline. A disabled detector
-/// left its placeholders inside every quoted string all the same.
+thread_local! {
+    static QUOTED_MEMO: std::cell::RefCell<TransparentQuotedMemo> =
+        std::cell::RefCell::new(TransparentQuotedMemo {
+            computed_under: None,
+            outcomes: std::collections::HashMap::new(),
+        });
+}
+
+impl TransparentQuotedMemo {
+    const MAX_ENTRIES: usize = 8192;
+    const MAX_KEY_LEN: usize = 256;
+
+    fn key_to(gates: NestedGates) {
+        QUOTED_MEMO.with(|m| {
+            let mut memo = m.borrow_mut();
+            if memo.computed_under.replace(gates) != Some(gates) {
+                memo.outcomes.clear();
+            }
+        });
+    }
+
+    fn outcome(quoted_string: &str, compute: impl FnOnce() -> QuotedOutcome) -> QuotedOutcome {
+        let cacheable = quoted_string.len() <= Self::MAX_KEY_LEN;
+        if cacheable
+            && let Some(known) =
+                QUOTED_MEMO.with(|m| m.borrow().outcomes.get(quoted_string).cloned())
+        {
+            return known;
+        }
+        let outcome = compute();
+        if cacheable {
+            QUOTED_MEMO.with(|m| {
+                let mut memo = m.borrow_mut();
+                if memo.outcomes.len() < Self::MAX_ENTRIES {
+                    memo.outcomes
+                        .insert(quoted_string.to_string(), outcome.clone());
+                }
+            });
+        }
+        outcome
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct NestedGates {
@@ -95,19 +111,53 @@ impl NestedGates {
     }
 }
 
-/// The verdict for one quoted string: the replacement text, whether a
-/// `QuotedString` token is emitted, and whether the verdict came from the
-/// instance-identifier shape rule (which is vetoed in JSON key position).
-type QuotedOutcome = (String, bool, bool);
+#[derive(Clone, Debug)]
+struct QuotedOutcome {
+    replacement: String,
+    emits_token: bool,
+    vetoed_in_key_position: bool,
+}
+
+impl QuotedOutcome {
+    fn escaped_json() -> Self {
+        Self {
+            replacement: "<ESCAPED_JSON>".to_string(),
+            emits_token: true,
+            vetoed_in_key_position: false,
+        }
+    }
+
+    fn placeholders_kept_in_their_words(normalized_content: &str) -> Self {
+        Self {
+            replacement: format!("\"{normalized_content}\""),
+            emits_token: true,
+            vetoed_in_key_position: false,
+        }
+    }
+
+    fn instance_name_folded_on_its_shape() -> Self {
+        Self {
+            replacement: "<QUOTED_STRING>".to_string(),
+            emits_token: true,
+            vetoed_in_key_position: true,
+        }
+    }
+
+    fn literal(quoted_string: &str) -> Self {
+        Self {
+            replacement: quoted_string.to_string(),
+            emits_token: false,
+            vetoed_in_key_position: false,
+        }
+    }
+}
 
 pub struct QuotedStringDetector;
 
-/// Is the quoted string at `end` a JSON key? A key is followed by `:`, with
-/// optional whitespace first — `"k":v` and `"k": v` are both JSON.
-fn followed_by_colon(bytes: &[u8], mut at: usize) -> bool {
-    while let Some(b) = bytes.get(at) {
+fn is_json_key(bytes: &[u8], mut quote_end: usize) -> bool {
+    while let Some(b) = bytes.get(quote_end) {
         match b {
-            b' ' | b'\t' => at += 1,
+            b' ' | b'\t' => quote_end += 1,
             b':' => return true,
             _ => return false,
         }
@@ -115,163 +165,106 @@ fn followed_by_colon(bytes: &[u8], mut at: usize) -> bool {
     false
 }
 
+type NestedPass = (fn(&NestedGates) -> bool, fn(&str, &NestedGates) -> String);
+
+const NESTED_CASCADE_PATHS_BEFORE_NETWORK_UUIDS_BEFORE_HASHES: [NestedPass; 8] = [
+    (
+        |g| g.timestamps,
+        |s, _| UnifiedTimestampDetector::detect_and_replace(s).0,
+    ),
+    (|g| g.paths, |s, _| PathDetector::detect_and_replace(s).0),
+    (|g| g.uuids, |s, _| UuidDetector::detect_and_replace(s).0),
+    (
+        |g| g.ips || g.ports || g.fqdns,
+        |s, g| NetworkDetector::detect_and_replace(s, g.ips, g.ports, g.fqdns).0,
+    ),
+    (|g| g.hashes, |s, _| HashDetector::detect_and_replace(s).0),
+    (|g| g.pids, |s, _| ProcessDetector::detect_and_replace(s).0),
+    (
+        |g| g.durations,
+        |s, _| DurationDetector::detect_and_replace(s).0,
+    ),
+    (|g| g.names, |s, _| NameDetector::detect_and_replace(s).0),
+];
+
+fn is_escaped_blob(quoted_content: &str) -> bool {
+    let no_words = !quoted_content.contains(char::is_whitespace);
+    let opens_a_structure_with_escaped_quotes =
+        quoted_content.trim_start().starts_with(['{', '[']) && quoted_content.contains("\\\"");
+    (no_words || opens_a_structure_with_escaped_quotes)
+        && quoted_content.contains('\\')
+        && (quoted_content.contains(':')
+            || quoted_content.contains('{')
+            || quoted_content.contains('['))
+}
+
+fn carries_placeholders(quoted_content: &str, normalized_content: &str) -> bool {
+    let found_by_the_nested_cascade = normalized_content != quoted_content;
+    let already_put_there_by_the_main_pipeline = quoted_content.contains('<');
+    found_by_the_nested_cascade || already_put_there_by_the_main_pipeline
+}
+
 impl QuotedStringDetector {
-    /// Detect and replace quoted strings that appear to be variables, with
-    /// every nested detector enabled.
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         Self::detect_and_replace_with(text, NestedGates::ALL)
     }
 
-    /// As `detect_and_replace`, running only the nested detectors `gates`
-    /// enables.
     pub fn detect_and_replace_with(text: &str, gates: NestedGates) -> (String, Vec<Token>) {
-        // FAST PATH: Skip if no quoted strings
         if !text.contains('"') {
             return (text.to_string(), Vec::new());
         }
-        if QUOTED_CACHE_GATES.with(|g| g.replace(Some(gates))) != Some(gates) {
-            QUOTED_CACHE.with(|c| c.borrow_mut().clear());
-        }
+        TransparentQuotedMemo::key_to(gates);
         let haystack = text.to_string();
         let mut tokens = Vec::new();
 
-        // Replace all variable quoted strings with placeholder in one pass
         let result = QUOTED_STRING_PATTERN
             .replace_all(&haystack, |caps: &regex::Captures| {
                 let matched = caps.get(0).unwrap();
                 let quoted_string = matched.as_str();
 
-                let cacheable = quoted_string.len() <= QUOTED_CACHE_MAX_KEY_LEN;
-                let cached = if cacheable {
-                    QUOTED_CACHE.with(|c| c.borrow().get(quoted_string).cloned())
-                } else {
-                    None
-                };
+                let outcome = TransparentQuotedMemo::outcome(quoted_string, || {
+                    Self::normalize_quoted(quoted_string, gates)
+                });
 
-                let (replacement, had_token, shape_folded) = if let Some(outcome) = cached {
-                    outcome
-                } else {
-                    let outcome = Self::normalize_quoted(quoted_string, gates);
-                    if cacheable {
-                        QUOTED_CACHE.with(|c| {
-                            let mut cache = c.borrow_mut();
-                            if cache.len() < QUOTED_CACHE_MAX_ENTRIES {
-                                cache.insert(quoted_string.to_string(), outcome.clone());
-                            }
-                        });
-                    }
-                    outcome
-                };
-
-                // A JSON key looks like any other quoted string — there is no
-                // way to tell `"app-namespace"` from `"redis-sentinel"`, or a
-                // 30-char key from a 30-char message, by the string alone. One
-                // lookahead settles it: a key is followed by `:`. A key that
-                // folds erases the record's schema from the template, whichever
-                // rule folded it, so the veto covers every whole-string
-                // replacement — but not a key an inner detector rewrote, which
-                // keeps its quotes and its shape.
-                let whole_replacement = had_token && replacement == "<QUOTED_STRING>";
-                if (shape_folded || whole_replacement)
-                    && followed_by_colon(haystack.as_bytes(), matched.end())
+                if outcome.vetoed_in_key_position && is_json_key(haystack.as_bytes(), matched.end())
                 {
                     return quoted_string.to_string();
                 }
 
-                if had_token {
+                if outcome.emits_token {
                     tokens.push(Token::QuotedString(quoted_string.to_string()));
                 }
-                replacement
+                outcome.replacement
             })
             .to_string();
 
         (result, tokens)
     }
 
-    /// Whole-value instance identifier: a DNS-1123-ish label standing alone as
-    /// a field value. See [`INSTANCE_IDENT`] for why each condition is there.
     fn is_instance_ident(content: &str) -> bool {
         content.len() >= MIN_IDENT_LEN
             && content.bytes().any(|b| b == b'-' || b.is_ascii_digit())
-            && INSTANCE_IDENT.is_match(content)
+            && DNS_LABEL_LIKE_VALUE.is_match(content)
     }
 
-    /// The full normalization cascade for one quoted string (quotes included).
     fn normalize_quoted(quoted_string: &str, gates: NestedGates) -> QuotedOutcome {
-        // Normalize patterns WITHIN the quoted content before deciding
-        let quoted_content = &quoted_string[1..quoted_string.len() - 1]; // Remove quotes
+        let quoted_content = &quoted_string[1..quoted_string.len() - 1];
         let mut normalized_content = quoted_content.to_string();
 
-        // Preserve the nested cascade's ordering: paths before network,
-        // UUIDs before hashes, and generic measurements/names last.
-        if gates.timestamps {
-            normalized_content =
-                UnifiedTimestampDetector::detect_and_replace(&normalized_content).0;
-        }
-        if gates.paths {
-            normalized_content = PathDetector::detect_and_replace(&normalized_content).0;
-        }
-        if gates.uuids {
-            normalized_content = UuidDetector::detect_and_replace(&normalized_content).0;
-        }
-        if gates.ips || gates.ports || gates.fqdns {
-            normalized_content = NetworkDetector::detect_and_replace(
-                &normalized_content,
-                gates.ips,
-                gates.ports,
-                gates.fqdns,
-            )
-            .0;
-        }
-        if gates.hashes {
-            normalized_content = HashDetector::detect_and_replace(&normalized_content).0;
-        }
-        if gates.pids {
-            normalized_content = ProcessDetector::detect_and_replace(&normalized_content).0;
-        }
-        if gates.durations {
-            normalized_content = DurationDetector::detect_and_replace(&normalized_content).0;
-        }
-        if gates.names {
-            normalized_content = NameDetector::detect_and_replace(&normalized_content).0;
+        for (enabled, run) in NESTED_CASCADE_PATHS_BEFORE_NETWORK_UUIDS_BEFORE_HASHES {
+            if enabled(&gates) {
+                normalized_content = run(&normalized_content, &gates);
+            }
         }
 
-        // Escaped JSON FIRST (highest priority): a blob, not a sentence. A
-        // sentence that merely contains an escape (`args=\u0026{…}`, or a
-        // `[ tag ]` at its start) keeps its words like any other sentence
-        // (lessence-t8q); a blob is content without whitespace, or content
-        // that opens with `{`/`[` and carries escaped quotes of its own.
-        let blob = !quoted_content.contains(char::is_whitespace)
-            || (quoted_content.trim_start().starts_with(['{', '['])
-                && quoted_content.contains("\\\""));
-        if blob
-            && quoted_content.contains('\\')
-            && (quoted_content.contains(':')
-                || quoted_content.contains('{')
-                || quoted_content.contains('['))
-        {
-            // This is escaped JSON or structured data - normalize it
-            ("<ESCAPED_JSON>".to_string(), true, false)
-        } else if normalized_content != quoted_content || quoted_content.contains('<') {
-            // The content carries variable patterns: either the inner cascade
-            // just found them, or — far more often, since this detector runs
-            // last — the main pipeline already replaced them with `<TOKEN>`
-            // placeholders before we got here. Either way the variable parts
-            // are tokenised and the words around them ARE the template. Keep
-            // it quoted with the placeholders in place.
-            (format!("\"{normalized_content}\""), true, false)
+        if is_escaped_blob(quoted_content) {
+            QuotedOutcome::escaped_json()
+        } else if carries_placeholders(quoted_content, &normalized_content) {
+            QuotedOutcome::placeholders_kept_in_their_words(&normalized_content)
         } else if Self::is_instance_ident(quoted_content) {
-            // An instance name — folds on its shape, at any length.
-            ("<QUOTED_STRING>".to_string(), true, true)
+            QuotedOutcome::instance_name_folded_on_its_shape()
         } else {
-            // Nothing variable inside and no identifier shape. A sentence
-            // ("Loading TLS configuration from secret") is the event, not a
-            // value of it — two different sentences are two different events
-            // however long they are, so it stays literal exactly as an
-            // unquoted sentence would. Length used to decide here, and on a
-            // JSON `msg` that folded 98.5% of a 60,849-line log into one group
-            // (lessence-7lj).
-            (quoted_string.to_string(), false, false)
+            QuotedOutcome::literal(quoted_string)
         }
     }
 }
@@ -308,8 +301,6 @@ mod tests {
         );
     }
 
-    /// A disabled detector does not run inside a quoted string either, and
-    /// a verdict cached under one set of gates is not reused under another.
     #[test]
     fn the_nested_cascade_honours_the_gates() {
         let line = r#"job msg="started at 2024-01-01T10:00:00Z took 5ms ok""#;
@@ -342,12 +333,12 @@ mod tests {
 
         let (normalized, tokens) = QuotedStringDetector::detect_and_replace(input);
 
-        // "csi-log" is a whole-value instance identifier (hyphen, no
-        // whitespace), so it folds on its shape regardless of length. The
-        // other 3 quoted strings have internal patterns that get normalized.
-        assert_eq!(tokens.len(), 4);
+        assert_eq!(
+            tokens.len(),
+            4,
+            "csi-log folds on its shape; the other three carry inner patterns"
+        );
 
-        // Verify normalized output contains expected patterns
         assert!(
             !normalized.contains("\"csi-log\""),
             "csi-log is an instance name and should fold: {normalized}"
@@ -360,24 +351,21 @@ mod tests {
     }
 
     #[test]
-    fn test_exclude_keywords() {
+    fn plain_quoted_words_stay_literal() {
         let input = r#"status "started" and "finished" operations"#;
 
         let (normalized, tokens) = QuotedStringDetector::detect_and_replace(input);
 
-        // Should not detect keyword strings
         assert_eq!(tokens.len(), 0);
-        assert_eq!(normalized, input); // Unchanged
+        assert_eq!(normalized, input);
     }
 
     #[test]
-    fn test_exclude_short_strings() {
+    fn below_min_ident_len_and_bare_words_stay_literal() {
         let input = r#"value "x" and "ab" but "plain""#;
 
         let (normalized, tokens) = QuotedStringDetector::detect_and_replace(input);
 
-        // Below MIN_IDENT_LEN, and a bare word carries no identifier shape, so
-        // none of these fold.
         assert_eq!(tokens.len(), 0);
         assert_eq!(normalized, input);
     }
@@ -390,14 +378,15 @@ mod tests {
         let (normalized1, tokens1) = QuotedStringDetector::detect_and_replace(input1);
         let (normalized2, tokens2) = QuotedStringDetector::detect_and_replace(input2);
 
-        // Both should normalize to the same pattern since they only differ in duration
-        assert_eq!(normalized1, normalized2);
+        assert_eq!(
+            normalized1, normalized2,
+            "two lines differing only in a duration fold alike"
+        );
         assert_eq!(
             normalized1,
             r#"error "back-off <DURATION> restarting failed""#
         );
 
-        // Both should detect tokens
         assert_eq!(tokens1.len(), 1);
         assert_eq!(tokens2.len(), 1);
     }
@@ -451,8 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_comprehensive_pattern_grouping() {
-        // Test that patterns with different internal variables normalize to the same result
+    fn quoted_strings_differing_only_in_ip_fold_alike() {
         let inputs = vec![
             r#"error "connection to 192.168.1.1 failed""#,
             r#"error "connection to 10.0.0.1 failed""#,
@@ -466,7 +454,6 @@ mod tests {
             assert_eq!(tokens.len(), 1);
         }
 
-        // All should normalize to the same pattern
         assert_eq!(normalized_results[0], normalized_results[1]);
         assert_eq!(normalized_results[1], normalized_results[2]);
         assert_eq!(
@@ -514,12 +501,6 @@ mod tests {
                 r#"error "http://192.168.1.1:8080/api/v1 unreachable""#,
                 r#"error "<PATH> unreachable""#,
             ),
-            // A sentence with a Windows path in it is a sentence: the path
-            // folds, the words stay (it used to read as escaped JSON)
-            (
-                r#"error "path C:\Windows\System32\config invalid""#,
-                r#"error "path <PATH> invalid""#,
-            ),
         ];
 
         for (input, expected) in test_cases {
@@ -529,12 +510,20 @@ mod tests {
         }
     }
 
-    // ---- Mutant-killing: boundary conditions on quote detection ----
+    #[test]
+    fn a_sentence_with_a_windows_path_is_a_sentence_not_escaped_json() {
+        let (result, tokens) = QuotedStringDetector::detect_and_replace(
+            r#"error "path C:\Windows\System32\config invalid""#,
+        );
+        assert_eq!(
+            result, r#"error "path <PATH> invalid""#,
+            "backslashes inside a sentence do not make it an escaped blob"
+        );
+        assert_eq!(tokens.len(), 1);
+    }
 
     #[test]
     fn quoted_string_escaped_json_bracket_only() {
-        // Kills mutant: `|| with &&` on line 78 (contains('['))
-        // Input has backslash + bracket but NOT colon and NOT brace
         let input = r#"data "value\[index\]more" done"#;
         let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
         assert!(
@@ -545,7 +534,6 @@ mod tests {
 
     #[test]
     fn quoted_string_escaped_json_colon_only() {
-        // Input has backslash + colon but NOT brace and NOT bracket
         let input = r#"data "key\:value\:end" done"#;
         let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
         assert!(
@@ -556,7 +544,6 @@ mod tests {
 
     #[test]
     fn quoted_string_escaped_json_brace_only() {
-        // Input has backslash + brace but NOT colon and NOT bracket
         let input = r#"data "obj\{inner\}end" done"#;
         let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
         assert!(
@@ -565,9 +552,6 @@ mod tests {
         );
     }
 
-    // ---- instance-identifier shape rule (bead lessence-8jb) ----
-
-    /// Fold one quoted string in value position and return the result.
     fn fold_value(value: &str) -> String {
         let (normalized, _) =
             QuotedStringDetector::detect_and_replace(&format!(r#"{{"k":"{value}"}}"#));
@@ -575,9 +559,7 @@ mod tests {
     }
 
     #[test]
-    fn shape_fold_is_length_independent_bead_8jb() {
-        // The bead's repro: five application names spanning the old 25-char
-        // boundary. Whether they fold must not depend on how long they are.
+    fn shape_fold_is_length_independent() {
         for value in [
             "iperf3",
             "rook-ceph",
@@ -588,26 +570,30 @@ mod tests {
             assert_eq!(
                 fold_value(value),
                 r#"{"k":<QUOTED_STRING>}"#,
-                "{value} should fold on its shape"
+                "{value} ({} chars) should fold on its shape, at any length",
+                value.len()
             );
         }
     }
 
     #[test]
     fn shape_requires_hyphen_or_digit() {
-        // A bare lowercase word is shape-identical to an enum value such as a
-        // log level, so it stays literal. Each disjunct tested alone.
-        assert_eq!(fold_value("harbor"), r#"{"k":"harbor"}"#);
+        assert_eq!(
+            fold_value("harbor"),
+            r#"{"k":"harbor"}"#,
+            "a bare lowercase word is shape-identical to an enum value"
+        );
         assert_eq!(fold_value("rook-ceph"), r#"{"k":<QUOTED_STRING>}"#);
         assert_eq!(fold_value("iperf3"), r#"{"k":<QUOTED_STRING>}"#);
     }
 
     #[test]
     fn shape_requires_leading_letter() {
-        // HttpStatusDetector emits a bare `2xx`, not an angle-bracket
-        // placeholder. A leading digit must not be eaten, or 2xx merges with
-        // 5xx.
-        assert_eq!(fold_value("2xx"), r#"{"k":"2xx"}"#);
+        assert_eq!(
+            fold_value("2xx"),
+            r#"{"k":"2xx"}"#,
+            "HttpStatusDetector emits a bare 2xx; folding it would merge 2xx with 5xx"
+        );
         assert_eq!(fold_value("a2x"), r#"{"k":<QUOTED_STRING>}"#);
     }
 
@@ -625,9 +611,11 @@ mod tests {
 
     #[test]
     fn shape_rejects_whitespace() {
-        // Prose stays with the length rule. This value is under 25 chars, so
-        // the length rule cannot mask a shape-rule mistake.
-        assert_eq!(fold_value("Update ok-1"), r#"{"k":"Update ok-1"}"#);
+        assert_eq!(
+            fold_value("Update ok-1"),
+            r#"{"k":"Update ok-1"}"#,
+            "a value with a space is prose, not an instance name"
+        );
     }
 
     #[test]
@@ -637,9 +625,11 @@ mod tests {
 
     #[test]
     fn shape_accepts_slash_for_qualified_names() {
-        // argocd emits "app-qualified-name":"argocd/iperf3"; without `/` in
-        // the class those lines refuse to merge.
-        assert_eq!(fold_value("argocd/iperf3"), r#"{"k":<QUOTED_STRING>}"#);
+        assert_eq!(
+            fold_value("argocd/iperf3"),
+            r#"{"k":<QUOTED_STRING>}"#,
+            "an app-qualified name is one instance name"
+        );
     }
 
     #[test]
@@ -651,18 +641,32 @@ mod tests {
 
     #[test]
     fn shape_vetoed_when_the_string_is_a_json_key() {
-        // A key has the same shape as an instance name. Folding it would erase
-        // the record's schema from the template.
         let (normalized, _) =
             QuotedStringDetector::detect_and_replace(r#"{"app-namespace":"argocd"}"#);
-        assert_eq!(normalized, r#"{"app-namespace":"argocd"}"#);
+        assert_eq!(
+            normalized, r#"{"app-namespace":"argocd"}"#,
+            "folding a key erases the record's schema from the template"
+        );
     }
 
     #[test]
-    fn shape_not_vetoed_for_the_same_string_in_value_position() {
-        // Paired with the veto test above: together they prove the veto is
-        // positional and is not baked into the memo cache.
-        assert_eq!(fold_value("app-namespace"), r#"{"k":<QUOTED_STRING>}"#);
+    fn a_key_an_inner_detector_rewrote_is_not_vetoed() {
+        let (normalized, tokens) = QuotedStringDetector::detect_and_replace(r#"{"10.1.2.3":"up"}"#);
+        assert_eq!(
+            normalized, r#"{"<IP>":"up"}"#,
+            "the veto covers whole-string folds; a rewritten key keeps its quotes and shape"
+        );
+        assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn the_key_veto_is_positional_not_cached() {
+        let _ = QuotedStringDetector::detect_and_replace(r#"{"app-namespace":"x"}"#);
+        assert_eq!(
+            fold_value("app-namespace"),
+            r#"{"k":<QUOTED_STRING>}"#,
+            "the same string vetoed as a key a moment ago folds as a value"
+        );
     }
 
     #[test]
@@ -686,8 +690,6 @@ mod tests {
 
     #[test]
     fn claimed_content_beats_the_shape_rule() {
-        // The inner cascade already recognised something here; the shape rule
-        // must not run ahead of it and throw that away.
         let normalized = fold_value("build 1.5");
         assert!(
             !normalized.contains("<QUOTED_STRING>"),
@@ -696,7 +698,6 @@ mod tests {
         assert!(normalized.contains("<DECIMAL>"), "{normalized}");
     }
 
-    /// A sentence that contains an escape sequence is still a sentence.
     #[test]
     fn a_sentence_with_an_escape_keeps_its_words() {
         let (r, _) = QuotedStringDetector::detect_and_replace(
@@ -719,30 +720,31 @@ mod tests {
 
     #[test]
     fn a_quoted_sentence_stays_literal_whatever_its_length() {
-        // lessence-7lj: length used to decide here (> 25 chars -> folded).
-        // A sentence with nothing variable inside IS the event; two different
-        // sentences are two events at any length.
         for content in [
-            "it is a very simple tex",            // 23 chars, under the old floor
-            "it is a very simple text",           // 24 — the old boundary
-            "it is a very simple text indeed ok", // well over
+            "it is a very simple tex",
+            "it is a very simple text",
+            "it is a very simple text indeed ok",
         ] {
             let input = format!(r#"x "{content}""#);
             let (result, tokens) = QuotedStringDetector::detect_and_replace(&input);
-            assert_eq!(result, input, "prose must survive verbatim");
+            assert_eq!(
+                result,
+                input,
+                "prose of {} chars must survive verbatim",
+                content.len()
+            );
             assert!(tokens.is_empty(), "prose emits no token: {tokens:?}");
         }
     }
 
     #[test]
     fn a_quoted_sentence_keeps_placeholders_the_pipeline_already_put_in_it() {
-        // This detector runs last. By then the main pipeline has replaced the
-        // variable parts with <TOKEN>s; the inner cascade then finds nothing
-        // left to change. That must count as "claimed", not fall through to
-        // the prose branch — the words around the placeholders are the template.
         let input = r#"{"msg":"Refreshing app status (expiry: <DURATION>), level (2)"}"#;
         let (result, tokens) = QuotedStringDetector::detect_and_replace(input);
-        assert_eq!(result, input);
+        assert_eq!(
+            result, input,
+            "this detector runs last: the nested cascade finds nothing, the placeholders still count"
+        );
         assert_eq!(
             tokens.len(),
             1,
@@ -751,8 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn test_order_critical_patterns() {
-        // Test UUID detection happens before hash detection
+    fn a_uuid_inside_quotes_is_not_fragmented_into_hashes() {
         let uuid_input = r#"error "pod 550e8400-e29b-41d4-a716-446655440000 terminated""#;
         let (uuid_result, _) = QuotedStringDetector::detect_and_replace(uuid_input);
         assert_eq!(uuid_result, r#"error "pod <UUID> terminated""#);
@@ -760,8 +761,10 @@ mod tests {
             !uuid_result.contains("<HASH>"),
             "UUID should not be fragmented into hashes"
         );
+    }
 
-        // Test URL paths are preserved (path detection before network)
+    #[test]
+    fn a_url_inside_quotes_is_one_path_not_an_ip() {
         let url_input = r#"error "endpoint http://192.168.1.1:8080/api/v1/users down""#;
         let (url_result, _) = QuotedStringDetector::detect_and_replace(url_input);
         assert_eq!(url_result, r#"error "endpoint <PATH> down""#);
@@ -769,8 +772,10 @@ mod tests {
             !url_result.contains("<IP>"),
             "URL should be preserved as complete path"
         );
+    }
 
-        // Test complex pattern with multiple types
+    #[test]
+    fn a_path_a_timestamp_and_a_uuid_in_one_quoted_string_each_fold() {
         let complex_input = r#"error "backup of /data/db at 2025-01-20 10:15:30 for pod 550e8400-e29b-41d4-a716-446655440000 failed""#;
         let (complex_result, _) = QuotedStringDetector::detect_and_replace(complex_input);
         assert_eq!(
@@ -780,20 +785,18 @@ mod tests {
     }
 }
 
-/// The JSON-key veto and its colon lookahead (lessence-e8v survivors
-/// 57, 111-112).
 #[cfg(test)]
-mod e8v_key_veto_2026_09_18 {
+mod json_key_veto_edges {
     use super::*;
 
     #[test]
     fn a_colon_after_optional_blanks_marks_a_key_and_nothing_else_does() {
-        assert!(followed_by_colon(b":v", 0));
-        assert!(followed_by_colon(b"  :v", 0));
-        assert!(followed_by_colon(b"\t:v", 0));
-        assert!(!followed_by_colon(b" v", 0));
-        assert!(!followed_by_colon(b"", 0));
-        assert!(!followed_by_colon(b"x:", 0));
+        assert!(is_json_key(b":v", 0));
+        assert!(is_json_key(b"  :v", 0));
+        assert!(is_json_key(b"\t:v", 0));
+        assert!(!is_json_key(b" v", 0));
+        assert!(!is_json_key(b"", 0));
+        assert!(!is_json_key(b"x:", 0));
     }
 
     #[test]
@@ -808,12 +811,12 @@ mod e8v_key_veto_2026_09_18 {
         assert!(!plain.contains("abc123xyz"), "{plain}");
     }
 
-    /// The veto covers a shape-folded key and a whole-string replacement
-    /// only; an escaped-JSON blob in key position is a blob, not a key,
-    /// and still folds.
     #[test]
     fn an_escaped_blob_in_key_position_still_folds() {
         let (out, _) = QuotedStringDetector::detect_and_replace(r#""a\:b": 1"#);
-        assert!(out.contains("<ESCAPED_JSON>"), "{out}");
+        assert!(
+            out.contains("<ESCAPED_JSON>"),
+            "the veto covers the shape fold only; a blob is not a key: {out}"
+        );
     }
 }

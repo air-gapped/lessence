@@ -1,20 +1,8 @@
-//! `--skill`: the agent skill, shipped inside the binary (lessence-xo4).
-//!
-//! The skill documents this binary's behaviour, so it is embedded at build
-//! time from the same commit and printed by the binary itself, the way
-//! `herdr --skill` does it. There is no second copy to drift: an installed
-//! skill is the one that was verified against the build that printed it.
-
-/// The skill body, `.claude/skills/lessence/SKILL.md` at build time.
 const SKILL: &str = include_str!("../.claude/skills/lessence/SKILL.md");
-/// The complete flag reference the skill points to.
 const FLAGS: &str = include_str!("../.claude/skills/lessence/references/flags.md");
 
-/// The topics `--skill` can print.
 pub const TOPICS: &[&str] = &["skill", "flags"];
 
-/// The text `--skill <topic>` prints, or `None` for an unknown topic.
-///
 /// `skill` is SKILL.md with a provenance note inserted after its YAML
 /// frontmatter, so the file still starts with `---` at byte 0 as the skill
 /// loaders require; `flags` is references/flags.md with the note on top.
@@ -35,13 +23,19 @@ fn provenance(version: &str) -> String {
     )
 }
 
+const FRONTMATTER_OPEN: &str = "---\n";
+const FRONTMATTER_CLOSE: &str = "\n---\n";
+
 fn with_provenance_after_frontmatter(text: &str, note: &str) -> String {
-    // Frontmatter is the first `---` line up to the next `---` line.
-    if let Some(rest) = text.strip_prefix("---\n")
-        && let Some(end) = rest.find("\n---\n")
+    if let Some(rest) = text.strip_prefix(FRONTMATTER_OPEN)
+        && let Some(end) = rest.find(FRONTMATTER_CLOSE)
     {
-        let split = 4 + end + 5;
-        return format!("{}\n{note}{}", &text[..split - 1], &text[split..]);
+        let frontmatter_end = FRONTMATTER_OPEN.len() + end + FRONTMATTER_CLOSE.len();
+        return format!(
+            "{}\n{note}{}",
+            &text[..frontmatter_end - 1],
+            &text[frontmatter_end..]
+        );
     }
     format!("{note}\n{text}")
 }

@@ -2,109 +2,104 @@ use super::Token;
 use regex::{Captures, Regex};
 use std::sync::LazyLock;
 
-// A CPU field carrying millicpu is a resource quantity, not minutes.
-// Accept plain, JSON and backslash-escaped field delimiters. A field name
-// alone is insufficient for unitless values, which can also name CPU IDs.
+const CPU_FIELD_DELIMITER_PLAIN_JSON_OR_ESCAPED: &str = r#"[\\"']*\s*[:=]\s*[\\"']*"#;
+const CPU_WORD_THEN_BLANKS: &str = r"[ \t]+";
+const MILLICPU_NEEDS_ITS_M: &str = r"([0-9]+(?:\.[0-9]+)?m)";
+const CPU_QUANTITY_END: &str = r#"(?:$|[\s,}\]"'\\])"#;
+
 static CPU_QUANTITY: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"\b(?:cpu|CPU)(?:[\\"']*\s*[:=]\s*[\\"']*|[ \t]+)([0-9]+(?:\.[0-9]+)?m)(?:$|[\s,}\]"'\\])"#,
-    )
+    Regex::new(&format!(
+        r"\b(?:cpu|CPU)(?:{CPU_FIELD_DELIMITER_PLAIN_JSON_OR_ESCAPED}|{CPU_WORD_THEN_BLANKS}){MILLICPU_NEEDS_ITS_M}{CPU_QUANTITY_END}"
+    ))
     .expect("CPU quantity field pattern must compile")
 });
 
-// Decimal numbers (like 3.488101038, 254547.69971015)
-// Match decimal numbers that are likely durations or measurements
 static DECIMAL_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d+\.\d+\b").unwrap());
 
-// Integer numbers (like 12345, 67890) - standalone integers that could be IDs, counts, etc.
-// More specific than decimal but broad enough to catch numeric identifiers.
-//
-// DELIBERATELY aggressive (audit bead lessence-elx, 2026-06-09): folding
-// lines that differ only in a numeric field is lessence's core value
-// proposition — the README compression numbers depend on it. Lines folded
-// this way lose no information: rollup variation annotations surface the
-// distinct values (e.g. "number×2 {137, 143}") in both text and JSON
-// output. If stricter behavior is ever needed, add an opt-in context-anchor
-// mode rather than tightening this default.
-static INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b\d{3,}\b").unwrap()); // 3+ digits to avoid matching small numbers like "3 retries"
+const MIN_FOLDED_INTEGER_DIGITS: usize = 3;
 
-// auditd's record id: `msg=audit(<epoch>:<seq>)`. The sequence counter is
-// a counter whatever its digit count; kept apart 324 boot lines in one corpus.
+static INTEGER_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"\b\d{{{MIN_FOLDED_INTEGER_DIGITS},}}\b")).unwrap());
+
 static AUDIT_SEQ_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(\baudit\([^():\s]+:)(\d+)\)").unwrap());
 
-// An integer standing alone as the whole value of a JSON field: `"diff_ms":82`.
-// The 3-digit floor above exists so prose like "3 retries" survives, but a
-// field value is not prose — and leaving it in place meant a latency crossing
-// 100 ms changed whether its line folded (bead lessence-8jb). Runs after
-// INTEGER_REGEX, on whatever small numbers it left behind; the key is
-// preserved, only the value folds.
-//
-// Deliberately JSON-only. Extending it to bare logfmt (`syscall=42`) was
-// measured and rejected: auditd SYSCALL records have ~40 numeric fields, so
-// folding all of them pushed records for different syscalls over the
-// similarity threshold and merged them (linux_auditd 649 -> 344 output lines).
-// The JSON form carries the whole measured win without that.
-static FIELD_INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+static JSON_FIELD_INTEGER_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"("[A-Za-z_][A-Za-z0-9_.-]*"\s*:\s*)(-?\d+)\b"#)
         .expect("Failed to compile field integer regex")
 });
 
-// Duration with units (1.234s, 523ms, 2m30s, 1h15m, 15m27.417653609s)
-// Matches various duration formats: Xh, Xm, Xs, Xms, XμS, Xns, combinations like 1h30m, 2m15s
-// systemd spells a long one out — `3d 12h 48min 21.967s`, `7h 33min 1.865s`,
-// `10min 45.033s` — and each part read alone left the line half literal.
-// Both µ (U+00B5, Go) and μ (U+03BC) are microseconds. No quoted form: the
-// quotes around a JSON value belong to the record, not the duration.
+const MICRO_SIGN_UNITS_U00B5_AND_U03BC: &str = "µs|μs";
+const SYSTEMD_SPELLED_TO_SECONDS: &str = r"(?:\d+d )?(?:\d+h )?(?:\d+min )?\d+(?:\.\d+)?s";
+const SYSTEMD_SPELLED_DAYS: &str = r"\d+d \d+h(?: \d+min)?";
+const SYSTEMD_SPELLED_HOURS: &str = r"\d+h \d+min";
+const GO_COMPACT_FROM_HOURS: &str = r"\d+h(?:\d+m)?(?:\d+(?:\.\d+)?s)?";
+const GO_COMPACT_FROM_MINUTES: &str = r"\d+m(?:\d+(?:\.\d+)?s)?";
+
 static DURATION_WITH_UNIT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:(?:\d+d )?(?:\d+h )?(?:\d+min )?\d+(?:\.\d+)?s|\d+d \d+h(?: \d+min)?|\d+h \d+min|\d+h(?:\d+m)?(?:\d+(?:\.\d+)?s)?|\d+m(?:\d+(?:\.\d+)?s)?|\d+(?:\.\d+)?(?:ms|µs|μs|ns|s))\b").unwrap()
+    Regex::new(&format!(
+        r"\b(?:{SYSTEMD_SPELLED_TO_SECONDS}|{SYSTEMD_SPELLED_DAYS}|{SYSTEMD_SPELLED_HOURS}|{GO_COMPACT_FROM_HOURS}|{GO_COMPACT_FROM_MINUTES}|\d+(?:\.\d+)?(?:ms|{MICRO_SIGN_UNITS_U00B5_AND_U03BC}|ns|s))\b"
+    ))
+    .unwrap()
 });
 
-// An ISO-8601 duration: `PT30M15S`, `P1DT2H`, `PT0.5S`. At least one
-// component is required — a bare `P` or `PT` is a word (a time zone).
+const ISO_DATE_PART: &str = r"(?:\d+Y(?:\d+M)?(?:\d+D)?|\d+M(?:\d+D)?|\d+D)";
+const ISO_OPTIONAL_TIME_AFTER_A_DATE: &str = r"(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?";
+const ISO_TIME_PART_WITH_A_COMPONENT: &str =
+    r"T(?:\d+H(?:\d+M)?(?:\d+(?:\.\d+)?S)?|\d+M(?:\d+(?:\.\d+)?S)?|\d+(?:\.\d+)?S)";
+
 static ISO_DURATION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\bP(?:(?:\d+Y(?:\d+M)?(?:\d+D)?|\d+M(?:\d+D)?|\d+D)(?:T(?:\d+H)?(?:\d+M)?(?:\d+(?:\.\d+)?S)?)?|T(?:\d+H(?:\d+M)?(?:\d+(?:\.\d+)?S)?|\d+M(?:\d+(?:\.\d+)?S)?|\d+(?:\.\d+)?S))\b").unwrap()
+    Regex::new(&format!(
+        r"\bP(?:{ISO_DATE_PART}{ISO_OPTIONAL_TIME_AFTER_A_DATE}|{ISO_TIME_PART_WITH_A_COMPONENT})\b"
+    ))
+    .unwrap()
 });
 
-// Kubernetes duration fields (podStartSLOduration=, podStartE2EDuration=).
-// The key is the event's name for what was measured, so it stays on the
-// line: only the value after `=` becomes `<DURATION_FIELD>`, and
-// `podStartSLOduration=` never folds with `imagePullDuration=`.
 static K8S_DURATION_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(\w*[Dd]uration=)(\d+(?:\.\d+)?(?:ms|µs|μs|ns|us|s|m|h)?)\b").unwrap()
+    Regex::new(&format!(
+        r"(\w*[Dd]uration=)(\d+(?:\.\d+)?(?:ms|{MICRO_SIGN_UNITS_U00B5_AND_U03BC}|ns|us|s|m|h)?)\b"
+    ))
+    .unwrap()
 });
 
-// Memory/file size values (1234567 bytes, 1.2MB, 5.6GB, 128KB)
-// Matches integer or decimal numbers followed by size units: bytes, KB, MB, GB, TB, B
-// `775.5M memory peak`, `40K`, `9.6G`, `256Mi`: systemd and Kubernetes
-// write the unit letter alone, glued to the number.
+const SIZE_WITH_A_UNIT_WORD: &str = r"\b\d+(?:\.\d+)?\s*(?:bytes?|[KMGT]?i?B)\b";
+const SIZE_WITH_A_BARE_UNIT_LETTER: &str = r"\b\d+(?:\.\d+)?[KMGT]i?\b";
+
 static SIZE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b\d+(?:\.\d+)?\s*(?:bytes?|[KMGT]?i?B)\b|\b\d+(?:\.\d+)?[KMGT]i?\b").unwrap()
+    Regex::new(&format!(
+        "{SIZE_WITH_A_UNIT_WORD}|{SIZE_WITH_A_BARE_UNIT_LETTER}"
+    ))
+    .unwrap()
 });
 
-// Memory addresses (0x7fff5fbff8c0): eight or more hex digits. A short
-// `0x22` is a type code, an opcode, a flag — a value, not an address.
-static MEMORY_ADDR_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b0x[a-fA-F0-9]{8,}\b").unwrap());
+const MIN_ADDR_HEX_DIGITS: usize = 8;
 
-// Percentages (87.3%, CPU: 45%, memory: 78%)
-// Matches both integer and decimal percentages: 45%, 87.3%
+static MEMORY_ADDR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(&format!(r"\b0x[a-fA-F0-9]{{{MIN_ADDR_HEX_DIGITS},}}\b")).unwrap());
+
 static PERCENTAGE_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b\d+(?:\.\d+)?%").unwrap());
 
-// HTTP status codes (200, 404, 500, 401, etc.)
-// Matches 3-digit codes that are valid HTTP status codes (100-599)
-// Must be surrounded by spaces or punctuation to avoid matching parts of IP addresses.
-// The context word is a whole word: without the leading `\b`, `barcode 404`
-// read `barcode <HTTP_STATUS>` and `terror 500` an error status.
 static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\b(?:status|error|code|returned?)\s+([1-5][0-9][0-9])\b").unwrap()
 });
 
+type MeasurementPass = fn(&mut String, &mut Vec<Token>);
+
 pub struct DurationDetector;
 
 impl DurationDetector {
-    /// `\d-` before the run or `-\d` after it: a dashed numeric tuple.
+    const PASSES_MOST_SPECIFIC_FIRST: [MeasurementPass; 8] = [
+        Self::fold_iso_durations,
+        Self::fold_duration_fields_keeping_their_key,
+        Self::fold_units_addresses_and_sizes,
+        Self::fold_registered_http_statuses,
+        Self::fold_percentages,
+        Self::fold_decimals_except_versions,
+        Self::fold_integers_except_dashed_tuples,
+        Self::fold_json_field_integers_and_audit_sequences,
+    ];
+
     fn in_dashed_tuple(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
         let before =
@@ -113,9 +108,6 @@ impl DurationDetector {
         before || after
     }
 
-    /// `P` then a digit, or `PT` then a digit: the only way an ISO-8601
-    /// duration can start. A line without one skips ISO_DURATION_REGEX,
-    /// which would otherwise scan every capital P on every line.
     fn has_iso_duration_indicators(text: &str) -> bool {
         let b = text.as_bytes();
         text.match_indices('P').any(|(i, _)| {
@@ -124,17 +116,18 @@ impl DurationDetector {
         })
     }
 
-    /// Three digits in a row: enough for INTEGER_REGEX to have something to do.
     fn has_digit_run(text: &str) -> bool {
         text.as_bytes()
-            .windows(3)
+            .windows(MIN_FOLDED_INTEGER_DIGITS)
             .any(|w| w.iter().all(u8::is_ascii_digit))
     }
 
-    /// Called before generic detectors in the full pipeline, and here for
-    /// direct duration detection. The placeholder makes later passes inert.
+    fn mentions_cpu_and_a_millicpu_unit(text: &str) -> bool {
+        text.contains('m') && (text.contains("cpu") || text.contains("CPU"))
+    }
+
     pub fn cpu_quantities(text: &str) -> (String, Vec<Token>) {
-        if !text.contains('m') || !(text.contains("cpu") || text.contains("CPU")) {
+        if !Self::mentions_cpu_and_a_millicpu_unit(text) {
             return (text.to_string(), Vec::new());
         }
         let mut tokens = Vec::new();
@@ -151,55 +144,62 @@ impl DurationDetector {
         (result.into_owned(), tokens)
     }
 
+    fn has_a_unit_letter_or_a_dot(text: &str) -> bool {
+        text.contains('.')
+            || text.contains('%')
+            || text.contains('s')
+            || text.contains('m')
+            || text.contains('h')
+            || text.contains("KB")
+            || text.contains("MB")
+    }
+
+    fn may_hold_a_unitless_json_field_value(text: &str) -> bool {
+        text.contains(':')
+    }
+
+    fn may_hold_a_measurement(text: &str) -> bool {
+        Self::has_a_unit_letter_or_a_dot(text)
+            || Self::has_iso_duration_indicators(text)
+            || Self::may_hold_a_unitless_json_field_value(text)
+            || Self::has_digit_run(text)
+    }
+
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // FAST PATH: Skip if no duration indicators
-        if !text.contains('.')
-            && !text.contains('%')
-            && !text.contains("ms")
-            && !text.contains('s')
-            && !text.contains('m')
-            && !text.contains('h')
-            && !text.contains("bytes")
-            && !text.contains("KB")
-            && !text.contains("MB")
-            // an ISO-8601 duration carries its units in capitals
-            && !Self::has_iso_duration_indicators(text)
-            // a JSON field value carries no unit of its own
-            && !text.contains(':')
-            // and neither does a bare number: `[Tue <TIMESTAMP> 2024]`
-            && !Self::has_digit_run(text)
-        {
+        if !Self::may_hold_a_measurement(text) {
             return (text.to_string(), Vec::new());
         }
 
         let (mut result, mut tokens) = Self::cpu_quantities(text);
+        for pass in Self::PASSES_MOST_SPECIFIC_FIRST {
+            pass(&mut result, &mut tokens);
+        }
+        (result, tokens)
+    }
 
-        if Self::has_iso_duration_indicators(&result) {
-            for found in ISO_DURATION_REGEX.find_iter(&result) {
+    fn fold_iso_durations(result: &mut String, tokens: &mut Vec<Token>) {
+        if Self::has_iso_duration_indicators(result) {
+            for found in ISO_DURATION_REGEX.find_iter(result) {
                 tokens.push(Token::Duration(found.as_str().to_string()));
             }
-            result = ISO_DURATION_REGEX
-                .replace_all(&result, "<DURATION>")
+            *result = ISO_DURATION_REGEX
+                .replace_all(result, "<DURATION>")
                 .to_string();
         }
+    }
 
-        // Process in order of specificity: each pass folds its own matches
-        // away before the next, looser one runs, so `<SIZE>` can never be
-        // re-read as a bare number. The duration field goes first and keeps
-        // its key; only the value is folded.
-        super::fold_matches(
-            &mut result,
-            &mut tokens,
-            &K8S_DURATION_FIELD_REGEX,
-            |caps| {
-                let key = caps.get(1).unwrap().as_str();
-                let value = caps.get(2).unwrap().as_str();
-                Some((
-                    Token::Duration(value.to_string()),
-                    format!("{key}<DURATION_FIELD>"),
-                ))
-            },
-        );
+    fn fold_duration_fields_keeping_their_key(result: &mut String, tokens: &mut Vec<Token>) {
+        super::fold_matches(result, tokens, &K8S_DURATION_FIELD_REGEX, |caps| {
+            let key = caps.get(1).unwrap().as_str();
+            let value = caps.get(2).unwrap().as_str();
+            Some((
+                Token::Duration(value.to_string()),
+                format!("{key}<DURATION_FIELD>"),
+            ))
+        });
+    }
+
+    fn fold_units_addresses_and_sizes(result: &mut String, tokens: &mut Vec<Token>) {
         for (regex, placeholder, token) in [
             (
                 &*DURATION_WITH_UNIT_REGEX,
@@ -209,107 +209,99 @@ impl DurationDetector {
             (&*MEMORY_ADDR_REGEX, "<ADDR>", Token::Number),
             (&*SIZE_REGEX, "<SIZE>", Token::Size),
         ] {
-            for found in regex.find_iter(&result) {
+            for found in regex.find_iter(result) {
                 tokens.push(token(found.as_str().to_string()));
             }
-            result = regex.replace_all(&result, placeholder).to_string();
+            *result = regex.replace_all(result, placeholder).to_string();
         }
+    }
 
-        // HTTP status codes in prose: only a code the registry knows.
-        // `exit status 128` is an exit status.
-        for cap in HTTP_STATUS_REGEX.captures_iter(&result) {
-            if let Some(status_match) = cap.get(1) {
-                let status_str = status_match.as_str();
-                if let Ok(status_code) = status_str.parse::<u16>()
-                    && Self::is_registered_http_status(status_code)
-                {
-                    tokens.push(Token::HttpStatus(status_code));
-                }
-            }
-        }
-        // Replace only the status code part, keeping the context word.
-        // Slice via match positions, not length arithmetic — positions are
-        // always char boundaries and stay correct if the regex ever grows
-        // a suffix after the capture group.
-        result = HTTP_STATUS_REGEX
-            .replace_all(&result, |caps: &Captures| {
+    fn fold_registered_http_statuses(result: &mut String, tokens: &mut Vec<Token>) {
+        *result = HTTP_STATUS_REGEX
+            .replace_all(result, |caps: &Captures| {
                 let full = caps.get(0).unwrap();
                 let code = caps.get(1).unwrap();
-                if !code
+                let Some(status_code) = code
                     .as_str()
                     .parse::<u16>()
-                    .is_ok_and(Self::is_registered_http_status)
-                {
+                    .ok()
+                    .filter(|c| Self::is_registered_http_status(*c))
+                else {
                     return full.as_str().to_string();
-                }
-                let context = &full.as_str()[..code.start() - full.start()];
-                format!("{context}<HTTP_STATUS>")
+                };
+                tokens.push(Token::HttpStatus(status_code));
+                let context_ending_at_the_code = &full.as_str()[..code.start() - full.start()];
+                format!("{context_ending_at_the_code}<HTTP_STATUS>")
             })
             .to_string();
+    }
 
-        // Loosest passes last, on whatever text the placeholders left behind.
-        for found in PERCENTAGE_REGEX.find_iter(&result) {
+    fn fold_percentages(result: &mut String, tokens: &mut Vec<Token>) {
+        for found in PERCENTAGE_REGEX.find_iter(result) {
             tokens.push(Token::Number(found.as_str().to_string()));
         }
-        result = PERCENTAGE_REGEX.replace_all(&result, "<PCT>").to_string();
+        *result = PERCENTAGE_REGEX.replace_all(result, "<PCT>").to_string();
+    }
 
-        // A decimal with another dotted number attached (`3.3.4`) is a
-        // version, kept whole.
-        for found in DECIMAL_REGEX.find_iter(&result) {
-            if !Self::is_dotted_version(&result, &found) {
-                tokens.push(Token::Duration(found.as_str().to_string()));
-            }
-        }
-        result = DECIMAL_REGEX
-            .replace_all(&result, |caps: &Captures| {
-                let m = caps.get(0).unwrap();
-                if Self::is_dotted_version(&result, &m) {
-                    m.as_str().to_string()
-                } else {
-                    "<DECIMAL>".to_string()
-                }
-            })
-            .to_string();
-
-        // `192-168-7-0-24` is one identifier: a digit run joined to more
-        // digits by dashes on either side is not a number of its own.
-        for found in INTEGER_REGEX.find_iter(&result) {
-            if !Self::in_dashed_tuple(&result, &found) {
-                tokens.push(Token::Number(found.as_str().to_string()));
-            }
-        }
-        let folded = INTEGER_REGEX.replace_all(&result, |caps: &Captures| {
+    fn fold_unless(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        regex: &Regex,
+        stays_literal: fn(&str, &regex::Match) -> bool,
+        placeholder: &str,
+        token: fn(String) -> Token,
+    ) {
+        let folded = regex.replace_all(result, |caps: &Captures| {
             let m = caps.get(0).unwrap();
-            if Self::in_dashed_tuple(&result, &m) {
+            if stays_literal(result, &m) {
                 m.as_str().to_string()
             } else {
-                "<NUMBER>".to_string()
+                tokens.push(token(m.as_str().to_string()));
+                placeholder.to_string()
             }
         });
         if let std::borrow::Cow::Owned(s) = folded {
-            result = s;
+            *result = s;
         }
+    }
 
-        // JSON field values last, on the small numbers INTEGER_REGEX left
-        // behind. Capture-preserving, so the key survives.
-        super::fold_matches(&mut result, &mut tokens, &FIELD_INTEGER_REGEX, |caps| {
+    fn fold_decimals_except_versions(result: &mut String, tokens: &mut Vec<Token>) {
+        Self::fold_unless(
+            result,
+            tokens,
+            &DECIMAL_REGEX,
+            Self::is_dotted_version,
+            "<DECIMAL>",
+            Token::Duration,
+        );
+    }
+
+    fn fold_integers_except_dashed_tuples(result: &mut String, tokens: &mut Vec<Token>) {
+        Self::fold_unless(
+            result,
+            tokens,
+            &INTEGER_REGEX,
+            Self::in_dashed_tuple,
+            "<NUMBER>",
+            Token::Number,
+        );
+    }
+
+    fn fold_json_field_integers_and_audit_sequences(result: &mut String, tokens: &mut Vec<Token>) {
+        super::fold_matches(result, tokens, &JSON_FIELD_INTEGER_REGEX, |caps| {
             let key = caps.get(1).unwrap().as_str();
             let value = caps.get(2).unwrap().as_str();
             Some((Token::Number(value.to_string()), format!("{key}<NUMBER>")))
         });
         if result.contains("audit(") {
-            super::fold_matches(&mut result, &mut tokens, &AUDIT_SEQ_REGEX, |caps| {
+            super::fold_matches(result, tokens, &AUDIT_SEQ_REGEX, |caps| {
                 let prefix = caps.get(1).unwrap().as_str();
                 let seq = caps.get(2).unwrap().as_str();
                 Some((Token::Number(seq.to_string()), format!("{prefix}<NUMBER>)")))
             });
         }
-
-        (result, tokens)
     }
 
-    /// IANA-registered HTTP status codes; anything else after "status" or
-    /// "code" in prose is some other kind of number.
     fn is_registered_http_status(code: u16) -> bool {
         matches!(
             code,
@@ -329,7 +321,6 @@ impl DurationDetector {
         )
     }
 
-    /// `3.3` inside `3.3.4`: preceded by `.digit` or followed by `.digit`.
     fn is_dotted_version(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
         let before =
@@ -342,8 +333,6 @@ impl DurationDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- structured field values (bead lessence-8jb) ----
 
     fn fold(text: &str) -> String {
         DurationDetector::detect_and_replace(text).0
@@ -405,12 +394,11 @@ mod tests {
 
     #[test]
     fn field_integer_folds_independently_of_digit_count() {
-        // The bug: a latency crossing 100 ms changed whether its line folded.
         for value in ["4", "82", "123", "4567"] {
             assert_eq!(
                 fold(&format!(r#"{{"a":"x","diff_ms":{value}}}"#)),
                 r#"{"a":"x","diff_ms":<NUMBER>}"#,
-                "diff_ms:{value}"
+                "diff_ms:{value}: a latency crossing 100 ms must not change whether its line folds"
             );
         }
     }
@@ -422,8 +410,25 @@ mod tests {
 
     #[test]
     fn field_integer_leaves_bare_logfmt_alone() {
-        // Deliberate scope limit, not an oversight: see FIELD_INTEGER_REGEX.
-        assert_eq!(fold("syscall=42 done"), "syscall=42 done");
+        assert_eq!(
+            fold("syscall=42 done"),
+            "syscall=42 done",
+            "JSON_FIELD_INTEGER_REGEX is JSON-only by design"
+        );
+    }
+
+    #[test]
+    fn auditd_syscall_records_for_different_syscalls_stay_apart() {
+        let openat = fold(
+            "type=SYSCALL msg=audit(<TIMESTAMP>:<NUMBER>): arch=c000003e syscall=42 success=yes exit=3 a0=7 a1=1 a2=2 a3=0 items=1 ppid=1 pid=88 uid=0 gid=0 ses=4 tty=pts0",
+        );
+        let execve = fold(
+            "type=SYSCALL msg=audit(<TIMESTAMP>:<NUMBER>): arch=c000003e syscall=59 success=yes exit=0 a0=5 a1=9 a2=6 a3=8 items=2 ppid=2 pid=91 uid=0 gid=0 ses=4 tty=pts0",
+        );
+        assert!(
+            openat.contains("syscall=42") && execve.contains("syscall=59"),
+            "a bare logfmt integer is not a JSON field value: folding every small auditd field over-merged records for different syscalls: {openat} / {execve}"
+        );
     }
 
     #[test]
@@ -438,22 +443,30 @@ mod tests {
 
     #[test]
     fn field_integer_leaves_prose_alone() {
-        // The 3-digit floor on INTEGER_REGEX exists for exactly these.
-        assert_eq!(fold("3 retries remaining"), "3 retries remaining");
+        assert_eq!(
+            fold("3 retries remaining"),
+            "3 retries remaining",
+            "under MIN_FOLDED_INTEGER_DIGITS prose keeps its numbers"
+        );
         assert_eq!(fold("retry 2 of 5"), "retry 2 of 5");
     }
 
     #[test]
     fn field_integer_requires_a_key() {
-        // A bare colon in prose is not a field.
-        assert_eq!(fold("waited: 7 units"), "waited: 7 units");
+        assert_eq!(
+            fold("waited: 7 units"),
+            "waited: 7 units",
+            "a bare colon in prose is not a field"
+        );
     }
 
     #[test]
     fn field_integer_does_not_split_a_decimal() {
-        // The decimal pass runs first; the field pass must not then eat the
-        // integer part of what is left.
-        assert_eq!(fold(r#"{"ratio":1.5}"#), r#"{"ratio":<DECIMAL>}"#);
+        assert_eq!(
+            fold(r#"{"ratio":1.5}"#),
+            r#"{"ratio":<DECIMAL>}"#,
+            "the decimal pass runs first and takes the whole value"
+        );
     }
 
     #[test]
@@ -465,20 +478,19 @@ mod tests {
 
     #[test]
     fn fast_path_still_reaches_a_bare_json_field() {
-        // `{"a":1}` carries none of the duration hints the fast path checks.
-        assert_eq!(fold(r#"{"a":1}"#), r#"{"a":<NUMBER>}"#);
+        assert_eq!(
+            fold(r#"{"a":1}"#),
+            r#"{"a":<NUMBER>}"#,
+            "a JSON field carries no unit hint, only its colon"
+        );
     }
 
     #[test]
-    fn test_k8s_duration_detection() {
+    fn k8s_duration_fields_fold_their_values() {
         let text = r#"podStartSLOduration=3.488101038 podStartE2EDuration="3.488101038s""#;
         let (result, tokens) = DurationDetector::detect_and_replace(text);
 
-        println!("Input: {text}");
-        println!("Output: {result}");
-        println!("Tokens: {tokens:?}");
-
-        assert!(result.contains("<DURATION_FIELD>"));
+        assert!(result.contains("<DURATION_FIELD>"), "{result}");
         assert!(!tokens.is_empty());
     }
 
@@ -545,8 +557,6 @@ mod tests {
                 true,
             ),
             ("buffer: 128KB allocated", "buffer: <SIZE> allocated", true),
-            // "downloaded 2TB of data" is skipped by fast-path pre-filter (no '.', '%', 's', 'm', 'h', etc.)
-            ("downloaded 2TB of data", "downloaded 2TB of data", false),
             ("cache: 512 B total", "cache: <SIZE> total", true),
             (
                 "memory usage: 1234567 bytes and 5.6GB disk",
@@ -565,8 +575,16 @@ mod tests {
         }
     }
 
-    /// A short hex literal is a value, an address has eight hex digits or
-    /// more; a digit run inside a dashed tuple is not a number of its own.
+    #[test]
+    fn a_bare_tb_size_is_skipped_by_the_fast_path() {
+        let (result, tokens) = DurationDetector::detect_and_replace("downloaded 2TB of data");
+        assert_eq!(
+            result, "downloaded 2TB of data",
+            "no unit letter, dot, colon or digit run: the fast path skips the line, a known under-fold"
+        );
+        assert!(tokens.is_empty(), "{tokens:?}");
+    }
+
     #[test]
     fn short_hex_and_dashed_tuples_stay_literal() {
         let (r, _) = DurationDetector::detect_and_replace(
@@ -590,7 +608,6 @@ mod tests {
                 "POST /login returned <HTTP_STATUS> Unauthorized",
                 true,
             ),
-            // a bare number is enough to enter the detector; no `s` needed
             (
                 "Error 404 not found on page",
                 "Error <HTTP_STATUS> not found on page",
@@ -622,9 +639,11 @@ mod tests {
             }
         }
 
-        // The context word is a whole word: `barcode` is not `code`.
         let (barcode, tokens) = DurationDetector::detect_and_replace("scanned barcode 404 items");
-        assert_eq!(barcode, "scanned barcode <NUMBER> items");
+        assert_eq!(
+            barcode, "scanned barcode <NUMBER> items",
+            "`barcode` is not the word `code`: the number folds, not as a status"
+        );
         assert!(
             !tokens.iter().any(|t| matches!(t, Token::HttpStatus(_))),
             "{tokens:?}"
@@ -655,16 +674,15 @@ mod tests {
 
     #[test]
     fn test_http_status_context_with_multibyte_text() {
-        // Multi-byte UTF-8 around the status code must not break the
-        // context slice in the replacement closure.
         let (result, tokens) =
             DurationDetector::detect_and_replace("запрос к api.host returned 404 — повтор");
-        assert_eq!(result, "запрос к api.host returned <HTTP_STATUS> — повтор");
+        assert_eq!(
+            result, "запрос к api.host returned <HTTP_STATUS> — повтор",
+            "multibyte text must not break the context slice"
+        );
         assert!(tokens.iter().any(|t| matches!(t, Token::HttpStatus(404))));
     }
 
-    /// `exit status 128` is an exit status: only a registered HTTP code
-    /// after "status"/"returned" in prose is an HTTP status.
     #[test]
     fn prose_status_must_be_a_registered_http_code() {
         assert_eq!(
@@ -681,8 +699,6 @@ mod tests {
         );
     }
 
-    /// The unit is part of the field: `duration=272ms` and `duration=2.9s`
-    /// fold alike, and nothing of the unit is left behind the placeholder.
     #[test]
     fn duration_field_takes_its_unit() {
         assert_eq!(
@@ -691,8 +707,6 @@ mod tests {
         );
     }
 
-    /// The key names what was measured: it stays on the line, and the
-    /// token carries the value alone.
     #[test]
     fn duration_field_keeps_its_key() {
         let (result, tokens) = DurationDetector::detect_and_replace(
@@ -711,8 +725,6 @@ mod tests {
         );
     }
 
-    /// The sequence counter in an audit record id is a counter whatever
-    /// its digit count.
     #[test]
     fn audit_sequence_counter_folds() {
         assert_eq!(
@@ -773,10 +785,8 @@ mod shapes_2026_08_29 {
     }
 }
 
-/// Boundaries of the dashed-tuple and dotted-version guards and the ISO
-/// duration prefilter (lessence-e8v survivors 106-119, 318-319).
 #[cfg(test)]
-mod e8v_guards_2026_09_18 {
+mod dashed_tuple_dotted_version_iso_edges {
     use super::*;
 
     fn run_at<'a>(text: &'a str, needle: &str) -> regex::Match<'a> {

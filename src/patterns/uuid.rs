@@ -2,82 +2,95 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// Standard UUID format: 8-4-4-4-12 hex digits. No leading `\b`: `_` is a
-// word character, and `user_session_550e8400-…` carries a UUID. The start
-// boundary is checked by hand instead.
-static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+static UUID_WITHOUT_START_BOUNDARY: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b")
         .unwrap()
 });
 
-// A ULID: 26 characters of Crockford base32 (no I, L, O or U), the first
-// one 0–7, in the canonical upper case.
-static ULID_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b[0-7][0-9A-HJKMNP-TV-Z]{25}\b").unwrap());
+fn standalone_uuids(text: &str) -> impl Iterator<Item = regex::Match<'_>> {
+    UUID_WITHOUT_START_BOUNDARY
+        .find_iter(text)
+        .filter(|m| !glued_to_an_alphanumeric_run(text, m.start()))
+}
 
-// A UUID as systemd escapes it inside a unit name, `-` written `\x2d`:
-// `438a97c2\x2d7b77\x2d466d\x2d964d\x2da94c97935530`.
-static ESCAPED_UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"[0-9a-fA-F]{8}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{12}\b").unwrap()
-});
+fn glued_to_an_alphanumeric_run(text: &str, start: usize) -> bool {
+    start > 0 && text.as_bytes()[start - 1].is_ascii_alphanumeric()
+}
 
-// An id-named JSON field with a short opaque value: `"execID":"003d3"`,
-// `"request_id":"a1b2c3"`. The key says it is an id; left literal, a
-// per-call token fragments one event into singleton chains.
-static JSON_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#""([A-Za-z][A-Za-z0-9]*(?:_id|Id|_ID|ID))"\s*:\s*"([A-Za-z0-9][A-Za-z0-9+/=_-]{2,})""#,
-    )
+const ULID_LEN: usize = 26;
+const CROCKFORD_BASE32_UPPER: &str = "[0-9A-HJKMNP-TV-Z]";
+const ULID_FIRST_CHAR: &str = "[0-7]";
+
+static ULID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"\b{ULID_FIRST_CHAR}{CROCKFORD_BASE32_UPPER}{{{}}}\b",
+        ULID_LEN - 1
+    ))
     .unwrap()
 });
 
-// Request ID patterns. The prose word "request" must never match on its own:
-// require an explicit `id` suffix, a `=`/`:` separator, or the `req-`/`req_`
-// prefix idiom before capturing a value.
+const SYSTEMD_ESCAPED_DASH: &str = r"\x2d";
+
+static SYSTEMD_ESCAPED_UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[0-9a-fA-F]{8}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{4}\\x2d[0-9a-fA-F]{12}\b").unwrap()
+});
+
+const ID_NAMED_KEY: &str = "[A-Za-z][A-Za-z0-9]*(?:_id|Id|_ID|ID)";
+
+static ID_NAMED_JSON_FIELD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#""({ID_NAMED_KEY})"\s*:\s*"([A-Za-z0-9][A-Za-z0-9+/=_-]{{2,}})""#
+    ))
+    .unwrap()
+});
+
+const REQUEST_KEY_WITH_ID_SUFFIX: &str = r"(?:req|request)[-_]?id[=:]?\s*";
+const REQUEST_KEY_WITH_SEPARATOR: &str = r"(?:req|request)[=:]\s*";
+const REQ_DASH_OR_UNDERSCORE_PREFIX: &str = r"req[-_]";
+
 static REQUEST_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:(?:req|request)[-_]?id[=:]?\s*|(?:req|request)[=:]\s*|req[-_])([a-zA-Z0-9][a-zA-Z0-9-_]*)\b")
-        .unwrap()
+    Regex::new(&format!(
+        r"\b(?:{REQUEST_KEY_WITH_ID_SUFFIX}|{REQUEST_KEY_WITH_SEPARATOR}|{REQ_DASH_OR_UNDERSCORE_PREFIX})([a-zA-Z0-9][a-zA-Z0-9-_]*)\b"
+    ))
+    .unwrap()
 });
 
-// Any `*_id=` / `*Id=` field whose value is 8+ chars with a letter in it:
-// `container_id=def456ghi789`, `trace_id=5af93g46...`. A charset the hash
-// detector would refuse is still an id here, because the key says so.
+const MIN_GENERIC_ID_LEN: usize = 8;
+
 static GENERIC_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([A-Za-z][A-Za-z0-9]*(?:_id|Id|_ID|ID))=([A-Za-z0-9][A-Za-z0-9-]{7,})\b")
-        .unwrap()
+    Regex::new(&format!(
+        r"\b({ID_NAMED_KEY})=([A-Za-z0-9][A-Za-z0-9-]{{{},}})\b",
+        MIN_GENERIC_ID_LEN - 1
+    ))
+    .unwrap()
 });
 
-// Trace ID patterns
 static TRACE_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\btrace[=:]([a-zA-Z0-9-_]+)\b").unwrap());
 
-// Session ID patterns
 static SESSION_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bsession[=:]([a-zA-Z0-9-_]+)\b").unwrap());
 
-// Correlation ID patterns
 static CORRELATION_ID_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bcorrelation[-_]?id[=:]([a-zA-Z0-9-_]+)\b").unwrap());
+
+const MIN_ID_LEN: usize = 4;
+const MAX_ID_LEN: usize = 64;
+const LONG_HEX_FLOOR: usize = 20;
 
 pub struct UuidDetector;
 
 impl UuidDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no UUID indicators
         if !Self::has_uuid_indicators(text) {
             return (text.to_string(), Vec::new());
         }
 
         let mut tokens = Vec::new();
 
-        // Standard UUIDs first. A UUID glued to a longer alphanumeric run is
-        // a slice of something else; one after `_` is a UUID.
         let mut result = String::with_capacity(text.len());
         let mut last = 0;
-        for m in UUID_REGEX.find_iter(text) {
-            if m.start() > 0 && text.as_bytes()[m.start() - 1].is_ascii_alphanumeric() {
-                continue;
-            }
+        for m in standalone_uuids(text) {
             tokens.push(Token::Uuid(m.as_str().to_string()));
             result.push_str(&text[last..m.start()]);
             result.push_str("<UUID>");
@@ -85,8 +98,7 @@ impl UuidDetector {
         }
         result.push_str(&text[last..]);
 
-        // A ULID is an id too; 26 digits alone would be a number.
-        if result.len() >= 26 {
+        if result.len() >= ULID_LEN {
             super::fold_matches(&mut result, &mut tokens, &ULID_REGEX, |caps| {
                 let id = &caps[0];
                 id.bytes()
@@ -95,48 +107,30 @@ impl UuidDetector {
             });
         }
 
-        // Request IDs
-        if result.contains("\\x2d") {
-            for found in ESCAPED_UUID_REGEX.find_iter(&result) {
+        if result.contains(SYSTEMD_ESCAPED_DASH) {
+            for found in SYSTEMD_ESCAPED_UUID_REGEX.find_iter(&result) {
                 tokens.push(Token::Uuid(found.as_str().to_string()));
             }
-            result = ESCAPED_UUID_REGEX
+            result = SYSTEMD_ESCAPED_UUID_REGEX
                 .replace_all(&result, "<UUID>")
                 .to_string();
         }
 
-        for cap in REQUEST_ID_REGEX.captures_iter(&result) {
-            let req_id = cap.get(1).unwrap().as_str();
-            if Self::is_likely_id(req_id) && !Self::is_prose(&cap) {
-                tokens.push(Token::Uuid(req_id.to_string()));
-            }
-        }
-        result = REQUEST_ID_REGEX
-            .replace_all(&result, |caps: &regex::Captures| {
-                if Self::is_likely_id(&caps[1]) && !Self::is_prose(caps) {
-                    Self::keep_prefix(caps)
-                } else {
-                    caps[0].to_string()
-                }
-            })
-            .to_string();
-
-        // Trace, session and correlation ids all carry the value in group 1
-        // and fold to a keyword-prefixed placeholder.
-        for regex in [&*TRACE_ID_REGEX, &*SESSION_ID_REGEX, &*CORRELATION_ID_REGEX] {
+        for regex in [
+            &*REQUEST_ID_REGEX,
+            &*TRACE_ID_REGEX,
+            &*SESSION_ID_REGEX,
+            &*CORRELATION_ID_REGEX,
+        ] {
             for caps in regex.captures_iter(&result) {
                 let id = caps.get(1).unwrap().as_str();
-                if Self::is_likely_id(id) {
+                if Self::has_id_length_and_a_digit(id) {
                     tokens.push(Token::Uuid(id.to_string()));
                 }
             }
-            // Folded only when the value looks like an id, the same test
-            // the token uses: `session=opened` and `session=closed` are
-            // words, and folding them anyway made two events one with no
-            // value recorded for either.
             result = regex
                 .replace_all(&result, |caps: &regex::Captures| {
-                    if Self::is_likely_id(&caps[1]) {
+                    if Self::has_id_length_and_a_digit(&caps[1]) {
                         Self::keep_prefix(caps)
                     } else {
                         caps[0].to_string()
@@ -145,20 +139,16 @@ impl UuidDetector {
                 .to_string();
         }
 
-        if result.contains("id=") || result.contains("Id=") || result.contains("ID=") {
+        if Self::has_logfmt_id_key(&result) {
             for caps in GENERIC_ID_REGEX.captures_iter(&result) {
                 let value = &caps[2];
-                if Self::is_likely_id(value) {
+                if Self::has_id_length_and_a_digit(value) {
                     tokens.push(Token::Uuid(value.to_string()));
                 }
             }
             result = GENERIC_ID_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
-                    // A purely numeric id (`auid=4294967295`) is a number, and
-                    // a purely alphabetic value (`action_id=readiness`) is a
-                    // word, never an opaque id — `is_likely_id` requires a
-                    // digit for exactly that reason.
-                    if Self::is_likely_id(&caps[2]) {
+                    if Self::has_id_length_and_a_digit(&caps[2]) {
                         format!("{}=<UUID>", &caps[1])
                     } else {
                         caps[0].to_string()
@@ -168,14 +158,14 @@ impl UuidDetector {
         }
 
         if result.contains("\":") {
-            for caps in JSON_ID_REGEX.captures_iter(&result) {
-                if Self::is_likely_id(&caps[2]) {
+            for caps in ID_NAMED_JSON_FIELD_REGEX.captures_iter(&result) {
+                if Self::has_id_length_and_a_digit(&caps[2]) {
                     tokens.push(Token::Uuid(caps[2].to_string()));
                 }
             }
-            result = JSON_ID_REGEX
+            result = ID_NAMED_JSON_FIELD_REGEX
                 .replace_all(&result, |caps: &regex::Captures| {
-                    if Self::is_likely_id(&caps[2]) {
+                    if Self::has_id_length_and_a_digit(&caps[2]) {
                         format!("\"{}\":\"<UUID>\"", &caps[1])
                     } else {
                         caps[0].to_string()
@@ -187,49 +177,45 @@ impl UuidDetector {
         (result, tokens)
     }
 
-    fn is_likely_id(text: &str) -> bool {
-        // Check if it looks like an ID (reasonable length, alphanumeric)
-        if text.len() < 4 || text.len() > 64 {
-            return false;
-        }
-
-        // A word of letters only is never an opaque id: `liveness`,
-        // `readiness`, `inform` are English, not hex or a generated token.
-        // An id carries at least one digit — a git hash, a request id, a
-        // trace id all do; a plain word never does. Numeric-only stays
-        // accepted (a numeric request id is still an id).
-        text.chars().any(char::is_numeric)
-    }
-
-    /// `request: tokenreviews` — the word `request` followed by a colon, a
-    /// space and a plain word is a sentence, not a request id. An id sits
-    /// right after its separator or carries a digit.
-    fn is_prose(caps: &regex::Captures) -> bool {
-        let whole = &caps[0];
-        let id = &caps[1];
-        whole[..whole.len() - id.len()].ends_with(' ')
-            && id.bytes().all(|b| b.is_ascii_alphabetic())
+    fn has_id_length_and_a_digit(text: &str) -> bool {
+        (MIN_ID_LEN..=MAX_ID_LEN).contains(&text.len()) && text.chars().any(char::is_numeric)
     }
 
     #[inline]
-    /// The placeholder replaces the id and nothing else: `req-abc123` becomes
-    /// `req-<UUID>`, `trace:abc` becomes `trace:<UUID>`. The value is the
-    /// last capture group and ends the match.
     fn keep_prefix(caps: &regex::Captures) -> String {
-        let whole = &caps[0];
-        let id = &caps[1];
-        format!("{}<UUID>", &whole[..whole.len() - id.len()])
+        let whole = caps.get(0).unwrap();
+        let id = caps.get(1).unwrap();
+        debug_assert_eq!(
+            id.end(),
+            whole.end(),
+            "the id must be the last capture and end the match, or the kept prefix is wrong"
+        );
+        format!("{}<UUID>", &whole.as_str()[..id.start() - whole.start()])
+    }
+
+    fn has_logfmt_id_key(text: &str) -> bool {
+        text.contains("id=") || text.contains("Id=") || text.contains("ID=")
+    }
+
+    fn has_json_id_key(text: &str) -> bool {
+        text.contains("id\":") || text.contains("Id\":") || text.contains("ID\":")
+    }
+
+    fn names_a_request_trace_or_session(text: &str) -> bool {
+        text.contains("req") || text.contains("trace") || text.contains("session")
+    }
+
+    fn may_hold_a_long_hex_string(text: &str) -> bool {
+        text.len() > LONG_HEX_FLOOR && text.chars().any(|c| c.is_ascii_hexdigit())
     }
 
     fn has_uuid_indicators(text: &str) -> bool {
-        // Ultra-fast check for UUID/ID indicators
-        text.contains('-') || // Standard UUIDs have hyphens
-        text.contains("\\x2d") || // a UUID as systemd escapes it
-        text.contains("id=") || text.contains("Id=") || text.contains("ID=") ||
-        text.contains("id\":") || text.contains("Id\":") || text.contains("ID\":") ||
-        text.contains("req") || text.contains("request") ||
-        text.contains("trace") || text.contains("session") ||
-        (text.len() > 20 && text.chars().any(|c| c.is_ascii_hexdigit())) // Potential hex string
+        text.contains('-')
+            || text.contains(SYSTEMD_ESCAPED_DASH)
+            || Self::has_logfmt_id_key(text)
+            || Self::has_json_id_key(text)
+            || Self::names_a_request_trace_or_session(text)
+            || Self::may_hold_a_long_hex_string(text)
     }
 }
 
@@ -241,8 +227,10 @@ mod tests {
     fn test_standard_uuid_detection() {
         let text = "Processing request 550e8400-e29b-41d4-a716-446655440000";
         let (result, tokens) = UuidDetector::detect_and_replace(text);
-        // The prose word "request" stays intact; only the UUID is replaced.
-        assert_eq!(result, "Processing request <UUID>");
+        assert_eq!(
+            result, "Processing request <UUID>",
+            "the prose word `request` stays; only the UUID folds"
+        );
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::Uuid(_)));
     }
@@ -267,9 +255,11 @@ mod tests {
 
     #[test]
     fn test_request_short_value_left_alone() {
-        // Captured value fails is_likely_id (< 4 chars) — line stays intact.
         let (result, tokens) = UuidDetector::detect_and_replace("req-ab1 started");
-        assert_eq!(result, "req-ab1 started");
+        assert_eq!(
+            result, "req-ab1 started",
+            "a value under MIN_ID_LEN is not an id"
+        );
         assert_eq!(tokens.len(), 0);
     }
 
@@ -300,8 +290,6 @@ mod tests {
         assert!(matches!(tokens[0], Token::Uuid(_)));
     }
 
-    /// A trace, session or correlation keyword in front of a plain word is
-    /// a state, not an id: the word stays and no token is recorded.
     #[test]
     fn a_keyword_before_a_word_is_not_an_id() {
         for text in [
@@ -330,8 +318,6 @@ mod tests {
         assert_eq!(result, "HTTP 200 OK");
         assert_eq!(tokens.len(), 0);
     }
-
-    // ---- has_uuid_indicators: per-condition tests ----
 
     #[test]
     fn uuid_ind_hyphen() {
@@ -362,121 +348,130 @@ mod tests {
 
     #[test]
     fn uuid_ind_long_hex() {
-        // >20 chars with hex digits, no hyphens/req/trace/session
-        assert!(UuidDetector::has_uuid_indicators(
-            "id: 550e8400e29b41d4a716446655440000"
-        ));
+        assert!(
+            UuidDetector::has_uuid_indicators("id: 550e8400e29b41d4a716446655440000"),
+            "a line over LONG_HEX_FLOOR with a hex digit may hold a hex id"
+        );
     }
 
     #[test]
     fn uuid_ind_short_no_match() {
-        // <=20 chars, no keywords — should fail
-        assert!(!UuidDetector::has_uuid_indicators("ok"));
+        assert!(
+            !UuidDetector::has_uuid_indicators("ok"),
+            "short, no hex run, no id keyword"
+        );
     }
 
     #[test]
     fn uuid_ind_exactly_21_chars_with_hex() {
-        // Kills: > 20 → >= 20 boundary
-        // 21 chars with a hex digit, no keywords
-        let s = "z".repeat(20) + "a"; // 21 chars, 'a' is hex
-        assert!(UuidDetector::has_uuid_indicators(&s));
+        let s = "z".repeat(LONG_HEX_FLOOR) + "a";
+        assert!(
+            UuidDetector::has_uuid_indicators(&s),
+            "{} chars with a hex digit is over LONG_HEX_FLOOR",
+            s.len()
+        );
     }
 
     #[test]
     fn uuid_ind_exactly_20_chars_with_hex() {
-        // 20 chars, NOT > 20, should fail (no keywords either)
-        let s = "z".repeat(19) + "a"; // 20 chars
-        assert!(!UuidDetector::has_uuid_indicators(&s));
+        let s = "z".repeat(LONG_HEX_FLOOR - 1) + "a";
+        assert!(
+            !UuidDetector::has_uuid_indicators(&s),
+            "{} chars is not over LONG_HEX_FLOOR",
+            s.len()
+        );
     }
 
     #[test]
     fn uuid_ind_long_no_hex() {
-        // >20 chars but NO hex digits → && fails
-        // Kills: && with || (would pass if || because len > 20 alone suffices)
-        let s = "z".repeat(25); // no hex digits (z is not hex)
-        assert!(!UuidDetector::has_uuid_indicators(&s));
+        let s = "z".repeat(25);
+        assert!(
+            !UuidDetector::has_uuid_indicators(&s),
+            "length alone is not enough: the line also needs a hex digit"
+        );
     }
-
-    // ---- is_likely_id: per-condition tests ----
 
     #[test]
     fn likely_id_too_short() {
-        assert!(!UuidDetector::is_likely_id("ab"));
+        assert!(!UuidDetector::has_id_length_and_a_digit("ab"));
     }
 
     #[test]
     fn likely_id_too_long() {
-        assert!(!UuidDetector::is_likely_id(&"a".repeat(65)));
+        assert!(!UuidDetector::has_id_length_and_a_digit(&"a".repeat(65)));
     }
 
     #[test]
     fn likely_id_just_letters_is_a_word_not_an_id() {
-        assert!(!UuidDetector::is_likely_id("abcdef"));
+        assert!(!UuidDetector::has_id_length_and_a_digit("abcdef"));
     }
 
     #[test]
     fn likely_id_just_numbers() {
-        assert!(UuidDetector::is_likely_id("123456"));
+        assert!(UuidDetector::has_id_length_and_a_digit("123456"));
     }
 
     #[test]
     fn likely_id_no_alphanum() {
-        assert!(!UuidDetector::is_likely_id("----"));
+        assert!(!UuidDetector::has_id_length_and_a_digit("----"));
     }
-
-    // ---- Mutant-killing: boundary tests for is_likely_id ----
 
     #[test]
     fn likely_id_exactly_4_chars() {
-        // Kills mutant: `< 4` → `<= 4` (line 112)
-        assert!(UuidDetector::is_likely_id("abc1")); // len=4, has a digit → true
+        assert!(
+            UuidDetector::has_id_length_and_a_digit("abc1"),
+            "MIN_ID_LEN chars is long enough"
+        );
     }
 
     #[test]
     fn likely_id_exactly_3_chars_rejected() {
-        assert!(!UuidDetector::is_likely_id("ab1")); // len=3 < 4 → false
+        assert!(
+            !UuidDetector::has_id_length_and_a_digit("ab1"),
+            "one char under MIN_ID_LEN"
+        );
     }
 
     #[test]
     fn likely_id_exactly_64_chars() {
-        // Kills mutant: `> 64` → `>= 64` (line 112)
-        let s = format!("1{}", "a".repeat(63));
-        assert!(UuidDetector::is_likely_id(&s)); // len=64, has a digit → true
+        let s = format!("1{}", "a".repeat(MAX_ID_LEN - 1));
+        assert!(
+            UuidDetector::has_id_length_and_a_digit(&s),
+            "MAX_ID_LEN chars is still an id"
+        );
     }
 
     #[test]
     fn likely_id_exactly_65_chars_rejected() {
-        let s = format!("1{}", "a".repeat(64));
-        assert!(!UuidDetector::is_likely_id(&s)); // len=65 > 64 → false
+        let s = format!("1{}", "a".repeat(MAX_ID_LEN));
+        assert!(
+            !UuidDetector::has_id_length_and_a_digit(&s),
+            "one char over MAX_ID_LEN"
+        );
     }
 
-    /// 32 hex digits with no hyphens are an MD5, the hash detector's.
     #[test]
     fn thirty_two_hex_digits_are_not_a_uuid() {
         let (r, _) =
             UuidDetector::detect_and_replace("saddr=02000050A9FEA9FE0000000000000000 req-x");
         assert!(
             r.starts_with("saddr=02000050A9FEA9FE0000000000000000"),
-            "{r}"
+            "32 hex digits are an MD5, the hash detector's, not a UUID: {r}"
         );
     }
 
-    /// `_` is a word character, so `\b` used to refuse the UUID after it; a
-    /// UUID glued to a longer hex run is still refused.
     #[test]
     fn uuid_after_an_underscore_is_a_uuid() {
         let (r, t) = UuidDetector::detect_and_replace(
             "key: user_session_550e8400-e29b-41d4-a716-446655440000 and x550e8400-e29b-41d4-a716-446655440000",
         );
         assert_eq!(
-            r,
-            "key: user_session_<UUID> and x550e8400-e29b-41d4-a716-446655440000"
+            r, "key: user_session_<UUID> and x550e8400-e29b-41d4-a716-446655440000",
+            "`_` is a word char but not a glue char: a UUID after it is a UUID; after a letter it is a slice"
         );
         assert_eq!(t.len(), 1);
     }
 
-    /// 26 characters of Crockford base32 are a ULID wherever they stand;
-    /// 26 digits are a number.
     #[test]
     fn ulid_is_an_id() {
         let (r, t) = UuidDetector::detect_and_replace(
@@ -487,30 +482,29 @@ mod tests {
             r#"ulid=<ULID> sources="[<ULID> <ULID>]" n=01234567890123456789012345"#
         );
         assert_eq!(t.len(), 3);
-        // lower case, a letter outside the alphabet, 27 chars, a first
-        // character past 7: none of them a ULID
-        for s in [
-            "01k5h2m4n6p8q0r2s4t6v8w0x2",
-            "01K5H2M4N6P8Q0R2S4T6V8W0XI",
-            "01K5H2M4N6P8Q0R2S4T6V8W0X22",
-            "81K5H2M4N6P8Q0R2S4T6V8W0X2",
+        for (s, why) in [
+            ("01k5h2m4n6p8q0r2s4t6v8w0x2", "lower case is not canonical"),
+            (
+                "01K5H2M4N6P8Q0R2S4T6V8W0XI",
+                "I is outside Crockford base32",
+            ),
+            ("01K5H2M4N6P8Q0R2S4T6V8W0X22", "27 chars is not ULID_LEN"),
+            ("81K5H2M4N6P8Q0R2S4T6V8W0X2", "the first char is past 7"),
         ] {
             let line = format!("id {s} end");
             let (r, _) = UuidDetector::detect_and_replace(&line);
-            assert_eq!(r, line);
+            assert_eq!(r, line, "{why}");
         }
     }
 
-    /// An id field's value is an id whatever its charset; a numeric one is
-    /// a number and stays for the number detector.
     #[test]
     fn id_field_with_letters_is_an_id_whatever_its_charset() {
         let (r, t) = UuidDetector::detect_and_replace(
             "container_id=def456ghi789 trace_id=5af93g46a2b7c8d9 auid=4294967295 node_id=n7",
         );
         assert_eq!(
-            r,
-            "container_id=<UUID> trace_id=<UUID> auid=4294967295 node_id=n7"
+            r, "container_id=<UUID> trace_id=<UUID> auid=4294967295 node_id=n7",
+            "an id-named key makes a value with a letter and a digit an id whatever its charset"
         );
         assert_eq!(t.len(), 2);
     }
@@ -556,12 +550,6 @@ mod shapes_2026_08_29_ids {
         assert_eq!(r, r#"{"grpc.method_type":"unary"}"#, "not an id-named key");
     }
 
-    /// lessence-defect: `"route_id":"liveness"` was invented into an 8-hex
-    /// id (`5f21025e`), and the same "liveness" then got rewritten wherever
-    /// else it appeared (`"action":"liveness"`) — a word of letters only
-    /// is never a hex id. `req-inform` had the same failure through
-    /// `REQUEST_ID_REGEX`. A real digit-bearing id (`route_id":"a1b2c3d4"`,
-    /// `req-abc123`) must still be recognised.
     #[test]
     fn an_id_named_field_holding_a_plain_word_is_not_an_id() {
         let (r, t) = UuidDetector::detect_and_replace(r#""route_id":"liveness""#);
@@ -585,10 +573,8 @@ mod shapes_2026_08_29_ids {
     }
 }
 
-/// The id-field and prose guards and every indicator alone
-/// (lessence-e8v survivors 138, 198-200, 217-219).
 #[cfg(test)]
-mod e8v_indicators_2026_09_18 {
+mod id_indicator_and_prose_edges {
     use super::*;
 
     #[test]

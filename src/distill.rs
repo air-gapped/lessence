@@ -642,7 +642,9 @@ mod tests {
 
     fn cfg(members: usize) -> Config {
         Config {
-            distill: Some(members),
+            group_sink: crate::config::GroupSink::RecordDistillMembers {
+                members_per_group: members,
+            },
             stats: false,
             thread_count: Some(1),
             ..Config::default()

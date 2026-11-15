@@ -2,46 +2,80 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// JSON structured logs with level and component/service
-static JSON_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"\{"[^"]*(?:level|severity|lvl)"[^"]*:\s*"(error|warn|warning|info|information|debug|trace|fatal|critical)"[^}]*"(?:component|service|module|logger|source)"[^"]*:\s*"([^"]+)"[^}]*\}"#
-    ).unwrap()
+const LOG_LEVELS: [&str; 9] = [
+    "error",
+    "warn",
+    "warning",
+    "info",
+    "information",
+    "debug",
+    "trace",
+    "fatal",
+    "critical",
+];
+const LEVEL_KEYS: &str = "level|severity|lvl";
+const COMPONENT_KEYS: &str = "component|service|module|logger|source";
+
+fn level_values() -> String {
+    LOG_LEVELS.join("|")
+}
+
+static JSON_LEVEL_FIRST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"\{{"[^"]*(?:{LEVEL_KEYS})"[^"]*:\s*"({})"[^}}]*"(?:{COMPONENT_KEYS})"[^"]*:\s*"([^"]+)"[^}}]*\}}"#,
+        level_values()
+    ))
+    .unwrap()
 });
 
-// Alternative JSON order: component first, then level
-static JSON_STRUCTURED_ALT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"\{"[^"]*"(?:component|service|module|logger|source)"[^"]*:\s*"([^"]+)"[^}]*"(?:level|severity|lvl)"[^"]*:\s*"(error|warn|warning|info|information|debug|trace|fatal|critical)"[^}]*\}"#
-    ).unwrap()
+static JSON_COMPONENT_FIRST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"\{{"[^"]*"(?:{COMPONENT_KEYS})"[^"]*:\s*"([^"]+)"[^}}]*"(?:{LEVEL_KEYS})"[^"]*:\s*"({})"[^}}]*\}}"#,
+        level_values()
+    ))
+    .unwrap()
 });
 
-// Logfmt style: level=info component=api-gateway msg="message"
 static LOGFMT_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?:level|severity|lvl)=(error|warn|warning|info|information|debug|trace|fatal|critical)\s+(?:component|service|module|logger|source)=([^\s]+)"
-    ).unwrap()
+    Regex::new(&format!(
+        r"(?:{LEVEL_KEYS})=({})\s+(?:{COMPONENT_KEYS})=([^\s]+)",
+        level_values()
+    ))
+    .unwrap()
 });
 
-// Docker/Container structured logs
-static CONTAINER_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+static DOCKER_JSON_FILE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\{"[^}]*"log":\s*"[^"]*\[(INFO|ERROR|WARN|DEBUG)\]\s+([^:]+):[^"]*"[^}]*\}"#)
         .unwrap()
 });
 
+const MIN_COMPONENT_LEN: usize = 3;
+const MAX_COMPONENT_LEN: usize = 50;
+
+#[derive(Clone, Copy)]
+enum FieldOrder {
+    LevelFirst,
+    ComponentFirst,
+}
+
+impl FieldOrder {
+    fn level_and_component_groups(self) -> (usize, usize) {
+        match self {
+            Self::LevelFirst => (1, 2),
+            Self::ComponentFirst => (2, 1),
+        }
+    }
+}
+
 pub struct StructuredMessageDetector;
 
 impl StructuredMessageDetector {
-    /// Both halves in table order: the JSON records, then the logfmt ones.
-    /// The text is kept verbatim; only tokens are extracted.
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
         let (text, mut tokens) = Self::detect_json_records(text);
         tokens.extend(Self::detect_logfmt_records(&text).1);
         (text, tokens)
     }
 
-    /// The half `--disable-patterns json` switches off. K8s records are
-    /// left to `KubernetesDetector`.
     pub(crate) fn detect_json_records(text: &str) -> (String, Vec<Token>) {
         let mut tokens = Vec::new();
         if Self::has_structured_indicators(text) {
@@ -52,7 +86,6 @@ impl StructuredMessageDetector {
         (text.to_string(), tokens)
     }
 
-    /// The half `--disable-patterns key-value` switches off.
     pub(crate) fn detect_logfmt_records(text: &str) -> (String, Vec<Token>) {
         let mut tokens = Vec::new();
         if Self::has_structured_indicators(text) {
@@ -61,34 +94,39 @@ impl StructuredMessageDetector {
         (text.to_string(), tokens)
     }
 
-    pub(crate) fn has_structured_indicators(text: &str) -> bool {
-        // Fast byte-level checks for structured logging indicators
-        (text.contains(r#""level":"#) ||
-         text.contains(r#""severity":"#) ||
-         text.contains(r#""component":"#) ||
-         text.contains(r#""service":"#) ||
-         text.contains("level=") ||
-         text.contains("component=")) &&
-        // Must have JSON or logfmt structure
-        (text.contains('{') || text.contains('=')) &&
-        // Exclude non-log JSON
-        !text.contains(r#""data":"#) &&
-        !text.contains(r#""result":"#) &&
-        !text.contains(r#""response":"#)
+    fn has_level_or_component_key(text: &str) -> bool {
+        text.contains(r#""level":"#)
+            || text.contains(r#""severity":"#)
+            || text.contains(r#""component":"#)
+            || text.contains(r#""service":"#)
+            || text.contains("level=")
+            || text.contains("component=")
     }
 
-    /// Collect one `StructuredMessage` per match that `accept` recognises.
-    ///
-    /// `level_group` and `component_group` are capture indices, because the
-    /// JSON variants disagree about which field comes first.
+    fn has_json_or_logfmt_structure(text: &str) -> bool {
+        text.contains('{') || text.contains('=')
+    }
+
+    fn is_payload_json(text: &str) -> bool {
+        text.contains(r#""data":"#)
+            || text.contains(r#""result":"#)
+            || text.contains(r#""response":"#)
+    }
+
+    pub(crate) fn has_structured_indicators(text: &str) -> bool {
+        Self::has_level_or_component_key(text)
+            && Self::has_json_or_logfmt_structure(text)
+            && !Self::is_payload_json(text)
+    }
+
     fn collect(
         text: &str,
         tokens: &mut Vec<Token>,
         regex: &Regex,
-        level_group: usize,
-        component_group: usize,
+        order: FieldOrder,
         accept: impl Fn(&str, &str) -> bool,
     ) {
+        let (level_group, component_group) = order.level_and_component_groups();
         for caps in regex.captures_iter(text) {
             let level = caps.get(level_group).unwrap().as_str();
             let component = caps.get(component_group).unwrap().as_str();
@@ -102,35 +140,34 @@ impl StructuredMessageDetector {
         }
     }
 
-    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: the pre-filter (has_structured_indicators) excludes all inputs that would match CONTAINER_STRUCTURED_REGEX, so this is dead code in practice
+    #[cfg_attr(test, mutants::skip)]
     fn apply_container_pattern(text: &str, tokens: &mut Vec<Token>) {
-        // Container logs carry a bracketed level rather than a log-level
-        // field, so only the component is validated here.
-        Self::collect(text, tokens, &CONTAINER_STRUCTURED_REGEX, 1, 2, |c, _| {
-            Self::is_application_component(c)
-        });
+        Self::collect(
+            text,
+            tokens,
+            &DOCKER_JSON_FILE_REGEX,
+            FieldOrder::LevelFirst,
+            |component, _bracketed_level| Self::is_application_component(component),
+        );
     }
 
     fn apply_json_pattern(text: &str, tokens: &mut Vec<Token>) {
         Self::collect(
             text,
             tokens,
-            &JSON_STRUCTURED_REGEX,
-            1,
-            2,
+            &JSON_LEVEL_FIRST_REGEX,
+            FieldOrder::LevelFirst,
             Self::is_valid_structured_log,
         );
     }
 
-    #[cfg_attr(test, mutants::skip)] // Equivalent mutant: JSON alt pattern (component first, level second) is rarely matched after the primary JSON pattern already consumed the input
+    #[cfg_attr(test, mutants::skip)]
     fn apply_json_alt_pattern(text: &str, tokens: &mut Vec<Token>) {
-        // Component first, level second — hence the swapped group indices.
         Self::collect(
             text,
             tokens,
-            &JSON_STRUCTURED_ALT_REGEX,
-            2,
-            1,
+            &JSON_COMPONENT_FIRST_REGEX,
+            FieldOrder::ComponentFirst,
             Self::is_valid_structured_log,
         );
     }
@@ -140,8 +177,7 @@ impl StructuredMessageDetector {
             text,
             tokens,
             &LOGFMT_STRUCTURED_REGEX,
-            1,
-            2,
+            FieldOrder::LevelFirst,
             Self::is_valid_structured_log,
         );
     }
@@ -176,7 +212,6 @@ impl StructuredMessageDetector {
     }
 
     fn is_microservice_component(component: &str) -> bool {
-        // Common microservice naming patterns
         component.contains("service")
             || component.contains("api")
             || component.contains("gateway")
@@ -215,7 +250,11 @@ impl StructuredMessageDetector {
         framework_components
             .iter()
             .any(|&framework| component.contains(framework))
-            || component.contains('.') && !component.contains(' ') // Package-style names
+            || Self::is_package_name(component)
+    }
+
+    fn is_package_name(component: &str) -> bool {
+        component.contains('.') && !component.contains(' ')
     }
 
     fn is_infrastructure_component(component: &str) -> bool {
@@ -246,35 +285,25 @@ impl StructuredMessageDetector {
             .any(|&infra| component.contains(infra))
     }
 
-    #[cfg_attr(test, mutants::skip)] // The four is_*_component checks are all subsets of the generic validation (3-50 chars, alphanumeric)
-    fn is_valid_structured_log(component: &str, level: &str) -> bool {
-        // Validate log level
-        let valid_levels = [
-            "error",
-            "warn",
-            "warning",
-            "info",
-            "information",
-            "debug",
-            "trace",
-            "fatal",
-            "critical",
-        ];
+    fn is_component_shaped(component: &str) -> bool {
+        (MIN_COMPONENT_LEN..=MAX_COMPONENT_LEN).contains(&component.len())
+            && component
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
+            && !component.chars().all(|c| c.is_ascii_digit())
+    }
 
-        if !valid_levels.contains(&level.to_lowercase().as_str()) {
+    #[cfg_attr(test, mutants::skip)]
+    fn is_valid_structured_log(component: &str, level: &str) -> bool {
+        if !LOG_LEVELS.contains(&level.to_lowercase().as_str()) {
             return false;
         }
 
-        // Validate component (K8s components removed to prevent pattern theft)
-        Self::is_application_component(component) ||
-        Self::is_microservice_component(component) ||
-        Self::is_framework_component(component) ||
-        Self::is_infrastructure_component(component) ||
-        // Generic validation for reasonable component names
-        (component.len() >= 3 &&
-         component.len() <= 50 &&
-         component.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') &&
-         !component.chars().all(|c| c.is_ascii_digit())) // Not just numbers
+        Self::is_application_component(component)
+            || Self::is_microservice_component(component)
+            || Self::is_framework_component(component)
+            || Self::is_infrastructure_component(component)
+            || Self::is_component_shaped(component)
     }
 }
 
@@ -283,13 +312,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_kubernetes_structured_detection() {
-        // A kubernetes component is a component like any other: no word on
-        // the line switches the detector off (lessence-enl).
+    fn a_kubernetes_component_is_a_component_like_any_other() {
         let k8s_line = r#"{"level":"info","ts":"2024-01-01T10:00:00.000Z","component":"kubelet","msg":"Starting container"}"#;
         let (_result, tokens) = StructuredMessageDetector::detect_and_replace(k8s_line);
 
-        assert!(!tokens.is_empty());
+        assert!(
+            !tokens.is_empty(),
+            "no word on the line switches the detector off"
+        );
     }
 
     #[test]
@@ -335,8 +365,6 @@ mod tests {
         }
     }
 
-    // --- Component classification (private helpers) ---
-
     #[test]
     fn test_microservice_component() {
         assert!(StructuredMessageDetector::is_microservice_component(
@@ -374,8 +402,6 @@ mod tests {
         assert!(!StructuredMessageDetector::is_framework_component("my-app"));
     }
 
-    // --- Structured log validation ---
-
     #[test]
     fn test_valid_structured_log() {
         assert!(StructuredMessageDetector::is_valid_structured_log(
@@ -403,8 +429,6 @@ mod tests {
         ));
     }
 
-    // --- has_structured_indicators ---
-
     #[test]
     fn test_structured_indicators_json() {
         assert!(StructuredMessageDetector::has_structured_indicators(
@@ -430,21 +454,12 @@ mod tests {
         for test_case in non_log_cases {
             let (_result, tokens) = StructuredMessageDetector::detect_and_replace(test_case);
 
-            // Should not detect structured logging in data JSON
-            let has_structured = tokens
-                .iter()
-                .any(|token| matches!(token, Token::StructuredMessage { .. }));
-
-            if has_structured {
-                // If detected, should be valid
-                for token in &tokens {
-                    if let Token::StructuredMessage { component, level } = token {
-                        assert!(StructuredMessageDetector::is_valid_structured_log(
-                            component, level
-                        ));
-                    }
-                }
-            }
+            assert!(
+                !tokens
+                    .iter()
+                    .any(|token| matches!(token, Token::StructuredMessage { .. })),
+                "data JSON is not a log record: {test_case} -> {tokens:?}"
+            );
         }
     }
 
@@ -462,8 +477,6 @@ mod tests {
             assert_eq!(result, multi_line, "text must be preserved verbatim");
         }
     }
-
-    // ---- has_structured_indicators: per-condition tests ----
 
     #[test]
     fn struct_ind_level_json() {
@@ -508,12 +521,19 @@ mod tests {
     }
 
     #[test]
-    fn struct_ind_requires_structure() {
-        // Has level= but no { or = (beyond the level=) — well, level= has = so it passes
-        // Test: has "level": but no { or =
-        assert!(!StructuredMessageDetector::has_structured_indicators(
-            r#""level":"error" plain"#
-        ));
+    fn a_json_level_key_without_braces_or_equals_has_no_structure() {
+        for (text, case) in [
+            (r#""level":"error" plain"#, "struct_ind_requires_structure"),
+            (
+                r#""level":"error" no structure"#,
+                "struct_ind_needs_both_keyword_and_structure",
+            ),
+        ] {
+            assert!(
+                !StructuredMessageDetector::has_structured_indicators(text),
+                "{case}: a level key with no `{{` and no `=` fails the structure check"
+            );
+        }
     }
 
     #[test]
@@ -538,8 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn struct_ind_no_longer_checks_k8s() {
-        // No word elsewhere on the line switches the detector off.
+    fn no_word_on_the_line_switches_the_detector_off() {
         assert!(StructuredMessageDetector::has_structured_indicators(
             r#"{"level":"info","component":"kubelet"}"#
         ));
@@ -552,14 +571,12 @@ mod tests {
         ));
     }
 
-    // ---- is_application_component: per-branch tests ----
-
     #[test]
     fn app_comp_known() {
-        // Uses contains(), so component must contain one of the app_components items
-        assert!(StructuredMessageDetector::is_application_component(
-            "my-application"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("my-application"),
+            "a listed word anywhere in the component matches: substring, not equality"
+        );
         assert!(StructuredMessageDetector::is_application_component(
             "database-primary"
         ));
@@ -632,8 +649,6 @@ mod tests {
     fn app_comp_negative() {
         assert!(!StructuredMessageDetector::is_application_component("zzz"));
     }
-
-    // ---- is_microservice_component: per-branch tests ----
 
     #[test]
     fn micro_comp_service() {
@@ -731,8 +746,6 @@ mod tests {
         assert!(!StructuredMessageDetector::is_microservice_component("zzz"));
     }
 
-    // ---- is_valid_structured_log: per-branch tests ----
-
     #[test]
     fn valid_struct_log_invalid_level() {
         assert!(!StructuredMessageDetector::is_valid_structured_log(
@@ -771,39 +784,130 @@ mod tests {
 
     #[test]
     fn valid_struct_log_generic_valid() {
-        // 3-50 chars, alphanumeric, not all digits
-        assert!(StructuredMessageDetector::is_valid_structured_log(
-            "my-app", "error"
-        ));
+        assert!(
+            StructuredMessageDetector::is_valid_structured_log("my-app", "error"),
+            "MIN_COMPONENT_LEN..=MAX_COMPONENT_LEN chars of [A-Za-z0-9_.-], not all digits"
+        );
     }
 
     #[test]
-    fn valid_struct_log_too_short() {
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            "ab", "error"
-        ));
+    fn a_component_outside_the_generic_shape_is_refused() {
+        let long = "a".repeat(MAX_COMPONENT_LEN + 1);
+        for (component, level, case) in [
+            ("ab", "error", "valid_struct_log_too_short"),
+            (long.as_str(), "error", "valid_struct_log_too_long"),
+            ("12345", "error", "valid_struct_log_all_digits"),
+            ("my app!", "error", "valid_struct_log_special_chars"),
+            ("ab", "info", "valid_structured_log_too_short"),
+            (long.as_str(), "info", "valid_structured_log_too_long"),
+            ("12345", "info", "valid_structured_log_all_digits_fails"),
+            (
+                "has space",
+                "info",
+                "valid_structured_log_invalid_chars_fails",
+            ),
+        ] {
+            assert!(
+                !StructuredMessageDetector::is_valid_structured_log(component, level),
+                "{case}: {component}"
+            );
+        }
     }
 
     #[test]
-    fn valid_struct_log_too_long() {
-        let long = "a".repeat(51);
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            &long, "error"
-        ));
+    fn the_generic_shape_admits_both_length_bounds() {
+        for component in ["abc".to_string(), "a".repeat(MAX_COMPONENT_LEN)] {
+            assert!(
+                StructuredMessageDetector::is_component_shaped(&component),
+                "{} chars is inside MIN_COMPONENT_LEN..=MAX_COMPONENT_LEN",
+                component.len()
+            );
+        }
     }
 
     #[test]
-    fn valid_struct_log_all_digits() {
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            "12345", "error"
-        ));
+    fn each_classifier_alone_admits_a_component_the_generic_shape_refuses() {
+        type Classifier = fn(&str) -> bool;
+        let classifiers: [(&str, Classifier); 4] = [
+            (
+                "application",
+                StructuredMessageDetector::is_application_component,
+            ),
+            (
+                "microservice",
+                StructuredMessageDetector::is_microservice_component,
+            ),
+            (
+                "framework",
+                StructuredMessageDetector::is_framework_component,
+            ),
+            (
+                "infrastructure",
+                StructuredMessageDetector::is_infrastructure_component,
+            ),
+        ];
+        for (component, holds) in [
+            ("my database", "application"),
+            ("edge gateway", "microservice"),
+            ("spring boot", "framework"),
+            ("nginx ingress", "infrastructure"),
+        ] {
+            assert!(
+                !StructuredMessageDetector::is_component_shaped(component),
+                "{component}: a space fails the generic shape"
+            );
+            for (name, classify) in classifiers {
+                assert_eq!(
+                    classify(component),
+                    name == holds,
+                    "{component}: only the {holds} classifier holds, not {name}"
+                );
+            }
+            assert!(
+                StructuredMessageDetector::is_valid_structured_log(component, "info"),
+                "{component}: the {holds} classifier alone admits it"
+            );
+        }
+        assert!(
+            !StructuredMessageDetector::is_valid_structured_log("my database", "bogus"),
+            "an unknown level is refused whatever the component"
+        );
     }
 
     #[test]
-    fn valid_struct_log_special_chars() {
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            "my app!", "error"
-        ));
+    fn a_docker_json_file_record_with_a_level_key_reaches_the_container_pattern() {
+        let (_, tokens) = StructuredMessageDetector::detect_and_replace(
+            r#"{"level":"x","log":"[INFO] database: connected\n","stream":"stdout"}"#,
+        );
+        assert_eq!(
+            tokens,
+            vec![Token::StructuredMessage {
+                component: "database".to_string(),
+                level: "info".to_string(),
+            }],
+            "the prefilter admits a container record that carries a level key"
+        );
+        let (_, tokens) = StructuredMessageDetector::detect_and_replace(
+            r#"{"level":"x","log":"[INFO] worker: connected\n","stream":"stdout"}"#,
+        );
+        assert!(
+            tokens.is_empty(),
+            "the container pattern takes only an application component: {tokens:?}"
+        );
+    }
+
+    #[test]
+    fn the_component_first_pattern_reads_the_level_from_group_two() {
+        let (_, tokens) = StructuredMessageDetector::detect_and_replace(
+            r#"{"x"service":"db-proxy","level":"warn"}"#,
+        );
+        assert_eq!(
+            tokens,
+            vec![Token::StructuredMessage {
+                component: "db-proxy".to_string(),
+                level: "warn".to_string(),
+            }]
+        );
     }
 
     #[test]
@@ -826,23 +930,21 @@ mod tests {
         }
     }
 
-    // ---- Mutant-killing: apply_* patterns must emit tokens (text is kept) ----
-
     #[test]
     fn apply_json_pattern_emits_token_preserves_text() {
-        // JSON structured log: level first, then component (not a k8s component)
-        // Kills mutant: apply_json_pattern replaced with ()
         let input = r#"{"level":"error","component":"payment-api","msg":"fail"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
         assert_eq!(result, input, "text must be preserved verbatim");
-        assert!(!tokens.is_empty(), "JSON pattern should produce tokens");
+        assert!(
+            !tokens.is_empty(),
+            "JSON pattern should produce tokens: an apply_json_pattern that does nothing emits none"
+        );
     }
 
     #[test]
     fn apply_json_primary_regex_matches_directly() {
-        // Verify the primary JSON regex works (level first, then component)
         let input = r#"{"level":"error","service":"order-api"}"#;
-        let m = JSON_STRUCTURED_REGEX.captures(input);
+        let m = JSON_LEVEL_FIRST_REGEX.captures(input);
         assert!(
             m.is_some(),
             "Primary JSON regex should match level-first JSON, input: {input}"
@@ -851,17 +953,17 @@ mod tests {
 
     #[test]
     fn apply_logfmt_pattern_emits_token_preserves_text() {
-        // Logfmt structured log with a valid component
-        // Kills mutant: apply_logfmt_pattern replaced with ()
         let input = "level=info component=api-gateway msg=\"Request received\"";
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
         assert_eq!(result, input, "text must be preserved verbatim");
-        assert!(!tokens.is_empty(), "logfmt pattern should produce tokens");
+        assert!(
+            !tokens.is_empty(),
+            "logfmt pattern should produce tokens: an apply_logfmt_pattern that does nothing emits none"
+        );
     }
 
     #[test]
     fn apply_json_pattern_produces_correct_token() {
-        // Verify the JSON path produces the right component and level
         let input = r#"{"level":"warn","service":"billing-api","msg":"retry"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
         assert_eq!(result, input, "text must be preserved verbatim");
@@ -876,7 +978,6 @@ mod tests {
 
     #[test]
     fn apply_logfmt_pattern_produces_correct_token() {
-        // Verify logfmt produces the right component and level
         let input = "level=error component=my-registry msg=\"connection lost\"";
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(input);
         assert_eq!(result, input, "text must be preserved verbatim");
@@ -889,71 +990,66 @@ mod tests {
         }
     }
 
-    // ---- Mutant-killing: is_application_component suffix-only matches ----
-
     #[test]
     fn app_comp_only_service_suffix() {
-        // "xyz-service" ends_with("-service") but "xyz" is NOT in app_components list
-        assert!(StructuredMessageDetector::is_application_component(
-            "xyz-service"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("xyz-service"),
+            "xyz is in no list: only the -service suffix matches"
+        );
     }
 
     #[test]
     fn app_comp_only_underscore_service_suffix() {
-        assert!(StructuredMessageDetector::is_application_component(
-            "xyz_service"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("xyz_service"),
+            "xyz is in no list: only the _service suffix matches"
+        );
     }
 
     #[test]
     fn app_comp_only_api_suffix() {
-        // "xyz-api" ends_with("-api") but "xyz" is not in app_components
-        assert!(StructuredMessageDetector::is_application_component(
-            "xyz-api"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("xyz-api"),
+            "xyz is in no list: only the -api suffix matches"
+        );
     }
 
     #[test]
     fn app_comp_only_underscore_api_suffix() {
-        assert!(StructuredMessageDetector::is_application_component(
-            "xyz_api"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("xyz_api"),
+            "xyz is in no list: only the _api suffix matches"
+        );
     }
 
     #[test]
     fn app_comp_only_client_suffix() {
-        // "xyz-client" ends_with("-client") but "xyz" is not in app_components
-        assert!(StructuredMessageDetector::is_application_component(
-            "xyz-client"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("xyz-client"),
+            "xyz is in no list: only the -client suffix matches"
+        );
     }
 
     #[test]
     fn app_comp_only_underscore_client_suffix() {
-        assert!(StructuredMessageDetector::is_application_component(
-            "xyz_client"
-        ));
+        assert!(
+            StructuredMessageDetector::is_application_component("xyz_client"),
+            "xyz is in no list: only the _client suffix matches"
+        );
     }
 
     #[test]
     fn app_comp_no_match_at_all() {
-        // Does not match any app_component item NOR any suffix
         assert!(!StructuredMessageDetector::is_application_component(
             "xyz-handler"
         ));
     }
 
-    // ---- Mutant-killing: is_microservice_component single-keyword matches ----
-
     #[test]
     fn micro_comp_only_gateway() {
-        // Contains "gateway" but NOT service, api, proxy, balancer, registry, discovery,
-        // config, auth, user, payment, order, inventory, notification
         assert!(StructuredMessageDetector::is_microservice_component(
             "my-gateway-1"
         ));
-        // Verify it doesn't contain other keywords
         let s = "my-gateway-1";
         assert!(!s.contains("service") && !s.contains("api") && !s.contains("proxy"));
     }
@@ -994,20 +1090,12 @@ mod tests {
         ));
     }
 
-    // ---- Mutant-killing: is_valid_structured_log single-checker matches ----
-
     #[test]
     fn valid_struct_log_only_app_component() {
-        // "metrics-handler" -> is_application_component (contains "metrics") = true
-        // is_microservice_component: contains none of its keywords (actually "metrics" is not in micro list) = false
-        // is_framework_component: no framework names, no '.' = false
-        // is_infrastructure_component: no infra names = false
-        // Kills mutant: || replaced with && between the four is_* checks
-        assert!(StructuredMessageDetector::is_valid_structured_log(
-            "metrics-handler",
-            "info"
-        ));
-        // Verify it's ONLY app_component
+        assert!(
+            StructuredMessageDetector::is_valid_structured_log("metrics-handler", "info"),
+            "exactly one is_*_component classifier holds for metrics-handler"
+        );
         assert!(StructuredMessageDetector::is_application_component(
             "metrics-handler"
         ));
@@ -1024,11 +1112,10 @@ mod tests {
 
     #[test]
     fn valid_struct_log_only_micro_component() {
-        // "my-gateway-1" -> is_microservice (contains "gateway") but NOT app, framework, or infra
-        assert!(StructuredMessageDetector::is_valid_structured_log(
-            "my-gateway-1",
-            "info"
-        ));
+        assert!(
+            StructuredMessageDetector::is_valid_structured_log("my-gateway-1", "info"),
+            "exactly one is_*_component classifier holds for my-gateway-1"
+        );
         assert!(!StructuredMessageDetector::is_application_component(
             "my-gateway-1"
         ));
@@ -1045,12 +1132,10 @@ mod tests {
 
     #[test]
     fn valid_struct_log_only_framework_component() {
-        // "spring-boot" -> is_framework (contains "spring") but NOT app, micro, or infra
-        // Note: doesn't contain any micro keywords (service, api, gateway, etc.)
-        assert!(StructuredMessageDetector::is_valid_structured_log(
-            "spring-boot",
-            "info"
-        ));
+        assert!(
+            StructuredMessageDetector::is_valid_structured_log("spring-boot", "info"),
+            "exactly one is_*_component classifier holds for spring-boot"
+        );
         assert!(!StructuredMessageDetector::is_application_component(
             "spring-boot"
         ));
@@ -1067,12 +1152,10 @@ mod tests {
 
     #[test]
     fn valid_struct_log_only_infra_component() {
-        // "my-nginx-1" -> is_infrastructure (contains "nginx") but NOT app, micro, or framework
-        // "nginx" doesn't contain any micro keywords or app_components items
-        assert!(StructuredMessageDetector::is_valid_structured_log(
-            "my-nginx-1",
-            "info"
-        ));
+        assert!(
+            StructuredMessageDetector::is_valid_structured_log("my-nginx-1", "info"),
+            "exactly one is_*_component classifier holds for my-nginx-1"
+        );
         assert!(!StructuredMessageDetector::is_application_component(
             "my-nginx-1"
         ));
@@ -1087,11 +1170,8 @@ mod tests {
         ));
     }
 
-    // ---- Mutant-killing: is_microservice_component (line 215) ----
-
     #[test]
     fn microservice_component_each_keyword() {
-        // Each keyword in is_microservice_component should independently return true
         let keywords = [
             "service",
             "api",
@@ -1124,18 +1204,12 @@ mod tests {
         ));
     }
 
-    // ---- Mutant-killing: is_valid_structured_log generic validation (lines 302-304) ----
-
     #[test]
     fn valid_structured_log_generic_component() {
-        // A component that's NOT in any category (app, micro, framework, infra)
-        // but passes the generic validation: 3-50 chars, alphanumeric/underscore/dash/dot,
-        // not all digits
-        assert!(StructuredMessageDetector::is_valid_structured_log(
-            "my-custom-comp",
-            "info"
-        ));
-        // Verify it's not in any specific category
+        assert!(
+            StructuredMessageDetector::is_valid_structured_log("my-custom-comp", "info"),
+            "in no category, admitted by the generic shape alone"
+        );
         assert!(!StructuredMessageDetector::is_application_component(
             "my-custom-comp"
         ));
@@ -1147,57 +1221,6 @@ mod tests {
         ));
         assert!(!StructuredMessageDetector::is_infrastructure_component(
             "my-custom-comp"
-        ));
-    }
-
-    #[test]
-    fn valid_structured_log_too_short() {
-        // Component with 2 chars (< 3) should fail the generic validation
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            "ab", "info"
-        ));
-    }
-
-    #[test]
-    fn valid_structured_log_too_long() {
-        // Component with 51 chars (> 50) should fail
-        let long = "a".repeat(51);
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            &long, "info"
-        ));
-    }
-
-    #[test]
-    fn valid_structured_log_all_digits_fails() {
-        // All-digit component should fail
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            "12345", "info"
-        ));
-    }
-
-    #[test]
-    fn valid_structured_log_invalid_chars_fails() {
-        // Component with spaces should fail
-        assert!(!StructuredMessageDetector::is_valid_structured_log(
-            "has space",
-            "info"
-        ));
-    }
-
-    // ---- Mutant-killing: has_structured_indicators line 84 ----
-
-    #[test]
-    fn struct_ind_needs_both_keyword_and_structure() {
-        // Has level= keyword but NO structure indicators ({ or =) — wait, level= has =
-        // So we need "level": keyword without { or =
-        // Actually `"level":` test: has the keyword but if we strip { and =...
-        // The && on line 64 requires BOTH a keyword AND structure
-        // Test: keyword present but no { and no = — impossible with level= but possible with "level":
-        // "\"level\":\"x\"" has : but contains neither { nor =
-        // Wait, look at the code: the structure check is (contains('{') || contains('='))
-        // "\"level\":\"x\"" — no { and no = → structure check fails
-        assert!(!StructuredMessageDetector::has_structured_indicators(
-            r#""level":"error" no structure"#
         ));
     }
 }

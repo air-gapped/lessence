@@ -2,62 +2,58 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// Apache style: [error] mod_jk message
+const BRACKETED_LEVELS: &str =
+    "error|warn|warning|info|information|debug|trace|fatal|crit|critical|notice";
+const SYSTEMD_BRACKETED_LEVELS: &str = "error|warn|warning|info|information|debug|trace|fatal";
+const FRAMEWORK_LEVELS: &str = "ERROR|WARN|WARNING|INFO|INFORMATION|DEBUG|TRACE|FATAL|CRITICAL";
+
 static APACHE_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\[(error|warn|warning|info|information|debug|trace|fatal|crit|critical|notice)\]\s+(mod_\w+)"
-    ).unwrap()
+    Regex::new(&format!(
+        r"\[(?P<level>{BRACKETED_LEVELS})\]\s+(?P<module>mod_\w+)"
+    ))
+    .unwrap()
 });
 
-// Nginx style: [error] 12345#0: *1 ngx_http_core_module: message
 static NGINX_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"\[(error|warn|warning|info|information|debug|trace|fatal|crit|critical|notice)\]\s+\d+#\d+:\s*\*?\d*\s+(ngx_\w+(?:_module)?)"
-    ).unwrap()
+    Regex::new(&format!(
+        r"\[(?P<level>{BRACKETED_LEVELS})\]\s+\d+#\d+:\s*\*?\d*\s+(?P<module>ngx_\w+(?:_module)?)"
+    ))
+    .unwrap()
 });
 
-// Framework style: LEVEL [module.component] message
 static FRAMEWORK_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(ERROR|WARN|WARNING|INFO|INFORMATION|DEBUG|TRACE|FATAL|CRITICAL)\s+\[([a-zA-Z][a-zA-Z0-9_.]+)\]"
-    ).unwrap()
+    Regex::new(&format!(
+        r"(?P<level>{FRAMEWORK_LEVELS})\s+\[(?P<module>[a-zA-Z][a-zA-Z0-9_.]+)\]"
+    ))
+    .unwrap()
 });
 
-// Systemd style: service[pid]: [level] component: message
 static SYSTEMD_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"([a-zA-Z][a-zA-Z0-9_-]+)\[\d+\]:\s*\[(error|warn|warning|info|information|debug|trace|fatal)\]\s+([a-zA-Z][a-zA-Z0-9_]+):"
-    ).unwrap()
+    Regex::new(&format!(
+        r"(?P<service>[a-zA-Z][a-zA-Z0-9_-]+)\[\d+\]:\s*\[(?P<level>{SYSTEMD_BRACKETED_LEVELS})\]\s+(?P<component>[a-zA-Z][a-zA-Z0-9_]+):"
+    ))
+    .unwrap()
 });
 
 pub struct LogWithModuleDetector;
 
 impl LogWithModuleDetector {
-    /// The level and the module name are the event's identity, not a
-    /// variable value, so the Apache, nginx and systemd shapes leave the
-    /// line unchanged and the token only feeds the level statistics.
-    /// Replacing `[error] mod_jk` with one placeholder made an error and a
-    /// notice from one module one event.
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no log module indicators
         if !Self::has_log_module_indicators(text) {
             return (text.to_string(), Vec::new());
         }
 
         let mut tokens = Vec::new();
 
-        // Apply log-with-module detection in order of specificity
-        Self::apply_apache_pattern(text, &mut tokens);
-        Self::apply_nginx_pattern(text, &mut tokens);
+        Self::note_apache_module(text, &mut tokens);
+        Self::note_nginx_module(text, &mut tokens);
         let mut result = text.to_string();
-        Self::apply_framework_pattern(&mut result, &mut tokens);
-        Self::apply_systemd_pattern(&result, &mut tokens);
+        Self::fold_framework_logger(&mut result, &mut tokens);
+        Self::note_systemd_component(&result, &mut tokens);
 
         (result, tokens)
     }
 
-    /// Push a token for every match the recogniser accepts; the text is
-    /// never rewritten (see `detect_and_replace`).
     fn note_matches(
         text: &str,
         tokens: &mut Vec<Token>,
@@ -72,27 +68,29 @@ impl LogWithModuleDetector {
     }
 
     pub(crate) fn has_log_module_indicators(text: &str) -> bool {
-        // Fast byte-level checks for log module indicators
-        (text.contains("mod_") ||
-         text.contains("ngx_") ||
-         text.contains("[error]") ||
-         text.contains("[warn") ||
-         text.contains("[info") ||
-         text.contains("[debug") ||
-         text.contains("ERROR ") ||
-         text.contains("WARN ") ||
-         text.contains("INFO ") ||
-         text.contains("DEBUG ")) &&
-        // Exclude non-logging contexts
-        !text.contains("function ") &&
-        !text.contains("class ") &&
-        !text.contains("import ")
+        (text.contains("mod_")
+            || text.contains("ngx_")
+            || text.contains("[error]")
+            || text.contains("[warn")
+            || text.contains("[info")
+            || text.contains("[debug")
+            || text.contains("ERROR ")
+            || text.contains("WARN ")
+            || text.contains("INFO ")
+            || text.contains("DEBUG "))
+            && !Self::looks_like_source_code(text)
     }
 
-    fn apply_apache_pattern(text: &str, tokens: &mut Vec<Token>) {
+    fn looks_like_source_code(text: &str) -> bool {
+        ["function ", "class ", "import "]
+            .iter()
+            .any(|keyword| text.contains(keyword))
+    }
+
+    fn note_apache_module(text: &str, tokens: &mut Vec<Token>) {
         Self::note_matches(text, tokens, &APACHE_LOG_MODULE_REGEX, |caps| {
-            let level = caps.get(1).unwrap().as_str();
-            let module = caps.get(2).unwrap().as_str();
+            let level = &caps["level"];
+            let module = &caps["module"];
             Self::is_apache_module(module).then(|| Token::LogWithModule {
                 level: level.to_lowercase(),
                 module: module.to_string(),
@@ -100,10 +98,10 @@ impl LogWithModuleDetector {
         });
     }
 
-    fn apply_nginx_pattern(text: &str, tokens: &mut Vec<Token>) {
+    fn note_nginx_module(text: &str, tokens: &mut Vec<Token>) {
         Self::note_matches(text, tokens, &NGINX_LOG_MODULE_REGEX, |caps| {
-            let level = caps.get(1).unwrap().as_str();
-            let module = caps.get(2).unwrap().as_str();
+            let level = &caps["level"];
+            let module = &caps["module"];
             Self::is_nginx_module(module).then(|| Token::LogWithModule {
                 level: level.to_lowercase(),
                 module: module.to_string(),
@@ -111,13 +109,10 @@ impl LogWithModuleDetector {
         });
     }
 
-    // Still folds the logger: keeping it literal is right but moves the
-    // keycloak corpus past the reviewed output-size allowance, so it waits
-    // for that baseline to be reviewed. The level stays on the line.
-    fn apply_framework_pattern(text: &mut String, tokens: &mut Vec<Token>) {
+    fn fold_framework_logger(text: &mut String, tokens: &mut Vec<Token>) {
         super::fold_matches(text, tokens, &FRAMEWORK_LOG_MODULE_REGEX, |caps| {
-            let level = caps.get(1).unwrap().as_str();
-            let module = caps.get(2).unwrap().as_str();
+            let level = &caps["level"];
+            let module = &caps["module"];
             Self::is_framework_module(module).then(|| {
                 (
                     Token::LogWithModule {
@@ -130,11 +125,11 @@ impl LogWithModuleDetector {
         });
     }
 
-    fn apply_systemd_pattern(text: &str, tokens: &mut Vec<Token>) {
+    fn note_systemd_component(text: &str, tokens: &mut Vec<Token>) {
         Self::note_matches(text, tokens, &SYSTEMD_LOG_MODULE_REGEX, |caps| {
-            let service = caps.get(1).unwrap().as_str();
-            let level = caps.get(2).unwrap().as_str();
-            let component = caps.get(3).unwrap().as_str();
+            let service = &caps["service"];
+            let level = &caps["level"];
+            let component = &caps["component"];
             Self::is_systemd_component(component).then(|| Token::LogWithModule {
                 level: level.to_lowercase(),
                 module: format!("{service}.{component}"),
@@ -217,9 +212,14 @@ impl LogWithModuleDetector {
             "elasticsearch",
         ];
 
-        framework_patterns.iter().any(|&pattern| module.contains(pattern)) ||
-        module.contains('.') ||  // Package-style modules
-        module.contains('_') // Underscore-separated modules
+        framework_patterns
+            .iter()
+            .any(|&pattern| module.contains(pattern))
+            || Self::is_package_style(module)
+    }
+
+    fn is_package_style(module: &str) -> bool {
+        module.contains('.') || module.contains('_')
     }
 
     fn is_systemd_component(component: &str) -> bool {
@@ -259,8 +259,10 @@ mod tests {
             "[Sun Dec 04 04:47:44 2005] [error] mod_jk child workerEnv in error state 6";
         let (result, tokens) = LogWithModuleDetector::detect_and_replace(apache_line);
 
-        // the level and the module stay on the line; only the token is new
-        assert_eq!(result, apache_line);
+        assert_eq!(
+            result, apache_line,
+            "the level and module stay on the line; only the token is new"
+        );
         assert_eq!(
             tokens,
             vec![Token::LogWithModule {
@@ -330,27 +332,27 @@ mod tests {
     }
 
     #[test]
-    fn test_no_false_positives() {
-        let non_module_cases = vec![
-            "Regular log message without module",
-            "Processing mod_calculation = result + 5",
-            "function mod_test() { return true; }",
-            "import mod_library from 'package'",
-        ];
-
-        for test_case in non_module_cases {
-            let (result, tokens) = LogWithModuleDetector::detect_and_replace(test_case);
-
-            // Should not detect false positives in programming contexts
-            if test_case.contains("function ") || test_case.contains("import ") {
-                assert_eq!(tokens.len(), 0);
-                assert_eq!(result, test_case);
-            }
+    fn prose_and_source_code_carry_no_log_module() {
+        for (case, reason) in [
+            ("Regular log message without module", "no indicator"),
+            (
+                "Processing mod_calculation = result + 5",
+                "a mod_ word with no bracketed level before it",
+            ),
+            (
+                "function mod_test() { return true; }",
+                "code context is not a log module",
+            ),
+            (
+                "import mod_library from 'package'",
+                "code context is not a log module",
+            ),
+        ] {
+            let (result, tokens) = LogWithModuleDetector::detect_and_replace(case);
+            assert!(tokens.is_empty(), "{reason}: {case}: {tokens:?}");
+            assert_eq!(result, case, "{reason}");
         }
     }
-
-    // ---- has_log_module_indicators: per-condition tests ----
-    // Positive: each || branch in the first group
 
     #[test]
     fn log_mod_ind_mod_prefix() {
@@ -422,8 +424,6 @@ mod tests {
         ));
     }
 
-    // Negative: each && exclusion
-
     #[test]
     fn log_mod_ind_excludes_function() {
         assert!(!LogWithModuleDetector::has_log_module_indicators(
@@ -446,8 +446,7 @@ mod tests {
     }
 
     #[test]
-    fn log_mod_ind_no_longer_checks_k8s() {
-        // No word elsewhere on the line switches the detector off.
+    fn no_other_word_switches_the_detector_off() {
         assert!(LogWithModuleDetector::has_log_module_indicators(
             "[error] kubelet failed"
         ));
@@ -459,8 +458,6 @@ mod tests {
             "plain message"
         ));
     }
-
-    // ---- is_framework_module: per-branch tests ----
 
     #[test]
     fn framework_mod_known() {
@@ -482,11 +479,8 @@ mod tests {
 
     #[test]
     fn framework_mod_negative() {
-        // No known pattern, no dot, no underscore
         assert!(!LogWithModuleDetector::is_framework_module("zzz"));
     }
-
-    // ---- is_systemd_component: per-branch tests ----
 
     #[test]
     fn systemd_comp_known() {
@@ -520,8 +514,6 @@ mod tests {
         assert!(!LogWithModuleDetector::is_systemd_component("zzz"));
     }
 
-    // ---- is_nginx_module: per-branch tests ----
-
     #[test]
     fn nginx_mod_known() {
         assert!(LogWithModuleDetector::is_nginx_module("ngx_http_core"));
@@ -538,8 +530,6 @@ mod tests {
         assert!(!LogWithModuleDetector::is_nginx_module("zzz"));
     }
 
-    // ---- is_apache_module: per-branch tests ----
-
     #[test]
     fn apache_mod_known() {
         assert!(LogWithModuleDetector::is_apache_module("mod_jk"));
@@ -552,12 +542,8 @@ mod tests {
         assert!(!LogWithModuleDetector::is_apache_module("zzz"));
     }
 
-    // ---- Mutant-killing: apply_nginx_pattern (replace with ()) ----
-
     #[test]
     fn nginx_pattern_only() {
-        // Input that matches ONLY the nginx log pattern
-        // nginx pattern: [level] DIGITS#DIGITS: *DIGITS ngx_MODULE
         let input = "[error] 99999#0: *1 ngx_http_core_module: client disconnected";
         let (result, tokens) = LogWithModuleDetector::detect_and_replace(input);
         assert!(
@@ -569,11 +555,8 @@ mod tests {
         assert_eq!(result, input, "the level and module stay on the line");
     }
 
-    // ---- Mutant-killing: apply_framework_pattern (replace with ()) ----
-
     #[test]
     fn framework_pattern_only() {
-        // Input: LEVEL [module.component] message
         let input = "ERROR [spring.web] Request mapping error";
         let (result, tokens) = LogWithModuleDetector::detect_and_replace(input);
         assert!(
@@ -588,11 +571,8 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: apply_systemd_pattern (replace with ()) ----
-
     #[test]
     fn systemd_pattern_only() {
-        // Input: service[pid]: [level] component: message
         let input = "systemd[1]: [error] service_manager: Unit failed";
         let (result, tokens) = LogWithModuleDetector::detect_and_replace(input);
         assert!(
@@ -604,14 +584,15 @@ mod tests {
         assert_eq!(result, input, "the level and component stay on the line");
     }
 
-    // ---- Mutant-killing: is_nginx_module line 255 ----
-
     #[test]
     fn nginx_module_generic_with_module_suffix() {
-        // Kills mutant: `|| module.starts_with("ngx_") && module.contains("module")` (line 255)
-        // Not in the known list but matches the generic pattern
-        assert!(LogWithModuleDetector::is_nginx_module("ngx_custom_module"));
-        // Without "module" in name, only starts_with("ngx_") is NOT enough for the second branch
-        assert!(!LogWithModuleDetector::is_nginx_module("ngx_something"));
+        assert!(
+            LogWithModuleDetector::is_nginx_module("ngx_custom_module"),
+            "an unknown ngx_ name counts only with module in it"
+        );
+        assert!(
+            !LogWithModuleDetector::is_nginx_module("ngx_something"),
+            "the ngx_ prefix alone is not enough"
+        );
     }
 }

@@ -1,19 +1,9 @@
-//! `--diff <other-lessence>`: which lines fold differently between two builds?
-//!
-//! Every fold change this project has shipped was measured the same way: run
-//! two binaries, diff two outputs, then stare at hundreds of changed lines to
-//! work out which *input lines* actually moved and whether that was right.
-//! This is that loop as one command. It reads two `--format json` streams and
-//! joins them on `first.line_no`, so it exercises no folding code of its own
-//! and cannot change what either binary does.
-
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// One folded group as the JSON stream reports it — only what the join needs.
 #[derive(Debug, serde::Deserialize)]
 struct Group {
     count: usize,
@@ -28,17 +18,13 @@ struct Line {
     source: Option<String>,
 }
 
-/// `(source, line_no)` of a group's first line: the one key that identifies
-/// a group across builds, since ids are assigned in flush order.
-type Key = (Option<String>, usize);
+type FoundingLine = (Option<String>, usize);
 
-/// A run's groups keyed by their founding line.
 struct Fold {
-    groups: BTreeMap<Key, Group>,
+    groups: BTreeMap<FoundingLine, Group>,
 }
 
 impl Fold {
-    /// Run `bin` over `files` and parse the group records it emits.
     fn run(bin: &Path, files: &[PathBuf], threads: &str) -> Result<Self> {
         let out = Command::new(bin)
             .args(["--format", "json", "--threads", threads, "-q"])
@@ -53,11 +39,13 @@ impl Fold {
                 String::from_utf8_lossy(&out.stderr).trim()
             );
         }
+        Self::parse(&String::from_utf8_lossy(&out.stdout), bin)
+    }
+
+    fn parse(json_stream: &str, bin: &Path) -> Result<Self> {
         let mut groups = BTreeMap::new();
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            // The summary record has no `first`; anything else that fails to
-            // parse is a real problem with the other binary's output.
-            if line.contains(r#""type":"summary""#) {
+        for line in json_stream.lines() {
+            if is_the_summary_record_which_has_no_founding_line(line) {
                 continue;
             }
             let g: Group = serde_json::from_str(line)
@@ -68,17 +56,21 @@ impl Fold {
     }
 }
 
-/// Compare `old` against `new` over the same input and print every group that
-/// moved. Returns the number of differences, so the caller can set the exit
-/// status like `diff(1)` does.
-pub fn run(old: &Path, new: &Path, files: &[PathBuf], threads: &str) -> Result<usize> {
+fn is_the_summary_record_which_has_no_founding_line(record: &str) -> bool {
+    record.contains(r#""type":"summary""#)
+}
+
+pub fn print_moved_groups(
+    old: &Path,
+    new: &Path,
+    files: &[PathBuf],
+    threads: &str,
+) -> Result<usize> {
     let before = Fold::run(old, files, threads)?;
     let after = Fold::run(new, files, threads)?;
 
-    // Build the report first, write it second: keeps the borrow of stdout
-    // out of the comparison, and lets one place handle a closed pipe.
     let mut lines: Vec<String> = Vec::new();
-    let mut report = |kind: &str, key: &Key, detail: String| {
+    let mut report = |kind: &str, key: &FoundingLine, detail: String| {
         let src = key.0.as_deref().unwrap_or("-");
         lines.push(format!("{kind:<6} {src}:{:<7} {detail}", key.1));
     };
@@ -120,8 +112,6 @@ pub fn run(old: &Path, new: &Path, files: &[PathBuf], threads: &str) -> Result<u
         after.groups.len()
     ));
 
-    // A reader that stops early (`| head`) closes the pipe; that is the
-    // reader's decision, not an error worth a panic.
     let mut out = io::stdout().lock();
     for line in &lines {
         match writeln!(out, "{line}") {
@@ -138,15 +128,7 @@ mod tests {
     use super::*;
 
     fn parse(json: &str) -> Fold {
-        let mut groups = BTreeMap::new();
-        for line in json.lines() {
-            if line.contains(r#""type":"summary""#) {
-                continue;
-            }
-            let g: Group = serde_json::from_str(line).unwrap();
-            groups.insert((g.first.source.clone(), g.first.line_no), g);
-        }
-        Fold { groups }
+        Fold::parse(json, Path::new("test")).unwrap()
     }
 
     #[test]
@@ -206,7 +188,7 @@ mod tests {
         }
 
         fn cmp(old: &Path, new: &Path, files: &[PathBuf], threads: &str) -> Result<usize> {
-            retrying(|| run(old, new, files, threads))
+            retrying(|| print_moved_groups(old, new, files, threads))
         }
 
         fn binary(dir: &Path, body: &str) -> PathBuf {

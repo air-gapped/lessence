@@ -2,31 +2,38 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-// HTTP status codes in common web server log formats
-// Matches patterns like: "GET /path HTTP/1.1" 200 1234 "-"
-// Also matches: "HTTP/1.1" 404 335 (response format)
-static HTTP_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?:"[^"]*(?:HTTP/\d\.\d)"?\s+)(\d{3})(?:\s+\d+(?:\s+|$))"#).unwrap()
+const STATUS_CODE: &str = r"(?P<status>\d{3})";
+const WHOLE_STATUS_CODE: &str = r"\b[1-5]\d{2}\b";
+const ARROW_AND_TEXT_BETWEEN: &str = r"\s*->\s*.*?";
+const HTTP_METHODS: &str = "GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH";
+const PREFILTER_METHODS: [&str; 4] = ["GET ", "POST ", "PUT ", "DELETE "];
+const QUOTE_THEN_STATUS_DIGIT: [&str; 4] = ["\" 2", "\" 3", "\" 4", "\" 5"];
+
+static QUOTED_PROTOCOL_STATUS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(?:"[^"]*(?:HTTP/\d\.\d)"?\s+){STATUS_CODE}(?:\s+\d+(?:\s+|$))"#
+    ))
+    .unwrap()
 });
 
-// Alternative pattern for access logs: method path protocol" status size
-static ACCESS_LOG_STATUS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#""(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH)\s+[^"]*"\s+(\d{3})\s+\d+"#).unwrap()
+static ACCESS_LOG_STATUS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#""(?:{HTTP_METHODS})\s+[^"]*"\s+{STATUS_CODE}\s+\d+"#
+    ))
+    .unwrap()
 });
 
-// Pattern for proxy logs: upstream_status -> downstream_status. Each code
-// is a whole number, and whatever stands between the arrow and the second
-// code (`200 -> downstream 502`) is the line's own text and stays: matching
-// `.*?` there swallowed `cache miss` and `cache hit` alike, and a code
-// could start inside `12345`.
-static PROXY_STATUS_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b([1-5]\d{2})\b(\s*->\s*.*?)\b([1-5]\d{2})\b").unwrap());
+static PROXY_STATUS_ARROW: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"(?P<upstream>{WHOLE_STATUS_CODE})(?P<between>{ARROW_AND_TEXT_BETWEEN})(?P<downstream>{WHOLE_STATUS_CODE})"
+    ))
+    .unwrap()
+});
 
 pub struct HttpStatusDetector;
 
 impl HttpStatusDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // ULTRA-FAST PRE-FILTER: Skip if no HTTP indicators
         if !Self::has_http_indicators(text) {
             return (text.to_string(), Vec::new());
         }
@@ -34,41 +41,38 @@ impl HttpStatusDetector {
         let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        // Apply HTTP status detection in order of specificity
-        Self::apply_status_pattern(&mut result, &mut tokens, &ACCESS_LOG_STATUS_REGEX);
-        Self::apply_status_pattern(&mut result, &mut tokens, &HTTP_STATUS_REGEX);
+        Self::apply_status_pattern(&mut result, &mut tokens, &ACCESS_LOG_STATUS);
+        Self::apply_status_pattern(&mut result, &mut tokens, &QUOTED_PROTOCOL_STATUS);
         Self::apply_proxy_pattern(&mut result, &mut tokens);
 
         (result, tokens)
     }
 
     fn has_http_indicators(text: &str) -> bool {
-        // Fast byte-level checks for HTTP indicators
         text.contains("HTTP/")
-            || text.contains("GET ")
-            || text.contains("POST ")
-            || text.contains("PUT ")
-            || text.contains("DELETE ")
-            || text.contains("\" 2")
-            || text.contains("\" 3")
-            || text.contains("\" 4")
-            || text.contains("\" 5")
+            || PREFILTER_METHODS.iter().any(|method| text.contains(method))
+            || Self::has_quote_then_status_digit(text)
+    }
+
+    fn has_quote_then_status_digit(text: &str) -> bool {
+        QUOTE_THEN_STATUS_DIGIT
+            .iter()
+            .any(|indicator| text.contains(indicator))
     }
 
     fn apply_status_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
         *text = regex
             .replace_all(text, |caps: &regex::Captures| {
-                let status_code = caps.get(1).unwrap().as_str();
-                if let Ok(status) = status_code.parse::<u16>() {
+                let status_code = caps.name("status").unwrap();
+                if let Ok(status) = status_code.as_str().parse::<u16>() {
                     let class = Self::classify_status_code(status);
                     tokens.push(Token::HttpStatusClass(class.clone()));
+                    let whole = caps.get(0).unwrap();
                     format!(
                         "{}<HTTP_STATUS_{}>{}",
-                        &caps.get(0).unwrap().as_str()
-                            [..caps.get(1).unwrap().start() - caps.get(0).unwrap().start()],
+                        &whole.as_str()[..status_code.start() - whole.start()],
                         class.to_uppercase(),
-                        &caps.get(0).unwrap().as_str()
-                            [caps.get(1).unwrap().end() - caps.get(0).unwrap().start()..]
+                        &whole.as_str()[status_code.end() - whole.start()..]
                     )
                 } else {
                     caps.get(0).unwrap().as_str().to_string()
@@ -78,11 +82,11 @@ impl HttpStatusDetector {
     }
 
     fn apply_proxy_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = PROXY_STATUS_REGEX
+        *text = PROXY_STATUS_ARROW
             .replace_all(text, |caps: &regex::Captures| {
-                let upstream_status = caps.get(1).unwrap().as_str();
-                let between = caps.get(2).unwrap().as_str();
-                let downstream_status = caps.get(3).unwrap().as_str();
+                let upstream_status = &caps["upstream"];
+                let between = &caps["between"];
+                let downstream_status = &caps["downstream"];
 
                 if let (Ok(upstream), Ok(downstream)) = (
                     upstream_status.parse::<u16>(),
@@ -174,8 +178,6 @@ mod tests {
         assert_eq!(result, non_http_line);
     }
 
-    // ---- has_http_indicators: per-condition tests ----
-
     #[test]
     fn http_ind_http_slash() {
         assert!(HttpStatusDetector::has_http_indicators("HTTP/1.1 200 OK"));
@@ -228,8 +230,6 @@ mod tests {
         ));
     }
 
-    // ---- classify_status_code: each match arm ----
-
     #[test]
     fn classify_1xx() {
         assert_eq!(HttpStatusDetector::classify_status_code(100), "1xx");
@@ -261,8 +261,6 @@ mod tests {
         assert_eq!(HttpStatusDetector::classify_status_code(600), "unknown");
     }
 
-    // ---- apply_http_status_pattern: verifies text modification ----
-
     #[test]
     fn apply_http_status_modifies_text() {
         let input = r#"10.0.0.1 - - [01/Jan/2025:00:00:00 +0000] "GET /api HTTP/1.1" 200 1234"#;
@@ -274,12 +272,8 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: apply_access_log_pattern (replace with ()) ----
-
     #[test]
-    fn access_log_pattern_only() {
-        // Input that matches ONLY the access log pattern (GET/POST + status)
-        // and NOT the generic HTTP_STATUS_REGEX pattern
+    fn access_log_line_folds_status() {
         let input = r#""GET /index.html HTTP/1.1" 200 1234"#;
         let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
         assert!(
@@ -292,13 +286,43 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: apply_http_status_pattern (replace with ()) ----
+    #[test]
+    fn access_log_pattern_only() {
+        let input = r#""GET /index.html" 200 1234"#;
+        assert!(
+            !QUOTED_PROTOCOL_STATUS.is_match(input),
+            "no protocol, so only the access-log pattern can match"
+        );
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert_eq!(result, r#""GET /index.html" <HTTP_STATUS_2XX> 1234"#);
+        assert_eq!(tokens, vec![Token::HttpStatusClass("2xx".into())]);
+    }
+
+    #[test]
+    fn the_access_log_pass_runs_before_the_quoted_protocol_pass() {
+        let input = r#""GET /a" 404 1 "HTTP/1.1" 200 2 end"#;
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert_eq!(
+            result,
+            r#""GET /a" <HTTP_STATUS_4XX> 1 "HTTP/1.1" <HTTP_STATUS_2XX> 2 end"#
+        );
+        assert_eq!(
+            tokens,
+            vec![
+                Token::HttpStatusClass("4xx".into()),
+                Token::HttpStatusClass("2xx".into()),
+            ],
+            "the access-log token comes first because its pass runs first"
+        );
+    }
 
     #[test]
     fn http_status_pattern_only() {
-        // Input that matches the HTTP_STATUS_REGEX but NOT access log pattern
-        // HTTP_STATUS_REGEX: "...HTTP/1.1" STATUS SIZE
         let input = r#"response "HTTP/1.1" 404 335 end"#;
+        assert!(
+            !ACCESS_LOG_STATUS.is_match(input),
+            "a bare quoted protocol with no method matches only the quoted-protocol pattern"
+        );
         let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
         assert!(
             !tokens.is_empty(),
@@ -310,11 +334,8 @@ mod tests {
         );
     }
 
-    // ---- Mutant-killing: apply_proxy_pattern ----
-
     #[test]
     fn proxy_pattern_detection() {
-        // Input that matches the PROXY_STATUS_REGEX: NNN -> NNN
         let input = "GET /api upstream 200 -> downstream 502";
         let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
         assert!(
@@ -327,13 +348,11 @@ mod tests {
         );
     }
 
-    /// A code is a whole number: `12345 -> 67890` holds none. The words
-    /// between the arrow and the second code are the event's and stay.
     #[test]
     fn proxy_pattern_takes_whole_codes_and_keeps_the_words_between() {
         let input = "GET /api id 12345 -> 67890 moved";
         let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
-        assert_eq!(result, input);
+        assert_eq!(result, input, "12345 -> 67890 holds no status code");
         assert!(tokens.is_empty(), "{tokens:?}");
 
         let (miss, _) = HttpStatusDetector::detect_and_replace(

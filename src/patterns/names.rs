@@ -3,32 +3,31 @@ use std::sync::LazyLock;
 
 use super::Token;
 
-// Generic hyphenated names with variable suffixes:
-// component-name-suffix, kube-api-access-suffix. A prefix segment may be a
-// word, a digit-led chunk (`v2`, `1`, a pod-template hash) or a placeholder
-// an earlier detector left behind (`<HASH>`, `<NUMBER>`), so a generated
-// Kubernetes name such as `web-v2-<HASH>-7j5z7` is seen as one name.
-// A systemd template unit instance: `modprobe@configfs.service`,
-// `user@1000.service`, `getty@tty1.service`. The template is the name, the
-// instance is the variable.
-static TEMPLATE_UNIT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([a-z][a-z0-9-]*)@([a-z0-9][a-z0-9._:-]*)\.(service|socket|timer|mount|target|slice|scope|path|device|swap)\b")
-        .expect("Failed to compile template unit regex")
+static SYSTEMD_TEMPLATE_UNIT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r"\b(?P<template>[a-z][a-z0-9-]*)@[a-z0-9][a-z0-9._:-]*\.(?P<unit_type>{})\b",
+        super::SYSTEMD_UNIT_TYPES.join("|")
+    ))
+    .expect("Failed to compile template unit regex")
 });
+
+const WORD_OR_DIGIT_SEGMENT: &str = "[a-z0-9]+";
+const PLACEHOLDER_SEGMENT: &str = "<[A-Z_]+>";
 
 static HYPHENATED_NAMES: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([a-z][a-z0-9]*(?:-(?:[a-z0-9]+|<[A-Z_]+>))*)-([a-z0-9]{5,})\b")
-        .expect("Failed to compile hyphenated names regex")
+    Regex::new(&format!(
+        r"\b(?P<prefix>[a-z][a-z0-9]*(?:-(?:{WORD_OR_DIGIT_SEGMENT}|{PLACEHOLDER_SEGMENT}))*)-(?P<suffix>[a-z0-9]{{{MIN_SUFFIX_LEN},}})\b"
+    ))
+    .expect("Failed to compile hyphenated names regex")
 });
 
-// The alphabet Kubernetes draws generated-name suffixes and pod-template
-// hashes from (k8s.io/apimachinery rand.String): no vowels, no y, no 0/1/3.
 pub(crate) const K8S_RAND_ALPHABET: &[u8] = b"bcdfghjklmnpqrstvwxz2456789";
 
-// Families whose names are always generated: after one of them, a 5-char
-// rand chunk is a suffix even with no digit in it (`kube-api-access-jwjsk`).
-// Every generated name keeps its prefix (`base_name`), on this list or not.
-static COMMON_PREFIXES: &[&str] = &[
+const MIN_SUFFIX_LEN: usize = 5;
+const K8S_RAND_SUFFIX_LEN: usize = 5;
+const POD_TEMPLATE_HASH_LEN: std::ops::RangeInclusive<usize> = 8..=10;
+
+static ALWAYS_GENERATED_FAMILIES: &[&str] = &[
     "kube-api-access",
     "kube-proxy",
     "kube-controller",
@@ -42,12 +41,16 @@ static COMMON_PREFIXES: &[&str] = &[
     "cilium-envoy",
 ];
 
+static WORD_SUFFIXES: &[&str] = &[
+    "stable", "latest", "master", "worker", "server", "client", "proxy", "cache", "store", "admin",
+    "config", "service",
+];
+
 pub struct NameDetector;
 
 impl NameDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        // FAST PATH: Skip if no hyphens (most lines won't have hyphenated names)
-        if !text.contains('-') && !text.contains('@') {
+        if !Self::may_hold_name(text) {
             return (text.to_string(), Vec::new());
         }
 
@@ -55,39 +58,27 @@ impl NameDetector {
         let mut tokens = Vec::new();
 
         if result.contains('@') {
-            result = TEMPLATE_UNIT
+            result = SYSTEMD_TEMPLATE_UNIT
                 .replace_all(&result, |caps: &regex::Captures| {
                     tokens.push(Token::Name(caps[0].to_string()));
-                    format!("{}@<INSTANCE>.{}", &caps[1], &caps[3])
+                    format!("{}@<INSTANCE>.{}", &caps["template"], &caps["unit_type"])
                 })
                 .to_string();
         }
 
-        // Replace hyphenated names with variable suffixes
         result = HYPHENATED_NAMES
             .replace_all(&result, |caps: &regex::Captures| {
-                let prefix = caps.get(1).unwrap().as_str();
-                let suffix = caps.get(2).unwrap().as_str();
-                let full_name = caps.get(0).unwrap().as_str();
-                let prev = prefix.rsplit('-').next().unwrap_or("");
+                let prefix = &caps["prefix"];
+                let suffix = &caps["suffix"];
+                let full_name = &caps[0];
+                let preceding_segment = prefix.rsplit('-').next().unwrap_or("");
 
-                // A variable suffix: hash-like, or a rand chunk after another
-                // variable segment, or a rand chunk on a family whose names
-                // are always generated (`kube-api-access-jwjsk`).
-                let generated = Self::is_variable_suffix(prev, suffix)
-                    || (suffix.len() == 5
-                        && Self::is_k8s_rand(suffix)
-                        && COMMON_PREFIXES
-                            .iter()
-                            .any(|p| Self::ends_with_segment(prefix, p)));
+                let generated = Self::is_variable_suffix(preceding_segment, suffix)
+                    || Self::is_always_generated_family_suffix(prefix, suffix);
                 if generated {
-                    // The component is the name; only the generated tail
-                    // folds. `<COMPONENT>-<SUFFIX>` made `nginx-a1b2c3` and
-                    // `redis-d4e5f6` one event.
                     tokens.push(Token::Name(full_name.to_string()));
-                    format!("{}-<SUFFIX>", Self::base_name(prefix))
+                    format!("{}-<SUFFIX>", Self::strip_generated_segments(prefix))
                 } else {
-                    // Keep original if suffix doesn't look variable
                     full_name.to_string()
                 }
             })
@@ -96,58 +87,54 @@ impl NameDetector {
         (result, tokens)
     }
 
-    /// `prev` is the prefix segment right before the suffix.
-    fn is_variable_suffix(prev: &str, suffix: &str) -> bool {
-        // Variable suffixes are typically:
-        // - 5+ characters mixed alphanumeric (hash-like)
-        // - Contains both letters and numbers
-        // - Exclude common English words
+    fn may_hold_name(text: &str) -> bool {
+        text.contains('-') || text.contains('@')
+    }
 
-        if suffix.len() < 5 {
+    fn is_always_generated_family_suffix(prefix: &str, suffix: &str) -> bool {
+        Self::is_k8s_rand_suffix(suffix)
+            && ALWAYS_GENERATED_FAMILIES
+                .iter()
+                .any(|family| Self::ends_with_segment(prefix, family))
+    }
+
+    fn is_variable_suffix(preceding_segment: &str, suffix: &str) -> bool {
+        if suffix.len() < MIN_SUFFIX_LEN {
             return false;
         }
 
-        // Exclude common English words that aren't variable
-        let common_words = &[
-            "stable", "latest", "master", "worker", "server", "client", "proxy", "cache", "store",
-            "admin", "config", "service",
-        ];
-        if common_words.contains(&suffix) {
+        if WORD_SUFFIXES.contains(&suffix) {
             return false;
         }
 
-        // A Kubernetes generated name: a 5-char rand.String chunk right after
-        // another variable segment — `<HASH>`, `<NUMBER>` (a CronJob's minute
-        // number) or a pod-template hash that was not hex. Two variable
-        // segments in a row cannot be a word, so this holds for `hcwqj` as
-        // much as for `7j5z7`. A lone all-letter chunk is not enough:
-        // `https`, `pgsql`, `smtps`, `nfsv4` all fit the alphabet.
-        if suffix.len() == 5
-            && Self::is_k8s_rand(suffix)
-            && (prev.starts_with('<')
-                || ((8..=10).contains(&prev.len()) && Self::is_k8s_rand(prev)))
-        {
+        if Self::is_rand_chunk_after_variable_segment(preceding_segment, suffix) {
             return true;
         }
 
-        // Letters then digits and nothing else — `ed25519`, `sha256`,
-        // `ipv6` — is a designator, a word with a number in it, not a
-        // generated suffix (the hash detector draws the same line). A
-        // designator has a vowel in it; a generated chunk (`tsd92`,
-        // `mrgp8`) is drawn from an alphabet without one.
-        let letters = suffix.bytes().take_while(u8::is_ascii_alphabetic).count();
-        if letters >= 2
-            && suffix.bytes().skip(letters).all(|b| b.is_ascii_digit())
-            && !Self::is_k8s_rand(suffix)
-        {
+        if super::is_designator(suffix) && !Self::is_k8s_rand(suffix) {
             return false;
         }
 
+        Self::is_hash_like(suffix)
+    }
+
+    fn is_k8s_rand_suffix(suffix: &str) -> bool {
+        suffix.len() == K8S_RAND_SUFFIX_LEN && Self::is_k8s_rand(suffix)
+    }
+
+    fn is_rand_chunk_after_variable_segment(preceding_segment: &str, suffix: &str) -> bool {
+        Self::is_k8s_rand_suffix(suffix)
+            && (preceding_segment.starts_with('<') || Self::is_pod_template_hash(preceding_segment))
+    }
+
+    fn is_pod_template_hash(segment: &str) -> bool {
+        POD_TEMPLATE_HASH_LEN.contains(&segment.len()) && Self::is_k8s_rand(segment)
+    }
+
+    fn is_hash_like(suffix: &str) -> bool {
         let has_letters = suffix.chars().any(char::is_alphabetic);
         let has_numbers = suffix.chars().any(char::is_numeric);
         let all_lowercase = suffix.chars().all(|c| c.is_lowercase() || c.is_numeric());
-
-        // Only accept if it has both letters and numbers (hash-like)
         has_letters && has_numbers && all_lowercase
     }
 
@@ -155,23 +142,16 @@ impl NameDetector {
         s.bytes().all(|b| K8S_RAND_ALPHABET.contains(&b))
     }
 
-    /// `prefix` is `family` or ends with `-family`.
     fn ends_with_segment(prefix: &str, family: &str) -> bool {
         prefix
             .strip_suffix(family)
             .is_some_and(|head| head.is_empty() || head.ends_with('-'))
     }
 
-    /// The stable part of a generated name: the prefix without the
-    /// generated segments at its end — a placeholder an earlier detector
-    /// left (`<HASH>`, `<NUMBER>`) or a pod-template hash drawn from the
-    /// Kubernetes rand alphabet. `web-v2-<HASH>` is `web-v2`,
-    /// `portal-5b8dfd9ck` is `portal`. The first segment always stays.
-    fn base_name(prefix: &str) -> &str {
+    fn strip_generated_segments(prefix: &str) -> &str {
         let mut base = prefix;
         while let Some((head, last)) = base.rsplit_once('-') {
-            let generated = last.starts_with('<')
-                || ((8..=10).contains(&last.len()) && Self::is_k8s_rand(last));
+            let generated = last.starts_with('<') || Self::is_pod_template_hash(last);
             if !generated {
                 break;
             }
@@ -187,61 +167,77 @@ mod tests {
 
     #[test]
     fn test_hyphenated_name_detection() {
-        let test_cases = vec![
+        for (input, expected, reason) in [
             (
                 "pod pushprox-kube-proxy-client-9djm4",
                 "pod pushprox-kube-proxy-client-<SUFFIX>",
+                "hash-like suffix",
             ),
             (
                 "volume kube-api-access-52r58",
                 "volume kube-api-access-<SUFFIX>",
+                "hash-like suffix",
             ),
-            ("container cilium-kh8lj", "container cilium-<SUFFIX>"),
-            ("service nginx-stable", "service nginx-stable"), // Short suffix, unchanged
-            ("app my-service", "app my-service"),             // Too short, unchanged
-        ];
-
-        for (input, expected) in test_cases {
+            (
+                "container cilium-kh8lj",
+                "container cilium-<SUFFIX>",
+                "hash-like suffix",
+            ),
+            (
+                "service nginx-stable",
+                "service nginx-stable",
+                "stable is a word suffix",
+            ),
+            (
+                "app my-service",
+                "app my-service",
+                "service is a word suffix",
+            ),
+        ] {
             let (result, _tokens) = NameDetector::detect_and_replace(input);
-            assert_eq!(result, expected, "Failed for input: {input}");
+            assert_eq!(result, expected, "{reason}: {input}");
         }
     }
 
-    /// A generated Kubernetes name is one name even when an earlier detector
-    /// already replaced its template hash or job number, and even when the
-    /// 5-char suffix happens to contain no digit.
     #[test]
     fn generated_pod_name_after_placeholder_is_one_name() {
         let cases = [
-            // Deployment pod, hex template hash already <HASH>, suffix has no digit
-            ("pod web-v2-<HASH>-hcwqj ready", "pod web-v2-<SUFFIX> ready"),
-            // digit-led segment inside the base name (`all-in-1-v2`)
+            (
+                "pod web-v2-<HASH>-hcwqj ready",
+                "pod web-v2-<SUFFIX> ready",
+                "hex template hash already <HASH>, digit-free suffix",
+            ),
             (
                 "Pod/ledger-all-in-1-v2-<HASH>-x4q7c",
                 "Pod/ledger-all-in-1-v2-<SUFFIX>",
+                "digit-led segment inside the base name",
             ),
-            // CronJob pod: minute number already <NUMBER>
-            ("pod backup-db-<NUMBER>-tvszq", "pod backup-db-<SUFFIX>"),
-            // non-hex template hash survived the hash detector
-            ("pod portal-5b8dfd9ck-bdwdp", "pod portal-<SUFFIX>"),
-            // the whole name is tokenised, not just its tail
+            (
+                "pod backup-db-<NUMBER>-tvszq",
+                "pod backup-db-<SUFFIX>",
+                "CronJob minute already <NUMBER>",
+            ),
+            (
+                "pod portal-5b8dfd9ck-bdwdp",
+                "pod portal-<SUFFIX>",
+                "non-hex template hash left by the hash detector",
+            ),
             (
                 "Pulled Pod/web-<HASH>-hcwqj image",
                 "Pulled Pod/web-<SUFFIX> image",
+                "the whole name is one token, not just its tail",
             ),
         ];
-        for (input, expected) in cases {
+        for (input, expected, reason) in cases {
             let (result, tokens) = NameDetector::detect_and_replace(input);
-            assert_eq!(result, expected, "input: {input}");
+            assert_eq!(result, expected, "{reason}: {input}");
             assert!(
                 tokens.iter().any(|t| matches!(t, Token::Name(_))),
-                "no Name token for {input}"
+                "no Name token ({reason}): {input}"
             );
         }
     }
 
-    /// The component is the event's subject: `nginx-a1b2c3` and
-    /// `redis-d4e5f6` are two names, and only the generated tail folds.
     #[test]
     fn a_generated_name_keeps_its_component() {
         let (a, _) =
@@ -250,10 +246,19 @@ mod tests {
             NameDetector::detect_and_replace("restarted container redis-d4e5f6 after probe");
         assert_eq!(a, "restarted container nginx-<SUFFIX> after probe");
         assert_eq!(b, "restarted container redis-<SUFFIX> after probe");
-        assert_eq!(NameDetector::base_name("web-v2-<HASH>"), "web-v2");
-        assert_eq!(NameDetector::base_name("portal-5b8dfd9ck"), "portal");
-        assert_eq!(NameDetector::base_name("<HASH>"), "<HASH>");
-        assert_eq!(NameDetector::base_name("backup-db-<NUMBER>"), "backup-db");
+        assert_eq!(
+            NameDetector::strip_generated_segments("web-v2-<HASH>"),
+            "web-v2"
+        );
+        assert_eq!(
+            NameDetector::strip_generated_segments("portal-5b8dfd9ck"),
+            "portal"
+        );
+        assert_eq!(NameDetector::strip_generated_segments("<HASH>"), "<HASH>");
+        assert_eq!(
+            NameDetector::strip_generated_segments("backup-db-<NUMBER>"),
+            "backup-db"
+        );
     }
 
     #[test]
@@ -270,8 +275,6 @@ mod tests {
         assert_eq!(r, "mail root@example.com sent");
     }
 
-    /// A family whose names are always generated takes an all-letter rand
-    /// suffix; a family that is not stays literal.
     #[test]
     fn generated_family_takes_an_all_letter_suffix() {
         let (r, _) = NameDetector::detect_and_replace(
@@ -291,8 +294,6 @@ mod tests {
         ));
     }
 
-    /// An all-letter 5-char chunk with nothing variable before it is a word
-    /// until proven otherwise: `https` and `pgsql` fit the alphabet too.
     #[test]
     fn lone_all_letter_suffix_stays_literal() {
         for input in [
@@ -301,45 +302,95 @@ mod tests {
             "pod osd-prepare-g8-nztxp done",
         ] {
             let (result, tokens) = NameDetector::detect_and_replace(input);
-            assert_eq!(result, input);
+            assert_eq!(
+                result, input,
+                "a rand-alphabet word with no variable segment before it is a word"
+            );
             assert!(tokens.is_empty(), "{input}");
         }
     }
 
     #[test]
-    fn test_variable_suffix_detection() {
-        assert!(NameDetector::is_variable_suffix("", "9djm4")); // mixed alphanumeric
-        assert!(NameDetector::is_variable_suffix("", "52r58")); // mixed alphanumeric
-        assert!(NameDetector::is_variable_suffix("", "kh8lj")); // mixed alphanumeric
-        // "abcde" is all letters with no numbers — the code requires both letters AND numbers
-        assert!(!NameDetector::is_variable_suffix("", "abcde"));
-
-        assert!(!NameDetector::is_variable_suffix("", "abc")); // too short
-        assert!(!NameDetector::is_variable_suffix("", "stable")); // common word
-        assert!(!NameDetector::is_variable_suffix("", "123")); // too short
+    fn a_hash_like_suffix_needs_letters_and_digits() {
+        for suffix in ["9djm4", "52r58", "kh8lj"] {
+            assert!(NameDetector::is_variable_suffix("", suffix), "{suffix}");
+        }
+        for (suffix, reason) in [
+            ("abcde", "no digit"),
+            ("abc", "under 5 chars"),
+            ("stable", "a word suffix"),
+            ("123", "under 5 chars"),
+        ] {
+            assert!(
+                !NameDetector::is_variable_suffix("", suffix),
+                "{reason}: {suffix}"
+            );
+        }
     }
 
     #[test]
     fn k8s_rand_suffix_needs_a_variable_segment_before_it() {
         assert!(NameDetector::is_variable_suffix("<HASH>", "hcwqj"));
         assert!(NameDetector::is_variable_suffix("<NUMBER>", "tvszq"));
-        assert!(NameDetector::is_variable_suffix("5b8dfd9ck", "bdwdp")); // 9-char template hash
-        assert!(!NameDetector::is_variable_suffix("proxy", "https")); // a word before it
-        assert!(!NameDetector::is_variable_suffix("<HASH>", "hcwqa")); // `a` is not in the alphabet
-        assert!(!NameDetector::is_variable_suffix("<HASH>", "hcwqjx")); // 6 chars is not a suffix
-        assert!(!NameDetector::is_variable_suffix("abcdefgh", "hcwqj")); // vowels: not a template hash
-        assert!(!NameDetector::is_variable_suffix("bcdfghj", "hcwqj")); // 7 chars: too short for one
-        assert!(!NameDetector::is_variable_suffix("bcdfghjklmn", "hcwqj")); // 11: too long
+        assert!(
+            NameDetector::is_variable_suffix("5b8dfd9ck", "bdwdp"),
+            "a 9-char template hash"
+        );
+        for (preceding, suffix, reason) in [
+            ("proxy", "https", "a word before it"),
+            ("<HASH>", "hcwqa", "`a` is not in the alphabet"),
+            ("<HASH>", "hcwqjx", "6 chars is no rand suffix"),
+            ("abcdefgh", "hcwqj", "vowels: no template hash"),
+            ("bcdfghj", "hcwqj", "7 chars: too short for a template hash"),
+            (
+                "bcdfghjklmn",
+                "hcwqj",
+                "11 chars: too long for a template hash",
+            ),
+        ] {
+            assert!(
+                !NameDetector::is_variable_suffix(preceding, suffix),
+                "{reason}: {preceding}-{suffix}"
+            );
+        }
+    }
+
+    #[test]
+    fn k8s_rand_alphabet_has_no_vowels_y_or_0_1_3() {
+        let mut expected: Vec<u8> = (b'a'..=b'z')
+            .chain(b'0'..=b'9')
+            .filter(|b| !b"aeiouy013".contains(b))
+            .collect();
+        expected.sort_unstable();
+        let mut alphabet = K8S_RAND_ALPHABET.to_vec();
+        alphabet.sort_unstable();
+        assert_eq!(alphabet, expected);
+    }
+
+    #[test]
+    fn every_systemd_unit_type_takes_an_instance() {
+        for unit in super::super::SYSTEMD_UNIT_TYPES {
+            let (out, tokens) =
+                NameDetector::detect_and_replace(&format!("Starting getty@tty1.{unit} now"));
+            assert_eq!(
+                out,
+                format!("Starting getty@<INSTANCE>.{unit} now"),
+                "{unit}"
+            );
+            assert_eq!(tokens.len(), 1, "{unit}");
+        }
+        let (out, _) = NameDetector::detect_and_replace("Set up automount boot@efi.automount");
+        assert_eq!(out, "Set up automount boot@<INSTANCE>.automount");
     }
 
     #[test]
     fn variable_suffix_boundary_4_chars() {
-        assert!(!NameDetector::is_variable_suffix("", "ab1c")); // exactly 4 — too short
+        assert!(!NameDetector::is_variable_suffix("", "ab1c"));
     }
 
     #[test]
     fn variable_suffix_boundary_5_chars() {
-        assert!(NameDetector::is_variable_suffix("", "ab1c2")); // exactly 5 — accepted
+        assert!(NameDetector::is_variable_suffix("", "ab1c2"));
     }
 }
 
@@ -362,9 +413,8 @@ mod shapes_2026_08_29 {
     }
 }
 
-/// The hyphen fast path (lessence-e8v survivor 48).
 #[cfg(test)]
-mod e8v_fast_path_2026_09_18 {
+mod hyphen_or_at_fast_path {
     use super::*;
 
     #[test]
@@ -375,8 +425,6 @@ mod e8v_fast_path_2026_09_18 {
         assert!(out.contains("<SUFFIX>"), "{out}");
     }
 
-    /// The other half of the fast path: a template unit with an `@` and no
-    /// hyphen anywhere must still reach the instance rule.
     #[test]
     fn a_template_unit_without_a_hyphen_is_still_detected() {
         let (out, _) = NameDetector::detect_and_replace("Starting getty@tty1.service now");
