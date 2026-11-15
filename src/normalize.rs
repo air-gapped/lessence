@@ -39,9 +39,12 @@ struct DetectorEntry {
     /// How broad the detector's shape is. Tiers never decrease down the
     /// table, so a broad detector cannot be moved above a specific one.
     tier: Tier,
-    /// The entries this one must come after, each with its reason: the
-    /// earlier detector reads text this one would otherwise take or break.
-    after: &'static [&'static str],
+    /// The entries this one must come after, each with a line that proves
+    /// it: normalized with this detector moved to just before that one, the
+    /// line comes out different. A rule with no such line is not a rule,
+    /// and `every_order_dependence_on_a_corpus_line_is_declared` finds the
+    /// ones the corpora show and nobody wrote down.
+    after: &'static [(&'static str, &'static str)],
     /// Config gate: is this detector enabled for the run?
     enabled: fn(&Config) -> bool,
     /// A rule about where the detector may run, on `(config, original
@@ -65,9 +68,10 @@ struct DetectorEntry {
 }
 
 /// Detection order — earlier entries consume text first, so order encodes
-/// priority. Each entry's `tier` and `after` say what its place depends on,
-/// and `detector_order_keeps_what_each_entry_declares` fails on a reorder
-/// that breaks one of them.
+/// priority. Each entry's `tier` and `after` say what its place depends on.
+/// A reorder that breaks one fails when a normalizer is built in a test
+/// build, and every `after` rule is proven by its own line
+/// (`every_declared_order_rule_changes_its_line`).
 static DETECTOR_ORDER: &[DetectorEntry] = &[
     // CPU quantities: a cpu field with a millicpu unit.
     DetectorEntry {
@@ -103,10 +107,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "path",
         tier: Tier::Specific,
-        after: &[
-            // an email inside a URL is read as an email first
-            "email",
-        ],
+        after: &[("timestamp", r"client [16/Sep/2026:11:20:30 +0000] ready")],
         enabled: |c| c.normalize_paths,
         only_when: None,
         prefilter: None,
@@ -116,10 +117,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "json",
         tier: Tier::Specific,
-        after: &[
-            // the cpu field and its unit are read before the object that holds them
-            "cpu-quantity",
-        ],
+        after: &[],
         enabled: |c| c.normalize_json,
         only_when: None,
         prefilter: Some(|_, _, s| s.contains('{')),
@@ -129,7 +127,16 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "uuid",
         tier: Tier::Specific,
-        after: &[],
+        after: &[
+            (
+                "timestamp",
+                r"00:00:23 default: Job OK (11111111-2222-4333-8444-555555555555)",
+            ),
+            (
+                "path",
+                r"open /tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab done",
+            ),
+        ],
         enabled: |c| c.normalize_uuids,
         only_when: None,
         prefilter: None,
@@ -140,8 +147,11 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         name: "network",
         tier: Tier::Specific,
         after: &[
-            // a URL is consumed whole before its host or port is
-            "path",
+            (
+                "timestamp",
+                r"type=SOCKADDR msg=audit(1500000000.276:518): ok",
+            ),
+            ("path", r"received block from /10.20.30.40"),
         ],
         enabled: |c| c.normalize_ips || c.normalize_ports || c.normalize_fqdns,
         only_when: None,
@@ -160,8 +170,12 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         name: "hash",
         tier: Tier::Specific,
         after: &[
-            // the hex pattern would cut a UUID into pieces
-            "uuid",
+            (
+                "path",
+                r"open /tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab done",
+            ),
+            ("uuid", r"id=00000000-0000-4000-8000-00000000003f"),
+            ("network", r"[    4.890000] 79792103.uart: ttyS0 ready"),
         ],
         enabled: |c| c.normalize_hashes,
         only_when: None,
@@ -172,7 +186,16 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "process",
         tier: Tier::Specific,
-        after: &[],
+        after: &[
+            (
+                "timestamp",
+                r"I1102 09:10:00.000004    3310 mounter.go:51] done",
+            ),
+            (
+                "path",
+                r"2026-08-26T09:19:07+02:00 host1 /usr/libexec/portal-helper[4242]: started",
+            ),
+        ],
         enabled: |c| c.normalize_pids,
         only_when: None,
         prefilter: None,
@@ -184,12 +207,14 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         name: "syslog-host",
         tier: Tier::Specific,
         after: &[
-            // the host is the field after a normalized stamp
-            "timestamp",
-            // an <FQDN> or <IP> already there is left alone
-            "network",
-            // `prog[123]:` already reads `prog[<PID>]:`, which the tag alternative matches
-            "process",
+            (
+                "timestamp",
+                r"Aug 29 03:10:09 gw-lab-1 daemon.err sshd: bad key",
+            ),
+            (
+                "network",
+                r"Mar  3 10:00:00 web01.example.com sshd[123]: session opened",
+            ),
         ],
         enabled: |c| c.normalize_fqdns,
         // A kernel line under an uptime stamp has no host field: the word
@@ -204,7 +229,17 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "kubernetes",
         tier: Tier::Specific,
-        after: &[],
+        after: &[
+            ("path", r#"agent "containerd/v2.1.4" connected"#),
+            (
+                "uuid",
+                r#"Operation for "{volumeName:kubernetes.io/secret/11111111-2222-4333-8444-555555555555-app-secret podName:11111111-2222-4333-8444-555555555555 nodeName:}" failed"#,
+            ),
+            (
+                "network",
+                r#"grantors=pam_namespace,pam_unix acct="some_user" exe="/usr/sbin/sshd" hostname=gw-204.286.40.28.lab.example.net addr=10.20.30.40 terminal=ssh res=success"#,
+            ),
+        ],
         enabled: |c| c.normalize_kubernetes,
         only_when: None,
         prefilter: None,
@@ -224,10 +259,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "bracket",
         tier: Tier::Specific,
-        after: &[
-            // a kubernetes shape is read before a generic bracket tag
-            "kubernetes",
-        ],
+        after: &[],
         enabled: |c| c.normalize_brackets,
         only_when: None,
         prefilter: Some(|_, _, s| {
@@ -240,8 +272,14 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
         name: "key-value",
         tier: Tier::Specific,
         after: &[
-            // the cpu field keeps its value and its field context
-            "cpu-quantity",
+            (
+                "timestamp",
+                r#"ts=2026-01-02T03:04:05.678Z caller=checkpoint.go:101 level=info component=tsdb msg="Creating checkpoint" from_segment=138 to_segment=140 mint=1767323045000"#,
+            ),
+            (
+                "path",
+                r#"rpc error: code = Unknown desc = failed (add): no agent client after 30.000000 seconds timeout: Get "http://localhost/v1/config": dial unix /var/run/app/app.sock: connect: no such file or directory"#,
+            ),
         ],
         enabled: |c| c.normalize_key_value,
         // An `=` inside a quoted value is not a pair: gated on any `=`,
@@ -259,10 +297,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "log-module",
         tier: Tier::Specific,
-        after: &[
-            // a kubernetes shape is read before a generic module tag
-            "kubernetes",
-        ],
+        after: &[],
         enabled: |c| c.normalize_brackets,
         only_when: None,
         prefilter: Some(|_, _, s| {
@@ -276,10 +311,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "structured",
         tier: Tier::Specific,
-        after: &[
-            // a kubernetes shape is read before a generic structured record
-            "kubernetes",
-        ],
+        after: &[],
         enabled: |c| c.normalize_json || c.normalize_key_value,
         // The detector cannot tell which half it is asked for: a half that
         // is switched off must not run on its own shape.
@@ -293,7 +325,34 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "duration",
         tier: Tier::Broad,
-        after: &[],
+        after: &[
+            (
+                "timestamp",
+                r"I1102 09:10:00.000004    3310 mounter.go:51] done",
+            ),
+            (
+                "path",
+                r"2026-08-26T09:19:07+02:00 host1 /usr/libexec/portal-helper[4242]: started",
+            ),
+            (
+                "uuid",
+                r"mounted filesystem cd1bccc7-a21f-4587-b414-3aa56a7c3f70 r/w",
+            ),
+            ("network", r"client 172.20.5.11:53212 connected"),
+            (
+                "hash",
+                r"Module libx.so.6 from rpm ncurses-6.5-7.20250614.fc43.x86_64",
+            ),
+            (
+                "process",
+                r"I1102 09:10:00.000004    3310 mounter.go:51] done",
+            ),
+            (
+                "http-status",
+                r"GET /api upstream 502 -> cache miss then 200",
+            ),
+            ("key-value", r"client ready timeout=1m0s"),
+        ],
         enabled: |c| c.normalize_durations,
         only_when: None,
         prefilter: None,
@@ -303,7 +362,25 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "name",
         tier: Tier::Generic,
-        after: &[],
+        after: &[
+            (
+                "path",
+                r"open /tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab done",
+            ),
+            (
+                "uuid",
+                r"var-lib-kubelet-pods-438a97c2\x2d7b77\x2d466d\x2d964d\x2da94c97935530-volumes.mount: Deactivated",
+            ),
+            (
+                "hash",
+                r"assigned ledger-worker-all-in-1-v2-7d4b9c2f8e-b6w8n to node3",
+            ),
+            (
+                "kubernetes",
+                r"&Event{ObjectMeta:{virt-handler-vhjp6.1862d2cbe90da39f  kubevirt    0 0001-01-01 00:00:00 +0000 UTC <nil> <nil> map[] map[] [] [] []},InvolvedObject:ObjectReference{Kind:Pod,Namespace:kubevirt,Name:virt-handler-vhjp6,UID:11111111-2222-4333-8444-555555555555,APIVersion:v1,ResourceVersion:4242,FieldPath:,},Reason:Started,}",
+            ),
+            ("duration", r"Stopped user-runtime-dir@1000.service - done"),
+        ],
         enabled: |c| c.normalize_names,
         only_when: None,
         prefilter: None,
@@ -314,7 +391,34 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
     DetectorEntry {
         name: "quoted",
         tier: Tier::Last,
-        after: &[],
+        after: &[
+            ("cpu-quantity", r#"{"cpu":"750m","wait":"40m"}"#),
+            (
+                "path",
+                r#"profile="unconfined" name="libvirt-d10f7a21-c572-4cab-95a9-51ad8f00f121//passt" pid=2415"#,
+            ),
+            (
+                "uuid",
+                r#"{"dir":"/tmp/repo/74ac195d-3097-4be6-b28c-c95067e201ab","execID":"e01b2"}"#,
+            ),
+            (
+                "network",
+                r#"{"url":"grpc:10.54.37.131//kas.example.svc|8155"}"#,
+            ),
+            ("kubernetes", r#"tracker pod="ns/web-1" status=observed"#),
+            (
+                "key-value",
+                r#""Allocatable" allocatable={"hugepages-1Gi":"0","pods":"110"}"#,
+            ),
+            (
+                "duration",
+                r#""pod \"nightly-backup-wiki-db-29304410-77kp4\" started" pod="wiki-db/nightly-backup-wiki-db-29304410-77kp4""#,
+            ),
+            (
+                "name",
+                r#""pod \"nightly-backup-wiki-db-29304410-77kp4\" started" pod="wiki-db/nightly-backup-wiki-db-29304410-77kp4""#,
+            ),
+        ],
         enabled: |c| c.normalize_quoted,
         only_when: None,
         prefilter: Some(|_, _, s| s.contains('"') || s.contains('\'')),
@@ -343,7 +447,7 @@ fn order_complaints(order: &[&DetectorEntry]) -> Vec<String> {
                 order[at - 1].tier
             ));
         }
-        for earlier in entry.after {
+        for (earlier, _) in entry.after {
             if !order[..at].iter().any(|e| e.name == *earlier) {
                 complaints.push(format!("`{}` must come after `{earlier}`", entry.name));
             }
@@ -1488,6 +1592,17 @@ impl Normalizer {
     }
 
     pub fn normalize_line(&self, original: String) -> Result<LogLine> {
+        self.normalize_in_order(original, DETECTOR_ORDER.iter())
+    }
+
+    /// `normalize_line` with the detectors in `order`. The table's order is
+    /// the only one a run uses; a test passes another to show what a
+    /// declared ordering rule protects.
+    fn normalize_in_order<'a>(
+        &self,
+        original: String,
+        order: impl Iterator<Item = &'a DetectorEntry>,
+    ) -> Result<LogLine> {
         // An anchored span (see `anchor_hash`) must render as its skeleton,
         // not `<PATH>` — otherwise the split it forces is invisible in the
         // shown line. Protect its exact span before any detector runs...
@@ -1500,7 +1615,7 @@ impl Normalizer {
 
         // Walk the detector ordering table; each enabled detector replaces
         // matched content with tokens in the partially-normalized line.
-        for entry in DETECTOR_ORDER {
+        for entry in order {
             if !(entry.enabled)(&self.config) {
                 continue;
             }
@@ -4659,6 +4774,101 @@ mod e8v_normalize_2026_09_17 {
         assert_eq!(normalize("x path=relative/dir/file to=/srv y").anchor, 0);
     }
 
+    /// `line` normalized with `later` sitting just after `earlier`, and
+    /// just before it; every other detector stays where it is.
+    fn either_side(line: &str, later: &str, earlier: &str) -> (String, String) {
+        let mut order: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
+        let from = order.iter().position(|e| e.name == later).unwrap();
+        let moved = order.remove(from);
+        let at = order.iter().position(|e| e.name == earlier).unwrap();
+        let n = Normalizer::new(Config::default());
+        let run = |to: usize| {
+            let mut order = order.clone();
+            order.insert(to, moved);
+            n.normalize_in_order(line.to_string(), order.into_iter())
+                .unwrap()
+                .normalized
+        };
+        (run(at + 1), run(at))
+    }
+
+    #[test]
+    fn every_declared_order_rule_changes_its_line() {
+        for entry in DETECTOR_ORDER {
+            for (earlier, line) in entry.after {
+                let (after, before) = either_side(line, entry.name, earlier);
+                assert_ne!(
+                    after, before,
+                    "`{}` after `{earlier}` is declared, but its line reads the same either way: {line}",
+                    entry.name
+                );
+            }
+        }
+    }
+
+    /// Slow (every corpus line under every pair of detectors): runs in the
+    /// `slow` profile, before a release. A pair whose order changes a corpus
+    /// line and that no `after` declares is a rule nobody wrote down: add it
+    /// to the later entry with an invented line of the same shape.
+    #[test]
+    fn every_order_dependence_on_a_corpus_line_is_declared() {
+        let mut lines: Vec<String> = Vec::new();
+        let corpora = std::fs::read_dir("examples/distilled")
+            .expect("examples/distilled must exist: this test reads every corpus");
+        for entry in corpora {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "log") {
+                let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+                // The longest lines hold two thirds of the corpora's bytes
+                // in two percent of their lines; they are left out.
+                lines.extend(text.lines().filter(|l| l.len() <= 2000).map(str::to_string));
+            }
+        }
+        assert!(lines.len() > 1000, "only {} corpus lines", lines.len());
+        let n = Normalizer::new(Config::default());
+        let run = |line: &str, order: &[&DetectorEntry]| {
+            n.normalize_in_order(line.to_string(), order.iter().copied())
+                .unwrap()
+                .normalized
+        };
+        let table: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
+        let mut undeclared = Vec::new();
+        for later in 1..table.len() {
+            // `prev` holds each line with `later` sitting just after
+            // table[k]; moving it one place up changes only that pair.
+            let mut prev: Vec<String> = lines.iter().map(|l| run(l, &table)).collect();
+            for k in (0..later).rev() {
+                let mut order = table.clone();
+                let moved = order.remove(later);
+                order.insert(k, moved);
+                let now: Vec<String> = lines.iter().map(|l| run(l, &order)).collect();
+                let changed: Vec<usize> =
+                    (0..lines.len()).filter(|&at| now[at] != prev[at]).collect();
+                let declared = table[later].after.iter().any(|(e, _)| *e == table[k].name);
+                if let (false, Some(&shortest)) =
+                    (declared, changed.iter().min_by_key(|&&at| lines[at].len()))
+                {
+                    undeclared.push(format!(
+                        "`{}` after `{}`: {} corpus lines, the shortest:\n  {}\n  after:  {}\n  before: {}",
+                        table[later].name,
+                        table[k].name,
+                        changed.len(),
+                        lines[shortest],
+                        prev[shortest],
+                        now[shortest]
+                    ));
+                }
+                prev = now;
+            }
+        }
+        assert!(
+            undeclared.is_empty(),
+            "{} undeclared order rule(s):\n{}",
+            undeclared.len(),
+            undeclared.join("\n")
+        );
+    }
+
     #[test]
     fn detector_order_keeps_what_each_entry_declares() {
         let order: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
@@ -4674,15 +4884,21 @@ mod e8v_normalize_2026_09_17 {
             order.swap(at(a), at(b));
             order_complaints(&order)
         };
-        // hashes moved above UUIDs
+        // hashes and UUIDs change places: hashes now also sit above network
         assert_eq!(
             swapped("uuid", "hash"),
-            vec!["`hash` must come after `uuid`"]
+            vec![
+                "`hash` must come after `uuid`",
+                "`hash` must come after `network`"
+            ]
         );
-        // quoted strings moved above names
+        // quoted strings and names change places
         assert_eq!(
             swapped("name", "quoted"),
-            vec!["`name` (Generic) comes after `quoted` (Last)"]
+            vec![
+                "`quoted` must come after `name`",
+                "`name` (Generic) comes after `quoted` (Last)"
+            ]
         );
         let mut twice: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
         twice.push(&DETECTOR_ORDER[at("quoted")]);
@@ -4690,11 +4906,14 @@ mod e8v_normalize_2026_09_17 {
             order_complaints(&twice),
             vec!["`quoted` is in the table twice"]
         );
-        // an entry naming one that is not in the table at all
-        let lone = [&DETECTOR_ORDER[at("hash")]];
+        // an entry whose earlier ones are not in the table at all
+        let lone = [&DETECTOR_ORDER[at("uuid")]];
         assert_eq!(
             order_complaints(&lone),
-            vec!["`hash` must come after `uuid`"]
+            vec![
+                "`uuid` must come after `timestamp`",
+                "`uuid` must come after `path`"
+            ]
         );
     }
 
