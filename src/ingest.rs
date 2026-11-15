@@ -193,7 +193,7 @@ impl Ingestor {
             .transpose()?;
         let mut report = IngestReport::default();
         let mut lines_seen = 0usize;
-        'inputs: for InputReader { source, reader } in readers {
+        for InputReader { source, reader } in readers {
             sink(Event::BeginInput { source: &source })?;
             let mut framer = RecordFramer::default();
             let mut source_hash = self.hash_input.then(SourceHash::default);
@@ -207,7 +207,7 @@ impl Ingestor {
                 if let Some(max_lines) = self.max_lines_reached_at(lines_seen) {
                     eprintln!("lessence: Line limit of {max_lines} reached, stopping processing");
                     report.max_lines_reached = true;
-                    break 'inputs;
+                    break;
                 }
                 lines_seen += 1;
 
@@ -244,8 +244,11 @@ impl Ingestor {
                 aggregate.push(source);
             }
 
-            if let Some(record) = framer.finish_at_end_of_input() {
+            if let Some(record) = framer.finish_at_end_of_input_or_line_limit() {
                 record.emit(&mut sink)?;
+            }
+            if report.max_lines_reached {
+                break;
             }
         }
         let every_reader_reached_eof = !report.max_lines_reached;
@@ -301,7 +304,7 @@ impl RecordFramer {
         Framed::Opened { finished }
     }
 
-    fn finish_at_end_of_input(self) -> Option<Record> {
+    fn finish_at_end_of_input_or_line_limit(self) -> Option<Record> {
         self.open
     }
 }
@@ -431,6 +434,32 @@ mod tests {
 
     fn ingestor(config: &Config) -> Ingestor {
         Ingestor::from_config(config).unwrap()
+    }
+
+    #[test]
+    fn a_record_still_open_at_the_line_limit_is_emitted_with_the_lines_read() {
+        let ing = ingestor(&Config {
+            max_lines: Some(3),
+            frame_continuations: true,
+            ..Config::default()
+        });
+        let (events, report) = record(
+            &ing,
+            vec![
+                reader(Some("a.log"), "start\nboom\n  at one\n  at two\nafter\n"),
+                reader(Some("b.log"), "never read\n"),
+            ],
+        );
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(Some("a.log".into())),
+                Recorded::Line("start".into(), 1),
+                Recorded::Line("boom at one".into(), 2),
+            ],
+            "the three lines read are all shown, and nothing past the limit"
+        );
+        assert!(report.max_lines_reached);
     }
 
     #[test]
