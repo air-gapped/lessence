@@ -45,9 +45,8 @@ git commit -am "chore: release X.Y.Z"
 cargo build --release
 ./scripts/readme-compression.sh --write vX.Y.Z
 git commit -am "docs: README compression table measured for vX.Y.Z"
-#    And move `verified-at:` in .claude/skills/lessence/references/sources.md
-#    to HEAD once the skill has been re-read against every user-facing
-#    src/ commit since the old sha.
+#    The agent skill needs no step here: the commit-msg hook made every
+#    user-facing src/ commit update it or say `Skill-Unchanged: <reason>`.
 
 # 5. The gate. This is what decides "ready" — not judgement.
 make release-check           # ~20 min
@@ -88,7 +87,7 @@ every build, `publish-crate` needing `release`.
 | `make ci` | fmt, clippy, doc, tests, deny |
 | slow tests | the wall-clock profile the default profile excludes |
 | README compression table | generated at a commit whose `src/` equals today's |
-| agent skill re-verified | `sources.md`'s `verified-at:` sha covers every user-facing `src/` commit |
+| agent skill moved with the behaviour | every user-facing `src/` commit after `sources.md`'s `verified-at:` updates the skill or carries `Skill-Unchanged:` |
 | release targets | `cargo check --release --target` for every shipped target: a Linux-only API is caught here, not on the release runners |
 
 The skill check used to be a GitHub check on the release-please PR branch. With

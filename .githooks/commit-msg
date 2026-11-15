@@ -107,6 +107,29 @@ case "$first_line" in
     ""|\#*) exit 0 ;;
 esac
 
+# ── The agent skill moves with the behaviour (docs/verification.md "Hooks") ─
+#
+# .claude/skills/lessence/ is what an agent reads to use the tool. A
+# feat:/fix:/perf: commit that changes src/ either updates it in the same
+# commit or says why it has nothing to update:
+# `Skill-Unchanged: <reason>`. scripts/release-check.sh applies the same
+# rule to every commit since the skill's `verified-at`.
+case "$first_line" in
+    feat[:\(!]*|fix[:\(!]*|perf[:\(!]*)
+        if git diff --cached --name-only --no-renames | grep -q '^src/' \
+            && ! git diff --cached --name-only --no-renames | grep -q '^\.claude/skills/lessence/' \
+            && ! grep -qE '^Skill-Unchanged: .+' "$msg_file"; then
+            {
+                echo ""
+                echo "This $(printf '%s' "$first_line" | sed -E 's/^([a-z]+).*/\1/'): commit changes src/ and leaves the agent skill as it was."
+                echo "Update .claude/skills/lessence/SKILL.md or references/flags.md in this commit,"
+                echo "or add a trailer: Skill-Unchanged: <why an agent reading the skill needs nothing new>"
+            } >&2
+            exit 1
+        fi
+        ;;
+esac
+
 # Match: feat:, feat(scope):, feat!:, feat(scope)!: (and fix/perf same)
 case "$first_line" in
     feat:*|feat\(*\):*|feat!:*|feat\(*\)!:*|\

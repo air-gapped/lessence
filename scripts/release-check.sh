@@ -89,18 +89,15 @@ echo "Checking the README compression table..." >&2
 readme_status="pass"
 readme_msg="$("$ROOT/scripts/readme-compression.sh" --check 2>&1)" || readme_status="FAIL"
 
-# ── agent skill re-verified since the last behaviour change ─────────────
+# ── the agent skill moved with every behaviour change ───────────────────
 #
-# This ran as a GitHub check on release-please's PR branch. With
-# release-please gone there is no PR to hang it on, and a check that only
-# fires on a branch nobody creates is a check that never runs — so it moves
-# here, onto the path that actually precedes a tag.
-#
-# `.claude/skills/lessence/references/sources.md` carries `verified-at: <sha>`.
-# Every user-facing src/ commit after that sha is a behaviour change the
-# agent-facing skill has not been re-read against.
+# `.claude/skills/lessence/references/sources.md` carries `verified-at: <sha>`,
+# the commit up to which the skill was read against the build by hand. Every
+# user-facing src/ commit after it must have updated the skill in the same
+# commit or carry `Skill-Unchanged: <reason>`: the rule the commit-msg hook
+# applies at commit time, checked again here over the whole range.
 
-echo "Checking the agent skill was re-verified..." >&2
+echo "Checking the agent skill moved with each behaviour change..." >&2
 skill_status="pass"
 skill_msg="ok"
 sources="$ROOT/.claude/skills/lessence/references/sources.md"
@@ -110,13 +107,23 @@ if [ -z "${verified_sha:-}" ]; then
 elif ! git -C "$ROOT" merge-base --is-ancestor "$verified_sha" HEAD 2>/dev/null; then
     skill_status="FAIL"; skill_msg="verified-at $verified_sha is not an ancestor of HEAD"
 else
-    unverified="$(git -C "$ROOT" log "$verified_sha"..HEAD --extended-regexp \
-        --grep='^(feat|fix|perf)(\(.*\))?!?:' --format='%h %s' -- src/)"
+    unverified=""
+    while read -r sha; do
+        [ -n "$sha" ] || continue
+        if git -C "$ROOT" show --format= --name-only --no-renames "$sha" | grep -q '^\.claude/skills/lessence/'; then
+            continue
+        fi
+        if git -C "$ROOT" log -1 --format=%B "$sha" | grep -qE '^Skill-Unchanged: .+'; then
+            continue
+        fi
+        unverified+="$(git -C "$ROOT" log -1 --format='%h %s' "$sha");"
+    done < <(git -C "$ROOT" log "$verified_sha"..HEAD --extended-regexp \
+        --grep='^(feat|fix|perf)(\(.*\))?!?:' --format='%H' -- src/)
     if [ -n "$unverified" ]; then
         skill_status="FAIL"
-        skill_msg="not re-verified since: $(echo "$unverified" | tr '\n' ';' | cut -c1-160)"
+        skill_msg="neither updates the skill nor says Skill-Unchanged: $(echo "$unverified" | cut -c1-160)"
     else
-        skill_msg="verified-at ${verified_sha:0:9} covers every user-facing src/ commit"
+        skill_msg="every user-facing src/ commit since ${verified_sha:0:9} updates the skill or says why not"
     fi
 fi
 

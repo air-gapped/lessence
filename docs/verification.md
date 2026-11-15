@@ -145,9 +145,9 @@ without `gh` the newest tag is used and a warning says so). Checks, in order:
 `cargo mutants --in-diff` on `<base>..HEAD` via `scripts/mutants.sh`
 (`mutants.out/outcomes.json` is the score); the README compression table was
 generated at a commit whose `src/` equals HEAD's
-(`scripts/readme-compression.sh --check`); the agent skill's `sources.md`
-`verified-at:` sha is an ancestor of HEAD and covers every user-facing `src/`
-commit since; `make ci`; `cargo nextest run --release --profile slow`. Writes `target/gate/release.json`, prints ≤ 25
+(`scripts/readme-compression.sh --check`); every user-facing `src/` commit after the agent skill's `sources.md`
+`verified-at:` sha updates the skill in the same commit or carries
+`Skill-Unchanged: <reason>`; `make ci`; `cargo nextest run --release --profile slow`. Writes `target/gate/release.json`, prints ≤ 25
 lines. `RELEASE_CHECK_SKIP_MUTANTS=1` skips mutants (testing only).
 
 ## Test profiles (`.config/nextest.toml`)
@@ -176,7 +176,9 @@ test by accident and `make release-check` always runs all of them.
   the index. A removed or altered `##CASE` header, a `##CASE` → `##TODO`
   demotion, or more `known` entries requires the trailer
   `Truth-Layer-Change: <bead> <reason>` in the message; otherwise exit 1
-  naming the change.
+  naming the change. A `feat:`/`fix:`/`perf:` commit that stages a change
+  under `src/` must also stage one under `.claude/skills/lessence/` or
+  carry `Skill-Unchanged: <reason>`; otherwise exit 1.
 
 ## Corpus-dependent tests
 

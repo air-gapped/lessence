@@ -7,11 +7,14 @@ the binary's `--help`, the JSON schema doc, and direct execution of
 `./target/release/lessence`. Re-verify after user-facing `feat:`/`fix:`
 commits (they change behavior this skill documents).
 
-verified-at: ad8416db92cb641bc3ea35bdcd2ee961f073f159
+verified-at: 933afb912fc7fe6fb5e3dc2a496bff1ba320e289
 
-`verified-at` is the main commit this skill was last verified against. The
-release gate blocks the release PR if any `feat:`/`fix:`/`perf:` commit
-touching `src/` postdates it.
+`verified-at` is the main commit up to which this skill was read against the
+build by hand. After it, the commit-msg hook refuses a `feat:`/`fix:`/`perf:`
+commit that changes `src/` unless the same commit updates this skill or its
+message carries `Skill-Unchanged: <reason>`; `make release-check` applies the
+same rule to every commit since `verified-at`. The line needs no bump per
+change.
 
 | Claim | Source | Last verified |
 |---|---|---|
