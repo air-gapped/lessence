@@ -224,7 +224,6 @@ impl PathDetector {
         path.matches('/').count() > 1
     }
 
-    #[cfg_attr(test, mutants::skip)]
     fn is_likely_file_path(path: &str) -> bool {
         let last_segment_has_extension = path.split('/').next_back().unwrap_or("").contains('.');
         path.starts_with('/')

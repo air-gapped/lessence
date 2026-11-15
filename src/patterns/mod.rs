@@ -23,7 +23,7 @@ pub enum Token {
     IPv6(String),
     Mac(String),
     Fqdn(String),
-    Host(String),
+    SyslogHost(String),
     Port(u16),
     Hash(HashType, String),
     Uuid(String),
@@ -44,7 +44,7 @@ pub enum Token {
     PodName(String),
     HttpStatusClass(String),
     BracketContext(Vec<String>),
-    KeyValuePair { key: String, value_type: String },
+    KeyValuePair { key: String, value_type: ValueType },
     LogWithModule { level: String, module: String },
     StructuredMessage { component: String, level: String },
 
@@ -58,6 +58,42 @@ pub enum HashType {
     SHA256,
     SHA512,
     Generic { len: usize },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ValueType {
+    Percentage,
+    Duration,
+    Size,
+    Rate,
+    Boolean,
+    Number,
+    Ip,
+    Url,
+    Text,
+}
+
+impl ValueType {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Percentage => "percentage",
+            Self::Duration => "duration",
+            Self::Size => "size",
+            Self::Rate => "rate",
+            Self::Boolean => "boolean",
+            Self::Number => "number",
+            Self::Ip => "ip",
+            Self::Url => "url",
+            Self::Text => "string",
+        }
+    }
+}
+
+impl std::fmt::Display for ValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -117,7 +153,7 @@ impl Token {
             Token::IPv6(_) => facts("IPV6", "IP", StatsBucket::Ips, true),
             Token::Mac(_) => facts("MAC", "mac", StatsBucket::Macs, true),
             Token::Fqdn(_) => facts("FQDN", "FQDN", StatsBucket::Fqdns, true),
-            Token::Host(_) => facts("HOST", "host", StatsBucket::Fqdns, true),
+            Token::SyslogHost(_) => facts("HOST", "host", StatsBucket::Fqdns, true),
             Token::Port(_) => facts("PORT", "port", StatsBucket::Ports, false),
             Token::Hash(_, _) => facts("HASH", "hash", StatsBucket::Hashes, true),
             Token::Uuid(_) => facts("UUID", "UUID", StatsBucket::Uuids, true),
@@ -190,7 +226,7 @@ impl Token {
             | Token::IPv6(s)
             | Token::Mac(s)
             | Token::Fqdn(s)
-            | Token::Host(s)
+            | Token::SyslogHost(s)
             | Token::Uuid(s)
             | Token::Path(s)
             | Token::EmbeddedJson(s)

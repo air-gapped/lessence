@@ -576,7 +576,7 @@ pub(crate) fn entity_token(type_name: &str, value: &str) -> Option<Token> {
     Some(match type_name {
         "EMAIL" => Token::Email(value),
         "FQDN" => Token::Fqdn(value),
-        "HOST" => Token::Host(value),
+        "HOST" => Token::SyslogHost(value),
         "IPV4" => Token::IPv4(value),
         "IPV6" => Token::IPv6(value),
         _ => return None,
@@ -586,7 +586,7 @@ pub(crate) fn entity_token(type_name: &str, value: &str) -> Option<Token> {
 fn entity_value(token: &Token) -> Option<(Entity, &'static str, &str)> {
     match token {
         Token::Email(v) => Some((Entity::Email, "EMAIL", v.as_str())),
-        Token::Fqdn(v) | Token::Host(v) => Some((Entity::Host, "HOST", v.as_str())),
+        Token::Fqdn(v) | Token::SyslogHost(v) => Some((Entity::Host, "HOST", v.as_str())),
         Token::IPv4(v) | Token::IPv6(v) => Some((Entity::Ip, "IP", v.as_str())),
         _ => None,
     }
@@ -768,7 +768,7 @@ mod tests {
     fn a_named_value_is_replaced_only_where_it_stands_whole() {
         let z = s(&["host", "email"], false).unwrap();
         let tokens = vec![
-            Token::Host("db".into()),
+            Token::SyslogHost("db".into()),
             Token::Email("ann@example.com".into()),
         ];
         assert_eq!(

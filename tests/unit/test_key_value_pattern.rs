@@ -22,7 +22,7 @@ mod tests {
             // Check that percentage values are properly typed
             let has_percentage = tokens.iter().any(|token| {
                 if let Token::KeyValuePair { key: _, value_type } = token {
-                    value_type == "percentage"
+                    value_type.as_str() == "percentage"
                 } else {
                     false
                 }

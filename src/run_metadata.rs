@@ -51,7 +51,7 @@ enum IngestDigest {
 impl IngestDigest {
     fn after_another_report(self, report: &IngestReport) -> Self {
         match self {
-            Self::NoReport => Self::OneReport(report.input_hash),
+            Self::NoReport => Self::OneReport(report.complete_input_hash),
             Self::OneReport(_) | Self::SeveralReportsHaveNoRawByteDigest => {
                 Self::SeveralReportsHaveNoRawByteDigest
             }
@@ -230,7 +230,7 @@ impl RunMetadata {
                 algorithm: "sha256",
                 scope: "ordered-source-bytes-v1",
                 value: if reason.is_none() {
-                    input.digest.hash().map(|h| hex(&h))
+                    input.digest.hash().map(|h| lower_hex(&h))
                 } else {
                     None
                 },
@@ -241,7 +241,7 @@ impl RunMetadata {
     }
 }
 
-pub(crate) fn hex(bytes: &[u8]) -> String {
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
     use std::fmt::Write;
     bytes
         .iter()
@@ -265,7 +265,7 @@ mod tests {
             "no ingestion has no digest to claim"
         );
         let report = IngestReport {
-            input_hash: Some([0x42; 32]),
+            complete_input_hash: Some([0x42; 32]),
             ..Default::default()
         };
         input.absorb(&report, 0);

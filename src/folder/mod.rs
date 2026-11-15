@@ -825,7 +825,7 @@ fn hash_token_value(token: &Token) -> u64 {
         | Token::IPv6(s)
         | Token::Mac(s)
         | Token::Fqdn(s)
-        | Token::Host(s)
+        | Token::SyslogHost(s)
         | Token::Uuid(s)
         | Token::Path(s)
         | Token::EmbeddedJson(s)
@@ -857,7 +857,7 @@ fn hash_token_value(token: &Token) -> u64 {
         Token::KeyValuePair { key, value_type } => {
             fnv1a_fold(&mut h, key.as_bytes());
             fnv1a_fold(&mut h, b"=");
-            fnv1a_fold(&mut h, value_type.as_bytes());
+            fnv1a_fold(&mut h, value_type.as_str().as_bytes());
         }
         Token::LogWithModule { level, module } => {
             fnv1a_fold(&mut h, level.as_bytes());
@@ -2436,9 +2436,9 @@ impl PatternFolder {
 
     pub fn absorb_ingest_report(&mut self, report: &IngestReport, failed_sources: usize) {
         self.record_ingest_metadata(report, failed_sources);
-        self.stats.total_lines += report.continuation_lines_absorbed;
-        self.stats.continuation_lines_absorbed += report.continuation_lines_absorbed;
-        self.stats.lines_saved += report.continuation_lines_absorbed;
+        self.stats.total_lines += report.continuation_lines_to_add_back;
+        self.stats.continuation_lines_absorbed += report.continuation_lines_to_add_back;
+        self.stats.lines_saved += report.continuation_lines_to_add_back;
     }
 
     pub fn record_ingest_metadata(&mut self, report: &IngestReport, failed_sources: usize) {

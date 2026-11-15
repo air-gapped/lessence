@@ -15,6 +15,14 @@ are the records `--format json` would have printed, byte for byte, except
 every distilled corpus. Nothing here changes when a run saves a report —
 the schema, the record order and the version are the same.
 
+The overview a default run prints is read back from the finished report in
+two passes (`src/overview.rs`): the first keeps only id, count and byte offset
+per record in two bounded heaps (the rarest and the most frequent), the second
+seeks to the chosen offsets in id order and renders one record at a time;
+`--overview all` streams every record with no heap. Its memory bound is
+`RECORD_GUARD` (no record is read past 16 MiB) and the entry limit, not a
+measured RSS figure.
+
 ## Why JSONL
 
 - **Streaming-friendly.** Consumers can parse records as they arrive
@@ -388,6 +396,11 @@ lessence --format json prod.log \
   match the pre-feature `--stats-json` output. The `variation` map
   inside group records uses UPPERCASE conventions. The two are
   independent.
+- **A saved report's rename is less durable on Windows.** On Unix the
+  run directory is fsynced after `report.jsonl.partial` is renamed to
+  `report.jsonl`; Windows cannot open a directory as a file, so there the
+  rename is `std::fs::rename` without write-through and is as durable as
+  NTFS journaling makes it.
 
 ## Run metadata (schema version 1)
 

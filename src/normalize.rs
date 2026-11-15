@@ -668,7 +668,7 @@ fn replace_syslog_host(s: &str) -> (String, Vec<Token>) {
             result.push_str(&s[..m.start()]);
             result.push_str("<HOST>");
             result.push_str(&s[m.end()..]);
-            return (result, vec![Token::Host(word.to_string())]);
+            return (result, vec![Token::SyslogHost(word.to_string())]);
         }
     }
     (s.to_string(), Vec::new())
@@ -3942,7 +3942,7 @@ mod syslog_host_tests_2026_08_29 {
             bracket_pid
                 .tokens
                 .iter()
-                .any(|t| matches!(t, Token::Host(h) if h == "usw-core-1"))
+                .any(|t| matches!(t, Token::SyslogHost(h) if h == "usw-core-1"))
         );
     }
 

@@ -51,7 +51,7 @@ fn class_of(token: &Token) -> Option<(Class, &str)> {
         Token::Uuid(v) => Some((Class::Uuid, v)),
         Token::Hash(_, v) => Some((Class::Hex, v)),
         Token::Email(v) => Some((Class::Email, v)),
-        Token::Fqdn(v) | Token::Host(v) => Some((Class::Host, v)),
+        Token::Fqdn(v) | Token::SyslogHost(v) => Some((Class::Host, v)),
         Token::PodName(v) | Token::VolumeName(v) => Some((Class::K8s, v)),
         Token::Timestamp(_)
         | Token::Port(_)
@@ -997,6 +997,24 @@ mod tests {
     }
 
     #[test]
+    fn past_collision_tolerated_after_a_colliding_draw_is_accepted_and_the_length_kept() {
+        let mut a = anon();
+        let inventions: Vec<String> = (0..12).map(|_| a.draw_unique(Class::Word, "7")).collect();
+        for invention in &inventions {
+            assert_eq!(invention.len(), 1, "{inventions:?}");
+            assert!(
+                invention.chars().all(|c| c.is_ascii_digit()),
+                "{inventions:?}"
+            );
+        }
+        let distinct: HashSet<&String> = inventions.iter().collect();
+        assert!(
+            distinct.len() < inventions.len(),
+            "twelve one-digit inventions from ten digits must reuse one: {inventions:?}"
+        );
+    }
+
+    #[test]
     fn ipv4_stays_ipv4_in_ten_slash_eight() {
         let mut a = anon();
         let out = a.draw_ipv4_keeping_subnet_membership("203.0.113.9");
@@ -1156,7 +1174,7 @@ mod tests {
     #[test]
     fn a_hostname_never_rewrites_a_longer_token() {
         let mut a = anon();
-        a.learn(&[Token::Host("db".to_string())]);
+        a.learn(&[Token::SyslogHost("db".to_string())]);
         let mut a = a.seal();
         let out = a.rewrite("db dbus /var/db");
         assert!(out.contains("dbus"), "{out}");
@@ -1167,7 +1185,7 @@ mod tests {
     fn a_host_seen_only_on_a_later_line_is_replaced_inside_an_earlier_compound_token() {
         let mut a = anon();
         a.learn(&[Token::VolumeName("zorvex-model-storage".to_string())]);
-        a.learn(&[Token::Host("zorvex".to_string())]);
+        a.learn(&[Token::SyslogHost("zorvex".to_string())]);
         let mut a = a.seal();
         let one = a.rewrite("PVC=\"vllm/zorvex-model-storage\" mounted");
         let two = a.rewrite("Aug 29 08:40:15 zorvex kubelet: ready");
@@ -1210,7 +1228,7 @@ mod tests {
         let mut a = anon();
         a.learn(&[
             Token::IPv6("fe80::".to_string()),
-            Token::Host("zorvex".to_string()),
+            Token::SyslogHost("zorvex".to_string()),
         ]);
         let mut a = a.seal();
         let out = a.rewrite("route add fe80::/64 dev zorvex");

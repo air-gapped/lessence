@@ -158,6 +158,25 @@ Higher values did not change the P99 rendering length meaningfully
 useful "show the complete set" behaviour on small groups without
 shortening the marker enough to matter.
 
+## Other measured folding constants
+
+Not rollup constants, but chosen the same way and recorded here:
+
+- **`DEFAULT_THRESHOLD = 83`** (`src/config.rs`). At 81 and below, distinct
+  HTTP status classes merge back into one group; at 84 and above, fold cost
+  rises by about half.
+- **`MULTISET_LEAD = 4`** (`src/patterns/mod.rs`): a line too long for the
+  ordered comparison keeps its first four tokens (timestamp, level,
+  component, first message word) in order and compares the rest as a
+  multiset. Eight measured worse (165 groups against 140 on a Kubernetes
+  fixture); the multiset alone merged messages that share a long payload
+  but differ in their leading words (`Updating TLS secret` lines into an
+  `Active TLS secret` group).
+- **`JSON_FIELD_INTEGER_REGEX`** (`src/patterns/duration.rs`) folds integers
+  in JSON fields only. Widening it to logfmt was measured and rejected:
+  auditd `SYSCALL` records, with about 40 numeric fields each, over-merged
+  (649 output lines fell to 344).
+
 ## What this calibration does NOT do
 
 - **It does not make text markers fit in 120 characters on typical

@@ -652,7 +652,7 @@ fn streamed_token_hash_equals_hashing_the_value_string_for_every_variant() {
         Token::BracketContext(vec!["error".into(), "handler".into()]),
         Token::KeyValuePair {
             key: "user".into(),
-            value_type: "string".into(),
+            value_type: crate::patterns::ValueType::Text,
         },
         Token::LogWithModule {
             level: "WARN".into(),
@@ -706,7 +706,7 @@ fn is_sample_worthy_covers_all_token_variants() {
         (
             Token::KeyValuePair {
                 key: "k".into(),
-                value_type: "v".into(),
+                value_type: crate::patterns::ValueType::Text,
             },
             false,
         ),
@@ -770,7 +770,7 @@ fn token_type_name_covers_all_variants() {
         Token::BracketContext(vec![]),
         Token::KeyValuePair {
             key: "k".into(),
-            value_type: "v".into(),
+            value_type: crate::patterns::ValueType::Text,
         },
         Token::LogWithModule {
             level: "INFO".into(),
@@ -824,7 +824,7 @@ fn token_value_string_handles_all_variants() {
         Token::BracketContext(vec!["error".into(), "handler".into()]),
         Token::KeyValuePair {
             key: "user".into(),
-            value_type: "string".into(),
+            value_type: crate::patterns::ValueType::Text,
         },
         Token::LogWithModule {
             level: "WARN".into(),
@@ -859,9 +859,9 @@ fn token_value_string_handles_all_variants() {
     assert_eq!(
         token_value_string(&Token::KeyValuePair {
             key: "k".into(),
-            value_type: "v".into()
+            value_type: crate::patterns::ValueType::Text
         }),
-        "k=v"
+        "k=string"
     );
 }
 
@@ -2260,9 +2260,9 @@ fn absorb_ingest_report_sets_input_completeness() {
     let report = crate::ingest::IngestReport {
         fail_pattern_matched: false,
         overlong_lines_skipped: 2,
-        continuation_lines_absorbed: 0,
+        continuation_lines_to_add_back: 0,
         max_lines_reached: true,
-        input_hash: None,
+        complete_input_hash: None,
     };
     f.absorb_ingest_report(&report, 1);
 
@@ -2346,7 +2346,7 @@ fn count_pattern_types_gives_every_token_type_its_own_counter() {
         Token::BracketContext(vec!["ERROR".into()]),
         Token::KeyValuePair {
             key: "k".into(),
-            value_type: "string".into(),
+            value_type: crate::patterns::ValueType::Text,
         },
         Token::LogWithModule {
             level: "INFO".into(),
@@ -3288,7 +3288,7 @@ fn count_pattern_types_kv_pair() {
     let mut f = make_folder();
     f.count_pattern_types(&[Token::KeyValuePair {
         key: "k".into(),
-        value_type: "string".into(),
+        value_type: crate::patterns::ValueType::Text,
     }]);
     assert_eq!(f.stats.key_values, 1);
     assert_eq!(f.stats.numbers, 0);
@@ -5592,9 +5592,9 @@ fn an_overlong_skip_alone_makes_input_and_the_run_incomplete() {
     let report = crate::ingest::IngestReport {
         fail_pattern_matched: false,
         overlong_lines_skipped: 1,
-        continuation_lines_absorbed: 0,
+        continuation_lines_to_add_back: 0,
         max_lines_reached: false,
-        input_hash: None,
+        complete_input_hash: None,
     };
     f.absorb_ingest_report(&report, 0);
     let v = summary_json(&f);
@@ -5635,6 +5635,22 @@ fn a_zero_second_span_has_no_rate() {
     let b = f.build_briefing();
     assert_eq!(b.span.duration_seconds, Some(0), "{:?}", b.span);
     assert_eq!(b.span.lines_per_second, None, "{:?}", b.span);
+}
+
+#[test]
+fn a_histogram_needs_a_clock_so_a_log_without_timestamps_has_neither() {
+    let mut f = make_folder_json();
+    for word in ["alpha", "beta", "gamma", "delta"] {
+        f.process_line(&format!("worker {word} finished")).unwrap();
+    }
+    f.finish().unwrap();
+    let b = f.build_briefing();
+    assert_eq!(b.span.duration_seconds, None, "{:?}", b.span);
+    assert!(
+        b.histogram.is_none(),
+        "no timestamps means no buckets to place: {:?}",
+        b.histogram
+    );
 }
 
 #[test]
@@ -6222,11 +6238,11 @@ fn briefing_counts_each_severity_and_logfmt_line() {
             },
             Token::KeyValuePair {
                 key: "job".into(),
-                value_type: "number".into(),
+                value_type: crate::patterns::ValueType::Number,
             },
             Token::KeyValuePair {
                 key: "attempt".into(),
-                value_type: "number".into(),
+                value_type: crate::patterns::ValueType::Number,
             },
         ];
         stats.record_briefing_line(&tokens, "job=12 attempt=3");
@@ -6309,9 +6325,9 @@ fn framed_continuations_add_to_input_and_saved_line_totals() {
     let report = crate::ingest::IngestReport {
         fail_pattern_matched: false,
         overlong_lines_skipped: 0,
-        continuation_lines_absorbed: 3,
+        continuation_lines_to_add_back: 3,
         max_lines_reached: false,
-        input_hash: None,
+        complete_input_hash: None,
     };
     f.absorb_ingest_report(&report, 0);
     assert_eq!(f.stats.total_lines, 10);
@@ -6327,9 +6343,9 @@ fn absorbed_continuation_lines_accumulate_apart_from_the_total() {
     let report = |n: usize| crate::ingest::IngestReport {
         fail_pattern_matched: false,
         overlong_lines_skipped: 0,
-        continuation_lines_absorbed: n,
+        continuation_lines_to_add_back: n,
         max_lines_reached: false,
-        input_hash: None,
+        complete_input_hash: None,
     };
     assert_eq!(f.stats.continuation_lines_absorbed, 0);
     f.absorb_ingest_report(&report(3), 0);
@@ -6348,9 +6364,9 @@ fn input_degraded_codes_name_exactly_what_the_ingest_proved() {
         &crate::ingest::IngestReport {
             fail_pattern_matched: false,
             overlong_lines_skipped: 2,
-            continuation_lines_absorbed: 0,
+            continuation_lines_to_add_back: 0,
             max_lines_reached: true,
-            input_hash: None,
+            complete_input_hash: None,
         },
         1,
     );
@@ -7482,7 +7498,7 @@ fn the_summary_coverage_counts_records_read_before_the_ingest_report_adds_contin
         f.process_line(&format!("{word} finished")).unwrap();
     }
     let report = IngestReport {
-        continuation_lines_absorbed: 6,
+        continuation_lines_to_add_back: 6,
         ..IngestReport::default()
     };
     let (mut out, mut err) = (Vec::new(), Vec::new());

@@ -140,7 +140,6 @@ impl StructuredMessageDetector {
         }
     }
 
-    #[cfg_attr(test, mutants::skip)]
     fn apply_container_pattern(text: &str, tokens: &mut Vec<Token>) {
         Self::collect(
             text,
@@ -161,7 +160,6 @@ impl StructuredMessageDetector {
         );
     }
 
-    #[cfg_attr(test, mutants::skip)]
     fn apply_json_alt_pattern(text: &str, tokens: &mut Vec<Token>) {
         Self::collect(
             text,
@@ -293,7 +291,6 @@ impl StructuredMessageDetector {
             && !component.chars().all(|c| c.is_ascii_digit())
     }
 
-    #[cfg_attr(test, mutants::skip)]
     fn is_valid_structured_log(component: &str, level: &str) -> bool {
         if !LOG_LEVELS.contains(&level.to_lowercase().as_str()) {
             return false;

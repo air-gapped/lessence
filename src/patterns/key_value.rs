@@ -1,4 +1,4 @@
-use super::Token;
+use super::{Token, ValueType};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -197,7 +197,7 @@ impl KeyValueDetector {
     }
 
     fn owned_by_duration_detector(value: &str) -> bool {
-        Self::classify_value_type(value) == "duration"
+        Self::classify_value_type(value) == ValueType::Duration
     }
 
     fn apply_general_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
@@ -243,15 +243,15 @@ impl KeyValueDetector {
         }
     }
 
-    fn classify_value_type(value: &str) -> String {
+    fn classify_value_type(value: &str) -> ValueType {
         let lower_value = value.to_lowercase();
 
         if value.ends_with('%') {
-            return "percentage".to_string();
+            return ValueType::Percentage;
         }
 
         if value.ends_with("ms") || value.ends_with("us") || value.ends_with("ns") {
-            return "duration".to_string();
+            return ValueType::Duration;
         }
         if value.ends_with('s')
             && value
@@ -260,7 +260,7 @@ impl KeyValueDetector {
                 .nth(1)
                 .is_some_and(|c| c.is_ascii_digit())
         {
-            return "duration".to_string();
+            return ValueType::Duration;
         }
 
         if value.ends_with("MB")
@@ -269,7 +269,7 @@ impl KeyValueDetector {
             || value.ends_with("bytes")
             || value.ends_with("byte")
         {
-            return "size".to_string();
+            return ValueType::Size;
         }
 
         if value.ends_with("rps")
@@ -278,29 +278,29 @@ impl KeyValueDetector {
             || value.ends_with("/min")
             || value.ends_with("/hr")
         {
-            return "rate".to_string();
+            return ValueType::Rate;
         }
 
         if matches!(
             lower_value.as_str(),
             "true" | "false" | "enabled" | "disabled" | "on" | "off"
         ) {
-            return "boolean".to_string();
+            return ValueType::Boolean;
         }
 
         if value.chars().all(|c| c.is_ascii_digit() || c == '.') {
-            return "number".to_string();
+            return ValueType::Number;
         }
 
         if Self::is_ip_address(value) {
-            return "ip".to_string();
+            return ValueType::Ip;
         }
 
         if URL_SCHEMES.iter().any(|scheme| value.starts_with(scheme)) {
-            return "url".to_string();
+            return ValueType::Url;
         }
 
-        "string".to_string()
+        ValueType::Text
     }
 
     fn is_not_sql_statement(text: &str) -> bool {
@@ -349,9 +349,12 @@ mod tests {
 
     #[test]
     fn an_ipv6_value_classifies_as_an_ip() {
-        assert_eq!(KeyValueDetector::classify_value_type("2001:db8::1"), "ip");
         assert_eq!(
-            KeyValueDetector::classify_value_type("::ffff:192.0.2.1"),
+            KeyValueDetector::classify_value_type("2001:db8::1").as_str(),
+            "ip"
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("::ffff:192.0.2.1").as_str(),
             "ip"
         );
     }
@@ -366,7 +369,7 @@ mod tests {
 
         let has_percentage = tokens.iter().any(|token| {
             if let Token::KeyValuePair { key: _, value_type } = token {
-                value_type == "percentage"
+                *value_type == ValueType::Percentage
             } else {
                 false
             }
@@ -520,13 +523,28 @@ mod tests {
 
     #[test]
     fn a_dotted_quad_classifies_as_a_number_before_an_ip() {
-        assert_eq!(KeyValueDetector::classify_value_type("75%"), "percentage");
-        assert_eq!(KeyValueDetector::classify_value_type("250ms"), "duration");
-        assert_eq!(KeyValueDetector::classify_value_type("1GB"), "size");
-        assert_eq!(KeyValueDetector::classify_value_type("true"), "boolean");
-        assert_eq!(KeyValueDetector::classify_value_type("12345"), "number");
         assert_eq!(
-            KeyValueDetector::classify_value_type("192.168.1.1"),
+            KeyValueDetector::classify_value_type("75%").as_str(),
+            "percentage"
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("250ms").as_str(),
+            "duration"
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("1GB").as_str(),
+            "size"
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("true").as_str(),
+            "boolean"
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("12345").as_str(),
+            "number"
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("192.168.1.1").as_str(),
             "number",
             "a dotted quad hits the numeric check before the IP check"
         );
@@ -534,27 +552,39 @@ mod tests {
 
     #[test]
     fn classify_duration_single_digit_s() {
-        assert_eq!(KeyValueDetector::classify_value_type("5s"), "duration");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("5s").as_str(),
+            "duration"
+        );
     }
 
     #[test]
     fn classify_boolean_off() {
-        assert_eq!(KeyValueDetector::classify_value_type("off"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("off").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_number_decimal() {
-        assert_eq!(KeyValueDetector::classify_value_type("10.5"), "number");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("10.5").as_str(),
+            "number"
+        );
     }
 
     #[test]
     fn an_empty_value_is_vacuously_a_number() {
-        assert_eq!(KeyValueDetector::classify_value_type(""), "number");
+        assert_eq!(KeyValueDetector::classify_value_type("").as_str(), "number");
     }
 
     #[test]
     fn classify_rate() {
-        assert_eq!(KeyValueDetector::classify_value_type("100rps"), "rate");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("100rps").as_str(),
+            "rate"
+        );
     }
 
     #[test]
@@ -590,112 +620,178 @@ mod tests {
 
     #[test]
     fn classify_percentage() {
-        assert_eq!(KeyValueDetector::classify_value_type("75%"), "percentage");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("75%").as_str(),
+            "percentage"
+        );
     }
 
     #[test]
     fn classify_duration_ms() {
-        assert_eq!(KeyValueDetector::classify_value_type("100ms"), "duration");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("100ms").as_str(),
+            "duration"
+        );
     }
 
     #[test]
     fn classify_duration_us() {
-        assert_eq!(KeyValueDetector::classify_value_type("50us"), "duration");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("50us").as_str(),
+            "duration"
+        );
     }
 
     #[test]
     fn classify_duration_ns() {
-        assert_eq!(KeyValueDetector::classify_value_type("200ns"), "duration");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("200ns").as_str(),
+            "duration"
+        );
     }
 
     #[test]
     fn classify_duration_s() {
-        assert_eq!(KeyValueDetector::classify_value_type("5s"), "duration");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("5s").as_str(),
+            "duration"
+        );
     }
 
     #[test]
     fn classify_size_mb() {
-        assert_eq!(KeyValueDetector::classify_value_type("512MB"), "size");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("512MB").as_str(),
+            "size"
+        );
     }
 
     #[test]
     fn classify_size_gb() {
-        assert_eq!(KeyValueDetector::classify_value_type("2GB"), "size");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("2GB").as_str(),
+            "size"
+        );
     }
 
     #[test]
     fn classify_size_kb() {
-        assert_eq!(KeyValueDetector::classify_value_type("1024KB"), "size");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("1024KB").as_str(),
+            "size"
+        );
     }
 
     #[test]
     fn classify_size_bytes() {
-        assert_eq!(KeyValueDetector::classify_value_type("4096bytes"), "size");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("4096bytes").as_str(),
+            "size"
+        );
     }
 
     #[test]
     fn classify_size_byte() {
-        assert_eq!(KeyValueDetector::classify_value_type("1byte"), "size");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("1byte").as_str(),
+            "size"
+        );
     }
 
     #[test]
     fn classify_rate_rps() {
-        assert_eq!(KeyValueDetector::classify_value_type("1000rps"), "rate");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("1000rps").as_str(),
+            "rate"
+        );
     }
 
     #[test]
     fn classify_rate_qps() {
-        assert_eq!(KeyValueDetector::classify_value_type("500qps"), "rate");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("500qps").as_str(),
+            "rate"
+        );
     }
 
     #[test]
     fn classify_rate_per_s() {
-        assert_eq!(KeyValueDetector::classify_value_type("100/s"), "rate");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("100/s").as_str(),
+            "rate"
+        );
     }
 
     #[test]
     fn classify_rate_per_min() {
-        assert_eq!(KeyValueDetector::classify_value_type("60/min"), "rate");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("60/min").as_str(),
+            "rate"
+        );
     }
 
     #[test]
     fn classify_rate_per_hr() {
-        assert_eq!(KeyValueDetector::classify_value_type("3600/hr"), "rate");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("3600/hr").as_str(),
+            "rate"
+        );
     }
 
     #[test]
     fn classify_bool_true() {
-        assert_eq!(KeyValueDetector::classify_value_type("true"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("true").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_bool_false() {
-        assert_eq!(KeyValueDetector::classify_value_type("false"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("false").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_bool_enabled() {
-        assert_eq!(KeyValueDetector::classify_value_type("enabled"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("enabled").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_bool_disabled() {
-        assert_eq!(KeyValueDetector::classify_value_type("disabled"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("disabled").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_bool_on() {
-        assert_eq!(KeyValueDetector::classify_value_type("on"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("on").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_bool_off() {
-        assert_eq!(KeyValueDetector::classify_value_type("off"), "boolean");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("off").as_str(),
+            "boolean"
+        );
     }
 
     #[test]
     fn classify_number() {
-        assert_eq!(KeyValueDetector::classify_value_type("42.5"), "number");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("42.5").as_str(),
+            "number"
+        );
     }
 
     #[test]
@@ -706,7 +802,7 @@ mod tests {
     #[test]
     fn classify_url_http() {
         assert_eq!(
-            KeyValueDetector::classify_value_type("http://example.com"),
+            KeyValueDetector::classify_value_type("http://example.com").as_str(),
             "url"
         );
     }
@@ -714,7 +810,7 @@ mod tests {
     #[test]
     fn classify_url_https() {
         assert_eq!(
-            KeyValueDetector::classify_value_type("https://example.com"),
+            KeyValueDetector::classify_value_type("https://example.com").as_str(),
             "url"
         );
     }
@@ -722,14 +818,17 @@ mod tests {
     #[test]
     fn classify_url_ftp() {
         assert_eq!(
-            KeyValueDetector::classify_value_type("ftp://files.com"),
+            KeyValueDetector::classify_value_type("ftp://files.com").as_str(),
             "url"
         );
     }
 
     #[test]
     fn classify_string_default() {
-        assert_eq!(KeyValueDetector::classify_value_type("hello"), "string");
+        assert_eq!(
+            KeyValueDetector::classify_value_type("hello").as_str(),
+            "string"
+        );
     }
 
     #[test]

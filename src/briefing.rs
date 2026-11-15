@@ -1361,11 +1361,11 @@ mod tests {
         let tokens = vec![
             Token::KeyValuePair {
                 key: "time".to_string(),
-                value_type: "NUMBER".to_string(),
+                value_type: crate::patterns::ValueType::Number,
             },
             Token::KeyValuePair {
                 key: "level".to_string(),
-                value_type: "WORD".to_string(),
+                value_type: crate::patterns::ValueType::Text,
             },
         ];
         assert_eq!(format_from_line(&tokens, ""), FormatClass::Logfmt);
@@ -1375,7 +1375,7 @@ mod tests {
     fn format_from_line_logfmt_needs_two_pairs_not_one() {
         let tokens = vec![Token::KeyValuePair {
             key: "level".to_string(),
-            value_type: "WORD".to_string(),
+            value_type: crate::patterns::ValueType::Text,
         }];
         assert_eq!(format_from_line(&tokens, ""), FormatClass::Plain);
     }

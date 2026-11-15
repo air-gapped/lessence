@@ -114,10 +114,10 @@ pub enum Event<'a> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct IngestReport {
     pub fail_pattern_matched: bool,
-    pub continuation_lines_absorbed: usize,
+    pub continuation_lines_to_add_back: usize,
     pub overlong_lines_skipped: usize,
     pub max_lines_reached: bool,
-    pub input_hash: Option<[u8; 32]>,
+    pub complete_input_hash: Option<[u8; 32]>,
 }
 
 pub struct Ingestor {
@@ -231,7 +231,7 @@ impl Ingestor {
                 }
 
                 match framer.push(line, line_number) {
-                    Framed::Continued => report.continuation_lines_absorbed += 1,
+                    Framed::Continued => report.continuation_lines_to_add_back += 1,
                     Framed::Opened {
                         finished: Some(record),
                     } => record.emit(&mut sink)?,
@@ -253,7 +253,7 @@ impl Ingestor {
         }
         let every_reader_reached_eof = !report.max_lines_reached;
         if every_reader_reached_eof {
-            report.input_hash = aggregate.map(AggregateHash::finish);
+            report.complete_input_hash = aggregate.map(AggregateHash::finish);
         }
         Ok(report)
     }
@@ -746,7 +746,7 @@ mod tests {
             ],
             "framing changes what a record means, so it must be asked for"
         );
-        assert_eq!(report.continuation_lines_absorbed, 0);
+        assert_eq!(report.continuation_lines_to_add_back, 0);
     }
 
     #[test]
@@ -765,7 +765,7 @@ mod tests {
             "frames join with CONTINUATION_JOINER: one record stays one line"
         );
         assert_eq!(
-            report.continuation_lines_absorbed, 2,
+            report.continuation_lines_to_add_back, 2,
             "absorbed frames are counted so line accounting can add them back"
         );
     }
@@ -836,7 +836,7 @@ Traceback:\n  at foo\n  at bar\n",
                 Recorded::Line("next".into(), 4),
             ]
         );
-        assert_eq!(report.continuation_lines_absorbed, 1);
+        assert_eq!(report.continuation_lines_to_add_back, 1);
     }
 
     #[test]
@@ -845,7 +845,7 @@ Traceback:\n  at foo\n  at bar\n",
         let (framed, framed_report) = record(&framing(), vec![reader(None, text)]);
         let (plain, _) = record(&ingestor(&Config::default()), vec![reader(None, text)]);
         assert_eq!(framed, plain);
-        assert_eq!(framed_report.continuation_lines_absorbed, 0);
+        assert_eq!(framed_report.continuation_lines_to_add_back, 0);
     }
 
     #[test]
@@ -879,7 +879,7 @@ mod input_hash_tests {
             .with_input_hash_if_every_input_opened(true, 0)
             .run(readers, |_| Ok(()))
             .unwrap();
-        crate::run_metadata::hex(&report.input_hash.unwrap())
+        crate::run_metadata::lower_hex(&report.complete_input_hash.unwrap())
     }
     #[test]
     fn framing_matches_independently_computed_vectors() {
@@ -999,7 +999,7 @@ mod input_hash_tests {
                 )
                 .unwrap();
             assert_eq!(report.max_lines_reached, truncated);
-            assert_eq!(report.input_hash.is_none(), truncated);
+            assert_eq!(report.complete_input_hash.is_none(), truncated);
         }
         let report = Ingestor::from_config(&Config::default())
             .unwrap()
@@ -1012,7 +1012,7 @@ mod input_hash_tests {
             )
             .unwrap();
         assert!(
-            report.input_hash.is_none(),
+            report.complete_input_hash.is_none(),
             "default library ingestion must not hash"
         );
     }
@@ -1030,7 +1030,7 @@ mod input_hash_tests {
             )
             .unwrap();
         assert!(
-            report.input_hash.is_none(),
+            report.complete_input_hash.is_none(),
             "a published digest must cover every requested source"
         );
     }
