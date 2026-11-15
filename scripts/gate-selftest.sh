@@ -237,5 +237,37 @@ check "a binary built from another commit is refused" "1" "$(rc)"
 check "the stale binary is named" "was built from deadbeef1" "$(cat "$WORK/rc-err")"
 check "the README copy was never written" "$before" "$(sha256sum "$readme_copy")"
 
+# ── The change hash: staging a file, or a dirty bead export, moves nothing ─
+# The pre-commit hook stages .beads/issues.jsonl itself. A hash that saw
+# that, or that told staged from unstaged, refused the commit the gate had
+# just passed.
+hash_repo="$WORK/hash-repo"
+mkdir -p "$hash_repo/src" "$hash_repo/.beads"
+(
+    cd "$hash_repo" || exit 2
+    git init -q .
+    echo a >src/x.rs
+    echo '{}' >.beads/issues.jsonl
+    git add -A
+    git -c user.name=t -c user.email=t@example.invalid commit -q -m init
+) >/dev/null 2>&1
+dhash() { (cd "$hash_repo" && "$ROOT/scripts/gate-diff-hash.sh"); }
+clean_hash="$(dhash)"
+echo b >"$hash_repo/src/x.rs"
+gated_hash="$(dhash)"
+if [ "$gated_hash" != "$clean_hash" ]; then ok "a source change moves the hash"; else
+    bad "a source change left the hash where it was"
+fi
+git -C "$hash_repo" add src/x.rs
+check "staging the change keeps the hash" "$gated_hash" "$(dhash)"
+echo '{"id":1}' >"$hash_repo/.beads/issues.jsonl"
+check "a dirty bead export keeps the hash" "$gated_hash" "$(dhash)"
+git -C "$hash_repo" add .beads
+check "the hook staging the bead export keeps the hash" "$gated_hash" "$(dhash)"
+echo c >"$hash_repo/src/x.rs"
+if [ "$(dhash)" != "$gated_hash" ]; then ok "an edit after the gate moves the hash"; else
+    bad "an edit after the gate left the hash where it was"
+fi
+
 echo "--- $fails failure(s)"
 [ "$fails" -eq 0 ]

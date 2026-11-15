@@ -98,7 +98,7 @@ No target other than `make distill` reads an original corpus.
 9. Stdout ≤ 15 lines. `gate.json`:
 
 ```json
-{ "time": "", "git_head": "", "staged_diff_sha256": "sha256(git diff --cached; git diff)",
+{ "time": "", "git_head": "", "staged_diff_sha256": "scripts/gate-diff-hash.sh: sha256(git diff HEAD, .beads/ excluded)",
   "base": {"ref": "HEAD", "commit": "", "sha256": ""},
   "new":  {"sha256": "", "rustc": ""},
   "cases": {"new": 0, "new_failing_on_base": 0, "vacuous": []},
@@ -167,7 +167,8 @@ test by accident and `make release-check` always runs all of them.
 - `pre-commit`: if a staged path (added, changed, deleted, or either side
   of a rename) is one of the binary's inputs (`scripts/gate.sh`, step 2), require
   `target/gate/gate.json` with `verdict: PASS` and `staged_diff_sha256`
-  equal to the current staged diff; otherwise print `run make gate` and
+  equal to `scripts/gate-diff-hash.sh` now (the working tree against HEAD,
+  staged or not, `.beads/` left out); otherwise print `run make gate` and
   exit 1.
 - `commit-msg`: diff `##CASE`/`##TODO` headers in
   `tests/fixtures/fold_regressions.log` and entries in the `known` tables of

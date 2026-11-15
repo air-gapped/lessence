@@ -89,7 +89,7 @@ if [ "$staged_src" = "1" ]; then
         verdict=$(sed -n 's/.*"verdict": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
         recorded_sha=$(sed -n 's/.*"staged_diff_sha256": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
     fi
-    current_sha=$( (git diff --cached; git diff) | sha256sum | awk '{print $1}')
+    current_sha=$(./scripts/gate-diff-hash.sh)
     if [ "$verdict" != "PASS" ]; then
         fail "target/gate/gate.json verdict is '$verdict', not PASS — run 'make gate'"
     fi

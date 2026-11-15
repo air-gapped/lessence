@@ -526,7 +526,7 @@ done
 
 # ── gate.json ────────────────────────────────────────────────────────────
 
-staged_diff_sha256="$( (git diff --cached; git diff) | sha256sum | awk '{print $1}')"
+staged_diff_sha256="$("$ROOT/scripts/gate-diff-hash.sh")"
 rustc_version="$(rustc --version)"
 git_head="$(git rev-parse HEAD)"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
