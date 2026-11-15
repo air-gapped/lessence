@@ -7863,10 +7863,10 @@ fn units_in_a_gap_pair_in_order_when_both_sides_have_as_many() {
     let aligned = [Some(0), None, None, Some(3)];
     assert_eq!(
         unit_ranges(&tmpl, &mem, &aligned),
-        (
-            vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))],
-            vec![]
-        )
+        UnitRanges {
+            stands_for: vec![Some((0, 1)), Some((1, 2)), Some((2, 3)), Some((3, 4))],
+            unshown: vec![]
+        }
     );
 }
 
@@ -7876,7 +7876,10 @@ fn a_gap_at_the_end_of_the_template_reads_the_rest_of_the_member() {
     let mem = ["a", "p", "q"];
     assert_eq!(
         unit_ranges(&tmpl, &mem, &[Some(0), None]),
-        (vec![Some((0, 1)), Some((1, 3))], vec![])
+        UnitRanges {
+            stands_for: vec![Some((0, 1)), Some((1, 3))],
+            unshown: vec![]
+        }
     );
 }
 

@@ -1025,37 +1025,69 @@ fn shows_every_unit(template: &str, member: &str) -> bool {
         .map(|&(at, len)| &member[at..at + len])
         .collect();
     let n = words.len();
-    let mut shown = vec![false; n + 1];
-    shown[n] = true;
-    let mut here = vec![false; n + 1];
+    let mut read_shows_from = vec![false; n + 1];
+    read_shows_from[n] = true;
+    let mut unit_shows_from = vec![false; n + 1];
     for &(at, len) in unit_spans(template).iter().rev() {
         let unit = &template[at..at + len];
         if unit == VARIES_MARK {
-            here[n] = shown[n];
-            for j in (0..n).rev() {
-                here[j] = shown[j] || here[j + 1];
-            }
+            bare_slot_shows(&read_shows_from, &mut unit_shows_from);
         } else if let Some((first, last)) = unit.find(VARIES_MARK).zip(unit.rfind(VARIES_MARK)) {
             let (before, after) = (&unit[..first], &unit[last + VARIES_MARK.len()..]);
-            let mut later = false;
-            here[n] = false;
-            for j in (0..n).rev() {
-                let word = words[j];
-                let ends_here = word.len() >= before.len() + after.len()
-                    && word.ends_with(after)
-                    && shown[j + 1];
-                here[j] = word.starts_with(before) && (ends_here || later);
-                later |= word.ends_with(after) && shown[j + 1];
-            }
+            slot_with_text_shows(
+                &words,
+                before,
+                after,
+                &read_shows_from,
+                &mut unit_shows_from,
+            );
         } else {
-            here[n] = false;
-            for j in (0..n).rev() {
-                here[j] = words[j] == unit && shown[j + 1];
-            }
+            literal_shows(&words, unit, &read_shows_from, &mut unit_shows_from);
         }
-        std::mem::swap(&mut shown, &mut here);
+        std::mem::swap(&mut read_shows_from, &mut unit_shows_from);
     }
-    shown[0]
+    read_shows_from[0]
+}
+
+fn bare_slot_shows(read_shows_from: &[bool], unit_shows_from: &mut [bool]) {
+    let n = read_shows_from.len() - 1;
+    unit_shows_from[n] = read_shows_from[n];
+    for j in (0..n).rev() {
+        unit_shows_from[j] = read_shows_from[j] || unit_shows_from[j + 1];
+    }
+}
+
+fn slot_with_text_shows(
+    words: &[&str],
+    before: &str,
+    after: &str,
+    read_shows_from: &[bool],
+    unit_shows_from: &mut [bool],
+) {
+    let n = words.len();
+    let mut later = false;
+    unit_shows_from[n] = false;
+    for j in (0..n).rev() {
+        let word = words[j];
+        let ends_here = word.len() >= before.len() + after.len()
+            && word.ends_with(after)
+            && read_shows_from[j + 1];
+        unit_shows_from[j] = word.starts_with(before) && (ends_here || later);
+        later |= word.ends_with(after) && read_shows_from[j + 1];
+    }
+}
+
+fn literal_shows(
+    words: &[&str],
+    unit: &str,
+    read_shows_from: &[bool],
+    unit_shows_from: &mut [bool],
+) {
+    let n = words.len();
+    unit_shows_from[n] = false;
+    for j in (0..n).rev() {
+        unit_shows_from[j] = words[j] == unit && read_shows_from[j + 1];
+    }
 }
 
 fn reads_as(template: &str, member: &str) -> bool {
@@ -1129,31 +1161,58 @@ fn align_exact(left: &[&str], right: &[&str]) -> Vec<Option<usize>> {
     out
 }
 
+const OUTSIDE_BAND: i32 = -1;
+
+struct Band {
+    low: isize,
+    width: usize,
+    cols: usize,
+}
+
+impl Band {
+    fn new(rows: usize, cols: usize, band: usize) -> Self {
+        Self {
+            low: cols.min(rows) as isize - rows as isize - band as isize,
+            width: rows.abs_diff(cols) + 2 * band + 1,
+            cols,
+        }
+    }
+
+    fn diagonal(&self, i: usize, j: usize) -> Option<usize> {
+        let k = j as isize - i as isize - self.low;
+        (0..self.width as isize).contains(&k).then_some(k as usize)
+    }
+
+    fn cell_in_row(&self, i: usize, j: usize) -> usize {
+        debug_assert!(self.columns(i).contains(&j));
+        (j as isize - i as isize - self.low) as usize
+    }
+
+    fn columns(&self, i: usize) -> std::ops::RangeInclusive<usize> {
+        let first = (i as isize + self.low).max(0) as usize;
+        let last =
+            (i as isize + self.low + self.width as isize - 1).min(self.cols as isize) as usize;
+        first..=last
+    }
+}
+
 fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>> {
     let (rows, cols) = (left.len(), right.len());
     debug_assert!(rows.abs_diff(cols) <= band && (rows != cols || band > 0));
-    let low = cols.min(rows) as isize - rows as isize - band as isize;
-    let width = rows.abs_diff(cols) + 2 * band + 1;
-    let at = |i: usize, j: usize| -> Option<usize> {
-        let k = j as isize - i as isize - low;
-        (0..width as isize).contains(&k).then_some(k as usize)
-    };
-    let mut below = vec![-1i32; width];
-    let mut here = vec![-1i32; width];
-    for (k, cell) in below.iter_mut().enumerate() {
-        let j = rows as isize + low + k as isize;
-        if (0..=cols as isize).contains(&j) {
-            *cell = 0;
-        }
+    let band = Band::new(rows, cols, band);
+    let width = band.width;
+    let mut below = vec![OUTSIDE_BAND; width];
+    let mut here = vec![OUTSIDE_BAND; width];
+    for j in band.columns(rows) {
+        below[band.cell_in_row(rows, j)] = 0;
     }
     let mut down = vec![0u64; (rows * width).div_ceil(64)];
-    let value = |row: &[i32], i: usize, j: usize| at(i, j).map_or(-1, |k| row[k]);
+    let value =
+        |row: &[i32], i: usize, j: usize| band.diagonal(i, j).map_or(OUTSIDE_BAND, |k| row[k]);
     for i in (0..rows).rev() {
-        here.fill(-1);
-        let first = (i as isize + low).max(0) as usize;
-        let last = (i as isize + low + width as isize - 1).min(cols as isize) as usize;
-        for j in (first..=last).rev() {
-            let k = (j as isize - i as isize - low) as usize;
+        here.fill(OUTSIDE_BAND);
+        for j in band.columns(i).rev() {
+            let k = band.cell_in_row(i, j);
             here[k] = if j == cols {
                 0
             } else if left[i] == right[j] {
@@ -1177,7 +1236,7 @@ fn align_banded(left: &[&str], right: &[&str], band: usize) -> Vec<Option<usize>
             i += 1;
             j += 1;
         } else {
-            let bit = i * width + at(i, j).expect("the walk stays inside the band");
+            let bit = i * width + band.diagonal(i, j).expect("the walk stays inside the band");
             if (down[bit / 64] >> (bit % 64)) & 1 == 1 {
                 i += 1;
             } else {
@@ -1327,24 +1386,35 @@ fn slot_affix(r: &str) -> Option<(&str, &str)> {
     Some((&r[..k], &r[k + VARIES_MARK.len()..]))
 }
 
-type Unshown = Vec<(usize, (usize, usize))>;
+type MemberUnits = (usize, usize);
 
-fn unit_ranges(
-    tmpl: &[&str],
-    mem: &[&str],
-    aligned: &[Option<usize>],
-) -> (Vec<Option<(usize, usize)>>, Unshown) {
+#[derive(Debug, PartialEq)]
+struct UnshownRun {
+    before_unit: usize,
+    member_units: MemberUnits,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct UnitRanges {
+    stands_for: Vec<Option<MemberUnits>>,
+    unshown: Vec<UnshownRun>,
+}
+
+fn unit_ranges(tmpl: &[&str], mem: &[&str], aligned: &[Option<usize>]) -> UnitRanges {
     fn resolve(
         tmpl: &[&str],
         mem: &[&str],
         (t0, t1): (usize, usize),
-        (m0, m1): (usize, usize),
-        out: &mut [Option<(usize, usize)>],
-        unshown: &mut Unshown,
+        (m0, m1): MemberUnits,
+        out: &mut [Option<MemberUnits>],
+        unshown: &mut Vec<UnshownRun>,
     ) {
         if t0 == t1 {
             if m0 < m1 {
-                unshown.push((t0, (m0, m1)));
+                unshown.push(UnshownRun {
+                    before_unit: t0,
+                    member_units: (m0, m1),
+                });
             }
             return;
         }
@@ -1369,23 +1439,21 @@ fn unit_ranges(
                 resolve(tmpl, mem, (t0, i), (m0, j), out, unshown);
                 resolve(tmpl, mem, (i + 1, t1), (j + 1, m1), out, unshown);
             } else if tmpl[t0..t1].iter().all(|&r| r == VARIES_MARK) {
-                for (n, i) in (t0..t1).enumerate() {
-                    let from = (m0 + n).min(m1);
-                    let to = if i + 1 == t1 { m1 } else { (from + 1).min(m1) };
-                    out[i] = Some((from, to));
-                }
+                read_in_order_into_bare_slots((t0, t1), (m0, m1), out);
             }
         }
     }
-    let mut out: Vec<Option<(usize, usize)>> =
-        aligned.iter().map(|a| a.map(|j| (j, j + 1))).collect();
-    let mut unshown = Unshown::new();
+    let mut out: Vec<Option<MemberUnits>> = aligned.iter().map(|a| a.map(|j| (j, j + 1))).collect();
+    let mut unshown = Vec::new();
     let mut i = 0;
     let mut from = 0;
     while i < aligned.len() {
         if let Some(j) = aligned[i] {
             if from < j {
-                unshown.push((i, (from, j)));
+                unshown.push(UnshownRun {
+                    before_unit: i,
+                    member_units: (from, j),
+                });
             }
             from = j + 1;
             i += 1;
@@ -1405,9 +1473,27 @@ fn unit_ranges(
         from = to;
     }
     if from < mem.len() {
-        unshown.push((aligned.len(), (from, mem.len())));
+        unshown.push(UnshownRun {
+            before_unit: aligned.len(),
+            member_units: (from, mem.len()),
+        });
     }
-    (out, unshown)
+    UnitRanges {
+        stands_for: out,
+        unshown,
+    }
+}
+
+fn read_in_order_into_bare_slots(
+    (t0, t1): (usize, usize),
+    (m0, m1): MemberUnits,
+    out: &mut [Option<MemberUnits>],
+) {
+    for (n, i) in (t0..t1).enumerate() {
+        let from = (m0 + n).min(m1);
+        let to = if i + 1 == t1 { m1 } else { (from + 1).min(m1) };
+        out[i] = Some((from, to));
+    }
 }
 
 fn range_text<'m>(member: &'m str, spans: &[(usize, usize)], (c, d): (usize, usize)) -> &'m str {
@@ -1446,8 +1532,11 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
         return None;
     }
     let aligned = align_words(&tmpl, &mem);
-    let (ranges, unshown) = if tmpl.len() == mem.len() {
-        (Vec::new(), Unshown::new())
+    let UnitRanges {
+        stands_for: ranges,
+        unshown,
+    } = if tmpl.len() == mem.len() {
+        UnitRanges::default()
     } else {
         unit_ranges(&tmpl, &mem, &aligned)
     };
@@ -1455,14 +1544,14 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
     let mut edits = Vec::new();
     let mut shared_atoms = SharedAtoms::new(template, member);
     for i in 0..=spans.len() {
-        while let Some((_, run)) = unshown.next_if(|&(t, _)| t == i) {
+        while let Some(run) = unshown.next_if(|run| run.before_unit == i) {
             edits.push(slot_opening(
                 template,
                 &spans,
                 member,
                 &member_spans,
                 i,
-                run,
+                run.member_units,
             )?);
         }
         let Some(&(at, len)) = spans.get(i) else {
@@ -2271,9 +2360,9 @@ impl RollupComputer {
             let masked;
             let range = match aligned[i] {
                 Some(j) => Some((j, j + 1)),
-                None => {
-                    ranges.get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned).0)[i]
-                }
+                None => ranges
+                    .get_or_insert_with(|| unit_ranges(tmpl_words, &member, &aligned).stands_for)
+                    [i],
             };
             let value = match range.filter(|&(from, to)| from < to) {
                 Some(range) => {
