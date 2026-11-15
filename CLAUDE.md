@@ -16,7 +16,7 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 ## Commands
 
 ```bash
-make ci             # fmt + clippy + doc + test + deny  (~18 s warm, every commit). Tests run on
+make ci             # fmt + clippy + doc + test + deny + mutants-pins (~20 s warm, every commit). Tests run on
                     # the test profile: the release profile (fat LTO, one codegen unit) is
                     # for the shipped binary, and GitHub CI is where it is checked to compile
 make gate           # FAILS on exactly five things: a new ##CASE that also passes on the
@@ -119,6 +119,25 @@ Before reporting, audit each claim against a tool result from this session.
 Report in four parts: **DONE** (what changed, in user terms), **PROOF**
 (gate.json numbers, commit hashes), **SCOPE** (what was not touched),
 **NOT VERIFIED** (anything without a tool result — say so plainly).
+
+## Rules and what enforces them
+
+When the owner corrects you, fix the mistake and add its rule here with the
+check that enforces it. A rule already listed with nothing enforcing it is a
+repeat: give it a check in the same change. Drop a rule once its mistake
+cannot happen.
+
+| Rule | Enforced by |
+|---|---|
+| A change to the binary's inputs is gated before commit | `pre-commit`: `gate.json` PASS for `scripts/gate-diff-hash.sh` (one script, also used by `scripts/gate.sh`; `.beads/` and staging do not move it — `scripts/gate-selftest.sh`) |
+| A new `##CASE` fails on the parent build | `make gate` → `cases.vacuous` |
+| The truth layer only grows | `commit-msg`: `Truth-Layer-Change:` trailer |
+| `feat:`/`fix:`/`perf:` only for what users see | `commit-msg`: `RELEASE_COMMIT=1` |
+| A behaviour change updates the agent skill in the same commit | `commit-msg`: a `feat:`/`fix:`/`perf:` commit staging `src/` stages `.claude/skills/lessence/` or carries `Skill-Unchanged: <reason>`; `make release-check` re-checks the range |
+| A mutant is excluded only with a proof, and the exclusion still points at it | `make ci` and GitHub CI: `scripts/check-mutants-pins.sh` fails on an `exclude_re` entry that matches no mutant |
+| README flags, examples and the skill's flag list match the binary | `tests/doc_contract.rs` |
+| Nothing secret or blocklisted is committed | `pre-commit`: blocklist + gitleaks |
+| New arithmetic and boundaries have unit tests that fail when they move | `make release-check` → mutants on the diff since the last release. Late by design: a per-commit run costs minutes per change |
 
 ## Commits
 
