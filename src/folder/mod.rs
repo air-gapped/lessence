@@ -433,7 +433,7 @@ pub struct PatternFolder {
     pub(super) sanitizer: Option<Sanitizer>,
     config: Config,
     normalizer: Normalizer,
-    thread_pool: Option<rayon::ThreadPool>,
+    detection: LineDetection,
     buffer: Vec<PatternGroup>,
     group_index: ahash::AHashMap<u64, usize>,
     stats: FoldingStats,
@@ -461,15 +461,26 @@ pub struct PatternFolder {
     json_retention_cap_hits: usize,
 }
 
-#[allow(clippy::large_enum_variant)]
+enum LineDetection {
+    Inline,
+    GlobalPool,
+    SizedPool(rayon::ThreadPool),
+}
+
 enum Retention {
     Kept,
-    Declined(PatternGroup),
+    Declined(Box<PatternGroup>),
 }
 
 pub const RETAINED_TEMPLATE_CAP: usize = 16_384;
 
 const BATCH_LINES: usize = 10_000;
+
+const LIVE_GROUP_LIMIT: usize = 1000;
+
+const EVICTION_DISTANCE: usize = 100;
+
+pub const TOP_SHOWS_EVERY_GROUP: usize = 0;
 
 #[derive(Debug, Default)]
 pub struct FoldingStats {
@@ -2425,7 +2436,8 @@ impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let sanitizer = config.sanitizer();
         let normalizer = Normalizer::new(config.clone());
-        let thread_pool = match config.thread_count {
+        let detection = match config.thread_count {
+            Some(1) => LineDetection::Inline,
             Some(requested) if requested > 1 => {
                 let cores = std::thread::available_parallelism().map_or(8, usize::from);
                 let n = requested.min(cores);
@@ -2435,23 +2447,23 @@ impl PatternFolder {
                     );
                 }
                 match rayon::ThreadPoolBuilder::new().num_threads(n).build() {
-                    Ok(pool) => Some(pool),
+                    Ok(pool) => LineDetection::SizedPool(pool),
                     Err(e) => {
                         eprintln!(
                             "lessence: could not create a {n}-thread pool ({e}); \
                              falling back to the default thread pool"
                         );
-                        None
+                        LineDetection::GlobalPool
                     }
                 }
             }
-            _ => None,
+            _ => LineDetection::GlobalPool,
         };
 
         Self {
             config,
             normalizer,
-            thread_pool,
+            detection,
             buffer: Vec::new(),
             group_index: ahash::AHashMap::new(),
             stats: FoldingStats::default(),
@@ -2538,7 +2550,7 @@ impl PatternFolder {
         location: Option<LineLocation>,
     ) -> Result<Option<String>> {
         self.stats.total_lines += 1;
-        if self.config.thread_count == Some(1) {
+        if matches!(self.detection, LineDetection::Inline) {
             let normalized_line = self.normalizer.normalize_line(line.to_string())?;
             self.place_line(normalized_line, location)?;
         } else {
@@ -2822,13 +2834,12 @@ impl PatternFolder {
         }
 
         let current_position = self.position_counter;
-        let safe_distance = 100;
 
         let mut oldest_index = None;
         let mut oldest_position = usize::MAX;
 
         for (i, group) in self.buffer.iter().enumerate() {
-            let is_old_enough = current_position - group.position > safe_distance;
+            let is_old_enough = current_position - group.position > EVICTION_DISTANCE;
             let is_ready = group.should_collapse(self.config.min_collapse) || is_old_enough;
 
             if is_ready && group.position < oldest_position {
@@ -2866,13 +2877,13 @@ impl PatternFolder {
 
     fn retain_evicted_group(&mut self, mut group: PatternGroup) -> Retention {
         if self.config.distill.is_some() {
-            return Retention::Declined(group);
+            return Retention::Declined(Box::new(group));
         }
         let key = group.first().hash;
         let already_retained = self.retained.contains_key(&key);
         if !already_retained && self.retained.len() >= RETAINED_TEMPLATE_CAP {
             self.json_retention_cap_hits += 1;
-            return Retention::Declined(group);
+            return Retention::Declined(Box::new(group));
         }
         let state = self.rollup_computer.seed(&group);
         let first = group.first().clone();
@@ -2922,12 +2933,12 @@ impl PatternFolder {
         use crate::config::DEFAULT_SUMMARY_CAP;
 
         let (limit, was_capped, fit_truncated) = match (top_n, fit_budget) {
-            (Some(n), _) if n > 0 => (n, false, 0),
+            (Some(n), _) if n != TOP_SHOWS_EVERY_GROUP => (n, false, 0),
             (_, Some(budget)) if total_patterns > budget => {
                 let show = budget.saturating_sub(1);
                 (show, false, total_patterns - show)
             }
-            (Some(0), _) | (_, Some(_)) => (total_patterns, false, 0),
+            (Some(TOP_SHOWS_EVERY_GROUP), _) | (_, Some(_)) => (total_patterns, false, 0),
             _ => (DEFAULT_SUMMARY_CAP, total_patterns > DEFAULT_SUMMARY_CAP, 0),
         };
         sorted.truncate(limit);
@@ -3004,10 +3015,14 @@ impl PatternFolder {
             self.process_batch()?;
         }
         debug_assert!(
-            self.evicted_output.is_empty(),
-            "a ranked run never evicts, so no group was streamed before the ranking"
+            self.retained.is_empty() && self.evicted_output.is_empty(),
+            "a ranked run never evicts, so every group is still in the live buffer"
         );
-        let n = if n == 0 { usize::MAX } else { n };
+        let n = if n == TOP_SHOWS_EVERY_GROUP {
+            usize::MAX
+        } else {
+            n
+        };
         self.fix_timeline_grid();
 
         let previously_formatted = self.next_json_id;
@@ -3090,11 +3105,11 @@ impl PatternFolder {
     }
 
     fn should_flush_buffer(&self) -> bool {
-        if self.config.summary || self.config.top_n.is_some() || self.config.explain {
-            return false;
-        }
-        const CONSTITUTIONAL_FLUSH_THRESHOLD: usize = 1000;
-        self.buffer.len() > CONSTITUTIONAL_FLUSH_THRESHOLD
+        !self.reads_every_group_after_the_run() && self.buffer.len() > LIVE_GROUP_LIMIT
+    }
+
+    fn reads_every_group_after_the_run(&self) -> bool {
+        self.config.summary || self.config.top_n.is_some() || self.config.explain
     }
 
     fn count_pattern_types(&mut self, tokens: &[Token]) {
@@ -3129,9 +3144,13 @@ impl PatternFolder {
                 .map(|line| self.normalizer.normalize_line(line.clone()))
                 .collect::<Result<Vec<_>, _>>()
         };
-        let processed_lines: Vec<LogLine> = match &self.thread_pool {
-            Some(pool) => pool.install(detect)?,
-            None => detect()?,
+        let processed_lines: Vec<LogLine> = match &self.detection {
+            LineDetection::SizedPool(pool) => pool.install(detect)?,
+            LineDetection::GlobalPool => detect()?,
+            LineDetection::Inline => lines
+                .iter()
+                .map(|line| self.normalizer.normalize_line(line.clone()))
+                .collect::<Result<Vec<_>, _>>()?,
         };
 
         Ok(processed_lines)

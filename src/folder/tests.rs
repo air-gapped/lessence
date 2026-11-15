@@ -5074,10 +5074,9 @@ fn new_sizes_thread_pool_from_explicit_thread_count() {
         thread_count: Some(3),
         ..Config::default()
     });
-    let pool = f
-        .thread_pool
-        .as_ref()
-        .expect("thread_count=Some(3) must build a dedicated pool");
+    let LineDetection::SizedPool(pool) = &f.detection else {
+        panic!("thread_count=Some(3) must build a dedicated pool");
+    };
     let cores = std::thread::available_parallelism().map_or(8, usize::from);
     assert_eq!(
         pool.current_num_threads(),
@@ -5094,10 +5093,9 @@ fn new_caps_thread_pool_at_available_parallelism() {
         thread_count: Some(999_999),
         ..Config::default()
     });
-    let pool = f
-        .thread_pool
-        .as_ref()
-        .expect("huge thread_count must still build a (capped) pool");
+    let LineDetection::SizedPool(pool) = &f.detection else {
+        panic!("huge thread_count must still build a (capped) pool");
+    };
     let cores = std::thread::available_parallelism().map_or(8, usize::from);
     assert_eq!(
         pool.current_num_threads(),
@@ -5113,7 +5111,7 @@ fn new_builds_no_pool_for_single_threaded_mode() {
         ..Config::default()
     });
     assert!(
-        f.thread_pool.is_none(),
+        matches!(f.detection, LineDetection::Inline),
         "Some(1) is the sequential path and must not build a pool"
     );
 }
@@ -5125,7 +5123,7 @@ fn new_builds_no_pool_for_auto_detect_mode() {
         ..Config::default()
     });
     assert!(
-        f.thread_pool.is_none(),
+        matches!(f.detection, LineDetection::GlobalPool),
         "None means rayon's global default pool, not a dedicated one"
     );
 }
