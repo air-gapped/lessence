@@ -986,9 +986,27 @@ enum AnchorIdentity<'a> {
     Pod(&'a str, &'a str),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StatusSource {
+    RequestLine,
+    StatusField,
+}
+
 struct ProtectedStatus {
     code: String,
-    is_http: bool,
+    source: StatusSource,
+}
+
+impl ProtectedStatus {
+    fn fact_of_the_detector_it_was_hidden_from(self, config: &Config) -> Option<Token> {
+        if self.source == StatusSource::RequestLine && config.normalize_http_status {
+            Some(Token::HttpStatusClass(format!("{}xx", &self.code[..1])))
+        } else if config.normalize_durations {
+            Some(Token::Number(self.code))
+        } else {
+            None
+        }
+    }
 }
 
 type AnchoredSpan = (usize, usize, AnchorRender);
@@ -1040,7 +1058,7 @@ fn protect_anchored_spans<'a>(
         for (span, class) in http_status_anchors(original, &REQUEST_STATUS_CLASS) {
             statuses.push(ProtectedStatus {
                 code: original[span.clone()].to_string(),
-                is_http: true,
+                source: StatusSource::RequestLine,
             });
             spans.push((span.start, span.end, AnchorRender::HttpStatus));
             identities.push((AnchorClass::RequestStatus, AnchorIdentity::Text(class)));
@@ -1099,7 +1117,7 @@ fn protect_anchored_spans<'a>(
         for (span, class) in http_status_anchors(original, &FIELD_STATUS) {
             statuses.push(ProtectedStatus {
                 code: original[span.clone()].to_string(),
-                is_http: false,
+                source: StatusSource::StatusField,
             });
             spans.push((span.start, span.end, AnchorRender::StatusField));
             identities.push((AnchorClass::StatusField, AnchorIdentity::Text(class)));
@@ -1330,13 +1348,11 @@ impl Normalizer {
                 normalized = normalized.replace(sentinel.as_str(), rendered);
             }
         }
-        for status in std::mem::take(&mut protected.statuses) {
-            if status.is_http && self.config.normalize_http_status {
-                tokens.push(Token::HttpStatusClass(format!("{}xx", &status.code[..1])));
-            } else if self.config.normalize_durations {
-                tokens.push(Token::Number(status.code));
-            }
-        }
+        tokens.extend(
+            std::mem::take(&mut protected.statuses)
+                .into_iter()
+                .filter_map(|status| status.fact_of_the_detector_it_was_hidden_from(&self.config)),
+        );
         tokens.extend(
             std::mem::take(&mut protected.unit_names)
                 .into_iter()
@@ -1986,6 +2002,37 @@ mod tests {
                 .iter()
                 .any(|t| matches!(t, Token::HttpStatusClass(_)))
         );
+    }
+
+    #[test]
+    fn a_protected_status_code_gives_the_fact_of_the_detector_it_was_hidden_from() {
+        let fact = |source, http, durations| {
+            let config = Config {
+                normalize_http_status: http,
+                normalize_durations: durations,
+                ..Config::default()
+            };
+            ProtectedStatus {
+                code: "204".to_string(),
+                source,
+            }
+            .fact_of_the_detector_it_was_hidden_from(&config)
+        };
+        let class = Some(Token::HttpStatusClass("2xx".to_string()));
+        let number = Some(Token::Number("204".to_string()));
+        for durations in [false, true] {
+            assert_eq!(fact(StatusSource::RequestLine, true, durations), class);
+        }
+        assert_eq!(fact(StatusSource::RequestLine, false, true), number);
+        assert_eq!(fact(StatusSource::RequestLine, false, false), None);
+        for http in [false, true] {
+            assert_eq!(
+                fact(StatusSource::StatusField, http, true),
+                number,
+                "a status field is a number, the duration detector's fact, whatever the HTTP flag"
+            );
+            assert_eq!(fact(StatusSource::StatusField, http, false), None);
+        }
     }
 
     #[test]
