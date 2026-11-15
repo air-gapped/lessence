@@ -877,12 +877,14 @@ fn render_route(target: &str) -> String {
     out
 }
 
-fn render_pod_prefix(matched: &str) -> String {
-    let Some(caps) = KUBECTL_PREFIX.captures(matched) else {
-        return matched.to_string();
-    };
-    let pod = caps.get(1).map_or("", |m| m.as_str());
-    let container = caps.get(2).map_or("", |m| m.as_str());
+fn pod_prefix_parts<'a>(caps: &regex::Captures<'a>) -> (&'a str, &'a str) {
+    (
+        caps.get(1).map_or("", |m| m.as_str()),
+        caps.get(2).map_or("", |m| m.as_str()),
+    )
+}
+
+fn render_pod_prefix(pod: &str, container: &str) -> String {
     let skeleton = pod_skeleton(pod);
     if skeleton.len() == pod.len() {
         format!("[pod/{skeleton}/{container}]")
@@ -891,10 +893,10 @@ fn render_pod_prefix(matched: &str) -> String {
     }
 }
 
-enum AnchorRender {
+enum AnchorRender<'a> {
     Route,
     ProseTarget,
-    PodPrefix,
+    PodPrefix { pod: &'a str, container: &'a str },
     HttpStatus,
     StatusField,
     Exact,
@@ -903,12 +905,12 @@ enum AnchorRender {
     SystemdUnit,
 }
 
-impl AnchorRender {
+impl AnchorRender<'_> {
     fn render(&self, text: &str) -> String {
         match self {
             Self::Route => render_route(text),
             Self::ProseTarget => render_prose_target(text),
-            Self::PodPrefix => render_pod_prefix(text),
+            Self::PodPrefix { pod, container } => render_pod_prefix(pod, container),
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
             Self::SystemdUnit => render_systemd_unit(text),
@@ -929,7 +931,7 @@ impl AnchorRender {
 
     fn when_nested(&self, cover_shows_text_verbatim: bool) -> NestedIdentity {
         match self {
-            Self::Route | Self::ProseTarget | Self::PodPrefix => NestedIdentity::Hidden,
+            Self::Route | Self::ProseTarget | Self::PodPrefix { .. } => NestedIdentity::Hidden,
             Self::HttpStatus | Self::StatusField => NestedIdentity::EveryOccurrence,
             Self::PciAddress if !cover_shows_text_verbatim => NestedIdentity::EveryOccurrence,
             Self::PciAddress | Self::Exact | Self::KlogCallSite | Self::SystemdUnit => {
@@ -1009,14 +1011,14 @@ impl ProtectedStatus {
     }
 }
 
-type AnchoredSpan = (usize, usize, AnchorRender);
+type AnchoredSpan<'a> = (usize, usize, AnchorRender<'a>);
 fn protect_anchored_spans<'a>(
     original: &'a str,
     pci: &[regex::Match<'a>],
     options: &[regex::Match<'a>],
     requests: &[ProseRequest],
 ) -> ProtectedAnchors<'a> {
-    let mut spans: Vec<AnchoredSpan> = Vec::new();
+    let mut spans: Vec<AnchoredSpan<'a>> = Vec::new();
     let mut statuses = Vec::new();
     let mut unit_names = Vec::new();
     let mut identities = Vec::new();
@@ -1225,16 +1227,15 @@ fn protect_anchored_spans<'a>(
         || KUBECTL_PREFIX.is_match(original),
     ) {
         for caps in KUBECTL_PREFIX.captures_iter(original) {
+            let (pod, container) = pod_prefix_parts(&caps);
             if let Some(m) = caps.get(0) {
-                spans.push((m.start(), m.end(), AnchorRender::PodPrefix));
+                spans.push((
+                    m.start(),
+                    m.end(),
+                    AnchorRender::PodPrefix { pod, container },
+                ));
             }
-            identities.push((
-                AnchorClass::PodPrefix,
-                AnchorIdentity::Pod(
-                    caps.get(1).map_or("", |m| m.as_str()),
-                    caps.get(2).map_or("", |m| m.as_str()),
-                ),
-            ));
+            identities.push((AnchorClass::PodPrefix, AnchorIdentity::Pod(pod, container)));
         }
     }
 
@@ -2181,13 +2182,21 @@ mod tests {
         assert_eq!(line.normalized, "saw <PATH> earlier");
     }
 
+    fn rendered_prefix(line: &str) -> String {
+        let caps = KUBECTL_PREFIX
+            .captures(line)
+            .expect("test line opens with a kubectl prefix");
+        let (pod, container) = pod_prefix_parts(&caps);
+        render_pod_prefix(pod, container)
+    }
+
     #[test]
     fn a_pod_prefix_renders_its_workload() {
         assert_eq!(
-            render_pod_prefix("[pod/rook-ceph-rgw-s3-a-b69d45f98-dwxsc/rgw]"),
+            rendered_prefix("[pod/rook-ceph-rgw-s3-a-b69d45f98-dwxsc/rgw]"),
             "[pod/rook-ceph-rgw-s3-<SUFFIX>/rgw]"
         );
-        assert_eq!(render_pod_prefix("[pod/etcd/etcd]"), "[pod/etcd/etcd]");
+        assert_eq!(rendered_prefix("[pod/etcd/etcd]"), "[pod/etcd/etcd]");
     }
 
     #[test]
@@ -2203,7 +2212,7 @@ mod tests {
             let caps = KUBECTL_PREFIX.captures(case).expect("test case matches");
             let pod = caps.get(1).map_or("", |m| m.as_str());
             let skeleton = pod_skeleton(pod);
-            let rendered = render_pod_prefix(case);
+            let rendered = rendered_prefix(case);
             assert!(
                 rendered.contains(skeleton),
                 "{rendered} must contain the hashed skeleton {skeleton}"
@@ -2211,16 +2220,16 @@ mod tests {
         }
 
         assert_eq!(
-            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
-            render_pod_prefix("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render]")
+            rendered_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
+            rendered_prefix("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render]")
         );
         assert_ne!(
-            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
-            render_pod_prefix("[pod/render-twin-5c9c5df548-dxqmk/vllm-render]")
+            rendered_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
+            rendered_prefix("[pod/render-twin-5c9c5df548-dxqmk/vllm-render]")
         );
         assert_ne!(
-            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
-            render_pod_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/other]")
+            rendered_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render]"),
+            rendered_prefix("[pod/llm-d-sim-67cb674c47-d6ms5/other]")
         );
     }
 
@@ -4297,7 +4306,13 @@ mod e8v_normalize_2026_09_17 {
             for (render, expected) in [
                 (AnchorRender::Route, Hidden),
                 (AnchorRender::ProseTarget, Hidden),
-                (AnchorRender::PodPrefix, Hidden),
+                (
+                    AnchorRender::PodPrefix {
+                        pod: "web-0",
+                        container: "app",
+                    },
+                    Hidden,
+                ),
                 (AnchorRender::HttpStatus, EveryOccurrence),
                 (AnchorRender::StatusField, EveryOccurrence),
                 (AnchorRender::Exact, OnceUnlessShown),
