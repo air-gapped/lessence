@@ -565,6 +565,41 @@ fn explain_retains_a_recurring_group_past_flush_threshold() {
 
 /// Deterministic 6-letter words: single-token lines that never group with
 /// each other (zero shared tokens → similarity score 0).
+#[test]
+fn the_batch_path_evicts_and_folds_exactly_as_the_single_thread_path() {
+    let run = |thread_count| {
+        let mut f = PatternFolder::new(Config {
+            thread_count,
+            output_format: "json".to_string(),
+            min_collapse: 3,
+            ..Config::default()
+        });
+        let mut output = Vec::new();
+        for round in 0..3 {
+            output.extend(f.process_line("gateway heartbeat ok node=edge-01").unwrap());
+            for i in 0..800 {
+                let line = format!("filler event {}", eviction_word(round * 800 + i));
+                output.extend(f.process_line(&line).unwrap());
+            }
+        }
+        f.process_batch().unwrap();
+        let retained = f.retained.len();
+        output.extend(f.finish().unwrap());
+        (retained, output)
+    };
+    let (single_retained, single) = run(Some(1));
+    let (batch_retained, batch) = run(None);
+    assert!(
+        single_retained > 0,
+        "2,403 distinct lines overflow the buffer"
+    );
+    assert_eq!(
+        batch_retained, single_retained,
+        "the batch path evicts the same groups"
+    );
+    assert_eq!(batch, single, "and renders the same records");
+}
+
 fn eviction_word(i: usize) -> String {
     let mut s = String::new();
     let mut x = i;
@@ -7391,9 +7426,10 @@ fn converging_groups_from_one_batch_end_on_the_true_last_member() {
     }
     f.process_batch().unwrap();
     assert_eq!(f.buffer.len(), 2);
-    // Grouping position stays batch-granular, but every line carries its
-    // own line number, so the two groups do not tie on where they ended.
-    assert_eq!(f.buffer[0].position, f.buffer[1].position);
+    // Every line of a batch takes its own position, as it would one at a
+    // time, and carries its own line number, so the two groups tie on
+    // neither where they began nor where they ended.
+    assert!(f.buffer[0].position < f.buffer[1].position);
     assert_ne!(f.buffer[0].last_line_no, f.buffer[1].last_line_no);
     let out = f.finish().unwrap();
     assert_eq!(out.len(), 1);

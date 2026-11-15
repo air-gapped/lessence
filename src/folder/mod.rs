@@ -3,7 +3,7 @@ use anyhow::Result;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::{self, Write};
 use std::time::Duration;
 
@@ -440,6 +440,7 @@ pub struct PatternFolder {
     position_counter: usize,
     batch_buffer: Vec<String>,
     batch_locations: Vec<LineLocation>,
+    evicted_output: VecDeque<String>,
     sources: Vec<String>,
     markdown_entries: Vec<String>,
     next_json_id: usize,
@@ -467,6 +468,8 @@ enum Retention {
 }
 
 pub const RETAINED_TEMPLATE_CAP: usize = 16_384;
+
+const BATCH_LINES: usize = 10_000;
 
 #[derive(Debug, Default)]
 pub struct FoldingStats {
@@ -2455,6 +2458,7 @@ impl PatternFolder {
             position_counter: 0,
             batch_buffer: Vec::new(),
             batch_locations: Vec::new(),
+            evicted_output: VecDeque::new(),
             sources: Vec::new(),
             markdown_entries: Vec::new(),
             next_json_id: 0,
@@ -2534,38 +2538,19 @@ impl PatternFolder {
         location: Option<LineLocation>,
     ) -> Result<Option<String>> {
         self.stats.total_lines += 1;
-        self.position_counter += 1;
-
-        if self.config.thread_count != Some(1) {
+        if self.config.thread_count == Some(1) {
+            let normalized_line = self.normalizer.normalize_line(line.to_string())?;
+            self.place_line(normalized_line, location)?;
+        } else {
             self.batch_buffer.push(line.to_string());
             if let Some(location) = location {
                 self.batch_locations.push(location);
             }
-
-            if self.batch_buffer.len() >= 10_000 {
+            if self.batch_buffer.len() >= BATCH_LINES {
                 self.process_batch()?;
             }
-
-            return Ok(None);
         }
-
-        let normalized_line = self.normalizer.normalize_line(line.to_string())?;
-
-        if !normalized_line.tokens.is_empty() {
-            self.stats.patterns_detected += 1;
-            self.count_pattern_types(&normalized_line.tokens);
-        }
-        self.stats
-            .record_briefing_line(&normalized_line.tokens, line);
-        let epoch = self.stats.record_span(&normalized_line.tokens);
-
-        self.cluster_line_timed(normalized_line, location, epoch);
-
-        if self.should_flush_buffer() {
-            return self.flush_oldest_safe_group();
-        }
-
-        Ok(None)
+        Ok(self.evicted_output.pop_front())
     }
 
     fn nearest_group(&self, line: &LogLine) -> Option<Nearest> {
@@ -2964,7 +2949,8 @@ impl PatternFolder {
             self.process_batch()?;
         }
 
-        let mut output = Vec::new();
+        let evicted = self.evicted_output.len();
+        let mut output: Vec<String> = self.evicted_output.drain(..).collect();
         self.fix_timeline_grid();
 
         self.group_index.clear();
@@ -2984,7 +2970,7 @@ impl PatternFolder {
             }
         }
         if self.is_json_output() {
-            self.json_groups_emitted += output.len();
+            self.json_groups_emitted += output.len() - evicted;
         }
 
         Ok(output)
@@ -3017,6 +3003,10 @@ impl PatternFolder {
         if !self.batch_buffer.is_empty() {
             self.process_batch()?;
         }
+        debug_assert!(
+            self.evicted_output.is_empty(),
+            "a ranked run never evicts, so no group was streamed before the ranking"
+        );
         let n = if n == 0 { usize::MAX } else { n };
         self.fix_timeline_grid();
 
@@ -3124,14 +3114,8 @@ impl PatternFolder {
         let locations = std::mem::take(&mut self.batch_locations);
         debug_assert!(locations.is_empty() || locations.len() == batch.len());
         let processed_lines = self.parallel_pattern_detection(&batch)?;
-        let batch_start = self.position_counter.saturating_sub(batch.len());
-
         for (index, processed_line) in processed_lines.into_iter().enumerate() {
-            let location = locations
-                .get(index)
-                .copied()
-                .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, batch_start + index + 1));
-            self.sequential_clustering_at(processed_line, Some(location))?;
+            self.place_line(processed_line, locations.get(index).copied())?;
         }
         Ok(())
     }
@@ -3155,14 +3139,15 @@ impl PatternFolder {
 
     #[cfg(test)]
     fn sequential_clustering(&mut self, normalized_line: LogLine) -> Result<()> {
-        self.sequential_clustering_at(normalized_line, None)
+        self.place_line(normalized_line, None)
     }
 
-    fn sequential_clustering_at(
+    fn place_line(
         &mut self,
         normalized_line: LogLine,
         location: Option<LineLocation>,
     ) -> Result<()> {
+        self.position_counter += 1;
         if !normalized_line.tokens.is_empty() {
             self.stats.patterns_detected += 1;
             self.count_pattern_types(&normalized_line.tokens);
@@ -3173,6 +3158,11 @@ impl PatternFolder {
 
         self.cluster_line_timed(normalized_line, location, epoch);
 
+        if self.should_flush_buffer()
+            && let Some(output) = self.flush_oldest_safe_group()?
+        {
+            self.evicted_output.push_back(output);
+        }
         Ok(())
     }
 
