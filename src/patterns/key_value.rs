@@ -116,6 +116,23 @@ impl KeyValueDetector {
     // No vetoes on words: `for `, `if ` and `while ` are English, and a
     // `for ` in "Waiting for caches" switched key-value folding off for
     // the whole line. A URL veto stays: a bare URL's `?a=b` is not a pair.
+    /// Whether the line carries a `key=value` pair at all: an `=` outside
+    /// every double-quoted span. Without one, the only `=` is inside a
+    /// value, and this detector would rewrite the values of a JSON record.
+    pub(crate) fn has_pair_outside_quotes(text: &str) -> bool {
+        let mut quoted = false;
+        let mut prev = 0u8;
+        for &b in text.as_bytes() {
+            match b {
+                b'"' if prev != b'\\' => quoted = !quoted,
+                b'=' if !quoted => return true,
+                _ => {}
+            }
+            prev = b;
+        }
+        false
+    }
+
     fn has_key_value_indicators(text: &str) -> bool {
         (text.contains('=') || text.contains(':'))
             && !text.contains("http://")

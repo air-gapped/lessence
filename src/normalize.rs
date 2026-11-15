@@ -227,7 +227,7 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
             ),
         ],
         enabled: |c| c.normalize_key_value,
-        only_when: Some(|_, _, s| has_unquoted_eq(s)),
+        only_when: Some(|_, _, s| KeyValueDetector::has_pair_outside_quotes(s)),
         prefilter: None,
         run: |_, s| KeyValueDetector::detect_and_replace(s),
     },
@@ -385,20 +385,6 @@ fn order_complaints(order: &[&DetectorEntry]) -> Vec<String> {
         }
     }
     complaints
-}
-
-fn has_unquoted_eq(s: &str) -> bool {
-    let mut quoted = false;
-    let mut prev = 0u8;
-    for &b in s.as_bytes() {
-        match b {
-            b'"' if prev != b'\\' => quoted = !quoted,
-            b'=' if !quoted => return true,
-            _ => {}
-        }
-        prev = b;
-    }
-    false
 }
 
 pub struct Normalizer {
@@ -3758,12 +3744,34 @@ mod key_value_gate_2026_08_29 {
 
     #[test]
     fn key_value_folding_needs_an_unquoted_equals_sign() {
-        assert!(has_unquoted_eq("time=x level=info"));
-        assert!(!has_unquoted_eq(
+        assert!(KeyValueDetector::has_pair_outside_quotes(
+            "time=x level=info"
+        ));
+        assert!(!KeyValueDetector::has_pair_outside_quotes(
             r#"{"exec_id":"Z2Y2M2I6MjI3MDk3MjQ5MzY5NDM3ODoyMTYwMDUz=", "pid":2160053}"#
         ));
-        assert!(!has_unquoted_eq(r#"{"msg":"a=b inside"}"#));
-        assert!(has_unquoted_eq(r#"msg="quoted" key=value"#));
+        assert!(!KeyValueDetector::has_pair_outside_quotes(
+            r#"{"msg":"a=b inside"}"#
+        ));
+        assert!(KeyValueDetector::has_pair_outside_quotes(
+            r#"msg="quoted" key=value"#
+        ));
+    }
+
+    #[test]
+    fn a_json_record_whose_only_equals_sign_is_quoted_keeps_its_values() {
+        let line = r#"{"exec_id":"Z2Y2M2I6MjI3MDk3MjQ5=","retries":3}"#;
+        assert!(
+            KeyValueDetector::detect_and_replace(line)
+                .0
+                .contains("<KEY_VALUE>"),
+            "the detector folds JSON values on its own, so the table must keep it off this line"
+        );
+        let normalized = Normalizer::new(Config::default())
+            .normalize_line(line.to_string())
+            .unwrap()
+            .normalized;
+        assert!(!normalized.contains("<KEY_VALUE>"), "{normalized}");
     }
 }
 
@@ -4011,8 +4019,8 @@ mod e8v_normalize_2026_09_17 {
 
     #[test]
     fn an_escaped_quote_does_not_end_a_quoted_value() {
-        assert!(!has_unquoted_eq(r#""a \"b c=d""#));
-        assert!(has_unquoted_eq(r#""a b" c=d"#));
+        assert!(!KeyValueDetector::has_pair_outside_quotes(r#""a \"b c=d""#));
+        assert!(KeyValueDetector::has_pair_outside_quotes(r#""a b" c=d"#));
     }
 
     #[test]
