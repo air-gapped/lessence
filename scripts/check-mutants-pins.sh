@@ -13,7 +13,10 @@
 #                                           shape (same file, column, text
 #                                           and function) when mutants of
 #                                           that shape sit on exactly as
-#                                           many lines as there are pins
+#                                           many lines as there are pins,
+#                                           and each new line reads the same
+#                                           as the pinned line did in the
+#                                           last commit
 #
 # What --repin leaves: `cargo mutants --list --no-config | grep '<function>'`,
 # pick the mutant the entry's comment describes, and write its location.
@@ -39,6 +42,7 @@ fi
 
 python3 - "$listing" "$@" <<'PY'
 import re
+import subprocess
 import sys
 import tomllib
 
@@ -60,6 +64,14 @@ dead = [e for e in entries if not any(re.search(e, m) for m in mutants)]
 if dead and "--repin" in sys.argv[2:]:
     text = open(".cargo/mutants.toml", encoding="utf-8").read()
     moved = 0
+
+    def committed(path):
+        shown = subprocess.run(
+            ["git", "show", f"HEAD:{path}"], capture_output=True, text=True
+        )
+        return shown.stdout.splitlines() if shown.returncode == 0 else None
+
+    committed_toml = "\n".join(committed(".cargo/mutants.toml") or [])
     # Dead pins that differ only in their line number, by that shared shape.
     groups = {}
     for e in dead:
@@ -73,7 +85,31 @@ if dead and "--repin" in sys.argv[2:]:
         # goes to the first place. Any other count is for a reader.
         if len(lines) != len(pins):
             continue
-        for (_, e), line in zip(sorted(pins), lines):
+        # A pin moves only when the source line it lands on reads the same
+        # as the line it was written for, taken from the last commit. A line
+        # that was edited, or a look-alike elsewhere in the function, is a
+        # different mutant and its proof has to be read again.
+        path = re.sub(r"\\(.)", r"\1", head[1:-1])
+        was = committed(path)
+        now = open(path, encoding="utf-8").read().splitlines()
+        pairs = list(zip(sorted(pins), lines))
+        differs = [
+            (old, line)
+            for (old, e), line in pairs
+            if e not in committed_toml
+            or was is None
+            or old > len(was)
+            or was[old - 1].strip() != now[line - 1].strip()
+        ]
+        if differs:
+            for old, line in differs:
+                print(
+                    f"not re-pinned: {path}:{old} in the last commit and "
+                    f"{path}:{line} now are not the same source line; read "
+                    "the entry's proof against the new code"
+                )
+            continue
+        for (_, e), line in pairs:
             new = f"{head}{line}{tail}"
             text = text.replace(e, new)
             print(f"re-pinned: {e}\n        to: {new}")
