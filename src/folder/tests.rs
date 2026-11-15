@@ -2475,20 +2475,110 @@ fn format_group_essence_mode_uses_normalized() {
     assert_eq!(output, "normalized <IP>");
 }
 
+fn one_ingested_group(config: Config, lines: &[&str]) -> (PatternFolder, PatternGroup) {
+    let mut f = PatternFolder::new(config);
+    for l in lines {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1, "these lines fold into one group");
+    let group = f.buffer.remove(0);
+    (f, group)
+}
+
+fn sanitized(spec: &str) -> Option<crate::sanitize::Sanitizer> {
+    crate::sanitize::Sanitizer::parse(&[spec.to_string()], false)
+        .unwrap()
+        .map(|z| z.with_test_key(7))
+}
+
+#[test]
+fn a_credential_is_masked_exactly_once() {
+    let raw = "Authorization: Bearer Lq7vRe2pXn";
+    for spec in ["credential", "credential:pseudonym"] {
+        let (mut f, group) = one_ingested_group(
+            Config {
+                thread_count: Some(1),
+                min_collapse: 3,
+                sanitize: sanitized(spec),
+                ..Config::default()
+            },
+            &[raw],
+        );
+        let output = f
+            .format_group(&group, &f.masked_rollup(BTreeMap::new()))
+            .unwrap()
+            .text;
+        if spec == "credential" {
+            assert_eq!(output, "Authorization: Bearer <SECRET>", "{spec}");
+        } else {
+            assert!(
+                output.starts_with("Authorization: Bearer <SECRET:") && output.ends_with('>'),
+                "{spec}: {output}"
+            );
+        }
+        assert_eq!(output.matches("<SECRET").count(), 1, "{spec}: {output}");
+        assert!(
+            group.template().matches("<SECRET").count() <= 1
+                && !group.template().contains("Lq7vRe2pXn"),
+            "{spec}: {}",
+            group.template()
+        );
+    }
+}
+
+#[test]
+fn a_masked_line_is_normalized_after_masking() {
+    let secrets = ["Kestrel42ab", "Plover17cd"];
+    let first = format!(r#""[\" token="{}" "#, secrets[0]);
+    let second = format!(r#""[\" token="{}" closed"#, secrets[1]);
+    for spec in ["credential", "credential:pseudonym"] {
+        let mut f = PatternFolder::new(Config {
+            thread_count: Some(1),
+            sanitize: sanitized(spec),
+            ..Config::default()
+        });
+        f.process_line(&first).unwrap();
+        let line = f.ingest(second.clone()).unwrap();
+        let nearest = f.nearest_group(&line).expect("a group to compare with");
+        assert!(nearest.first_diff.is_some(), "{spec}: {nearest:?}");
+        let seen = format!(
+            "{} | {} | {} | {nearest:?}",
+            f.buffer[0].template(),
+            line.normalized,
+            line.original
+        );
+        f.process_line(&second).unwrap();
+        let out = f.finish().unwrap().join("\n");
+        let briefing: Vec<String> = f
+            .build_briefing()
+            .templates
+            .shown
+            .iter()
+            .map(|e| e.template.clone())
+            .collect();
+        assert!(!briefing.is_empty(), "{spec}");
+        for secret in secrets {
+            assert!(!seen.contains(secret), "{spec}: {secret} in {seen}");
+            assert!(!out.contains(secret), "{spec}: {secret} in {out}");
+            assert!(
+                briefing.iter().all(|t| !t.contains(secret)),
+                "{spec}: {secret} in {briefing:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn format_group_pii_masking_masks_emails() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        min_collapse: 3,
-        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
-        ..Config::default()
-    });
-    let mut line = make_line(
-        "user alice@test.com logged in",
-        vec![Token::Email("alice@test.com".into())],
+    let (mut f, group) = one_ingested_group(
+        Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
+            ..Config::default()
+        },
+        &["user alice@test.com logged in"],
     );
-    line.original = "user alice@test.com logged in".to_string();
-    let group = PatternGroup::new(line, 1);
     let rollup = BTreeMap::new();
     let output = f
         .format_group(&group, &f.masked_rollup(rollup.clone()))
@@ -3740,20 +3830,15 @@ fn format_group_lines_saved_arithmetic() {
 
 #[test]
 fn format_group_pii_masking_only_in_non_essence() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        min_collapse: 3,
-        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
-        essence_mode: false,
-        ..Config::default()
-    });
-    let group = make_group(
-        "user test@example.com logged in",
-        vec![
-            vec![Token::Email("test@example.com".into())],
-            vec![Token::Email("test@example.com".into())],
-            vec![Token::Email("test@example.com".into())],
-        ],
+    let (mut f, group) = one_ingested_group(
+        Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
+            essence_mode: false,
+            ..Config::default()
+        },
+        &["user test@example.com logged in"; 3],
     );
     let rollup = BTreeMap::new();
     let output = f
@@ -3761,7 +3846,7 @@ fn format_group_pii_masking_only_in_non_essence() {
         .unwrap()
         .text;
     assert!(
-        output.contains("***@***") || !output.contains("test@example.com"),
+        output.contains("user <EMAIL> logged in") && !output.contains("test@example.com"),
         "PII should be masked in non-essence mode: {output}"
     );
 }
@@ -3928,19 +4013,16 @@ fn format_group_collapsed_marker_exact_count_rollup() {
 
 #[test]
 fn format_group_pii_plus_essence_masks_the_template() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        min_collapse: 3,
-        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
-        essence_mode: true,
-        ..Config::default()
-    });
-    let mut line = make_line(
-        "user alice@test.com logged in",
-        vec![Token::Email("alice@test.com".into())],
+    let (mut f, group) = one_ingested_group(
+        Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
+            essence_mode: true,
+            ..Config::default()
+        },
+        &["user alice@test.com logged in"],
     );
-    line.original = "user alice@test.com logged in".to_string();
-    let group = PatternGroup::new(line, 1);
     let rollup = BTreeMap::new();
     let output = f
         .format_group(&group, &f.masked_rollup(rollup.clone()))
@@ -4046,60 +4128,46 @@ fn format_group_non_essence_same_first_last_still_shows_last() {
 
 #[test]
 fn format_group_pii_masks_last_line_in_non_essence() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        min_collapse: 3,
-        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
-        essence_mode: false,
-        ..Config::default()
-    });
-    let line1 = make_line(
-        "user <EMAIL> logged in",
-        vec![Token::Email("first@test.com".into())],
+    let (mut f, group) = one_ingested_group(
+        Config {
+            thread_count: Some(1),
+            min_collapse: 3,
+            sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
+            essence_mode: false,
+            ..Config::default()
+        },
+        &[
+            "user first@test.com logged in",
+            "user second@test.com logged in",
+            "user last@test.com logged in",
+        ],
     );
-    let line2 = make_line(
-        "user <EMAIL> logged in",
-        vec![Token::Email("second@test.com".into())],
-    );
-    let mut line3 = make_line(
-        "user <EMAIL> logged in",
-        vec![Token::Email("last@test.com".into())],
-    );
-    line3.original = "user last@test.com logged in".to_string();
-    let mut group = PatternGroup::new(line1, 1);
-    group.add_line(line2, 2);
-    group.add_line(line3, 3);
     let rollup = BTreeMap::new();
     let output = f
         .format_group(&group, &f.masked_rollup(rollup.clone()))
         .unwrap()
         .text;
     assert!(
-        !output.contains("last@test.com"),
+        !output.contains("test.com") && output.ends_with("user <EMAIL> logged in"),
         "last line email should be masked with PII in non-essence mode: {output}"
     );
 }
 
 #[test]
 fn format_group_pii_masks_the_essence_line() {
-    let mut f = PatternFolder::new(Config {
-        thread_count: Some(1),
-        min_collapse: 2,
-        sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
-        essence_mode: true,
-        ..Config::default()
-    });
-    let line1 = make_line(
-        "user alice@test.com logged in",
-        vec![Token::Email("alice@test.com".into())],
+    let (mut f, group) = one_ingested_group(
+        Config {
+            thread_count: Some(1),
+            min_collapse: 2,
+            sanitize: Some(crate::sanitize::Sanitizer::pii_alias()),
+            essence_mode: true,
+            ..Config::default()
+        },
+        &[
+            "user alice@test.com logged in",
+            "user bob@test.com logged in",
+        ],
     );
-    let mut line2 = make_line(
-        "user alice@test.com logged in",
-        vec![Token::Email("bob@test.com".into())],
-    );
-    line2.original = "user bob@test.com logged in".to_string();
-    let mut group = PatternGroup::new(line1, 1);
-    group.add_line(line2, 2);
     let rollup = BTreeMap::new();
     let output = f
         .format_group(&group, &f.masked_rollup(rollup.clone()))

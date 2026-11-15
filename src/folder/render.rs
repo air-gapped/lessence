@@ -15,28 +15,6 @@ const SUMMARY_MIN_WIDTH_WORTH_TRUNCATING_TO: usize = 20;
 const FRAGMENTED_BY_RETENTION_CAP_IS_ZERO_SINCE_RETENTION_WAS_REMOVED_AND_STAYS_FOR_SCHEMA_STABILITY:
     usize = 0;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub(super) struct Masked(String);
-
-impl Masked {
-    pub(super) fn line(sanitizer: Option<&Sanitizer>, line: &str, tokens: &[Token]) -> Self {
-        Self(Sanitizer::masked(sanitizer, line, tokens))
-    }
-
-    fn essence_text(sanitizer: Option<&Sanitizer>, normalized: &str) -> Self {
-        Self(sanitizer.map_or_else(|| normalized.to_string(), |z| z.mask_text(normalized)))
-    }
-
-    pub(super) fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub(super) fn into_string(self) -> String {
-        self.0
-    }
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(transparent)]
 pub(super) struct MaskedRollup(GroupRollup);
@@ -44,7 +22,7 @@ pub(super) struct MaskedRollup(GroupRollup);
 impl MaskedRollup {
     fn new(mut rollup: GroupRollup, sanitizer: Option<&Sanitizer>) -> Self {
         if let Some(z) = sanitizer {
-            mask_rollup_pii(&mut rollup, z);
+            collapse_redacted_samples(&mut rollup, z);
         }
         Self(rollup)
     }
@@ -87,14 +65,10 @@ pub struct SummaryRequest {
 
 impl PatternFolder {
     pub(super) fn format_group_dispatch(&mut self, group: &PatternGroup) -> Result<Dispatched> {
-        let briefing_template = self.mask_shown(group.template(), &group.first().tokens);
         let (first_epoch, last_epoch) = group_epoch_range(group);
-        self.stats.template_counts.record(
-            briefing_template.as_str(),
-            group.count(),
-            first_epoch,
-            last_epoch,
-        );
+        self.stats
+            .template_counts
+            .record(group.template(), group.count(), first_epoch, last_epoch);
 
         if let GroupSink::RecordDistillMembers { members_per_group } = self.config.group_sink {
             self.distill_take(group, members_per_group);
@@ -165,15 +139,15 @@ impl PatternFolder {
             id,
             count: group.count(),
             token_types: token_types.into_iter().collect(),
-            normalized: self.mask_shown(group.template(), &group.first().tokens),
+            normalized: group.template().to_string(),
             first: LineRef {
                 source: self.source_name(group.first_source_id),
-                line: self.mask_shown(&group.first().original, &group.first().tokens),
+                line: group.first().original.clone(),
                 line_no: group.first_line_no,
             },
             last: LineRef {
                 source: self.source_name(group.last_source_id),
-                line: self.mask_shown(&group.last().original, &group.last().tokens),
+                line: group.last().original.clone(),
                 line_no: group.last_line_no,
             },
             time_range: {
@@ -247,8 +221,7 @@ impl PatternFolder {
     }
 
     fn format_essence(&self, group: &PatternGroup) -> String {
-        self.mask_shown(group.template(), &group.first().tokens)
-            .into_string()
+        group.template().to_string()
     }
 
     fn format_collapsed(&self, group: &PatternGroup, rollup: &MaskedRollup) -> String {
@@ -275,17 +248,12 @@ impl PatternFolder {
             )
         };
 
-        let mut result = self
-            .mask_shown(&group.first().original, &group.first().tokens)
-            .into_string();
+        let mut result = group.first().original.clone();
         result.push('\n');
         result.push_str(&marker);
         if group.count() > 1 {
             result.push('\n');
-            result.push_str(
-                self.mask_shown(&group.last().original, &group.last().tokens)
-                    .as_str(),
-            );
+            result.push_str(&group.last().original);
         }
         result
     }
@@ -296,7 +264,7 @@ impl PatternFolder {
             if i > 0 {
                 result.push('\n');
             }
-            result.push_str(self.mask_shown(&line.original, &line.tokens).as_str());
+            result.push_str(&line.original);
         }
         result
     }
@@ -705,58 +673,14 @@ impl PatternFolder {
 
         types.into_iter().collect()
     }
-
-    fn mask_shown(&self, text: &str, tokens: &[Token]) -> Masked {
-        if self.config.essence_mode {
-            Masked::essence_text(self.sanitizer.as_ref(), text)
-        } else {
-            Masked::line(self.sanitizer.as_ref(), text, tokens)
-        }
-    }
 }
 
-fn mask_rollup_pii(rollup: &mut GroupRollup, z: &Sanitizer) {
-    let entity_values = entity_values_in_rollup(rollup, z);
-    mask_rollup_samples(rollup, z, &entity_values);
-}
-
-fn entity_values_in_rollup(rollup: &GroupRollup, z: &Sanitizer) -> Vec<Token> {
-    let mut values: Vec<Token> = Vec::new();
-    for (name, entry) in rollup {
-        if z.rollup_entity(name).is_some() {
-            values.extend(
-                entry
-                    .samples
-                    .iter()
-                    .filter_map(|sample| crate::sanitize::entity_token(name, sample)),
-            );
-        }
-    }
-    values
-}
-
-fn mask_rollup_samples(rollup: &mut GroupRollup, z: &Sanitizer, entity_values: &[Token]) {
+fn collapse_redacted_samples(rollup: &mut GroupRollup, z: &Sanitizer) {
     for (name, entry) in rollup.iter_mut() {
-        match z.rollup_entity(name) {
-            Some((crate::sanitize::Action::Redact, class)) => {
-                if !entry.samples.is_empty() {
-                    entry.samples = vec![format!("<{class}>")];
-                }
-            }
-            Some((crate::sanitize::Action::KeyedPseudonym, class)) => {
-                for sample in &mut entry.samples {
-                    *sample = z.mask_sample(class, sample);
-                }
-            }
-            None => {
-                let slots = entry.slots.iter_mut().flatten();
-                for sample in std::iter::once(&mut entry.samples)
-                    .chain(slots.map(|slot| &mut slot.samples))
-                    .flatten()
-                {
-                    *sample = z.mask_line(sample, entity_values);
-                }
-            }
+        if let Some((crate::sanitize::Action::Redact, class)) = z.rollup_entity(name)
+            && !entry.samples.is_empty()
+        {
+            entry.samples = vec![format!("<{class}>")];
         }
     }
 }

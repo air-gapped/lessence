@@ -25,6 +25,9 @@ static IPV4_PORT_REGEX: LazyLock<Regex> =
 static RFC3986_IPV6_LITERAL_PORT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:.]+(?:%\w+)?)\]:(\d{1,5})\b").unwrap());
 
+static TAGGED_ADDRESS_PORT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(<IP>|\[<IP>\]):(\d{1,5})\b").unwrap());
+
 static IPV4_MAPPED_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)::ffff:(?:\d{1,3}\.){3}\d{1,3}\b").unwrap());
 
@@ -256,6 +259,7 @@ impl NetworkDetector {
             Self::fold_macs_before_ports_and_sizes_can_split_them(text, &mut result, &mut tokens);
             Self::fold_ipv4_with_port(text, &mut result, &mut tokens, normalize_ports);
             Self::fold_ipv6_literal_with_port(&mut result, &mut tokens, normalize_ports);
+            Self::fold_port_after_an_address_tag(&mut result, &mut tokens, normalize_ports);
             Self::fold_ipv4_mapped_before_ipv4_takes_its_tail(&mut result, &mut tokens);
             Self::fold_ipv4(&mut result, &mut tokens);
             Self::fold_ipv6(&mut result, &mut tokens);
@@ -340,6 +344,32 @@ impl NetworkDetector {
                 }
             })
             .to_string();
+    }
+
+    fn fold_port_after_an_address_tag(
+        result: &mut String,
+        tokens: &mut Vec<Token>,
+        normalize_ports: bool,
+    ) {
+        if !result.contains("<IP>") {
+            return;
+        }
+        let folded = TAGGED_ADDRESS_PORT_REGEX.replace_all(result, |caps: &regex::Captures| {
+            let address = caps.get(1).unwrap().as_str();
+            let port = caps.get(2).unwrap().as_str();
+            match port.parse::<u16>() {
+                Ok(parsed) => {
+                    if normalize_ports {
+                        tokens.push(Token::Port(parsed));
+                    }
+                    format!("{address}:<PORT>")
+                }
+                Err(_) => caps[0].to_string(),
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_ipv4_mapped_before_ipv4_takes_its_tail(result: &mut String, tokens: &mut Vec<Token>) {
@@ -582,6 +612,29 @@ mod tests {
         assert_eq!(result, "Connection failed to <IP> (timeout)");
         assert_eq!(tokens.len(), 1);
         assert!(matches!(tokens[0], Token::IPv4(_)));
+    }
+
+    #[test]
+    fn a_port_after_an_address_tag_is_a_port() {
+        for (text, folded) in [
+            ("dial <IP>:5432 failed", "dial <IP>:<PORT> failed"),
+            (
+                "fetch http://[<IP>]:8080/health",
+                "fetch http://[<IP>]:<PORT>/health",
+            ),
+        ] {
+            let (result, tokens) = NetworkDetector::detect_and_replace(text, true, true, false);
+            assert_eq!(result, folded, "{text}");
+            assert_eq!(
+                tokens.iter().any(|t| matches!(t, Token::Port(_))),
+                folded.contains("<PORT>"),
+                "{text}: {tokens:?}"
+            );
+        }
+        let (result, tokens) =
+            NetworkDetector::detect_and_replace("dial <IP>:5432 failed", true, false, false);
+        assert_eq!(result, "dial <IP>:<PORT> failed");
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 
     #[test]

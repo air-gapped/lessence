@@ -128,23 +128,12 @@ impl VariesCounts {
     }
 }
 
-fn first_diff(line: &LogLine, rep: &LogLine, sanitizer: Option<&Sanitizer>) -> Option<FirstDiff> {
+fn first_diff(line: &LogLine, rep: &LogLine) -> Option<FirstDiff> {
     let (ours, theirs) = first_diff_ranges(&line.normalized, &rep.normalized)?;
-    Some(match sanitizer {
-        None => FirstDiff {
-            at: ours.start,
-            ours: line.normalized[ours].to_string(),
-            theirs: rep.normalized[theirs].to_string(),
-        },
-        Some(z) => {
-            let ours = z.mask_range(&line.normalized, &line.tokens, ours);
-            let theirs = z.mask_range(&rep.normalized, &rep.tokens, theirs);
-            FirstDiff {
-                at: ours.offset,
-                ours: ours.text,
-                theirs: theirs.text,
-            }
-        }
+    Some(FirstDiff {
+        at: ours.start,
+        ours: line.normalized[ours].to_string(),
+        theirs: rep.normalized[theirs].to_string(),
     })
 }
 
@@ -615,7 +604,7 @@ struct PatternHits {
 #[derive(Serialize)]
 struct LineRef {
     source: Option<String>,
-    line: Masked,
+    line: String,
     line_no: usize,
 }
 
@@ -637,7 +626,7 @@ struct GroupRecord {
     id: usize,
     count: usize,
     token_types: Vec<&'static str>,
-    normalized: Masked,
+    normalized: String,
     first: LineRef,
     last: LineRef,
     time_range: TimeRange,
@@ -2237,35 +2226,21 @@ fn insert_within_cap<T: Eq + std::hash::Hash>(set: &mut HashSet<T>, value: T, ca
 struct RollupComputer {
     k: usize,
     distinct_cap: usize,
-    sanitizer: Option<Sanitizer>,
 }
 
 impl RollupComputer {
     fn new(k: usize, distinct_cap: usize) -> Self {
-        Self {
-            k,
-            distinct_cap,
-            sanitizer: None,
-        }
+        Self { k, distinct_cap }
     }
 
     fn with_defaults() -> Self {
         Self::new(ROLLUP_K, ROLLUP_DISTINCT_CAP)
     }
 
-    fn sanitized(mut self, sanitizer: Option<Sanitizer>) -> Self {
-        self.sanitizer = sanitizer;
-        self
-    }
-
     fn accumulate_tokens(&self, lines: &[LogLine], per_type: &mut PerType) {
         let capacity_hint = lines.len().min(self.distinct_cap);
 
         for line in lines {
-            let secrets = self
-                .sanitizer
-                .as_ref()
-                .and_then(|z| z.line_secrets(&line.original));
             for token in &line.tokens {
                 let name = token_type_name(token);
                 let sample_worthy = is_sample_worthy(token);
@@ -2285,11 +2260,7 @@ impl RollupComputer {
 
                 let kept = match &mut entry.values {
                     Accumulator::Values(s) => {
-                        let mut v = token_value_string(token);
-                        if let Some(masked) = secrets.as_ref().and_then(|x| x.mask(&v)) {
-                            v = masked;
-                        }
-                        insert_within_cap(s, v, self.distinct_cap)
+                        insert_within_cap(s, token_value_string(token), self.distinct_cap)
                     }
                     Accumulator::Hashes(s) => {
                         insert_within_cap(s, hash_token_value(token), self.distinct_cap)
@@ -2301,18 +2272,11 @@ impl RollupComputer {
     }
 
     fn accumulate_varies(&self, lines: &[LogLine], template: &str, varies: &mut SlotCounts) {
-        match &self.sanitizer {
-            Some(z) => self.accumulate_varies_counted(
-                lines.iter().map(|line| (z.mask_text(&line.normalized), 1)),
-                template,
-                varies,
-            ),
-            None => self.accumulate_varies_counted(
-                lines.iter().map(|line| (line.normalized.as_str(), 1)),
-                template,
-                varies,
-            ),
-        }
+        self.accumulate_varies_counted(
+            lines.iter().map(|line| (line.normalized.as_str(), 1)),
+            template,
+            varies,
+        );
     }
 
     fn accumulate_varies_counted<S: AsRef<str>>(
@@ -2348,7 +2312,6 @@ impl RollupComputer {
         let aligned = align_words(tmpl_words, &member);
         let mut ranges = None;
         for (s, &(i, k, q)) in template.slots.iter().enumerate() {
-            let masked;
             let range = match aligned[i] {
                 Some(j) => Some((j, j + 1)),
                 None => ranges
@@ -2358,12 +2321,6 @@ impl RollupComputer {
             let value = match range.filter(|&(from, to)| from < to) {
                 Some(range) => {
                     let w = range_text(normalized, units, range);
-                    let w = if let Some(z) = &self.sanitizer {
-                        masked = z.mask_text(w);
-                        masked.as_str()
-                    } else {
-                        w
-                    };
                     let prefix = &tmpl_words[i][..k];
                     let suffix = &tmpl_words[i][tmpl_words[i].len() - q..];
                     w.strip_prefix(prefix)
@@ -2380,14 +2337,7 @@ impl RollupComputer {
         let mut per_type = PerType::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
         let mut varies = SlotCounts::new();
-        let masked_template;
-        let template = match &self.sanitizer {
-            Some(z) => {
-                masked_template = z.mask_text(group.template());
-                masked_template.as_str()
-            }
-            None => group.template(),
-        };
+        let template = group.template();
         self.accumulate_varies(&group.lines, template, &mut varies);
         self.finalize(per_type, varies, template, &group.first().normalized)
     }
@@ -2620,7 +2570,7 @@ impl PatternFolder {
             json_uncomputed_variation_groups: 0,
             json_sampled_entries: 0,
             json_omitted_values_lower_bound: 0,
-            rollup_computer: RollupComputer::with_defaults().sanitized(sanitizer.clone()),
+            rollup_computer: RollupComputer::with_defaults(),
             sanitizer,
             distill_groups: Vec::new(),
         }
@@ -2680,7 +2630,7 @@ impl PatternFolder {
     fn process_line_impl(&mut self, line: &str, location: Option<LineLocation>) -> Result<()> {
         self.stats.total_lines += 1;
         if matches!(self.detection, LineDetection::Inline) {
-            let normalized_line = self.normalizer.normalize_line(line.to_string())?;
+            let normalized_line = self.ingest(line.to_string())?;
             return self.place_line(normalized_line, location);
         }
         self.batch_buffer.push(line.to_string());
@@ -2691,6 +2641,20 @@ impl PatternFolder {
             self.process_batch()?;
         }
         Ok(())
+    }
+
+    fn ingest(&self, line: String) -> Result<LogLine> {
+        let raw = self.normalizer.normalize_line(line)?;
+        let Some(z) = &self.sanitizer else {
+            return Ok(raw);
+        };
+        let Some(masked) = z.mask_for_folding(&raw.original, &raw.tokens) else {
+            return Ok(raw);
+        };
+        let mut line = self.normalizer.normalize_line(masked.normalizable)?;
+        line.tokens.extend(masked.tokens);
+        line.original = masked.shown;
+        Ok(line)
     }
 
     fn nearest_group(&self, line: &LogLine) -> Option<Nearest> {
@@ -2705,7 +2669,7 @@ impl PatternFolder {
             group_line_no: nearest.first_line_no,
             score: (score * 10.0).round() / 10.0,
             anchor_mismatch: line.anchor != nearest.first().anchor,
-            first_diff: first_diff(line, nearest.first(), self.sanitizer.as_ref()),
+            first_diff: first_diff(line, nearest.first()),
         })
     }
 
@@ -2904,12 +2868,7 @@ impl PatternFolder {
         for group in &self.buffer {
             let key = (group.template().to_string(), group.first().anchor);
             let count = group.count();
-            let representative = Masked::line(
-                self.sanitizer.as_ref(),
-                &group.first().original,
-                &group.first().tokens,
-            )
-            .into_string();
+            let representative = group.first().original.clone();
             merged
                 .entry(key)
                 .and_modify(|(c, _)| *c += count)
@@ -3064,12 +3023,7 @@ impl PatternFolder {
                 self.account_savings(&group);
                 let (first_epoch, last_epoch) = group_epoch_range(&group);
                 self.stats.template_counts.record(
-                    Masked::line(
-                        self.sanitizer.as_ref(),
-                        group.template(),
-                        &group.first().tokens,
-                    )
-                    .as_str(),
+                    group.template(),
                     group.count(),
                     first_epoch,
                     last_epoch,
@@ -3149,7 +3103,7 @@ impl PatternFolder {
         let detect = || {
             lines
                 .par_iter()
-                .map(|line| self.normalizer.normalize_line(line.clone()))
+                .map(|line| self.ingest(line.clone()))
                 .collect::<Result<Vec<_>, _>>()
         };
         let processed_lines: Vec<LogLine> = match &self.detection {
@@ -3157,7 +3111,7 @@ impl PatternFolder {
             LineDetection::GlobalPool => detect()?,
             LineDetection::Inline => lines
                 .iter()
-                .map(|line| self.normalizer.normalize_line(line.clone()))
+                .map(|line| self.ingest(line.clone()))
                 .collect::<Result<Vec<_>, _>>()?,
         };
 
@@ -3199,7 +3153,7 @@ impl PatternFolder {
 mod render;
 mod timeline;
 
-use render::{Dispatched, Masked, MaskedRollup, Rendered};
+use render::{Dispatched, MaskedRollup, Rendered};
 pub use render::{MarkdownEntry, SummaryRequest};
 
 #[cfg(test)]

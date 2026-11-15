@@ -139,6 +139,23 @@ pub(crate) fn scanned_entities_without_syslog_host(
 
 pub const KEY_ENV: &str = "LESSENCE_SANITIZE_KEY";
 
+static RUN_KEY: LazyLock<PseudonymKey> = LazyLock::new(|| {
+    let mut key = [0u8; 32];
+    if getrandom::fill(&mut key).is_err() {
+        use std::hash::BuildHasher;
+        let state = std::collections::hash_map::RandomState::new();
+        let seed = [state.hash_one(0u8), state.hash_one(1u8)];
+        return Sanitizer::derive_key(&[seed[0].to_le_bytes(), seed[1].to_le_bytes()].concat());
+    }
+    PseudonymKey(key)
+});
+
+pub struct MaskedLine {
+    pub shown: String,
+    pub normalizable: String,
+    pub tokens: Vec<Token>,
+}
+
 impl Sanitizer {
     pub fn pii_alias() -> Self {
         Self {
@@ -239,10 +256,6 @@ impl Sanitizer {
         }
     }
 
-    pub fn masked(sanitizer: Option<&Self>, text: &str, tokens: &[Token]) -> String {
-        sanitizer.map_or_else(|| text.to_string(), |z| z.mask_line(text, tokens))
-    }
-
     pub fn mask_line(&self, original: &str, hints: &[Token]) -> String {
         self.mask(original, hints)
     }
@@ -259,31 +272,35 @@ impl Sanitizer {
         render(text, &regions)
     }
 
-    pub fn mask_range(&self, text: &str, hints: &[Token], range: Range<usize>) -> MaskedPiece {
-        let regions = self.regions(text, hints);
-        let offset = masked_offset(&regions, range.start);
-        if range.is_empty() {
-            return MaskedPiece {
-                text: String::new(),
-                offset,
-            };
-        }
-        MaskedPiece {
-            text: render_window_with_whole_tags(text, &regions, range),
-            offset,
-        }
-    }
-
-    pub fn line_secrets<'a>(&self, line: &'a str) -> Option<LineSecrets<'a>> {
-        let mut spans = Vec::new();
-        self.credential_spans(line, &mut spans);
-        if spans.is_empty() {
+    pub fn mask_for_folding(&self, line: &str, hints: &[Token]) -> Option<MaskedLine> {
+        let regions = self.regions(line, hints);
+        if regions.is_empty() {
             return None;
         }
-        Some(LineSecrets {
-            line,
-            regions: self.merge_spans(line, spans),
+        let tokens = regions
+            .in_text_order()
+            .iter()
+            .filter_map(|r| {
+                let kind = r.kind?;
+                Some(kind.token(self.token_value(r, &line[r.start..r.end])))
+            })
+            .collect();
+        Some(MaskedLine {
+            shown: render_with(line, &regions, |out, r| out.push_str(&r.tag)),
+            normalizable: render_with(line, &regions, |out, r| {
+                out.push('<');
+                out.push_str(r.class);
+                out.push('>');
+            }),
+            tokens,
         })
+    }
+
+    fn token_value(&self, region: &Region, value: &str) -> String {
+        match self.action(region.entity) {
+            Some(Action::KeyedPseudonym) => region.tag.clone(),
+            _ => format!("<{}:{}>", region.class, keyed_tag64(&RUN_KEY, value)),
+        }
     }
 
     fn regions(&self, text: &str, hints: &[Token]) -> Regions {
@@ -303,6 +320,7 @@ impl Sanitizer {
                 end: range.end,
                 entity: Entity::Credential,
                 class,
+                kind: None,
                 rank,
             });
         };
@@ -338,27 +356,27 @@ impl Sanitizer {
                 detector_tokens.extend(line.tokens);
             }
             for (start, end) in NetworkDetector::dns_shaped_spans(text) {
-                spans.push(Span::entity(start, end, Entity::Host, "HOST"));
+                spans.push(Span::entity(start, end, Kind::Fqdn));
             }
         }
         if ip {
             for (start, end) in NetworkDetector::ipv4_spans(text) {
-                spans.push(Span::entity(start, end, Entity::Ip, "IP"));
+                spans.push(Span::entity(start, end, Kind::Ipv4));
             }
         }
-        let mut values: Vec<(Entity, &'static str, &str)> = hints
+        let mut values: Vec<(Kind, &str)> = hints
             .iter()
             .chain(&detector_tokens)
             .filter_map(entity_value)
-            .filter(|(entity, _, value)| !value.is_empty() && self.action(*entity).is_some())
+            .filter(|(kind, value)| !value.is_empty() && self.action(kind.entity()).is_some())
             .collect();
         values.sort_unstable();
         values.dedup();
-        for (entity, class, value) in values {
+        for (kind, value) in values {
             for (start, _) in text.match_indices(value) {
                 let end = start + value.len();
                 if at_token_boundary(text, start, end) {
-                    spans.push(Span::entity(start, end, entity, class));
+                    spans.push(Span::entity(start, end, kind));
                 }
             }
         }
@@ -385,6 +403,9 @@ impl Sanitizer {
                 start,
                 end,
                 tag: self.tag(highest_ranked.entity, highest_ranked.class, whole_region),
+                entity: highest_ranked.entity,
+                class: highest_ranked.class,
+                kind: highest_ranked.kind,
             });
             i = j;
         }
@@ -401,30 +422,18 @@ impl Sanitizer {
         self.action(entity).map(|a| (a, class))
     }
 
-    pub fn mask_sample(&self, class: &str, value: &str) -> String {
-        let entity = match class {
-            "EMAIL" => Entity::Email,
-            "HOST" => Entity::Host,
-            "IP" => Entity::Ip,
-            _ => return value.to_string(),
-        };
-        self.tag(entity, class, value)
-    }
-
     pub fn names(&self, entity: Entity) -> bool {
         self.action(entity).is_some()
     }
-}
-
-pub struct MaskedPiece {
-    pub text: String,
-    pub offset: usize,
 }
 
 struct Region {
     start: usize,
     end: usize,
     tag: String,
+    entity: Entity,
+    class: &'static str,
+    kind: Option<Kind>,
 }
 
 struct Regions(Vec<Region>);
@@ -457,75 +466,19 @@ fn keyed_tag64(key: &PseudonymKey, value: &str) -> String {
 }
 
 fn render(text: &str, regions: &Regions) -> String {
+    render_with(text, regions, |out, r| out.push_str(&r.tag))
+}
+
+fn render_with(text: &str, regions: &Regions, tag: impl Fn(&mut String, &Region)) -> String {
     let mut out = String::with_capacity(text.len());
     let mut copied = 0;
     for r in regions.in_text_order() {
         out.push_str(&text[copied..r.start]);
-        out.push_str(&r.tag);
+        tag(&mut out, r);
         copied = r.end;
     }
     out.push_str(&text[copied..]);
     out
-}
-
-fn render_window_with_whole_tags(text: &str, regions: &Regions, range: Range<usize>) -> String {
-    let mut out = String::new();
-    let mut copied = range.start;
-    for r in regions
-        .in_text_order()
-        .iter()
-        .filter(|r| r.start < range.end && range.start < r.end)
-    {
-        if copied < r.start {
-            out.push_str(&text[copied..r.start]);
-        }
-        out.push_str(&r.tag);
-        copied = r.end;
-    }
-    if copied < range.end {
-        out.push_str(&text[copied..range.end]);
-    }
-    out
-}
-
-fn masked_offset(regions: &Regions, pos: usize) -> usize {
-    let mut removed = 0;
-    let mut added = 0;
-    for r in regions.in_text_order() {
-        if r.end <= pos {
-            removed += r.end - r.start;
-            added += r.tag.len();
-        } else {
-            let pos_inside_region = r.start < pos;
-            if pos_inside_region {
-                let start_of_its_tag = r.start - removed + added;
-                return start_of_its_tag;
-            }
-            break;
-        }
-    }
-    pos - removed + added
-}
-
-pub struct LineSecrets<'a> {
-    line: &'a str,
-    regions: Regions,
-}
-
-impl LineSecrets<'_> {
-    pub fn mask(&self, value: &str) -> Option<String> {
-        if value.is_empty() {
-            return None;
-        }
-        self.line.match_indices(value).find_map(|(start, _)| {
-            let range = start..start + value.len();
-            self.regions
-                .in_text_order()
-                .iter()
-                .any(|r| r.start < range.end && range.start < r.end)
-                .then(|| render_window_with_whole_tags(self.line, &self.regions, range))
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -534,7 +487,45 @@ struct Span {
     end: usize,
     entity: Entity,
     class: &'static str,
+    kind: Option<Kind>,
     rank: ClaimRank,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Email,
+    Fqdn,
+    SyslogHost,
+    Ipv4,
+    Ipv6,
+}
+
+impl Kind {
+    fn entity(self) -> Entity {
+        match self {
+            Kind::Email => Entity::Email,
+            Kind::Fqdn | Kind::SyslogHost => Entity::Host,
+            Kind::Ipv4 | Kind::Ipv6 => Entity::Ip,
+        }
+    }
+
+    fn class(self) -> &'static str {
+        match self {
+            Kind::Email => "EMAIL",
+            Kind::Fqdn | Kind::SyslogHost => "HOST",
+            Kind::Ipv4 | Kind::Ipv6 => "IP",
+        }
+    }
+
+    fn token(self, value: String) -> Token {
+        match self {
+            Kind::Email => Token::Email(value),
+            Kind::Fqdn => Token::Fqdn(value),
+            Kind::SyslogHost => Token::SyslogHost(value),
+            Kind::Ipv4 => Token::IPv4(value),
+            Kind::Ipv6 => Token::IPv6(value),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -548,12 +539,13 @@ enum ClaimRank {
 }
 
 impl Span {
-    fn entity(start: usize, end: usize, entity: Entity, class: &'static str) -> Self {
+    fn entity(start: usize, end: usize, kind: Kind) -> Self {
         Self {
             start,
             end,
-            entity,
-            class,
+            entity: kind.entity(),
+            class: kind.class(),
+            kind: Some(kind),
             rank: ClaimRank::Entity,
         }
     }
@@ -571,23 +563,13 @@ impl Span {
     }
 }
 
-pub(crate) fn entity_token(type_name: &str, value: &str) -> Option<Token> {
-    let value = value.to_string();
-    Some(match type_name {
-        "EMAIL" => Token::Email(value),
-        "FQDN" => Token::Fqdn(value),
-        "HOST" => Token::SyslogHost(value),
-        "IPV4" => Token::IPv4(value),
-        "IPV6" => Token::IPv6(value),
-        _ => return None,
-    })
-}
-
-fn entity_value(token: &Token) -> Option<(Entity, &'static str, &str)> {
+fn entity_value(token: &Token) -> Option<(Kind, &str)> {
     match token {
-        Token::Email(v) => Some((Entity::Email, "EMAIL", v.as_str())),
-        Token::Fqdn(v) | Token::SyslogHost(v) => Some((Entity::Host, "HOST", v.as_str())),
-        Token::IPv4(v) | Token::IPv6(v) => Some((Entity::Ip, "IP", v.as_str())),
+        Token::Email(v) => Some((Kind::Email, v.as_str())),
+        Token::Fqdn(v) => Some((Kind::Fqdn, v.as_str())),
+        Token::SyslogHost(v) => Some((Kind::SyslogHost, v.as_str())),
+        Token::IPv4(v) => Some((Kind::Ipv4, v.as_str())),
+        Token::IPv6(v) => Some((Kind::Ipv6, v.as_str())),
         _ => None,
     }
 }
@@ -875,72 +857,33 @@ mod tests {
         );
     }
 
-    const RANGE_TEXT: &str = r#"api_key: "Heron5 Stoat8" from 198.51.100.21 ok"#;
-
-    fn range_of(word: &str) -> Range<usize> {
-        let at = RANGE_TEXT.find(word).unwrap();
-        at..at + word.len()
-    }
-
-    fn piece(z: &Sanitizer, range: Range<usize>) -> (String, usize) {
-        let MaskedPiece { text, offset } = z.mask_range(RANGE_TEXT, &[], range);
-        (text, offset)
-    }
-
     #[test]
-    fn a_word_holding_part_of_a_value_is_that_values_whole_tag() {
-        let z = s(&["credential", "ip"], false).unwrap();
-        assert_eq!(z.mask_text(RANGE_TEXT), "api_key: <SECRET> from <IP> ok");
-        for word in [r#""Heron5"#, r#"Stoat8""#] {
-            let (shown, at) = piece(&z, range_of(word));
-            assert_eq!((shown.as_str(), at), ("<SECRET>", 9), "{word}");
-        }
-    }
-
-    #[test]
-    fn a_word_after_a_masked_value_keeps_its_offset_in_the_masked_text() {
-        let z = s(&["credential", "ip"], false).unwrap();
-        let masked = z.mask_text(RANGE_TEXT);
-        for word in ["from", "198.51.100.21", "ok"] {
-            let (shown, at) = piece(&z, range_of(word));
-            let expected = if word == "198.51.100.21" {
-                "<IP>"
-            } else {
-                word
-            };
-            assert_eq!(shown, expected);
-            assert_eq!(&masked[at..at + shown.len()], expected, "{word}");
-        }
-        assert_eq!(piece(&z, 0..8), ("api_key:".to_string(), 0));
+    fn a_line_masked_for_folding_carries_shown_text_bare_tags_and_entity_tokens() {
+        let line = "peer 198.51.100.4 mail ann@example.com password=Quill7Fern";
+        let z = s(&["ip:pseudonym", "email", "credential"], false).unwrap();
+        let tag = z.mask_text("198.51.100.4");
+        let masked = z.mask_for_folding(line, &[]).unwrap();
         assert_eq!(
-            piece(&z, RANGE_TEXT.len()..RANGE_TEXT.len()),
-            (String::new(), masked.len())
+            masked.shown,
+            format!("peer {tag} mail <EMAIL> password=<SECRET>")
         );
-    }
-
-    #[test]
-    fn a_value_cut_from_a_line_is_masked_where_it_stands() {
-        let line = "dial postgres://app:Gale4Hollow@db.example.com:5432/x as app";
-        assert!(s(&["host"], false).unwrap().line_secrets(line).is_none());
-        let z = s(&["credential"], false).unwrap();
-        assert!(z.line_secrets("dial postgres://db.example.com/x").is_none());
-        let secrets = z.line_secrets(line).unwrap();
         assert_eq!(
-            secrets.mask("Gale4Hollow@db.example.com").as_deref(),
-            Some("<SECRET>@db.example.com")
+            masked.normalizable,
+            "peer <IP> mail <EMAIL> password=<SECRET>"
         );
-        assert_eq!(secrets.mask("Hollow@db").as_deref(), Some("<SECRET>@db"));
-        assert_eq!(secrets.mask("app:Gale4").as_deref(), Some("app:<SECRET>"));
-        assert_eq!(secrets.mask("//app"), None);
-        assert_eq!(secrets.mask("absent"), None);
-        assert_eq!(secrets.mask(""), None);
-    }
-
-    #[test]
-    fn masked_is_the_text_itself_without_a_sanitizer() {
-        let line = "mail bob@example.com";
-        assert_eq!(Sanitizer::masked(None, line, &[]), line);
-        let z = s(&["email"], false).unwrap();
-        assert_eq!(Sanitizer::masked(Some(&z), line, &[]), "mail <EMAIL>");
+        assert_eq!(masked.tokens.len(), 2, "{:?}", masked.tokens);
+        assert_eq!(masked.tokens[0], Token::IPv4(tag));
+        let Token::Email(email) = &masked.tokens[1] else {
+            panic!("{:?}", masked.tokens);
+        };
+        assert!(
+            email.starts_with("<EMAIL:") && !email.contains("example"),
+            "{email}"
+        );
+        let again = z.mask_for_folding("to ann@example.com", &[]).unwrap();
+        assert_eq!(again.tokens, vec![Token::Email(email.clone())]);
+        let other = z.mask_for_folding("to bob@example.com", &[]).unwrap();
+        assert_ne!(other.tokens, again.tokens);
+        assert!(z.mask_for_folding("nothing to hide here", &[]).is_none());
     }
 }

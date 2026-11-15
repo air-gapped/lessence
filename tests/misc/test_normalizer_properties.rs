@@ -58,11 +58,15 @@ fn masked_forms(spec: &str, planted: &str, before: &str, after: &str) -> Vec<Str
         .unwrap()
         .with_test_key(7);
     let line = format!("{before} {planted} {after}");
-    let normalized = default_normalizer().normalize_line(line.clone()).unwrap();
+    let normalizer = default_normalizer();
+    let normalized = normalizer.normalize_line(line.clone()).unwrap();
+    let normalizable = z
+        .mask_for_folding(&line, &normalized.tokens)
+        .map_or_else(|| line.clone(), |masked| masked.normalizable);
     vec![
         z.mask_line(&line, &normalized.tokens),
         z.mask_text(&line),
-        z.mask_text(&normalized.normalized),
+        normalizer.normalize_line(normalizable).unwrap().normalized,
     ]
 }
 
