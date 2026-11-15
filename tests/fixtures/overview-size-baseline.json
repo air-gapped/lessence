@@ -8,8 +8,8 @@
       "selected": 27,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13144,
-      "stdout_tokens": 4648,
+      "stdout_bytes": 13370,
+      "stdout_tokens": 4722,
       "total": 27
     },
     "apache_sample": {
@@ -104,8 +104,8 @@
       "selected": 27,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7783,
-      "stdout_tokens": 2631,
+      "stdout_bytes": 8088,
+      "stdout_tokens": 2720,
       "total": 27
     },
     "harbor_postgres_replica": {
@@ -128,8 +128,8 @@
       "selected": 8,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 5412,
-      "stdout_tokens": 1889,
+      "stdout_bytes": 5473,
+      "stdout_tokens": 1905,
       "total": 8
     },
     "host_fedora_journal": {
@@ -164,20 +164,20 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 12428,
-      "stdout_tokens": 4264,
+      "stdout_bytes": 12836,
+      "stdout_tokens": 4415,
       "total": 60
     },
     "host_pi_journal": {
       "corpus_sha256": "13fb4a76fea55b3f18b919cbc1cb8dcd81a2e1b96556f3efe5eb4bdf65cc74e1",
-      "omitted": 25,
+      "omitted": 27,
       "previewed": 5,
-      "printed": 40,
+      "printed": 38,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15156,
-      "stdout_tokens": 5433,
+      "stdout_bytes": 15610,
+      "stdout_tokens": 5584,
       "total": 65
     },
     "host_rke2_journal": {
@@ -195,49 +195,49 @@
     "k8s_argocd_aux": {
       "corpus_sha256": "b4420ad251f5b4344ee1897ca3cfb0ef9c4e75d45fb7c2bdad1462ba44c126d8",
       "omitted": 23,
-      "previewed": 11,
+      "previewed": 12,
       "printed": 16,
       "selected": 39,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15146,
-      "stdout_tokens": 5159,
+      "stdout_bytes": 15497,
+      "stdout_tokens": 5284,
       "total": 39
     },
     "k8s_cert_manager": {
       "corpus_sha256": "6cb991bd4f18e27c55e099db9e0e1b753c530a69628945a486378044d0703514",
-      "omitted": 13,
+      "omitted": 15,
       "previewed": 7,
-      "printed": 30,
+      "printed": 28,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15761,
-      "stdout_tokens": 5164,
+      "stdout_bytes": 15714,
+      "stdout_tokens": 5124,
       "total": 43
     },
     "k8s_cilium_operator": {
       "corpus_sha256": "bb9da987241ffb8f2c1838c59966314d6c3becb66cce534d7a4b2f5290a24888",
-      "omitted": 263,
-      "previewed": 2,
-      "printed": 39,
+      "omitted": 270,
+      "previewed": 0,
+      "printed": 32,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15758,
-      "stdout_tokens": 5560,
+      "stdout_bytes": 15133,
+      "stdout_tokens": 5246,
       "total": 302
     },
     "k8s_cloudflared": {
       "corpus_sha256": "ccc083b751cda51f71cce2015a7e786028c231f270c2a08b01e1ad883132b55f",
       "omitted": 0,
-      "previewed": 2,
+      "previewed": 3,
       "printed": 18,
       "selected": 18,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 9284,
-      "stdout_tokens": 3402,
+      "stdout_bytes": 11052,
+      "stdout_tokens": 4086,
       "total": 18
     },
     "k8s_controller_mgr": {
@@ -260,8 +260,8 @@
       "selected": 10,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7191,
-      "stdout_tokens": 2672,
+      "stdout_bytes": 7378,
+      "stdout_tokens": 2734,
       "total": 10
     },
     "k8s_etcd": {
@@ -279,13 +279,13 @@
     "k8s_events_all": {
       "corpus_sha256": "7fc14feba1786b01e6984efc1f4098b319688efc05591941f11be0d6139cbdb2",
       "omitted": 0,
-      "previewed": 0,
+      "previewed": 1,
       "printed": 12,
       "selected": 12,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 5900,
-      "stdout_tokens": 1701,
+      "stdout_bytes": 6676,
+      "stdout_tokens": 2008,
       "total": 12
     },
     "k8s_gitlab": {
@@ -302,26 +302,26 @@
     },
     "k8s_gpu_operator": {
       "corpus_sha256": "cd3370b0b0e25d095a8182acdf201bf76bacfbae04c17e59cbcb602e181f3a81",
-      "omitted": 56,
-      "previewed": 2,
-      "printed": 36,
+      "omitted": 58,
+      "previewed": 3,
+      "printed": 34,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15757,
-      "stdout_tokens": 5250,
+      "stdout_bytes": 15605,
+      "stdout_tokens": 5215,
       "total": 92
     },
     "k8s_grafana": {
       "corpus_sha256": "508859451620acb489ca7baeb2ad197bb0a743074debd6022bd17ff3e7271300",
       "omitted": 0,
-      "previewed": 0,
+      "previewed": 2,
       "printed": 29,
       "selected": 29,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 12319,
-      "stdout_tokens": 4053,
+      "stdout_bytes": 13048,
+      "stdout_tokens": 4286,
       "total": 29
     },
     "k8s_harbor": {
@@ -339,85 +339,85 @@
     "k8s_hubble": {
       "corpus_sha256": "fbe16da22cd1e1d413612c2fbef8f913b1cfd931cd60b7068dc6419017d5c525",
       "omitted": 0,
-      "previewed": 2,
+      "previewed": 3,
       "printed": 7,
       "selected": 7,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6183,
-      "stdout_tokens": 2164,
+      "stdout_bytes": 6567,
+      "stdout_tokens": 2291,
       "total": 7
     },
     "k8s_json_sample": {
       "corpus_sha256": "6be8120650538494be71e8c6c80135d954be0f1e2ee73280533dd470519c4112",
       "omitted": 10,
-      "previewed": 8,
+      "previewed": 10,
       "printed": 14,
       "selected": 24,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13549,
-      "stdout_tokens": 4841,
+      "stdout_bytes": 14049,
+      "stdout_tokens": 5001,
       "total": 24
     },
     "k8s_keda": {
       "corpus_sha256": "1a11de023134d56f0cf5824993db22232ea7a581857b6660a14382ed63b58d0c",
       "omitted": 0,
-      "previewed": 1,
+      "previewed": 3,
       "printed": 12,
       "selected": 12,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6431,
-      "stdout_tokens": 2272,
+      "stdout_bytes": 7523,
+      "stdout_tokens": 2591,
       "total": 12
     },
     "k8s_keycloak": {
       "corpus_sha256": "62d794e826fe560dd551cfc41002cf41b258208e2312e82af97999133b7a2622",
-      "omitted": 11,
+      "omitted": 14,
       "previewed": 5,
-      "printed": 31,
+      "printed": 28,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15550,
-      "stdout_tokens": 5435,
+      "stdout_bytes": 15593,
+      "stdout_tokens": 5517,
       "total": 42
     },
     "k8s_kube_state_metrics": {
       "corpus_sha256": "b38876099bb70934da9fcc3179513ba9a46c7e7d9494ec4246ad24875a2ddd1a",
-      "omitted": 6,
+      "omitted": 7,
       "previewed": 5,
-      "printed": 26,
+      "printed": 25,
       "selected": 32,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15402,
-      "stdout_tokens": 5150,
+      "stdout_bytes": 15401,
+      "stdout_tokens": 5173,
       "total": 32
     },
     "k8s_litellm": {
       "corpus_sha256": "4fb9b2842e94e1993785e25ed44aefd44f931cc7a741668bd05f35cc26604641",
       "omitted": 0,
-      "previewed": 2,
+      "previewed": 3,
       "printed": 12,
       "selected": 12,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6844,
-      "stdout_tokens": 2376,
+      "stdout_bytes": 7141,
+      "stdout_tokens": 2461,
       "total": 12
     },
     "k8s_metrics_server": {
       "corpus_sha256": "b77dbae6ef36ecb111fff8333185975ded41560b147a72851ed905afbb23ab32",
       "omitted": 0,
-      "previewed": 2,
+      "previewed": 3,
       "printed": 6,
       "selected": 6,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6420,
-      "stdout_tokens": 2148,
+      "stdout_bytes": 6643,
+      "stdout_tokens": 2226,
       "total": 6
     },
     "k8s_netbox": {
@@ -428,8 +428,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13974,
-      "stdout_tokens": 4794,
+      "stdout_bytes": 15260,
+      "stdout_tokens": 5283,
       "total": 71
     },
     "k8s_oauth2_proxy": {
@@ -446,14 +446,14 @@
     },
     "k8s_openebs": {
       "corpus_sha256": "c364a5866b623e7d48c0996f294d789ee78685f2916436c2e38cf721176cd6f3",
-      "omitted": 43,
+      "omitted": 44,
       "previewed": 11,
-      "printed": 22,
+      "printed": 21,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15506,
-      "stdout_tokens": 5260,
+      "stdout_bytes": 15325,
+      "stdout_tokens": 5200,
       "total": 65
     },
     "k8s_postgres_operator": {
@@ -464,20 +464,20 @@
       "selected": 21,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15010,
-      "stdout_tokens": 4994,
+      "stdout_bytes": 15456,
+      "stdout_tokens": 5142,
       "total": 21
     },
     "k8s_redis_sentinel": {
       "corpus_sha256": "5ebaf46e496bc91e5238858c0a6bc1e157ff1252665189416b182059dcf1576e",
       "omitted": 0,
-      "previewed": 8,
+      "previewed": 9,
       "printed": 26,
       "selected": 26,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11863,
-      "stdout_tokens": 4428,
+      "stdout_bytes": 12420,
+      "stdout_tokens": 4624,
       "total": 26
     },
     "k8s_rook_ceph": {
@@ -506,14 +506,14 @@
     },
     "k8s_tetragon": {
       "corpus_sha256": "29807c95ec128ef81ebe10c0f034eb5ad85cbed65ff6b189bc1f129d8cf067da",
-      "omitted": 23,
-      "previewed": 8,
-      "printed": 8,
+      "omitted": 26,
+      "previewed": 5,
+      "printed": 5,
       "selected": 31,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15409,
-      "stdout_tokens": 5731,
+      "stdout_bytes": 13945,
+      "stdout_tokens": 5439,
       "total": 31
     },
     "k8s_tetragon_cred_ns": {
@@ -555,13 +555,13 @@
     "kubectl_events": {
       "corpus_sha256": "27e7c28828fb26ad43bfc6b515ab3c687fb4af5d8d8aac57fbec9f1eff8ebdc9",
       "omitted": 0,
-      "previewed": 1,
+      "previewed": 2,
       "printed": 9,
       "selected": 9,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 4995,
-      "stdout_tokens": 1582,
+      "stdout_bytes": 6078,
+      "stdout_tokens": 2054,
       "total": 9
     },
     "kubelet": {
@@ -591,13 +591,13 @@
     "linux_auth_secure": {
       "corpus_sha256": "f1ec1aeebbe7d60927fba5465baccfc0e6f5ed8ae9d06f9b95eb7d6ba061d00c",
       "omitted": 0,
-      "previewed": 0,
+      "previewed": 1,
       "printed": 9,
       "selected": 9,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 5688,
-      "stdout_tokens": 2133,
+      "stdout_bytes": 6012,
+      "stdout_tokens": 2258,
       "total": 9
     },
     "microservices": {
@@ -608,8 +608,8 @@
       "selected": 13,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7247,
-      "stdout_tokens": 2477,
+      "stdout_bytes": 7421,
+      "stdout_tokens": 2530,
       "total": 13
     },
     "nas_dmesg": {
@@ -620,8 +620,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11449,
-      "stdout_tokens": 4248,
+      "stdout_bytes": 12200,
+      "stdout_tokens": 4444,
       "total": 132
     },
     "nginx_sample": {
@@ -662,14 +662,14 @@
     },
     "rancher_production": {
       "corpus_sha256": "b218f2b44862bbfbe27fd9d7f52b1690397257dadc29a3cdb188d7f86bfa8e92",
-      "omitted": 34,
-      "previewed": 6,
-      "printed": 28,
+      "omitted": 36,
+      "previewed": 5,
+      "printed": 26,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15805,
-      "stdout_tokens": 5688,
+      "stdout_bytes": 15284,
+      "stdout_tokens": 5518,
       "total": 62
     },
     "realistic_repetitive": {
@@ -692,8 +692,8 @@
       "selected": 24,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 9780,
-      "stdout_tokens": 3471,
+      "stdout_bytes": 10166,
+      "stdout_tokens": 3594,
       "total": 24
     },
     "synthetic": {
@@ -728,20 +728,20 @@
       "selected": 19,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 8427,
-      "stdout_tokens": 3014,
+      "stdout_bytes": 8545,
+      "stdout_tokens": 3057,
       "total": 19
     },
     "uap_messages": {
       "corpus_sha256": "d844fba845ad4b342e57dfbb3ee7d8355f24976045e0fa157bef0008ae31aeb8",
-      "omitted": 26,
+      "omitted": 27,
       "previewed": 12,
-      "printed": 29,
+      "printed": 28,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15515,
-      "stdout_tokens": 5776,
+      "stdout_bytes": 15584,
+      "stdout_tokens": 5805,
       "total": 55
     },
     "usw_dmesg": {
@@ -752,20 +752,20 @@
       "selected": 38,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11682,
-      "stdout_tokens": 4208,
+      "stdout_bytes": 12376,
+      "stdout_tokens": 4442,
       "total": 38
     },
     "usw_messages": {
       "corpus_sha256": "2e3554655c189ec5318535c3c8087ca478a04e17219b8fd1ec021b2b5527c725",
       "omitted": 0,
-      "previewed": 7,
+      "previewed": 8,
       "printed": 28,
       "selected": 28,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13285,
-      "stdout_tokens": 4895,
+      "stdout_bytes": 13924,
+      "stdout_tokens": 5127,
       "total": 28
     },
     "usw_rc": {
@@ -776,8 +776,8 @@
       "selected": 37,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6039,
-      "stdout_tokens": 2145,
+      "stdout_bytes": 5968,
+      "stdout_tokens": 2169,
       "total": 37
     },
     "uxg_analytic_report": {
@@ -788,8 +788,8 @@
       "selected": 14,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11190,
-      "stdout_tokens": 3910,
+      "stdout_bytes": 11290,
+      "stdout_tokens": 3940,
       "total": 14
     },
     "uxg_auth": {
@@ -812,20 +812,20 @@
       "selected": 8,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 5345,
-      "stdout_tokens": 2013,
+      "stdout_bytes": 5527,
+      "stdout_tokens": 2074,
       "total": 8
     },
     "uxg_daemon": {
       "corpus_sha256": "86cd30b2b0e8e87c698f499124259a6c6d197128704a23adfd7ebd89b9cb0c86",
-      "omitted": 16,
+      "omitted": 17,
       "previewed": 7,
-      "printed": 38,
+      "printed": 37,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15650,
-      "stdout_tokens": 6079,
+      "stdout_bytes": 15729,
+      "stdout_tokens": 6110,
       "total": 54
     },
     "uxg_dmesg_boot": {
@@ -860,32 +860,32 @@
       "selected": 21,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 10380,
-      "stdout_tokens": 3905,
+      "stdout_bytes": 10667,
+      "stdout_tokens": 4000,
       "total": 21
     },
     "uxg_journal_7d": {
       "corpus_sha256": "948bd942d6633acbd82b3e8b3a8bd7d396fcf478eaa39bbb60158cf3e3b70dbb",
-      "omitted": 26,
-      "previewed": 8,
-      "printed": 37,
+      "omitted": 29,
+      "previewed": 9,
+      "printed": 34,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15694,
-      "stdout_tokens": 6044,
+      "stdout_bytes": 15678,
+      "stdout_tokens": 6050,
       "total": 63
     },
     "uxg_kern": {
       "corpus_sha256": "2728d58c90332ad51be48db28031ded3424f77bdc62eb6e4f7af9fd829263f37",
       "omitted": 3,
-      "previewed": 5,
+      "previewed": 6,
       "printed": 40,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13046,
-      "stdout_tokens": 4892,
+      "stdout_bytes": 13751,
+      "stdout_tokens": 5170,
       "total": 43
     },
     "uxg_messages": {
@@ -896,8 +896,8 @@
       "selected": 14,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 8080,
-      "stdout_tokens": 2973,
+      "stdout_bytes": 8178,
+      "stdout_tokens": 3003,
       "total": 14
     },
     "uxg_network-init": {
@@ -920,8 +920,8 @@
       "selected": 4,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 3065,
-      "stdout_tokens": 1110,
+      "stdout_bytes": 3132,
+      "stdout_tokens": 1127,
       "total": 4
     },
     "uxg_updater": {
@@ -968,8 +968,8 @@
       "selected": 27,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11189,
-      "stdout_tokens": 3675,
+      "stdout_bytes": 11441,
+      "stdout_tokens": 3759,
       "total": 27
     }
   },

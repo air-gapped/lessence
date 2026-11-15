@@ -114,14 +114,16 @@ impl PatternFolder {
     }
 
     fn rollup_unless_too_small_to_collapse(&mut self, group: &PatternGroup) -> MaskedRollup {
-        let rollup = if group.should_collapse(self.config.min_collapse) {
-            self.rollup_computer.compute(group)
-        } else {
-            if self.is_json_output() {
-                self.json_uncomputed_variation_groups += 1;
-            }
-            BTreeMap::new()
-        };
+        let json_record_of_several_lines = self.is_json_output() && group.count() > 1;
+        let rollup =
+            if group.should_collapse(self.config.min_collapse) || json_record_of_several_lines {
+                self.rollup_computer.compute(group)
+            } else {
+                if self.is_json_output() {
+                    self.json_uncomputed_variation_groups += 1;
+                }
+                BTreeMap::new()
+            };
         self.masked_rollup(rollup)
     }
 
@@ -206,11 +208,11 @@ impl PatternFolder {
         group.timeline.view(grid, first_stamp_carries_year)
     }
 
-    fn account_savings(&mut self, group: &PatternGroup) {
+    pub(super) fn account_savings(&mut self, group: &PatternGroup) {
         self.account_count(group.count());
     }
 
-    fn account_count(&mut self, count: usize) {
+    pub(super) fn account_count(&mut self, count: usize) {
         if self.config.essence_mode {
             self.stats.lines_saved += count.saturating_sub(LINES_AN_ESSENCE_GROUP_SHOWS);
         } else if count >= self.config.min_collapse {

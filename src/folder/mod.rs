@@ -2117,16 +2117,23 @@ impl RollupComputer {
     }
 
     fn accumulate_varies(&self, lines: &[LogLine], template: &str, varies: &mut SlotCounts) {
-        self.accumulate_varies_counted(
-            lines.iter().map(|line| (line.normalized.as_str(), 1)),
-            template,
-            varies,
-        );
+        match &self.sanitizer {
+            Some(z) => self.accumulate_varies_counted(
+                lines.iter().map(|line| (z.mask_text(&line.normalized), 1)),
+                template,
+                varies,
+            ),
+            None => self.accumulate_varies_counted(
+                lines.iter().map(|line| (line.normalized.as_str(), 1)),
+                template,
+                varies,
+            ),
+        }
     }
 
-    fn accumulate_varies_counted<'a>(
+    fn accumulate_varies_counted<S: AsRef<str>>(
         &self,
-        lines: impl Iterator<Item = (&'a str, usize)>,
+        lines: impl Iterator<Item = (S, usize)>,
         template: &str,
         varies: &mut SlotCounts,
     ) {
@@ -2135,6 +2142,7 @@ impl RollupComputer {
             return;
         }
         for (normalized, count) in lines {
+            let normalized = normalized.as_ref();
             let units = unit_spans(normalized);
             self.accumulate_member_varies(&template, normalized, &units, count, varies);
         }
@@ -2188,13 +2196,16 @@ impl RollupComputer {
         let mut per_type = PerType::new();
         self.accumulate_tokens(&group.lines, &mut per_type);
         let mut varies = SlotCounts::new();
-        self.accumulate_varies(&group.lines, group.template(), &mut varies);
-        self.finalize(
-            per_type,
-            varies,
-            group.template(),
-            &group.first().normalized,
-        )
+        let masked_template;
+        let template = match &self.sanitizer {
+            Some(z) => {
+                masked_template = z.mask_text(group.template());
+                masked_template.as_str()
+            }
+            None => group.template(),
+        };
+        self.accumulate_varies(&group.lines, template, &mut varies);
+        self.finalize(per_type, varies, template, &group.first().normalized)
     }
 
     fn finalize(
@@ -2683,6 +2694,9 @@ impl PatternFolder {
             (Some(TOP_SHOWS_EVERY_GROUP), _) | (_, Some(_)) => (total_patterns, false, 0),
             _ => (DEFAULT_SUMMARY_TOP, total_patterns > DEFAULT_SUMMARY_TOP, 0),
         };
+        for (count, _) in sorted.iter().skip(limit) {
+            self.account_count(*count);
+        }
         sorted.truncate(limit);
 
         Ok(SummaryRows {
@@ -2810,6 +2824,7 @@ impl PatternFolder {
             if i < n {
                 top_groups.push((count, group));
             } else {
+                self.account_savings(&group);
                 let (first_epoch, last_epoch) = group_epoch_range(&group);
                 self.stats.template_counts.record(
                     Masked::line(

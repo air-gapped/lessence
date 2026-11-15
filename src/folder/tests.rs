@@ -4969,6 +4969,38 @@ fn a_slot_in_a_gap_is_read_the_way_the_join_reads_it() {
 }
 
 #[test]
+fn slot_values_are_read_from_the_masked_line() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        sanitize: crate::sanitize::Sanitizer::parse(&["credential,ip".to_string()], false).unwrap(),
+        ..Config::default()
+    });
+    for l in [
+        r#"login user=bob api_key: "Heron5 Stoat8" from 198.51.100.21"#,
+        r#"login user=bob api_key: "Heron6 Stoat8" from 198.51.100.22"#,
+        r#"login user=bob api_key: "Heron7 Stoat8" from 198.51.100.23"#,
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 1, "these lines must fold into one group");
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    let mut samples: Vec<&String> = Vec::new();
+    for entry in r.values() {
+        samples.extend(&entry.samples);
+        for slot in entry.slots.iter().flatten() {
+            samples.extend(&slot.samples);
+        }
+    }
+    for s in samples {
+        assert!(
+            !s.contains("Stoat8") && !s.contains("Heron"),
+            "every rollup sample is read from the masked line, got {s:?}"
+        );
+    }
+}
+
+#[test]
 fn two_sentence_words_apart_is_another_event() {
     assert_eq!(
         plain_word_diffs(
@@ -5073,9 +5105,13 @@ fn a_varies_slot_counts_masked_values_under_sanitize_pii() {
     let joined = format!("{:?}", r[VARIES].samples);
     assert!(
         !joined.contains("FIXVALUE"),
-        "the slot keeps the password= key the credential mask needs: {joined}"
+        "slot values are read from the masked line: {joined}"
     );
-    assert!(joined.contains("<SECRET>"), "{joined}");
+    assert_eq!(
+        r[VARIES].samples,
+        ["1", "2", "3"],
+        "the masked template shows password=<SECRET>, so the request number is its only slot"
+    );
 }
 
 #[test]
@@ -7596,5 +7632,62 @@ fn explain_annotates_records_and_changes_no_group() {
         run(true),
         run(false),
         "--explain is read-only diagnostics: folding is unchanged"
+    );
+}
+
+fn folder_fed_three_groups() -> PatternFolder {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        min_collapse: 3,
+        ..Config::default()
+    });
+    let groups = [
+        ("disk full on volume data", 6),
+        ("connection reset by remote peer", 5),
+        ("scheduler queue drained completely", 4),
+    ];
+    for (line, times) in groups {
+        for _ in 0..times {
+            f.process_line(line).unwrap();
+        }
+    }
+    f
+}
+
+#[test]
+fn a_top_limit_does_not_change_lines_saved_or_compression_ratio() {
+    let mut every_group = folder_fed_three_groups();
+    let _ = every_group.finish().unwrap();
+    let mut top_one = folder_fed_three_groups();
+    let TopGroups { shown, .. } = top_one.finish_top_n(1, None, false).unwrap();
+    assert_eq!(shown.len(), 1, "the limit leaves groups unshown");
+
+    let full = every_group.build_stats_json(Duration::ZERO);
+    let limited = top_one.build_stats_json(Duration::ZERO);
+    assert_eq!(full.lines_saved, (6 - 3) + (5 - 3) + (4 - 3));
+    assert_eq!(
+        limited.lines_saved, full.lines_saved,
+        "every group of the fold counts toward lines_saved, shown or not"
+    );
+    assert!(
+        (limited.compression_ratio - full.compression_ratio).abs() < f64::EPSILON,
+        "compression_ratio is the same with and without --top"
+    );
+}
+
+#[test]
+fn a_summary_top_limit_does_not_change_lines_saved() {
+    let mut every_row = folder_fed_three_groups();
+    let SummaryRows { display, .. } = every_row.prepare_summary(Some(0), None).unwrap();
+    every_row.account_summary(&display);
+    let mut top_one = folder_fed_three_groups();
+    let SummaryRows { display, .. } = top_one.prepare_summary(Some(1), None).unwrap();
+    assert_eq!(display.len(), 1, "the limit leaves rows unshown");
+    top_one.account_summary(&display);
+
+    assert_eq!(every_row.stats.lines_saved, (6 - 3) + (5 - 3) + (4 - 3));
+    assert_eq!(
+        top_one.stats.lines_saved, every_row.stats.lines_saved,
+        "every summary row counts toward lines_saved, shown or not"
     );
 }

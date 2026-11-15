@@ -74,14 +74,21 @@ exec systemd-run --user --scope -q -p "MemoryHigh=${MUTANTS_MEM_MAX}" \
     bash -c '
         cg=/sys/fs/cgroup$(cut -d: -f3 /proc/self/cgroup)
         peak=0
+        tick=0
         ( while sleep 2; do
             a=$(awk "/^anon /{print int(\$2/1048576)}" "$cg/memory.stat")
             [ "$a" -gt "$peak" ] && peak=$a && echo "$peak $1" > "$2"
+            tick=$(( tick + 1 ))
+            if [ $(( tick % 30 )) -eq 0 ] && [ -d mutants.out ]; then
+                tested=$(cat mutants.out/caught.txt mutants.out/missed.txt mutants.out/timeout.txt mutants.out/unviable.txt 2>/dev/null | wc -l)
+                missed=$(cat mutants.out/missed.txt 2>/dev/null | wc -l)
+                echo "mutants: $tested of $3 tested, $missed missed, $(( tick / 30 )) min" >&2
+            fi
           done ) &
         sampler=$!
-        shift 2
+        shift 3
         rc=0
         env PROPTEST_CASES=32 PROPTEST_MAX_SHRINK_ITERS=100 cargo mutants "$@" || rc=$?
         kill "$sampler"
-        exit "$rc"' _ "$busy" "$mem_record" \
+        exit "$rc"' _ "$busy" "$mem_record" "$mutant_count" \
     -j "$MUTANTS_JOBS" --timeout-multiplier "$MUTANTS_TIMEOUT_MULT" "$@"
