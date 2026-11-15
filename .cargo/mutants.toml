@@ -31,7 +31,7 @@ exclude_re = [
     # flush_oldest_safe_group: the map entry equal to the removed index is
     # deleted on the line above, so > vs >= over the remaining values is
     # indistinguishable.
-    '^src/folder/mod\.rs:3067:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
+    '^src/folder/mod\.rs:3092:23: replace > with >= in PatternFolder::flush_oldest_safe_group$',
     # token_lcs prefix/suffix trims and the early-exit bound are exact
     # optimizations: disabling a trim (< → == / >) or loosening the bound
     # (- → + / /) can never change the returned LCS or decision, only speed.

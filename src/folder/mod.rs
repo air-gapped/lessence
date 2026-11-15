@@ -2641,6 +2641,78 @@ fn slot_count(template: &str) -> usize {
         .count()
 }
 
+type MemberIndexes = std::collections::BTreeSet<usize>;
+
+fn members_that_moved_the_template(group: &PatternGroup) -> MemberIndexes {
+    let mut chosen = MemberIndexes::new();
+    let mut template = group.lines[0].normalized.clone();
+    chosen.insert(0);
+    for (idx, line) in group.lines.iter().enumerate().skip(1) {
+        if line.hash == group.lines[0].hash {
+            continue;
+        }
+        let edits = template_edits(&template, &line.normalized).unwrap_or_default();
+        if edits.is_empty() {
+            continue;
+        }
+        apply_edits(&mut template, &edits);
+        chosen.insert(idx);
+    }
+    chosen
+}
+
+struct DistinctForms {
+    count: usize,
+    past_the_kept_forms: Vec<usize>,
+}
+
+fn one_member_per_form(group: &PatternGroup, chosen: &mut MemberIndexes) -> DistinctForms {
+    let mut seen: HashSet<u64> = HashSet::new();
+    let mut past_the_kept_forms: Vec<usize> = Vec::new();
+    for (idx, line) in group.lines.iter().enumerate() {
+        if !seen.insert(line.hash) {
+            continue;
+        }
+        if seen.len() <= DISTILL_FORMS {
+            chosen.insert(idx);
+        } else if seen.len() <= ROLLUP_DISTINCT_CAP + 1 {
+            past_the_kept_forms.push(idx);
+        } else {
+            break;
+        }
+    }
+    DistinctForms {
+        count: seen.len(),
+        past_the_kept_forms,
+    }
+}
+
+fn keep_members_with_unseen_token_types(group: &PatternGroup, chosen: &mut MemberIndexes) {
+    let mut types_seen: std::collections::BTreeSet<&'static str> = chosen
+        .iter()
+        .flat_map(|&i| group.lines[i].tokens.iter().map(token_type_name))
+        .collect();
+    for (idx, line) in group.lines.iter().enumerate() {
+        if line
+            .tokens
+            .iter()
+            .any(|t| !types_seen.contains(token_type_name(t)))
+        {
+            types_seen.extend(line.tokens.iter().map(token_type_name));
+            chosen.insert(idx);
+        }
+    }
+}
+
+fn keep_earliest_members_until(held: usize, members: usize, chosen: &mut MemberIndexes) {
+    for idx in 0..held {
+        if chosen.len() >= members {
+            break;
+        }
+        chosen.insert(idx);
+    }
+}
+
 impl PatternFolder {
     pub fn new(config: Config) -> Self {
         let sanitizer = config.sanitizer();
@@ -2969,68 +3041,21 @@ impl PatternFolder {
             return;
         }
 
-        let mut chosen: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut chosen = members_that_moved_the_template(group);
+        let forms = one_member_per_form(group, &mut chosen);
+        keep_members_with_unseen_token_types(group, &mut chosen);
+        keep_earliest_members_until(group.lines.len(), members, &mut chosen);
 
-        let mut template = group.lines[0].normalized.clone();
-        chosen.insert(0);
-        for (idx, line) in group.lines.iter().enumerate().skip(1) {
-            if line.hash == group.lines[0].hash {
-                continue;
-            }
-            let edits = template_edits(&template, &line.normalized).unwrap_or_default();
-            if edits.is_empty() {
-                continue;
-            }
-            apply_edits(&mut template, &edits);
-            chosen.insert(idx);
-        }
-
-        let mut seen: HashSet<u64> = HashSet::new();
-        let mut overflow: Vec<usize> = Vec::new();
-        for (idx, line) in group.lines.iter().enumerate() {
-            if !seen.insert(line.hash) {
-                continue;
-            }
-            if seen.len() <= DISTILL_FORMS {
-                chosen.insert(idx);
-            } else if seen.len() <= ROLLUP_DISTINCT_CAP + 1 {
-                overflow.push(idx);
-            } else {
-                break;
-            }
-        }
-
-        let mut types_seen: std::collections::BTreeSet<&'static str> = chosen
-            .iter()
-            .flat_map(|&i| group.lines[i].tokens.iter().map(token_type_name))
-            .collect();
-        for (idx, line) in group.lines.iter().enumerate() {
-            if line
-                .tokens
-                .iter()
-                .any(|t| !types_seen.contains(token_type_name(t)))
-            {
-                types_seen.extend(line.tokens.iter().map(token_type_name));
-                chosen.insert(idx);
-            }
-        }
-
-        for idx in 0..group.lines.len() {
-            if chosen.len() >= members {
-                break;
-            }
-            chosen.insert(idx);
-        }
-
-        record.distinct_forms = seen.len();
+        record.distinct_forms = forms.count;
         record.kept = chosen
             .iter()
             .filter_map(|i| group.member_line_nos.get(*i).copied())
             .collect();
         record.kept.sort_unstable();
 
-        if seen.len() > ROLLUP_DISTINCT_CAP && record.avg_bytes <= DISTILL_CHEAP_LINE_BYTES {
-            record.capping_extra = overflow
+        if forms.count > ROLLUP_DISTINCT_CAP && record.avg_bytes <= DISTILL_CHEAP_LINE_BYTES {
+            record.capping_extra = forms
+                .past_the_kept_forms
                 .iter()
                 .filter_map(|i| group.member_line_nos.get(*i).copied())
                 .collect();
