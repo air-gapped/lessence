@@ -120,24 +120,17 @@ Report in four parts: **DONE** (what changed, in user terms), **PROOF**
 (gate.json numbers, commit hashes), **SCOPE** (what was not touched),
 **NOT VERIFIED** (anything without a tool result — say so plainly).
 
-## Rules and what enforces them
+## When the owner corrects you
 
-When the owner corrects you, fix the mistake and add its rule here with the
-check that enforces it. A rule already listed with nothing enforcing it is a
-repeat: give it a check in the same change. Drop a rule once its mistake
-cannot happen.
+Fix the mistake, then make it impossible or caught, in this order: change
+the code so the wrong thing cannot be written; add a check to `make ci`,
+`make gate` or a hook whose message says what to do instead; add a test.
+Write a rule in this file only for a judgment no check can make. A check
+explains itself when it fails, so it is not listed here.
 
-| Rule | Enforced by |
-|---|---|
-| A change to the binary's inputs is gated before commit | `pre-commit`: `gate.json` PASS for `scripts/gate-diff-hash.sh` (one script, also used by `scripts/gate.sh`; `.beads/` and staging do not move it — `scripts/gate-selftest.sh`) |
-| A new `##CASE` fails on the parent build | `make gate` → `cases.vacuous` |
-| The truth layer only grows | `commit-msg`: `Truth-Layer-Change:` trailer |
-| `feat:`/`fix:`/`perf:` only for what users see | `commit-msg`: `RELEASE_COMMIT=1` |
-| A behaviour change updates the agent skill in the same commit | `commit-msg`: a `feat:`/`fix:`/`perf:` commit staging `src/` stages `.claude/skills/lessence/` or carries `Skill-Unchanged: <reason>`; `make release-check` re-checks the range |
-| A mutant is excluded only with a proof, and the exclusion still points at it | `make ci` and GitHub CI: `scripts/check-mutants-pins.sh` fails on an `exclude_re` entry that matches no mutant |
-| README flags, examples and the skill's flag list match the binary | `tests/doc_contract.rs` |
-| Nothing secret or blocklisted is committed | `pre-commit`: blocklist + gitleaks |
-| New arithmetic and boundaries have unit tests that fail when they move | `make release-check` → mutants on the diff since the last release. Late by design: a per-commit run costs minutes per change |
+One known gap has no early check: new arithmetic and boundaries without
+unit tests are found only by the mutation run in `make release-check`,
+because a per-commit run costs minutes per change.
 
 ## Commits
 
