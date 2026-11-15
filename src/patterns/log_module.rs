@@ -47,11 +47,10 @@ impl LogWithModuleDetector {
 
         Self::note_apache_module(text, &mut tokens);
         Self::note_nginx_module(text, &mut tokens);
-        let mut result = text.to_string();
-        Self::fold_framework_logger(&mut result, &mut tokens);
-        Self::note_systemd_component(&result, &mut tokens);
+        Self::note_framework_logger(text, &mut tokens);
+        Self::note_systemd_component(text, &mut tokens);
 
-        (result, tokens)
+        (text.to_string(), tokens)
     }
 
     fn note_matches(
@@ -109,18 +108,13 @@ impl LogWithModuleDetector {
         });
     }
 
-    fn fold_framework_logger(text: &mut String, tokens: &mut Vec<Token>) {
-        super::fold_matches(text, tokens, &FRAMEWORK_LOG_MODULE_REGEX, |caps| {
+    fn note_framework_logger(text: &str, tokens: &mut Vec<Token>) {
+        Self::note_matches(text, tokens, &FRAMEWORK_LOG_MODULE_REGEX, |caps| {
             let level = &caps["level"];
             let module = &caps["module"];
-            Self::is_framework_module(module).then(|| {
-                (
-                    Token::LogWithModule {
-                        level: level.to_lowercase(),
-                        module: module.to_string(),
-                    },
-                    format!("{level} [<LOG_WITH_MODULE>]"),
-                )
+            Self::is_framework_module(module).then(|| Token::LogWithModule {
+                level: level.to_lowercase(),
+                module: module.to_string(),
             })
         });
     }
@@ -293,8 +287,8 @@ mod tests {
         let (result, tokens) = LogWithModuleDetector::detect_and_replace(framework_line);
 
         assert_eq!(
-            result,
-            "2024-01-01 10:00:00 ERROR [<LOG_WITH_MODULE>] Database connection failed"
+            result, framework_line,
+            "the logger name is the event's source and stays on the line"
         );
         assert_eq!(
             tokens,
@@ -565,10 +559,7 @@ mod tests {
                 .any(|t| matches!(t, Token::LogWithModule { .. })),
             "framework pattern should detect module: {tokens:?}"
         );
-        assert!(
-            result.contains("<LOG_WITH_MODULE>"),
-            "framework pattern should modify text: {result}"
-        );
+        assert_eq!(result, input, "the level and logger stay on the line");
     }
 
     #[test]

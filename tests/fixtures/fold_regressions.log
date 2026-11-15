@@ -4562,6 +4562,20 @@ ledger-flush bababan babakon babarin babamun babaten babason babalan babavin bab
 2024/01/01 10:00:00 [error] 12345#0: *1 ngx_http_core_module: client closed param=1
 2024/01/01 10:00:01 [error] 12345#0: *1 ngx_http_core_module: client closed param=1
 
+##CASE lessence-l05o out_present=billing.Export×2, ledger.Flush×2
+##WHY a `LEVEL [logger.Name]` prefix is the event's level and source: the same words from two loggers show each logger with its count, where the line used to read `ERROR [<LOG_WITH_MODULE>]` and named neither
+##FROM invented Java-logger lines; `param=` keeps the bracket detector off the line
+2024-01-01 10:00:00 ERROR [ledger.Flush] write rejected param=1
+2024-01-01 10:00:01 ERROR [ledger.Flush] write rejected param=1
+2024-01-01 10:00:02 ERROR [billing.Export] write rejected param=1
+2024-01-01 10:00:03 ERROR [billing.Export] write rejected param=1
+
+##CASE lessence-l05o template_present=ERROR [ledger.Flush] write rejected
+##WHY one logger's name stays on its line as read
+##FROM invented Java-logger lines
+2024-01-01 10:00:00 ERROR [ledger.Flush] write rejected param=1
+2024-01-01 10:00:01 ERROR [ledger.Flush] write rejected param=1
+
 ##CASE lessence-bmp groups=2
 ##WHY a bracketed word is a known context only as a whole word: `[domain]` and `[remainder]` contain `main` and used to fold together as one `<BRACKET_CONTEXT>`
 ##FROM invented resolver lines

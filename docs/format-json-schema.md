@@ -191,7 +191,7 @@ Text mode lists the slots the same way, one `varies×` per slot:
 `[+2 similar | varies×2 {"db"×3, "cache"×1}, varies×4 {"n1"×1, "n2"×1, "n3"×1, "n4"×1}]`.
 
 **Sample-worthy** (identity types — samples are useful): `UUID`,
-`IPV4`, `IPV6`, `MAC`, `HOST`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_VOLUME`,
+`IPV4`, `IPV6`, `MAC`, `HOST`, `PATH`, `EMAIL`, `HASH`, `K8S_NAMESPACE`, `K8S_NAME`, `K8S_VOLUME`,
 `K8S_PLUGIN`, `K8S_POD`, `QUOTED_STRING`, `NAME`, `HTTP_STATUS`,
 `HTTP_STATUS_CLASS`, `BRACKET_CONTEXT`, `JSON`.
 

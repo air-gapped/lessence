@@ -67,6 +67,7 @@ fn class_of(token: &Token) -> Option<(Class, &str)> {
         | Token::QuotedString(_)
         | Token::Name(_)
         | Token::KubernetesNamespace(_)
+        | Token::KubernetesName(_)
         | Token::PluginType(_)
         | Token::HttpStatusClass(_)
         | Token::BracketContext(_)

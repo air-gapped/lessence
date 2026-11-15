@@ -39,6 +39,7 @@ pub enum Token {
     QuotedString(String),
     Name(String),
     KubernetesNamespace(String),
+    KubernetesName(String),
     VolumeName(String),
     PluginType(String),
     PodName(String),
@@ -183,6 +184,9 @@ impl Token {
             Token::KubernetesNamespace(_) => {
                 facts("K8S_NAMESPACE", "namespace", StatsBucket::Kubernetes, true)
             }
+            Token::KubernetesName(_) => {
+                facts("K8S_NAME", "k8s_name", StatsBucket::Kubernetes, true)
+            }
             Token::VolumeName(_) => facts("K8S_VOLUME", "volume", StatsBucket::Kubernetes, true),
             Token::PluginType(_) => facts("K8S_PLUGIN", "plugin", StatsBucket::Kubernetes, true),
             Token::PodName(_) => facts("K8S_POD", "pod", StatsBucket::Kubernetes, true),
@@ -237,6 +241,7 @@ impl Token {
             | Token::QuotedString(s)
             | Token::Name(s)
             | Token::KubernetesNamespace(s)
+            | Token::KubernetesName(s)
             | Token::VolumeName(s)
             | Token::PluginType(s)
             | Token::PodName(s)

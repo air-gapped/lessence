@@ -836,6 +836,7 @@ fn hash_token_value(token: &Token) -> u64 {
         | Token::QuotedString(s)
         | Token::Name(s)
         | Token::KubernetesNamespace(s)
+        | Token::KubernetesName(s)
         | Token::VolumeName(s)
         | Token::PluginType(s)
         | Token::PodName(s)

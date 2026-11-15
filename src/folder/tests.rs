@@ -686,6 +686,7 @@ fn is_sample_worthy_covers_all_token_variants() {
         (Token::Email("a@b".into()), true),
         (Token::Hash(HashType::MD5, "abc".into()), true),
         (Token::KubernetesNamespace("ns".into()), true),
+        (Token::KubernetesName("web".into()), true),
         (Token::VolumeName("vol".into()), true),
         (Token::PluginType("csi".into()), true),
         (Token::PodName("pod".into()), true),
@@ -737,7 +738,7 @@ fn is_sample_worthy_covers_all_token_variants() {
 
     assert_eq!(
         all_tokens.len(),
-        27,
+        28,
         "Token enum may have new variants — update this test"
     );
 }
@@ -4576,13 +4577,13 @@ fn variation_types_multiple_types_sorted() {
 #[test]
 fn variation_types_ignore_payloads_of_presence_only_kinds() {
     let f = make_folder();
-    let first = vec![Token::LogWithModule {
+    let first = vec![Token::StructuredMessage {
+        component: "api".to_string(),
         level: "error".to_string(),
-        module: "mod_ssl".to_string(),
     }];
-    let last = vec![Token::LogWithModule {
+    let last = vec![Token::StructuredMessage {
+        component: "worker".to_string(),
         level: "warn".to_string(),
-        module: "mod_jk".to_string(),
     }];
     assert!(
         f.summarize_variation_types(&first, &last).is_empty(),

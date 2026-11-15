@@ -202,7 +202,7 @@ impl KubernetesDetector {
             let captures: Vec<_> = re.captures_iter(&result).collect();
             for capture in captures {
                 if let Some(value) = capture.get(2) {
-                    tokens.push(Token::KubernetesNamespace(value.as_str().to_string()));
+                    tokens.push(Token::KubernetesName(value.as_str().to_string()));
                 }
             }
             result = re
@@ -260,13 +260,23 @@ mod tests {
 
     #[test]
     fn name_field_value_is_the_whole_token() {
-        let (r, _) = KubernetesDetector::detect_and_replace(
+        let (r, tokens) = KubernetesDetector::detect_and_replace(
             "volumeName:kubernetes.io/projected/<UUID>-kube-api-access-<SUFFIX> podName:<UUID> nodeName:} filename=app.log. hostname=? hostname=<FQDN> port=x:80",
         );
         assert_eq!(
             r,
             "volumeName:<K8S_NAME> podName:<UUID> nodeName:} filename=<K8S_NAME>. hostname=? hostname=<FQDN> port=x:80",
             "the value is the whole token and the placeholder adds nothing the input did not have"
+        );
+        assert_eq!(
+            tokens,
+            vec![
+                Token::KubernetesName(
+                    "kubernetes.io/projected/<UUID>-kube-api-access-<SUFFIX>".into()
+                ),
+                Token::KubernetesName("app.log".into()),
+            ],
+            "a name field is recorded as a name, never as a namespace"
         );
     }
 
