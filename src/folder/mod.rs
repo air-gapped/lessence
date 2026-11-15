@@ -237,12 +237,13 @@ impl PatternGroup {
     }
 
     fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
-        self.mark_varying_words(edits);
+        self.apply_template_edits(edits);
         self.assert_claim_holds(&line.normalized);
         self.lines.push(line);
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
         self.count += 1;
+        self.assert_members_held();
     }
 
     fn retained_rejoin(
@@ -264,11 +265,14 @@ impl PatternGroup {
                     state,
                 );
             }
-            apply_edits(&mut self.template, edits);
-            template_units = unit_spans(&self.template);
-            self.slot_units = Some(template_units.clone());
+            self.apply_template_edits(edits);
+            template_units = self
+                .slot_units
+                .clone()
+                .expect("a template with edits applied has slot units");
         }
         self.assert_claim_holds(&line.normalized);
+        let held_every_member = self.holds_every_member();
         self.count += 1;
         self.last_line_no = location.line_no;
         self.last_source_id = location.source_id;
@@ -277,7 +281,7 @@ impl PatternGroup {
             let template = VariesSlots::new(&self.template, &template_units);
             rollup_computer.accumulate_retained_varies(&line, &line_units, &template, state);
         }
-        if self.lines.len() + 1 == self.count {
+        if held_every_member {
             self.lines.push(line);
             if self.count >= min_collapse && self.lines.len() > 2 {
                 let last = self.lines.pop().expect("pushed above");
@@ -287,6 +291,20 @@ impl PatternGroup {
         } else {
             self.lines[1] = line;
         }
+        self.assert_members_held();
+    }
+
+    fn holds_every_member(&self) -> bool {
+        self.lines.len() == self.count
+    }
+
+    fn assert_members_held(&self) {
+        debug_assert!(
+            self.holds_every_member() || (1..=2).contains(&self.lines.len()),
+            "a group holds every member or only its first and last: {} held of {}",
+            self.lines.len(),
+            self.count
+        );
     }
 
     fn absorb(
@@ -319,6 +337,7 @@ impl PatternGroup {
                 self.lines.append(&mut other_lines);
                 self.lines.push(own_last);
             }
+            self.assert_members_held();
             return;
         }
 
@@ -348,9 +367,10 @@ impl PatternGroup {
             Some(last) if self.count > 1 => vec![first, last],
             _ => vec![first],
         };
+        self.assert_members_held();
     }
 
-    fn mark_varying_words(&mut self, edits: &[Edit]) {
+    fn apply_template_edits(&mut self, edits: &[Edit]) {
         if edits.is_empty() {
             return;
         }
@@ -2723,6 +2743,7 @@ impl PatternFolder {
             self.buffer.push(group);
             let prev = self.group_index.insert(rep_hash, self.buffer.len() - 1);
             debug_assert!(prev.is_none(), "duplicate representative hash in buffer");
+            self.assert_one_key_space(rep_hash);
         }
     }
 
@@ -2881,6 +2902,14 @@ impl PatternFolder {
         Ok(None)
     }
 
+    fn assert_one_key_space(&self, founding_hash: u64) {
+        debug_assert!(
+            !(self.group_index.contains_key(&founding_hash)
+                && self.retained.contains_key(&founding_hash)),
+            "a founding hash keys a live group or a retained one, never both"
+        );
+    }
+
     fn retain_evicted_group(&mut self, mut group: PatternGroup) -> Retention {
         if self.config.distill.is_some() {
             return Retention::Declined(Box::new(group));
@@ -2901,10 +2930,12 @@ impl PatternFolder {
             };
         }
         group.retained = Some(state);
+        group.assert_members_held();
         if !already_retained {
             self.retained_index.insert(group.first());
         }
         self.retained.insert(key, group);
+        self.assert_one_key_space(key);
         Retention::Kept
     }
 
