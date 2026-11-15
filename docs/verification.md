@@ -205,6 +205,12 @@ test by accident and `make release-check` always runs all of them.
   naming the change. A `feat:`/`fix:`/`perf:` commit that stages a change
   under `src/` must also stage one under `.claude/skills/lessence/` or
   carry `Skill-Unchanged: <reason>`; otherwise exit 1.
+- `pre-commit` and `commit-msg` both run `scripts/check-public-text.sh`:
+  exit 1 on a staged file named like a security working document, on an
+  added line of Markdown or of the issue export that describes a weakness,
+  on a commit message that does, and on an added line or message holding a
+  string from the local, untracked `.private-names`. `--commit REV` runs the
+  same checks on an existing commit.
 
 ## Corpus-dependent tests
 

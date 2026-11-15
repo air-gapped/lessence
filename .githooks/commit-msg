@@ -21,6 +21,8 @@ set -e
 msg_file="$1"
 first_line=$(sed -n '1p' "$msg_file")
 
+"$(git rev-parse --show-toplevel)/scripts/check-public-text.sh" --message "$msg_file"
+
 # ── Truth-layer check (docs/verification.md "Hooks") ────────────────────
 #
 # The fixture and the `known` tables are the record of correct behaviour;

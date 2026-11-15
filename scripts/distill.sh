@@ -11,8 +11,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-SCRUB_VOCAB="${SCRUB_VOCAB:-$HOME/security/lessence/vocab.txt}"
-SCRUB_FORBID="${SCRUB_FORBID:-$HOME/security/lessence/forbid.txt}"
+SCRUB_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/lessence"
+SCRUB_VOCAB="${SCRUB_VOCAB:-$SCRUB_DIR/scrub-vocab.txt}"
+SCRUB_FORBID="${SCRUB_FORBID:-$SCRUB_DIR/scrub-forbid.txt}"
 BIN="target/release/lessence"
 DIST_DIR="examples/distilled"
 mkdir -p "$DIST_DIR"

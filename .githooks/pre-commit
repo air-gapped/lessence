@@ -130,6 +130,12 @@ if [ -f ".blocklist" ]; then
     pass "blocklist"
 fi
 
+# Security working documents and prose that describes a weakness
+if ! scripts/check-public-text.sh --staged; then
+    fail "text that must not be published"
+fi
+pass "public text"
+
 # Gitleaks
 if command -v gitleaks >/dev/null 2>&1; then
     if ! gitleaks protect --staged --no-banner; then
