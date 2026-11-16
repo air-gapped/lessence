@@ -448,9 +448,9 @@ fn prose_target_parts(target: &str) -> (&str, &str) {
     }
 }
 
-fn render_prose_target(target: &str) -> String {
+fn render_prose_target(target: &str, named: u64) -> String {
     let (scheme, path) = prose_target_parts(target);
-    let route = render_route(path);
+    let route = render_named_route(path, named);
     if scheme.is_empty() {
         route
     } else {
@@ -551,6 +551,154 @@ fn http_status_anchors<'a>(
         let rest = caps.get(2).expect("remaining status digits");
         (class.start()..rest.end(), class.as_str())
     })
+}
+
+static STATUS_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)"[a-z_]*status[a-z_]*"\s*:\s*\{"#)
+        .expect("status object anchor pattern must compile")
+});
+
+fn status_object_codes(original: &str) -> impl Iterator<Item = (std::ops::Range<usize>, &str)> {
+    STATUS_OBJECT
+        .find_iter(original)
+        .filter_map(|object| code_member_of_object(original, object.end()))
+}
+
+fn code_member_of_object(text: &str, body: usize) -> Option<(std::ops::Range<usize>, &str)> {
+    let bytes = text.as_bytes();
+    let mut depth = 1usize;
+    let mut at = body;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'"' => {
+                let start = at + 1;
+                let end = start + closing_quote_offset(&bytes[start..])?;
+                at = end + 1;
+                if depth == 1
+                    && &text[start..end] == "code"
+                    && let Some(found) = http_status_value_after_key(text, at)
+                {
+                    return Some(found);
+                }
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        at += 1;
+    }
+    None
+}
+
+fn closing_quote_offset(bytes: &[u8]) -> Option<usize> {
+    let mut at = 0;
+    while at < bytes.len() {
+        match bytes[at] {
+            b'\\' => at += 2,
+            b'"' => return Some(at),
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+fn http_status_value_after_key(
+    text: &str,
+    after_key: usize,
+) -> Option<(std::ops::Range<usize>, &str)> {
+    let bytes = text.as_bytes();
+    let skip_space = |mut at: usize| {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    };
+    let colon = skip_space(after_key);
+    if bytes.get(colon) != Some(&b':') {
+        return None;
+    }
+    let start = skip_space(colon + 1);
+    let digits = bytes[start..]
+        .iter()
+        .take_while(|b| b.is_ascii_digit())
+        .count();
+    let ends_the_value = matches!(
+        bytes.get(start + digits),
+        None | Some(b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
+    );
+    (digits == 3 && (b'1'..=b'5').contains(&bytes[start]) && ends_the_value)
+        .then(|| (start..start + 3, &text[start..=start]))
+}
+
+static RECORD_IDENTITY_FIELD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#""(name|namespace|resource)"\s*:\s*"([^"\\]+)""#)
+        .expect("record identity field pattern must compile")
+});
+
+#[derive(Default)]
+struct RecordIdentity<'a> {
+    names: Vec<&'a str>,
+    resources: Vec<&'a str>,
+}
+
+impl<'a> RecordIdentity<'a> {
+    fn of(original: &'a str) -> Self {
+        let mut identity = Self::default();
+        if !original.contains("\"name") && !original.contains("\"resource") {
+            return identity;
+        }
+        for caps in RECORD_IDENTITY_FIELD.captures_iter(original) {
+            let value = caps.get(2).map_or("", |m| m.as_str());
+            if &caps[1] == "resource" {
+                identity.resources.push(value);
+            } else {
+                identity.names.push(value);
+            }
+        }
+        identity
+    }
+
+    fn named_segments(&self, target: &str) -> u64 {
+        if self.names.is_empty() {
+            return 0;
+        }
+        let (path, _) = route_path(prose_target_parts(target).1);
+        let segments: Vec<&str> = path.split('/').collect();
+        let mut named = 0;
+        for at in 1..segments.len().min(MAX_NAMED_SEGMENTS) {
+            let (collection, segment) = (segments[at - 1], segments[at]);
+            if self.names.contains(&segment)
+                && !self.resources.contains(&segment)
+                && !segments[at + 1..].contains(&segment)
+                && !collection.is_empty()
+                && !self.names.contains(&collection)
+            {
+                named |= 1 << at;
+            }
+        }
+        named
+    }
+}
+
+const MAX_NAMED_SEGMENTS: usize = 64;
+
+fn is_named_segment(named: u64, at: usize) -> bool {
+    at < MAX_NAMED_SEGMENTS && named & (1 << at) != 0
+}
+
+fn named_segment_values(target: &str, named: u64) -> impl Iterator<Item = &str> {
+    route_path(prose_target_parts(target).1)
+        .0
+        .split('/')
+        .enumerate()
+        .filter(move |&(at, _)| is_named_segment(named, at))
+        .map(|(_, segment)| segment)
 }
 
 static FIELD_PATH: LazyLock<Regex> = LazyLock::new(|| {
@@ -692,10 +840,10 @@ fn anchor_hash(identities: &mut [(AnchorClass, AnchorIdentity<'_>)]) -> u64 {
         match identity {
             AnchorIdentity::Route(route) => hash_route(route, &mut hasher),
             AnchorIdentity::Text(text) => text.hash(&mut hasher),
-            AnchorIdentity::ProseTarget(target) => {
+            AnchorIdentity::ProseTarget(target, named) => {
                 let (scheme, route) = prose_target_parts(target);
                 scheme.hash(&mut hasher);
-                hash_route(route, &mut hasher);
+                hash_named_route(route, named, &mut hasher);
             }
             AnchorIdentity::Unit(unit) => visit_unit_skeleton(unit, |part| match part {
                 UnitPart::Byte(byte) => byte.hash(&mut hasher),
@@ -817,6 +965,17 @@ fn classify_route_segment(segment: &str) -> RouteSegment {
     if segment.is_empty() {
         return RouteSegment::Slash;
     }
+    if let Some((head, tail)) = segment.rsplit_once('.')
+        && tail.len() >= OPAQUE_TAIL_HEX_DIGITS
+        && tail.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        let head = match classify_route_segment(head) {
+            RouteSegment::Slash => String::new(),
+            RouteSegment::Id => "<ID>".to_string(),
+            RouteSegment::Skeleton(skeleton) => skeleton,
+        };
+        return RouteSegment::Skeleton(format!("{head}.<ID>"));
+    }
     let body = segment
         .split_once(':')
         .filter(|(algo, _)| !algo.is_empty() && algo.bytes().all(|b| b.is_ascii_alphanumeric()))
@@ -876,13 +1035,23 @@ fn route_path(target: &str) -> (&str, bool) {
     }
 }
 
+const OPAQUE_TAIL_HEX_DIGITS: usize = 16;
+
 fn hash_route(target: &str, hasher: &mut AHasher) {
+    hash_named_route(target, 0, hasher);
+}
+
+fn hash_named_route(target: &str, named: u64, hasher: &mut AHasher) {
     let (path, has_query) = route_path(target);
-    for segment in path.split('/') {
-        match classify_route_segment(segment) {
-            RouteSegment::Slash => "/".hash(hasher),
-            RouteSegment::Id => "<id>".hash(hasher),
-            RouteSegment::Skeleton(s) => s.hash(hasher),
+    for (i, segment) in path.split('/').enumerate() {
+        if is_named_segment(named, i) {
+            "<name>".hash(hasher);
+        } else {
+            match classify_route_segment(segment) {
+                RouteSegment::Slash => "/".hash(hasher),
+                RouteSegment::Id => "<id>".hash(hasher),
+                RouteSegment::Skeleton(s) => s.hash(hasher),
+            }
         }
         "|".hash(hasher);
     }
@@ -890,11 +1059,19 @@ fn hash_route(target: &str, hasher: &mut AHasher) {
 }
 
 fn render_route(target: &str) -> String {
+    render_named_route(target, 0)
+}
+
+fn render_named_route(target: &str, named: u64) -> String {
     let (path, has_query) = route_path(target);
     let mut out = String::with_capacity(path.len() + 8);
     for (i, segment) in path.split('/').enumerate() {
         if i > 0 {
             out.push('/');
+        }
+        if is_named_segment(named, i) {
+            out.push_str("<NAME>");
+            continue;
         }
         match classify_route_segment(segment) {
             RouteSegment::Slash => {}
@@ -926,7 +1103,7 @@ fn render_pod_prefix(pod: &str, container: &str) -> String {
 
 enum AnchorRender<'a> {
     Route,
-    ProseTarget,
+    ProseTarget { named: u64 },
     PodPrefix { pod: &'a str, container: &'a str },
     HttpStatus,
     StatusField,
@@ -940,7 +1117,7 @@ impl AnchorRender<'_> {
     fn render(&self, text: &str) -> String {
         match self {
             Self::Route => render_route(text),
-            Self::ProseTarget => render_prose_target(text),
+            Self::ProseTarget { named } => render_prose_target(text, *named),
             Self::PodPrefix { pod, container } => render_pod_prefix(pod, container),
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
@@ -962,7 +1139,9 @@ impl AnchorRender<'_> {
 
     fn when_nested(&self, cover_shows_text_verbatim: bool) -> NestedIdentity {
         match self {
-            Self::Route | Self::ProseTarget | Self::PodPrefix { .. } => NestedIdentity::Hidden,
+            Self::Route | Self::ProseTarget { .. } | Self::PodPrefix { .. } => {
+                NestedIdentity::Hidden
+            }
             Self::HttpStatus | Self::StatusField => NestedIdentity::EveryOccurrence,
             Self::PciAddress if !cover_shows_text_verbatim => NestedIdentity::EveryOccurrence,
             Self::PciAddress | Self::Exact | Self::KlogCallSite | Self::SystemdUnit => {
@@ -983,7 +1162,7 @@ struct ProtectedAnchors<'a> {
     text: String,
     renders: Vec<(String, String)>,
     statuses: Vec<ProtectedStatus>,
-    unit_names: Vec<String>,
+    name_facts: Vec<String>,
     path_facts: Vec<String>,
     identities: Vec<(AnchorClass, AnchorIdentity<'a>)>,
 }
@@ -1014,7 +1193,7 @@ enum AnchorClass {
 enum AnchorIdentity<'a> {
     Route(&'a str),
     Text(&'a str),
-    ProseTarget(&'a str),
+    ProseTarget(&'a str, u64),
     Unit(&'a str),
     Pod(&'a str, &'a str),
 }
@@ -1051,7 +1230,7 @@ fn protect_anchored_spans<'a>(
 ) -> ProtectedAnchors<'a> {
     let mut spans: Vec<AnchoredSpan<'a>> = Vec::new();
     let mut statuses = Vec::new();
-    let mut unit_names = Vec::new();
+    let mut name_facts = Vec::new();
     let mut identities = Vec::new();
     let mut path_facts = Vec::new();
 
@@ -1064,7 +1243,7 @@ fn protect_anchored_spans<'a>(
         spans.push((
             request.target.start,
             request.target.end,
-            AnchorRender::ProseTarget,
+            AnchorRender::ProseTarget { named: 0 },
         ));
         identities.push((
             AnchorClass::ProseRequest,
@@ -1072,7 +1251,7 @@ fn protect_anchored_spans<'a>(
         ));
         identities.push((
             AnchorClass::ProseRequest,
-            AnchorIdentity::ProseTarget(&original[request.target.clone()]),
+            AnchorIdentity::ProseTarget(&original[request.target.clone()], 0),
         ));
     }
 
@@ -1129,11 +1308,19 @@ fn protect_anchored_spans<'a>(
         original,
         || field_routes(original, has_method).next().is_some(),
     ) {
+        let mut record: Option<RecordIdentity<'_>> = None;
         for (start, value) in field_routes(original, has_method) {
             let end = start + value.len();
-            spans.push((start, end, AnchorRender::ProseTarget));
-            identities.push((AnchorClass::FieldRoute, AnchorIdentity::ProseTarget(value)));
+            let named = record
+                .get_or_insert_with(|| RecordIdentity::of(original))
+                .named_segments(value);
+            spans.push((start, end, AnchorRender::ProseTarget { named }));
+            identities.push((
+                AnchorClass::FieldRoute,
+                AnchorIdentity::ProseTarget(value, named),
+            ));
             path_facts.push(value.to_string());
+            name_facts.extend(named_segment_values(value, named).map(str::to_string));
         }
     }
 
@@ -1145,9 +1332,12 @@ fn protect_anchored_spans<'a>(
             http_status_anchors(original, &FIELD_STATUS)
                 .next()
                 .is_some()
+                || status_object_codes(original).next().is_some()
         },
     ) {
-        for (span, class) in http_status_anchors(original, &FIELD_STATUS) {
+        for (span, class) in
+            http_status_anchors(original, &FIELD_STATUS).chain(status_object_codes(original))
+        {
             statuses.push(ProtectedStatus {
                 code: original[span.clone()].to_string(),
                 source: StatusSource::StatusField,
@@ -1178,7 +1368,7 @@ fn protect_anchored_spans<'a>(
             AnchorIdentity::Unit(unit.as_str()),
         ));
         if render_systemd_unit(unit.as_str()) != unit.as_str() {
-            unit_names.push(unit.as_str().to_string());
+            name_facts.push(unit.as_str().to_string());
         }
     }
 
@@ -1275,7 +1465,7 @@ fn protect_anchored_spans<'a>(
             text: original.to_string(),
             renders: Vec::new(),
             statuses,
-            unit_names,
+            name_facts,
             path_facts,
             identities,
         };
@@ -1312,7 +1502,7 @@ fn protect_anchored_spans<'a>(
         text: result,
         renders,
         statuses,
-        unit_names,
+        name_facts,
         path_facts,
         identities,
     }
@@ -1386,7 +1576,7 @@ impl Normalizer {
                 .filter_map(|status| status.fact_of_the_detector_it_was_hidden_from(&self.config)),
         );
         tokens.extend(
-            std::mem::take(&mut protected.unit_names)
+            std::mem::take(&mut protected.name_facts)
                 .into_iter()
                 .map(Token::Name),
         );
@@ -2221,6 +2411,211 @@ mod tests {
             route_hash("/pods/web-7d9c5b8f4-x2kqz"),
             route_hash("/pods/api-7d9c5b8f4-x2kqz"),
             "the workload name is part of the route"
+        );
+    }
+
+    fn audit_record(uri: &str, object_ref: &str, code: &str) -> String {
+        format!(
+            r#"{{"kind":"Event","stage":"ResponseComplete","requestURI":"{uri}","verb":"get","objectRef":{{{object_ref}}},"responseStatus":{{"metadata":{{}},"code":{code}}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_code_inside_a_status_object_is_an_http_status_class() {
+        let n = Normalizer::new(Config::default());
+        let line = |code: &str| {
+            n.normalize_line(audit_record("/readyz", r#""resource":"x""#, code))
+                .unwrap()
+        };
+        let (failed, ok, created) = (line("500"), line("200"), line("201"));
+        assert_ne!(failed.anchor, ok.anchor);
+        assert_ne!(failed.normalized, ok.normalized);
+        assert!(
+            failed.normalized.contains(r#""code":<STATUS_5XX>"#),
+            "{}",
+            failed.normalized
+        );
+        assert_eq!(ok.anchor, created.anchor, "one class, one anchor");
+        assert_eq!(ok.normalized, created.normalized);
+        assert!(
+            failed
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::Number(c) if c == "500"))
+        );
+    }
+
+    #[test]
+    fn a_status_object_code_is_three_digits_from_100_to_599() {
+        let class = |code: &str| {
+            let text = format!(r#"{{"responseStatus":{{"code":{code}}}}}"#);
+            status_object_codes(&text)
+                .next()
+                .map(|(span, class)| (text[span].to_string(), class.to_string()))
+        };
+        assert_eq!(class("99"), None);
+        assert_eq!(class("100"), Some(("100".into(), "1".into())));
+        assert_eq!(class("599"), Some(("599".into(), "5".into())));
+        assert_eq!(class("600"), None);
+        assert_eq!(class("2000"), None);
+        assert_eq!(class("200.5"), None);
+        assert_eq!(class(r#""200""#), None);
+    }
+
+    #[test]
+    fn only_the_code_member_of_the_status_object_itself_counts() {
+        let found = |text: &str| status_object_codes(text).next().map(|(_, c)| c.to_string());
+        assert_eq!(found(r#"{"error":{"code":500}}"#), None);
+        assert_eq!(
+            found(r#"{"responseStatus":{"details":{"code":500},"reason":"x"}}"#),
+            None
+        );
+        assert_eq!(
+            found(r#"{"responseStatus":{"message":"say \"code\":200","code":404}}"#),
+            Some("4".into())
+        );
+        assert_eq!(
+            found(r#"{"responseStatus":{"reason":"code","code" : 503}}"#),
+            Some("5".into())
+        );
+        assert_eq!(
+            found(r#"{"responseStatus":{"metadata":{}}},"code":500"#),
+            None
+        );
+    }
+
+    #[test]
+    fn a_route_segment_the_record_names_is_a_name_placeholder() {
+        let n = Normalizer::new(Config::default());
+        let line = |uri: &str, object_ref: &str| {
+            n.normalize_line(audit_record(uri, object_ref, "404"))
+                .unwrap()
+        };
+        let orbit = line(
+            "/apis/rbac.example.io/v1/clusterroles/orbit-reader",
+            r#""resource":"clusterroles","name":"orbit-reader""#,
+        );
+        let lantern = line(
+            "/apis/rbac.example.io/v1/clusterroles/lantern-editor",
+            r#""resource":"clusterroles","name":"lantern-editor""#,
+        );
+        assert!(
+            orbit
+                .normalized
+                .contains(r#""requestURI":"/apis/rbac.example.io/v<N>/clusterroles/<NAME>""#),
+            "{}",
+            orbit.normalized
+        );
+        assert_eq!(orbit.anchor, lantern.anchor);
+        assert!(
+            orbit
+                .tokens
+                .iter()
+                .any(|t| matches!(t, Token::Name(v) if v == "orbit-reader"))
+        );
+
+        let orchard = line(
+            "/api/v1/namespaces/orchard/limitranges",
+            r#""resource":"limitranges","namespace":"orchard""#,
+        );
+        let tundra = line(
+            "/api/v1/namespaces/tundra/limitranges",
+            r#""resource":"limitranges","namespace":"tundra""#,
+        );
+        assert!(
+            orchard
+                .normalized
+                .contains("/namespaces/<NAME>/limitranges"),
+            "{}",
+            orchard.normalized
+        );
+        assert_eq!(orchard.anchor, tundra.anchor);
+    }
+
+    #[test]
+    fn a_segment_counts_as_named_only_when_its_own_line_names_it() {
+        let n = Normalizer::new(Config::default());
+        let line = |uri: &str, name: &str| {
+            n.normalize_line(audit_record(
+                uri,
+                &format!(r#""resource":"clusterroles","name":"{name}""#),
+                "404",
+            ))
+            .unwrap()
+        };
+        let named = line("/clusterroles/orbit-reader", "orbit-reader");
+        let other_lines_name = line("/clusterroles/lantern-editor", "orbit-reader");
+        assert!(
+            other_lines_name
+                .normalized
+                .contains("/clusterroles/lantern-editor"),
+            "{}",
+            other_lines_name.normalized
+        );
+        assert_ne!(named.anchor, other_lines_name.anchor);
+    }
+
+    #[test]
+    fn the_resource_segment_and_the_scope_stay_part_of_the_route() {
+        let named = |line: &str, route: &str| RecordIdentity::of(line).named_segments(route);
+        assert_eq!(
+            named(r#""resource":"pods","name":"pods""#, "/api/v1/pods"),
+            0,
+            "a name equal to the resource type leaves the resource segment literal"
+        );
+        assert_eq!(
+            named(
+                r#""resource":"configmaps","name":"api""#,
+                "/api/v1/configmaps/api"
+            ),
+            1 << 4,
+            "only the last segment equal to a name, after a collection, is the name"
+        );
+        assert_eq!(
+            named(
+                r#""resource":"pods","namespace":"alpha","name":"kiosk-q7zrt""#,
+                "/api/v1/namespaces/alpha/pods/kiosk-q7zrt"
+            ),
+            (1 << 4) | (1 << 6)
+        );
+        assert_eq!(named(r#""username":"orbit""#, "/users/orbit"), 0);
+
+        let n = Normalizer::new(Config::default());
+        let cluster = n
+            .normalize_line(audit_record("/api/v1/pods", r#""resource":"pods""#, "200"))
+            .unwrap();
+        let namespaced = n
+            .normalize_line(audit_record(
+                "/api/v1/namespaces/alpha/pods",
+                r#""resource":"pods","namespace":"alpha""#,
+                "200",
+            ))
+            .unwrap();
+        assert_ne!(cluster.anchor, namespaced.anchor);
+    }
+
+    #[test]
+    fn a_long_hex_tail_after_a_dot_is_an_opaque_id() {
+        assert_eq!(
+            render_route("/events/kiosk.1a2f3e4d5c6b7a89"),
+            "/events/kiosk.<ID>"
+        );
+        assert_ne!(
+            render_route("/events/kiosk.1a2f3e4d5c6b7a8"),
+            "/events/kiosk.<ID>",
+            "fifteen hex digits are not yet an opaque id"
+        );
+        assert_eq!(
+            render_route("/events/kiosk-5d8f9c7b6-q7zrt.1a2f3e4d5c6b7a89"),
+            "/events/kiosk-<SUFFIX>.<ID>"
+        );
+        assert_eq!(
+            route_hash("/events/kiosk.1a2f3e4d5c6b7a89"),
+            route_hash("/events/kiosk.17f3a9c2d4e5b6a7")
+        );
+        assert_ne!(
+            route_hash("/events/kiosk.1a2f3e4d5c6b7a89"),
+            route_hash("/events/ledger.1a2f3e4d5c6b7a89")
         );
     }
 
@@ -4449,7 +4844,7 @@ mod e8v_normalize_2026_09_17 {
         for cover_verbatim in [false, true] {
             for (render, expected) in [
                 (AnchorRender::Route, Hidden),
-                (AnchorRender::ProseTarget, Hidden),
+                (AnchorRender::ProseTarget { named: 0 }, Hidden),
                 (
                     AnchorRender::PodPrefix {
                         pod: "web-0",

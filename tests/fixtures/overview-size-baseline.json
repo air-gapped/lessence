@@ -152,8 +152,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15696,
-      "stdout_tokens": 5757,
+      "stdout_bytes": 15704,
+      "stdout_tokens": 5760,
       "total": 155
     },
     "host_pi_dmesg": {
@@ -191,6 +191,18 @@
       "stdout_bytes": 14990,
       "stdout_tokens": 5808,
       "total": 200
+    },
+    "k8s_apiserver_audit": {
+      "corpus_sha256": "7610d53518eeab404ca16485d6ce756e8f7dd43be5d13f9162eabbb37eb74960",
+      "omitted": 37,
+      "previewed": 6,
+      "printed": 10,
+      "selected": 40,
+      "stderr_bytes": 0,
+      "stderr_tokens": 0,
+      "stdout_bytes": 14807,
+      "stdout_tokens": 4839,
+      "total": 47
     },
     "k8s_argocd_aux": {
       "corpus_sha256": "b4420ad251f5b4344ee1897ca3cfb0ef9c4e75d45fb7c2bdad1462ba44c126d8",
@@ -537,7 +549,7 @@
       "stderr_bytes": 0,
       "stderr_tokens": 0,
       "stdout_bytes": 10800,
-      "stdout_tokens": 3783,
+      "stdout_tokens": 3784,
       "total": 7
     },
     "k8s_vllm": {
