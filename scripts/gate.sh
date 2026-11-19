@@ -58,6 +58,13 @@ if ! perf stat -e instructions:u -- true >/dev/null 2>/tmp/gate-perf-check.$$; t
 fi
 rm -f /tmp/gate-perf-check.$$
 
+# A mutants pin that a line shift left stale is fixed by editing
+# .cargo/mutants.toml, which changes the tree this run is about to measure
+# and sign. Refuse now, before the minutes are spent.
+if ! pins_out="$(scripts/check-mutants-pins.sh 2>&1)"; then
+    die2 "$pins_out"
+fi
+
 # ── 2. Baseline: build GATE_BASE in a throwaway worktree, cached per commit ─
 # Every baseline builds into one shared target dir, so only the first build
 # is cold, and the worktree is removed once its binary is copied out: what

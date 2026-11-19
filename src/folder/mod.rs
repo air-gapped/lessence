@@ -1525,11 +1525,20 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
         let Some(&(at, len)) = spans.get(i) else {
             break;
         };
-        let absent = ranges
-            .get(i)
-            .copied()
-            .flatten()
-            .is_some_and(|(c, d)| c == d);
+        let absent_at = |k: usize| {
+            ranges
+                .get(k)
+                .copied()
+                .flatten()
+                .is_some_and(|(c, d)| c == d)
+        };
+        let absent = absent_at(i);
+        if absent
+            && tmpl[i] != VARIES_MARK
+            && absent_run_is_glued_to_a_kept_unit(&spans, template.len(), i, absent_at)
+        {
+            return None;
+        }
         let beside_has_separator = |gap: usize| {
             separator_bytes(&template[gap_between(&spans, template.len(), gap)])
                 .next()
@@ -1632,6 +1641,21 @@ fn same_atoms<'s>(
     ours.map(|m| m.as_str()).eq(theirs.map(|m| m.as_str()))
 }
 
+fn open_gap(units: &[(usize, usize)], len: usize, i: usize) -> Option<std::ops::Range<usize>> {
+    let range = gap_between(units, len, i);
+    (i == 0 || i == units.len() || !range.is_empty()).then_some(range)
+}
+
+fn absent_run_is_glued_to_a_kept_unit(
+    units: &[(usize, usize)],
+    len: usize,
+    i: usize,
+    absent: impl Fn(usize) -> bool,
+) -> bool {
+    let glued = |gap: usize| open_gap(units, len, gap).is_none();
+    (glued(i) && !absent(i - 1)) || (glued(i + 1) && !absent(i + 1))
+}
+
 fn slot_opening(
     template: &str,
     spans: &[(usize, usize)],
@@ -1643,13 +1667,9 @@ fn slot_opening(
     if spans.is_empty() {
         return None;
     }
-    let gap = |units: &[(usize, usize)], len: usize, i: usize| {
-        let range = gap_between(units, len, i);
-        (i == 0 || i == units.len() || !range.is_empty()).then_some(range)
-    };
-    let between = gap(spans, template.len(), t)?;
-    let before = &member[gap(member_spans, member.len(), m0)?];
-    let after = &member[gap(member_spans, member.len(), m1)?];
+    let between = open_gap(spans, template.len(), t)?;
+    let before = &member[open_gap(member_spans, member.len(), m0)?];
+    let after = &member[open_gap(member_spans, member.len(), m1)?];
     let text = &template[between.clone()];
     if separator_bytes(text).next().is_some() {
         let with = if t == 0 {

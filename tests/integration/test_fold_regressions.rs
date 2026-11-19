@@ -394,7 +394,6 @@ const ORDER_IS_THE_INPUT: &[(&str, &str)] = &[(
 const KNOWN_ORDER_DEPENDENT: &[(&str, &str)] = &[
     ("lessence-682#1", "lessence-v5kr"),
     ("lessence-bek#1", "lessence-v5kr"),
-    ("lessence-1tee#5", "lessence-v5kr"),
 ];
 
 const FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE: usize = 200;

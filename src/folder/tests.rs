@@ -5288,24 +5288,15 @@ fn pci_identity_survives_variation_on_either_side_without_added_spaces() {
 
 #[test]
 fn pci_template_atoms_do_not_treat_different_address_lists_as_equal() {
-    for (first, next, expected_count) in [
-        ("usb-0000:2a:00.3/input0", "usb-0000:2a:00.4/input0", 0),
-        (
-            "left-0000:2a:00.3/right-0000:2a:00.3",
-            "left-0000:2a:00.3",
-            1,
-        ),
-    ] {
-        let mut template = first.to_string();
-        for (at, len) in spans_of(first, next).into_iter().rev() {
-            template.replace_range(at..at + len, VARIES_MARK);
-        }
-        assert_eq!(
-            template.matches("0000:2a:00.3").count(),
-            expected_count,
-            "{template}"
-        );
+    let (first, next) = ("usb-0000:2a:00.3/input0", "usb-0000:2a:00.4/input0");
+    let mut template = first.to_string();
+    for (at, len) in spans_of(first, next).into_iter().rev() {
+        template.replace_range(at..at + len, VARIES_MARK);
     }
+    assert_eq!(template.matches("0000:2a:00.3").count(), 0, "{template}");
+    let (longer, shorter) = ("left-0000:2a:00.3/right-0000:2a:00.3", "left-0000:2a:00.3");
+    assert_eq!(template_edits(longer, shorter), None);
+    assert_eq!(template_edits(shorter, longer), None);
 }
 
 #[test]
@@ -7969,4 +7960,44 @@ fn a_separator_beside_a_slot_a_member_lacks_is_a_false_claim() {
         "got peers=node-1,node-2 ok"
     ));
     assert!(!template_holds("<VARIES>,a b", "a b"));
+}
+
+#[test]
+fn a_word_glued_to_a_unit_is_refused_whichever_line_founded_the_group() {
+    let plain = "pci slot 0000:41:00.0 link up";
+    let glued_before = "pci slot x-0000:41:00.0 link up";
+    let glued_after = "pci slot 0000:41:00.0-x link up";
+    assert_eq!(template_edits(plain, glued_before), None);
+    assert_eq!(template_edits(glued_before, plain), None);
+    assert_eq!(template_edits(plain, glued_after), None);
+    assert_eq!(template_edits(glued_after, plain), None);
+}
+
+#[test]
+fn a_glued_word_absent_with_the_unit_it_is_glued_to_still_varies() {
+    assert!(template_edits("a x-0000:41:00.0 b", "a b").is_some());
+    assert!(template_edits("a 0000:41:00.0-x b", "a b").is_some());
+}
+
+#[test]
+fn a_bare_slot_glued_to_a_unit_may_stand_for_nothing() {
+    assert_eq!(
+        template_edits("a <VARIES>0000:41:00.0 b", "a 0000:41:00.0 b"),
+        Some(Vec::new())
+    );
+}
+
+#[test]
+fn a_glued_founder_keeps_the_plain_lines_apart_in_reversed_order() {
+    let mut f = make_folder();
+    for l in [
+        "pci slot x-0000:41:00.0 link is up and ready for traffic now",
+        "pci slot 0000:41:00.0 link is up and ready for traffic now",
+        "pci slot 0000:41:00.0 link is up and ready for traffic now",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2);
+    assert_eq!(f.buffer[0].count(), 1);
+    assert_eq!(f.buffer[1].count(), 2);
 }

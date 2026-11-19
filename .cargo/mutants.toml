@@ -65,7 +65,7 @@ exclude_re = [
     '^src/folder/mod\.rs:1049:54: replace \+ with \* in align_exact$',
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
-    '^src/folder/mod\.rs:1795:85: replace < with <= in cli_option_units$',
+    '^src/folder/mod\.rs:1815:85: replace < with <= in cli_option_units$',
 
     # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
     # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded
