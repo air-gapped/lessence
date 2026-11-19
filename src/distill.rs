@@ -266,7 +266,11 @@ fn keep_set(
 ) -> Cover {
     match opts.selection {
         Selection::KeepEveryLine => keep_all(lines.len()),
-        Selection::Distill => covering_subset(&source.groups, partner_choices),
+        Selection::Distill => covering_subset(
+            &source.groups,
+            partner_choices,
+            DISTILL_ANCHOR_PROOF_BUDGET_BYTES,
+        ),
     }
 }
 
@@ -367,7 +371,16 @@ fn farthest_by_words(groups: &[DistillGroup], members: &[usize], primary: usize)
         .copied()
 }
 
-fn anchor_split_partners(groups: &[DistillGroup], members: &[usize], primary: usize) -> Vec<usize> {
+/// Bytes the further anchor values of long-line buckets may add to a
+/// distillation, for the whole input. The first anchor value of every bucket
+/// is outside it.
+const DISTILL_ANCHOR_PROOF_BUDGET_BYTES: usize = 1 << 20;
+
+fn anchor_values_busiest_then_first_seen(
+    groups: &[DistillGroup],
+    members: &[usize],
+    primary: usize,
+) -> Vec<usize> {
     let mut by_anchor: BTreeMap<u64, usize> = BTreeMap::new();
     for &i in members
         .iter()
@@ -384,25 +397,68 @@ fn anchor_split_partners(groups: &[DistillGroup], members: &[usize], primary: us
             })
             .or_insert(i);
     }
-    let mut others: Vec<usize> = by_anchor.into_values().collect();
-    if let Some(budget) = anchor_budget(groups[primary].avg_bytes) {
-        others.sort_unstable_by_key(|&i| (std::cmp::Reverse(groups[i].count), i));
-        others.truncate(budget);
+    let mut values: Vec<usize> = by_anchor.into_values().collect();
+    values.sort_unstable();
+    if let Some(busiest_at) = (0..values.len())
+        .max_by_key(|&at| (groups[values[at]].count, std::cmp::Reverse(values[at])))
+    {
+        let busiest = values.remove(busiest_at);
+        values.insert(0, busiest);
     }
-    others
+    values
 }
 
-fn anchor_budget(avg_line_bytes: usize) -> Option<usize> {
-    (avg_line_bytes > DISTILL_CHEAP_LINE_BYTES).then_some(1)
+fn lines_are_cheap_to_repeat(avg_line_bytes: usize) -> bool {
+    avg_line_bytes <= DISTILL_CHEAP_LINE_BYTES
 }
 
-fn covering_subset(groups: &[DistillGroup], partner_choices: &PartnerChoices) -> Cover {
+fn bytes_kept_for(group: &DistillGroup) -> usize {
+    group.kept.len().saturating_mul(group.avg_bytes)
+}
+
+fn further_anchor_values_within_budget(
+    groups: &[DistillGroup],
+    queue_per_bucket: &[Vec<usize>],
+    already_chosen: &BTreeSet<usize>,
+    budget_bytes: usize,
+) -> Vec<usize> {
+    let mut taken: Vec<usize> = Vec::new();
+    let mut spent: usize = 0;
+    let rounds = queue_per_bucket.iter().map(Vec::len).max().unwrap_or(0);
+    for round in 0..rounds {
+        for &group in queue_per_bucket.iter().filter_map(|queue| queue.get(round)) {
+            let cost = if already_chosen.contains(&group) {
+                0
+            } else {
+                bytes_kept_for(&groups[group])
+            };
+            match spent
+                .checked_add(cost)
+                .filter(|&total| total <= budget_bytes)
+            {
+                Some(total) => {
+                    spent = total;
+                    taken.push(group);
+                }
+                None => return taken,
+            }
+        }
+    }
+    taken
+}
+
+fn covering_subset(
+    groups: &[DistillGroup],
+    partner_choices: &PartnerChoices,
+    anchor_proof_budget_bytes: usize,
+) -> Cover {
     let mut buckets: BTreeMap<&[&'static str], Vec<usize>> = BTreeMap::new();
     for (i, g) in groups.iter().enumerate() {
         buckets.entry(&g.token_types).or_default().push(i);
     }
 
     let mut chosen: BTreeSet<usize> = BTreeSet::new();
+    let mut further_anchor_values: Vec<Vec<usize>> = Vec::new();
     for (key, members) in &buckets {
         let primary = busiest_earliest(groups, members);
         chosen.insert(primary);
@@ -416,8 +472,21 @@ fn covering_subset(groups: &[DistillGroup], partner_choices: &PartnerChoices) ->
             chosen.extend(farthest_by_prefix(groups, members, primary));
             chosen.extend(farthest_by_words(groups, members, primary));
         }
-        chosen.extend(anchor_split_partners(groups, members, primary));
+        let anchor_values = anchor_values_busiest_then_first_seen(groups, members, primary);
+        if lines_are_cheap_to_repeat(groups[primary].avg_bytes) {
+            chosen.extend(anchor_values);
+        } else if let Some((&free, further)) = anchor_values.split_first() {
+            chosen.insert(free);
+            further_anchor_values.push(further.to_vec());
+        }
     }
+    let within_budget = further_anchor_values_within_budget(
+        groups,
+        &further_anchor_values,
+        &chosen,
+        anchor_proof_budget_bytes,
+    );
+    chosen.extend(within_budget);
 
     top_up_missing_properties(groups, &mut chosen);
 
@@ -938,6 +1007,118 @@ mod tests {
             !contract_vocabulary_gone(&a, &["seen on g8 today".to_string()]),
             "the same word as its own token is a survivor"
         );
+    }
+
+    const LONG_LINE_BYTES: usize = 1_000;
+    const LINES_PER_ANCHOR_GROUP: usize = 2;
+    const BYTES_PER_FURTHER_VALUE: usize = LONG_LINE_BYTES * LINES_PER_ANCHOR_GROUP;
+
+    fn long_line_anchor_buckets() -> (Vec<DistillGroup>, PartnerChoices) {
+        let shape: [(&'static str, u64, usize); 7] = [
+            ("A", 0, 100),
+            ("A", 1, 50),
+            ("A", 2, 10),
+            ("A", 3, 20),
+            ("B", 0, 100),
+            ("B", 5, 50),
+            ("B", 6, 10),
+        ];
+        let groups: Vec<DistillGroup> = shape
+            .iter()
+            .enumerate()
+            .map(|(i, &(structure, anchor, count))| DistillGroup {
+                template: format!("g{i}"),
+                token_types: vec![structure],
+                all_types: vec![structure],
+                anchor,
+                avg_bytes: LONG_LINE_BYTES,
+                kept: (0..LINES_PER_ANCHOR_GROUP)
+                    .map(|line| 1 + i * LINES_PER_ANCHOR_GROUP + line)
+                    .collect(),
+                capping_extra: Vec::new(),
+                count,
+                distinct_forms: 1,
+            })
+            .collect();
+        let alone: PartnerChoices = [
+            (vec!["A"], PartnerChoice::Alone),
+            (vec!["B"], PartnerChoice::Alone),
+        ]
+        .into_iter()
+        .collect();
+        (groups, alone)
+    }
+
+    fn kept_templates(cover: &Cover) -> Vec<&str> {
+        cover
+            .must_stay_distinct
+            .iter()
+            .map(String::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn long_lines_whose_anchor_proofs_fit_the_budget_keep_every_anchor_value() {
+        let (groups, alone) = long_line_anchor_buckets();
+        let cover = covering_subset(&groups, &alone, DISTILL_ANCHOR_PROOF_BUDGET_BYTES);
+        assert_eq!(
+            kept_templates(&cover),
+            vec!["g0", "g1", "g2", "g3", "g4", "g5", "g6"],
+            "three further values of 2,000 bytes fit in 1 MiB, so none is dropped"
+        );
+    }
+
+    #[test]
+    fn long_lines_past_the_budget_keep_one_value_per_bucket_and_a_round_robin_share() {
+        let (groups, alone) = long_line_anchor_buckets();
+        let free_values = ["g0", "g1", "g4", "g5"];
+
+        let at_budget = 2 * BYTES_PER_FURTHER_VALUE;
+        let cover = covering_subset(&groups, &alone, at_budget);
+        assert_eq!(
+            kept_templates(&cover),
+            vec!["g0", "g1", "g2", "g4", "g5", "g6"],
+            "round one takes g2 from A (first seen, though g3 is busier) and g6 from B; g3 would pass the budget"
+        );
+        let further_bytes: usize = cover
+            .must_stay_distinct
+            .iter()
+            .filter(|t| !free_values.contains(&t.as_str()))
+            .map(|t| bytes_kept_for(&groups[t[1..].parse::<usize>().expect("gN")]))
+            .sum();
+        assert_eq!(further_bytes, at_budget);
+        assert!(further_bytes + BYTES_PER_FURTHER_VALUE > at_budget);
+
+        let one_byte_short = at_budget - 1;
+        assert_eq!(
+            kept_templates(&covering_subset(&groups, &alone, one_byte_short)),
+            vec!["g0", "g1", "g2", "g4", "g5"],
+            "one byte under two values keeps only the first further value"
+        );
+        assert_eq!(
+            kept_templates(&covering_subset(
+                &groups,
+                &alone,
+                3 * BYTES_PER_FURTHER_VALUE
+            )),
+            vec!["g0", "g1", "g2", "g3", "g4", "g5", "g6"],
+            "exactly three values' bytes keeps all three"
+        );
+        assert_eq!(
+            kept_templates(&covering_subset(&groups, &alone, 0)),
+            free_values.to_vec(),
+            "with no budget each bucket keeps its primary and its one free anchor value"
+        );
+    }
+
+    #[test]
+    fn the_anchor_selection_is_the_same_on_a_second_run() {
+        let (groups, alone) = long_line_anchor_buckets();
+        let budget = 2 * BYTES_PER_FURTHER_VALUE;
+        let first = covering_subset(&groups, &alone, budget);
+        let second = covering_subset(&groups, &alone, budget);
+        assert_eq!(first.lines, second.lines);
+        assert_eq!(first.must_stay_distinct, second.must_stay_distinct);
     }
 
     #[test]

@@ -65,10 +65,18 @@ its own group):
 
 Then across groups, one bucket per structure. Each bucket keeps the busiest
 group, the group nearest it by shared template prefix, and one group per
-distinct anchor value — all of the anchor values where the lines are small
-(mean under `DISTILL_CHEAP_LINE_BYTES`, 512), one of them where they are
-not, because proving an anchor costs another copy of the event and that is
-nothing on a syslog line and megabytes on a 23 KB Kubernetes event. The
+distinct anchor value. Where the lines are small (mean at most
+`DISTILL_CHEAP_LINE_BYTES`, 512) it keeps all of them. Where they are not,
+proving an anchor costs another copy of the event, which is nothing on a
+syslog line and megabytes on a 23 KB Kubernetes event, so the further values
+share one budget for the whole input, `DISTILL_ANCHOR_PROOF_BUDGET_BYTES`
+(1 MiB). Every bucket keeps its busiest anchor value outside the budget.
+The rest are handed out round-robin over the buckets, in bucket order, one
+more value per bucket per round, each bucket's values in first-seen order;
+each costs the bytes of the lines its group adds, and the hand-out stops at
+the first value that would pass the budget. One value per bucket left a log
+of 1.5 KB lines with a tenth of its events; under the budget it keeps all of
+them, and a log of 23 KB lines keeps about 45 values more. The
 same threshold decides which group may carry the extra members that push a
 rollup past `ROLLUP_DISTINCT_CAP`; at most one group per input carries them.
 

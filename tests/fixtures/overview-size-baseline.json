@@ -193,16 +193,16 @@
       "total": 200
     },
     "k8s_apiserver_audit": {
-      "corpus_sha256": "7610d53518eeab404ca16485d6ce756e8f7dd43be5d13f9162eabbb37eb74960",
-      "omitted": 37,
-      "previewed": 6,
-      "printed": 10,
+      "corpus_sha256": "711fea060d819083e0ef4e3f41ec839557465fb2670dbf95f2d4bf30cbdf9fcc",
+      "omitted": 361,
+      "previewed": 0,
+      "printed": 16,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 14807,
-      "stdout_tokens": 4839,
-      "total": 47
+      "stdout_bytes": 15746,
+      "stdout_tokens": 5087,
+      "total": 377
     },
     "k8s_argocd_aux": {
       "corpus_sha256": "b4420ad251f5b4344ee1897ca3cfb0ef9c4e75d45fb7c2bdad1462ba44c126d8",
