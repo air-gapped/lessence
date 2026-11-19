@@ -1108,6 +1108,7 @@ enum AnchorRender<'a> {
     HttpStatus,
     StatusField,
     Exact,
+    CliOption,
     KlogCallSite,
     PciAddress,
     SystemdUnit,
@@ -1122,19 +1123,25 @@ impl AnchorRender<'_> {
             Self::HttpStatus => format!("<HTTP_STATUS_{}XX>", &text[..1]),
             Self::StatusField => format!("<STATUS_{}XX>", &text[..1]),
             Self::SystemdUnit => render_systemd_unit(text),
-            Self::Exact | Self::KlogCallSite | Self::PciAddress => text.to_string(),
+            Self::Exact | Self::CliOption | Self::KlogCallSite | Self::PciAddress => {
+                text.to_string()
+            }
         }
     }
 
     fn sentinel(&self) -> AnchorSentinel {
         match self {
             Self::KlogCallSite => AnchorSentinel::KlogCallSiteVisibleToPid,
+            Self::CliOption => AnchorSentinel::CliOptionVisibleToQuoted,
             _ => AnchorSentinel::OpaqueToDetectors,
         }
     }
 
     fn shows_text_verbatim(&self) -> bool {
-        matches!(self, Self::Exact | Self::KlogCallSite | Self::PciAddress)
+        matches!(
+            self,
+            Self::Exact | Self::CliOption | Self::KlogCallSite | Self::PciAddress
+        )
     }
 
     fn when_nested(&self, cover_shows_text_verbatim: bool) -> NestedIdentity {
@@ -1144,9 +1151,11 @@ impl AnchorRender<'_> {
             }
             Self::HttpStatus | Self::StatusField => NestedIdentity::EveryOccurrence,
             Self::PciAddress if !cover_shows_text_verbatim => NestedIdentity::EveryOccurrence,
-            Self::PciAddress | Self::Exact | Self::KlogCallSite | Self::SystemdUnit => {
-                NestedIdentity::OnceUnlessShown
-            }
+            Self::PciAddress
+            | Self::Exact
+            | Self::CliOption
+            | Self::KlogCallSite
+            | Self::SystemdUnit => NestedIdentity::OnceUnlessShown,
         }
     }
 }
@@ -1355,7 +1364,7 @@ fn protect_anchored_spans<'a>(
         ));
     }
     for option in options {
-        spans.push((option.start(), option.end(), AnchorRender::Exact));
+        spans.push((option.start(), option.end(), AnchorRender::CliOption));
         identities.push((
             AnchorClass::CliOption,
             AnchorIdentity::Text(option.as_str()),
@@ -4084,6 +4093,27 @@ mod tests {
     }
 
     #[test]
+    fn an_option_name_inside_an_escaped_json_string_stays_visible() {
+        let verbose = normalize(r#"{"spec":"{\"argv\":[\"agent\",\"--verbose\",\"--port\"]}"}"#);
+        let quiet = normalize(r#"{"spec":"{\"argv\":[\"agent\",\"--quiet\",\"--port\"]}"}"#);
+        assert!(
+            verbose.normalized.contains(r#"\"--verbose\""#),
+            "{}",
+            verbose.normalized
+        );
+        assert!(verbose.normalized.contains(r#"\"--port\""#));
+        assert!(!verbose.normalized.contains("<ESCAPED_JSON>"));
+        assert!(!verbose.normalized.contains('\0'));
+        assert_ne!(verbose.anchor, quiet.anchor);
+        assert_eq!(
+            AnchorRender::CliOption.sentinel(),
+            AnchorSentinel::CliOptionVisibleToQuoted
+        );
+        assert_eq!(AnchorRender::CliOption.render("--port"), "--port");
+        assert!(AnchorRender::CliOption.shows_text_verbatim());
+    }
+
+    #[test]
     fn lines_without_anchors_are_untouched() {
         let plain = normalize(
             "Sep 14 06:58:42 oryx kernel: usb 1-1: new high-speed USB device number 4 using xhci_hcd",
@@ -4855,6 +4885,7 @@ mod e8v_normalize_2026_09_17 {
                 (AnchorRender::HttpStatus, EveryOccurrence),
                 (AnchorRender::StatusField, EveryOccurrence),
                 (AnchorRender::Exact, OnceUnlessShown),
+                (AnchorRender::CliOption, OnceUnlessShown),
                 (AnchorRender::KlogCallSite, OnceUnlessShown),
                 (AnchorRender::SystemdUnit, OnceUnlessShown),
             ] {

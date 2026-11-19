@@ -472,6 +472,7 @@ pub(crate) const SOURCE_EXTENSIONS: &[&str] = &[
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AnchorSentinel {
     KlogCallSiteVisibleToPid,
+    CliOptionVisibleToQuoted,
     OpaqueToDetectors,
 }
 
@@ -479,6 +480,7 @@ impl AnchorSentinel {
     pub(crate) const fn start(self) -> &'static str {
         match self {
             Self::KlogCallSiteVisibleToPid => "\0K",
+            Self::CliOptionVisibleToQuoted => "\0O",
             Self::OpaqueToDetectors => "\0A",
         }
     }

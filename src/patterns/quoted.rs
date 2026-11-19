@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
-use super::Token;
+use super::{AnchorSentinel, Token};
 use super::{
     duration::DurationDetector, hash::HashDetector, names::NameDetector, network::NetworkDetector,
     path::PathDetector, process::ProcessDetector, timestamp::UnifiedTimestampDetector,
@@ -198,6 +198,10 @@ fn is_escaped_blob(quoted_content: &str) -> bool {
             || quoted_content.contains('['))
 }
 
+fn holds_a_cli_option(quoted_content: &str) -> bool {
+    quoted_content.contains(AnchorSentinel::CliOptionVisibleToQuoted.start())
+}
+
 fn carries_placeholders(quoted_content: &str, normalized_content: &str) -> bool {
     let found_by_the_nested_cascade = normalized_content != quoted_content;
     let already_put_there_by_the_main_pipeline = quoted_content.contains('<');
@@ -257,7 +261,7 @@ impl QuotedStringDetector {
             }
         }
 
-        if is_escaped_blob(quoted_content) {
+        if is_escaped_blob(quoted_content) && !holds_a_cli_option(quoted_content) {
             QuotedOutcome::escaped_json()
         } else if carries_placeholders(quoted_content, &normalized_content) {
             QuotedOutcome::placeholders_kept_in_their_words(&normalized_content)
@@ -707,6 +711,21 @@ mod tests {
         assert!(r.contains("run task[memoryMonitor] with args="), "{r}");
         let (r, _) = QuotedStringDetector::detect_and_replace(r#"x "{\"a\": {\"b\": 1}}" y"#);
         assert_eq!(r, "x <ESCAPED_JSON> y");
+    }
+
+    #[test]
+    fn an_escaped_blob_holding_an_option_name_stays_visible() {
+        let blob = |sentinel: AnchorSentinel| {
+            format!(r#"x "{{\"argv\":[\"run\",\"{}\"]}}" y"#, sentinel.text(3))
+        };
+        let with_option = blob(AnchorSentinel::CliOptionVisibleToQuoted);
+        let (r, tokens) = QuotedStringDetector::detect_and_replace(&with_option);
+        assert_eq!(r, with_option, "the option name inside is an identity");
+        assert!(tokens.is_empty(), "{tokens:?}");
+        let (r, tokens) =
+            QuotedStringDetector::detect_and_replace(&blob(AnchorSentinel::OpaqueToDetectors));
+        assert_eq!(r, "x <ESCAPED_JSON> y", "only an option name keeps it open");
+        assert_eq!(tokens.len(), 1);
     }
 
     #[test]
