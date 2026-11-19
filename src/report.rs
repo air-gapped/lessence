@@ -266,7 +266,7 @@ fn open_0600(path: &Path) -> std::io::Result<File> {
 impl Spool {
     pub fn create(base: &Path, max_bytes: u64) -> Result<Self> {
         create_missing_parents_0700(base)?;
-        let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
+        let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
         let mut last_err = None;
         for _ in 0..8 {
             let run_id = format!("run-{stamp}-{}", random_suffix()?);

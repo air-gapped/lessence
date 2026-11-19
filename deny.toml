@@ -1,6 +1,4 @@
 [advisories]
-# chrono is retired upstream with no upgrade path; lessence-17a0 replaces it.
-ignore = ["RUSTSEC-2026-0543"]
 
 [licenses]
 confidence-threshold = 0.93

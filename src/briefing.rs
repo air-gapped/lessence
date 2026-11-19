@@ -619,9 +619,14 @@ fn month_abbrev(w: &[u8]) -> Option<u32> {
 }
 
 fn process_utc_year() -> i32 {
-    use chrono::Datelike;
     static YEAR: std::sync::OnceLock<i32> = std::sync::OnceLock::new();
-    *YEAR.get_or_init(|| chrono::Utc::now().year())
+    *YEAR.get_or_init(|| {
+        i32::from(
+            jiff::tz::Offset::UTC
+                .to_datetime(jiff::Timestamp::now())
+                .year(),
+        )
+    })
 }
 
 thread_local! {
@@ -636,8 +641,16 @@ fn ymd_hms_to_epoch(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u
         {
             return Some(epoch);
         }
-        let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
-        let epoch = date.and_hms_opt(0, 0, 0)?.and_utc().timestamp();
+        let date = jiff::civil::Date::new(
+            i16::try_from(year).ok()?,
+            i8::try_from(month).ok()?,
+            i8::try_from(day).ok()?,
+        )
+        .ok()?;
+        let epoch = jiff::tz::Offset::UTC
+            .to_timestamp(date.to_datetime(jiff::civil::Time::midnight()))
+            .ok()?
+            .as_second();
         cell.set(Some((year, month, day, epoch)));
         Some(epoch)
     })?;
@@ -791,11 +804,15 @@ fn parse_syslog_or_asctime_epoch(s: &str) -> Option<i64> {
 }
 
 fn add_one_year_utc(epoch: i64) -> Option<i64> {
-    use chrono::Datelike;
-    let dt = chrono::DateTime::from_timestamp(epoch, 0)?;
-    let naive = dt.naive_utc();
-    let bumped_date = naive.date().with_year(naive.year() + 1)?;
-    Some(bumped_date.and_time(naive.time()).and_utc().timestamp())
+    let utc = jiff::tz::Offset::UTC;
+    let dt = utc.to_datetime(jiff::Timestamp::from_second(epoch).ok()?);
+    let bumped_date =
+        jiff::civil::Date::new(dt.year().checked_add(1)?, dt.month(), dt.day()).ok()?;
+    Some(
+        utc.to_timestamp(bumped_date.to_datetime(dt.time()))
+            .ok()?
+            .as_second(),
+    )
 }
 
 pub(crate) fn span_epochs(first: &str, last: &str) -> Option<(i64, i64)> {
@@ -1059,8 +1076,8 @@ fn epoch_to_display(epoch: i64, dated: bool) -> String {
     } else {
         "%m-%d %H:%M"
     };
-    chrono::DateTime::from_timestamp(epoch, 0)
-        .map_or_else(|| epoch.to_string(), |dt| dt.format(fmt).to_string())
+    jiff::Timestamp::from_second(epoch)
+        .map_or_else(|_| epoch.to_string(), |ts| ts.strftime(fmt).to_string())
 }
 
 fn render_format_line(f: &FormatSniff) -> String {
@@ -1252,6 +1269,31 @@ pub fn render_text(b: &Briefing) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_one_year_utc_has_no_29_february_in_a_non_leap_year() {
+        assert_eq!(add_one_year_utc(1_709_208_000), None);
+    }
+
+    #[test]
+    fn add_one_year_utc_keeps_month_day_and_clock() {
+        assert_eq!(add_one_year_utc(1_757_423_229), Some(1_788_959_229));
+    }
+
+    #[test]
+    fn ymd_hms_to_epoch_rejects_31_april() {
+        assert_eq!(ymd_hms_to_epoch(2025, 4, 31, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn ymd_hms_to_epoch_rejects_29_february_in_a_non_leap_year() {
+        assert_eq!(ymd_hms_to_epoch(2025, 2, 29, 0, 0, 0), None);
+    }
+
+    #[test]
+    fn ymd_hms_to_epoch_accepts_29_february_in_a_leap_year() {
+        assert_eq!(ymd_hms_to_epoch(2024, 2, 29, 0, 0, 0), Some(1_709_164_800));
+    }
 
     #[test]
     fn format_from_line_top_level_json_object_without_json_token() {

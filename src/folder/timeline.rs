@@ -315,8 +315,8 @@ fn date_format_for(min: i64, max: i64, stamps_carry_year: bool) -> &'static str 
 
 fn show_time(epoch: i64, with_seconds: bool, date: &str) -> String {
     let fmt = format!("{date}{}", if with_seconds { "%H:%M:%S" } else { "%H:%M" });
-    chrono::DateTime::from_timestamp(epoch, 0)
-        .map_or_else(|| epoch.to_string(), |dt| dt.format(&fmt).to_string())
+    jiff::Timestamp::from_second(epoch)
+        .map_or_else(|_| epoch.to_string(), |ts| ts.strftime(&fmt).to_string())
 }
 
 fn needs_seconds(from: i64, to: i64, date: &str) -> bool {
@@ -336,6 +336,22 @@ fn run_times(from: i64, to: i64, min: i64, max: i64, stamps_carry_year: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_time_out_of_range_epoch_shows_the_raw_number() {
+        assert_eq!(
+            show_time(i64::MAX, true, "%Y-%m-%d "),
+            "9223372036854775807"
+        );
+    }
+
+    #[test]
+    fn show_time_in_range_epoch_shows_utc_date_and_clock() {
+        assert_eq!(
+            show_time(1_709_164_800, true, "%Y-%m-%d "),
+            "2024-02-29 00:00:00"
+        );
+    }
 
     fn grid(origin: i64, bucket_seconds: i64, len: usize) -> Grid {
         Grid {
