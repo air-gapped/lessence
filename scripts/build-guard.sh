@@ -26,8 +26,8 @@ if printf '%s' "$command" | grep -qE '(^|[;&|(])[[:space:]]*(bash[[:space:]]+)?(
     exit 0
 fi
 
-long_run='(make[[:space:]]+(release-check|mutants|mutants-full)|scripts/(release-check|mutants)\.sh)'
-if printf '%s' "$command" | grep -qE "$long_run" && printf '%s' "$command" | grep -qE '\|[[:space:]]*(tail|head)\b'; then
+long_run='(^|[;&|(])[[:space:]]*([A-Za-z_]+=[^[:space:]]+[[:space:]]+)*(make[[:space:]]+(release-check|mutants|mutants-full)|(\./)?scripts/(release-check|mutants)\.sh)([^;&]|>&)*\|[[:space:]]*(tail|head)\b'
+if printf '%s\n' "$command" | grep -qE "$long_run"; then
     jq -n --arg reason "build-guard: this run takes many minutes and tail or head hides its progress lines until the end. Run it without them, in the background; release-check also writes target/gate/release-check.log as it goes." \
         '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
     exit 0

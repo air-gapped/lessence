@@ -19,8 +19,9 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 make ci             # fmt + clippy + doc + test + deny + mutants-pins + comment-budget + corpus-acceptance + hooks-selftest (~20 s warm, every commit). Tests run on
                     # the test profile: the release profile (fat LTO, one codegen unit) is
                     # for the shipped binary, and GitHub CI is where it is checked to compile
-make gate           # FAILS on exactly five things: a new ##CASE that also passes on the
-                    # HEAD build (vacuous), kubelet instructions over +1%, --explain vs
+make gate           # FAILS on exactly six things: a new ##CASE that also passes on the
+                    # HEAD build (vacuous), kubelet instructions over +1%, or over +2%
+                    # against the last release tag (the sum of small steps), --explain vs
                     # --format json disagreeing on a corpus where the HEAD build agreed,
                     # peak RSS over +32 MiB (default run and --overview all), and default
                     # stdout/stderr bytes or tokens over the reviewed size baseline in
@@ -52,11 +53,12 @@ pre-commit hook checks that `gate.json` was produced for exactly the staged
 change. Run
 `make release-check` before a release. Nothing else is required per change.
 
-The only perf evidence for a release is the measurement against the last
+The perf evidence for a release is the measurement against the last
 published release, produced by `make release-check` at handoff and stated
-in the handoff as the cumulative number. The per-commit gate compares each
-change to its parent and forgets it; a `gate.json` found anywhere else, in a
-worktree or from an earlier day, is scratch, not evidence.
+in the handoff as the cumulative number. The per-commit gate measures
+against the newest local tag as well, so the sum of small steps is refused
+when it passes +2%, but a `gate.json` found anywhere else, in a worktree or
+from an earlier day, is scratch, not evidence.
 
 ## Architecture
 
@@ -103,6 +105,7 @@ not a claim.
 | tests pass | `make ci` exit 0 in this session |
 | output changed on purpose | `gate.json` → `golden[]`: templates added / removed / recounted, per corpus. **Read the diff — the gate does not judge it.** A re-bless makes any output "correct", so `golden: 0 changed` straight after `BLESS=1 make distill` proves only that you just wrote those files |
 | not slower | `gate.json` → `perf.delta_pct`: `instructions:u` on distilled kubelet, single thread, one pinned P-core; threshold +1% |
+| not slower since the release | `gate.json` → `perf.since_release.delta_pct`: the same measurement against the newest tag's build; threshold +2% (`GATE_PERF_RELEASE_MAX`) |
 | a new test can fail | `gate.json` → `cases.new_failing_on_base` |
 | memory did not grow | `gate.json` → `rss_kb`: peak RSS of the default run and `--overview all` vs the baseline's default, allowance +32 MiB |
 | the default output did not bloat | `gate.json` → `size`: stdout/stderr bytes and tiktoken `cl100k_base` tokens per corpus vs `tests/fixtures/overview-size-baseline.json` + max(128, 1%). Same caveat as the goldens — `GATE_BLESS_SIZE=1` makes any size "correct" |

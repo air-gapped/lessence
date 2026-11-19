@@ -64,7 +64,12 @@ No target other than `make distill` reads an original corpus.
    default — report written and overview printed — with `--report-dir` set to
    `target/gate/reports` when the binary supports it, so nothing lands in the
    caller's state directory; that directory is removed after the measurement
-   and nothing outside it is touched.
+   and nothing outside it is touched. The build of the newest tag reachable
+   from HEAD (`RELEASE_BASE` overrides; cached like the baseline) is measured
+   the same way: FAIL when the working tree is over it by more than
+   `GATE_PERF_RELEASE_MAX` (default 2.0), so steps that each pass the
+   per-change limit cannot add up unseen. A clone without tags skips this
+   and prints that it did.
 7. Peak RSS (`/usr/bin/time -v`, `scripts/gate-rss.sh`) on the same corpus
    for the baseline default, the new default and the new `--overview all`.
    FAIL when either new number is more than 32 MiB over the baseline default.

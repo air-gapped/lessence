@@ -9,6 +9,7 @@ cd "$ROOT"
 
 GATE_BASE="${GATE_BASE:-HEAD}"
 GATE_PERF_MAX="${GATE_PERF_MAX:-1.0}"
+GATE_PERF_RELEASE_MAX="${GATE_PERF_RELEASE_MAX:-2.0}"
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
 
@@ -62,24 +63,42 @@ rm -f /tmp/gate-perf-check.$$
 # is cold, and the worktree is removed once its binary is copied out: what
 # stays per commit is the binary alone.
 
-base_commit="$(git rev-parse "$GATE_BASE")"
-base_worktree="$GATE_DIR/base-${base_commit}-wt"
-base_dir="$GATE_DIR/base-${base_commit}"
-base_bin="$base_dir/lessence"
 base_target="$ROOT/$GATE_DIR/base-target"
 
-if [ ! -x "$base_bin" ]; then
-    echo "Building baseline ($GATE_BASE = $base_commit)..." >&2
-    if [ ! -d "$base_worktree" ]; then
-        git worktree add --detach "$base_worktree" "$base_commit" >/dev/null
+# Prints the path of the release binary built from commit $1, building it
+# first when it is not cached.
+baseline_binary() {
+    local commit="$1" label="$2"
+    local worktree="$GATE_DIR/base-${commit}-wt" dir="$GATE_DIR/base-${commit}"
+    local bin="$dir/lessence"
+    if [ ! -x "$bin" ]; then
+        echo "Building baseline ($label = $commit)..." >&2
+        if [ ! -d "$worktree" ]; then
+            git worktree add --detach "$worktree" "$commit" >/dev/null
+        fi
+        ( cd "$worktree" && CARGO_TARGET_DIR="$base_target" cargo build --release >/dev/null )
+        mkdir -p "$dir"
+        # Copy then rename: an interrupted copy must not leave an executable
+        # that the cache check above would trust.
+        cp "$base_target/release/lessence" "$bin.partial"
+        mv "$bin.partial" "$bin"
+        git worktree remove --force "$worktree"
     fi
-    ( cd "$base_worktree" && CARGO_TARGET_DIR="$base_target" cargo build --release >/dev/null )
-    mkdir -p "$base_dir"
-    # Copy then rename: an interrupted copy must not leave an executable
-    # that the cache check above would trust.
-    cp "$base_target/release/lessence" "$base_bin.partial"
-    mv "$base_bin.partial" "$base_bin"
-    git worktree remove --force "$base_worktree"
+    printf '%s\n' "$bin"
+}
+
+base_commit="$(git rev-parse "$GATE_BASE")"
+base_bin="$(baseline_binary "$base_commit" "$GATE_BASE")"
+
+# The last release, for the cumulative speed budget in step 6: the newest
+# tag reachable from HEAD, or RELEASE_BASE. No network is used; a clone
+# without tags skips that budget and says so.
+release_ref="${RELEASE_BASE:-$(git describe --tags --abbrev=0 2>/dev/null || true)}"
+release_commit=""
+release_bin=""
+if [ -n "$release_ref" ]; then
+    release_commit="$(git rev-parse "${release_ref}^{commit}")"
+    release_bin="$(baseline_binary "$release_commit" "$release_ref")"
 fi
 
 # ── 3. New: build the working tree (uncommitted changes included) ──────────
@@ -382,6 +401,23 @@ if awk -v d="$delta_pct" -v t="$GATE_PERF_MAX" 'BEGIN { exit !(d>t) }'; then
     perf_fail=1
 fi
 
+# Small slowdowns each pass the per-change limit and still add up, so the
+# working tree is also measured against the last release.
+release_delta_pct="null"
+release_perf_fail=0
+instr_release="null"
+if [ -n "$release_bin" ]; then
+    if [ "$release_commit" = "$base_commit" ]; then
+        instr_release="$instr_base"
+    else
+        read -r instr_release _ <<<"$(perf_instructions "$(pwd)/$release_bin")"
+    fi
+    release_delta_pct="$(awk -v b="$instr_release" -v n="$instr_new" 'BEGIN { if (b==0) { print 0 } else { printf "%.4f", (n-b)/b*100 } }')"
+    if awk -v d="$release_delta_pct" -v t="$GATE_PERF_RELEASE_MAX" 'BEGIN { exit !(d>t) }'; then
+        release_perf_fail=1
+    fi
+fi
+
 # ── 6b. Peak RSS: the new default and --overview all vs the baseline default
 # The contract's allowance is +32 MiB over the baseline's text default, for
 # the default run and for --overview all alike. This is a measurement, not
@@ -471,6 +507,10 @@ if [ "$perf_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("perf regression: ${delta_pct}% > ${GATE_PERF_MAX}%")
 fi
+if [ "$release_perf_fail" -eq 1 ]; then
+    verdict="FAIL"
+    fail_reasons+=("slower than ${release_ref} by ${release_delta_pct}% > ${GATE_PERF_RELEASE_MAX}%: the sum of changes since the release is over the budget; the owner decides whether to accept it (GATE_PERF_RELEASE_MAX) or what to speed up")
+fi
 if [ "$modes_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("--explain and --format json disagree on a corpus where the baseline agreed")
@@ -511,6 +551,12 @@ for row in "${modes_table_rows[@]}"; do
 done
 printf "perf(%s): instructions:u base=%s new=%s delta=%s%% (max %s%%) spread=%s%%\n" \
     "$PERF_CORPUS" "$instr_base" "$instr_new" "$delta_pct" "$GATE_PERF_MAX" "$spread_pct"
+if [ -n "$release_bin" ]; then
+    printf "perf since %s: instructions:u release=%s delta=%s%% (max %s%%)\n" \
+        "$release_ref" "$instr_release" "$release_delta_pct" "$GATE_PERF_RELEASE_MAX"
+else
+    echo "perf since the last release: not measured (no tag in this clone)"
+fi
 if [ "$rss_ok" -eq 1 ]; then
     printf "rss: base=%sK default=%sK overview-all=%sK (allowance +%sK)\n" \
         "$rss_base" "$rss_new" "$rss_all" "$RSS_ALLOWANCE_KB"
@@ -555,7 +601,9 @@ cat > "$GATE_DIR/gate.json" <<JSON
   "golden": [${golden_json}],
   "modes": [${modes_json}],
   "perf": {"cpu": ${GATE_CPU}, "instructions_base": ${instr_base}, "instructions_new": ${instr_new},
-           "spread_pct": ${spread_pct}, "delta_pct": ${delta_pct}, "threshold_pct": ${GATE_PERF_MAX}},
+           "spread_pct": ${spread_pct}, "delta_pct": ${delta_pct}, "threshold_pct": ${GATE_PERF_MAX},
+           "since_release": {"ref": "${release_ref}", "instructions": ${instr_release},
+                             "delta_pct": ${release_delta_pct}, "threshold_pct": ${GATE_PERF_RELEASE_MAX}}},
   "rss_kb": {"base_default": ${rss_base:-null}, "new_default": ${rss_new:-null},
              "new_overview_all": ${rss_all:-null}, "allowance_kb": ${RSS_ALLOWANCE_KB}},
   "size": ${size_json},

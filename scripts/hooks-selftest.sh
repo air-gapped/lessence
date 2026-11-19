@@ -74,6 +74,8 @@ build_case() { # name expect(deny|allow) command
 build_case "release-check through tail" deny "make release-check 2>&1 | tail -60"
 build_case "mutants script through head" deny "scripts/mutants.sh -f src/x.rs | head -5"
 build_case "a listing through tail" allow "ls scripts | tail -3"
+build_case "long run with an env prefix through tail" deny "RELEASE_BASE=v1 make release-check 2>&1 | tail -5"
+build_case "long run named in text, then head elsewhere" allow $'echo "run make release-check at handoff"\nls scripts | head -3'
 
 review_guard_case() { # name expect(deny|allow) json
     local out
