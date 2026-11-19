@@ -16,7 +16,7 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 ## Commands
 
 ```bash
-make ci             # fmt + clippy + doc + test + deny + mutants-pins + comment-budget + hooks-selftest (~20 s warm, every commit). Tests run on
+make ci             # fmt + clippy + doc + test + deny + mutants-pins + comment-budget + corpus-acceptance + hooks-selftest (~20 s warm, every commit). Tests run on
                     # the test profile: the release profile (fat LTO, one codegen unit) is
                     # for the shipped binary, and GitHub CI is where it is checked to compile
 make gate           # FAILS on exactly five things: a new ##CASE that also passes on the
@@ -27,6 +27,8 @@ make gate           # FAILS on exactly five things: a new ##CASE that also passe
                     # tests/fixtures + max(128, 1%). The golden
                     # diff it prints is material for you to READ, not a verdict — a changed
                     # golden never fails the gate. ≤15 lines, target/gate/gate.json (seconds)
+make goldens        # re-record the goldens the last `make gate` reports as changed, after
+                    # reading its diff; without it `make ci` fails on the stale golden
 make distill        # examples/distilled/<name>.log + .golden from each examples/originals/<name>.log
                     # via the hidden dev flags `--distill --anonymize` (docs/distill.md):
                     # the smallest log that still proves every structure, token type, split

@@ -2,7 +2,7 @@
 # `make ci` mirrors .github/workflows/ci.yml except that CI also runs
 # `cargo build --release` (the release profile is checked there) — run it before every commit
 
-.PHONY: ci fmt clippy doc build test deny mutants-pins comment-budget docs install clean help \
+.PHONY: ci fmt clippy doc build test deny mutants-pins comment-budget corpus-acceptance goldens docs install clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
        gate release-check distill hooks-selftest
 
@@ -11,7 +11,7 @@
 #---------------------------------------------------------------------------
 
 ## ci: Run the full CI pipeline locally (same as GitHub Actions)
-ci: fmt clippy doc test deny mutants-pins comment-budget hooks-selftest
+ci: fmt clippy doc test deny mutants-pins comment-budget corpus-acceptance hooks-selftest
 	@echo "✓ All CI checks passed"
 
 ## hooks-selftest: The edit and stop guards deny and allow what they should
@@ -50,6 +50,10 @@ mutants-pins:
 comment-budget:
 	./scripts/check-comment-budget.sh
 
+## corpus-acceptance: Every distilled corpus with a golden is accepted, or rejected under an open issue
+corpus-acceptance:
+	./scripts/check-corpus-acceptance.sh
+
 #---------------------------------------------------------------------------
 # Verification gates (docs/verification.md)
 #---------------------------------------------------------------------------
@@ -57,6 +61,10 @@ comment-budget:
 ## gate: Baseline diff + perf check before committing src/ changes (~2 min)
 gate:
 	./scripts/gate.sh
+
+## goldens: Re-record the goldens the last gate run reports as changed (read its diff first)
+goldens:
+	./scripts/record-goldens.sh
 
 ## release-check: Gate vs the last published release + mutants on the diff + make ci + slow tests + README table/skill freshness (~20 min)
 release-check:
