@@ -8,14 +8,23 @@
 # while another cargo, rustc or nextest process is running, or while less
 # than MIN_AVAILABLE_GB of memory is available. A release-check or mutants
 # run piped through tail or head is refused too: it would show nothing for
-# its whole length. Everything else passes.
+# its whole length, and so is scripts/record-review.sh from the main
+# session: a review is recorded by the agent that did it. Everything else
+# passes.
 #
 #   echo '{"tool_input":{"command":"cargo build"}}' | scripts/build-guard.sh
 set -euo pipefail
 
 MIN_AVAILABLE_GB="${LESSENCE_BUILD_MIN_AVAILABLE_GB:-10}"
 
-command=$(jq -r '.tool_input.command // empty')
+input=$(cat)
+command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+
+if printf '%s' "$command" | grep -qE '(^|[;&|(])[[:space:]]*(bash[[:space:]]+)?(\./)?scripts/record-review\.sh' && [ -z "$(printf '%s' "$input" | jq -r '.agent_id // empty')" ]; then
+    jq -n --arg reason "build-guard: the main session does not record its own review. Spawn the fold-reviewer agent; it reads the golden diff and records the verdict." \
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
+    exit 0
+fi
 
 long_run='(make[[:space:]]+(release-check|mutants|mutants-full)|scripts/(release-check|mutants)\.sh)'
 if printf '%s' "$command" | grep -qE "$long_run" && printf '%s' "$command" | grep -qE '\|[[:space:]]*(tail|head)\b'; then

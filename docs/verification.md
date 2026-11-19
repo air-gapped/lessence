@@ -195,7 +195,12 @@ test by accident and `make release-check` always runs all of them.
   `target/gate/gate.json` with `verdict: PASS` and `staged_diff_sha256`
   equal to `scripts/gate-diff-hash.sh` now (the working tree against HEAD,
   staged or not, `.beads/` left out); otherwise print `run make gate` and
-  exit 1.
+  exit 1. When that gate run changed any golden, it also requires
+  `target/gate/review.json` with `verdict: pass` for the same
+  `staged_diff_sha256` (`scripts/check-fold-review.sh`). The fold-reviewer
+  agent (`.claude/agents/fold-reviewer.md`) reads the golden diff against
+  the corpus lines and writes that file with `scripts/record-review.sh`;
+  `scripts/build-guard.sh` refuses that script from the main session.
 - `commit-msg`: diff `##CASE`/`##TODO` headers in
   `tests/fixtures/fold_regressions.log` and entries in the `known` tables of
   `tests/integration/test_constitutional_compliance.rs` between `HEAD` and

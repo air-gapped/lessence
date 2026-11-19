@@ -101,6 +101,10 @@ if [ "$staged_src" = "1" ]; then
         fail "target/gate/gate.json was written for a different change — run 'make gate' again"
     fi
     pass "make gate PASS for this change"
+    if ! review_out=$(./scripts/check-fold-review.sh 2>&1); then
+        fail "$review_out"
+    fi
+    pass "$review_out"
 fi
 
 # Large file check (1MB limit)

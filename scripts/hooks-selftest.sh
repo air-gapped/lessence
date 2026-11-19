@@ -75,4 +75,38 @@ build_case "release-check through tail" deny "make release-check 2>&1 | tail -60
 build_case "mutants script through head" deny "scripts/mutants.sh -f src/x.rs | head -5"
 build_case "a listing through tail" allow "ls scripts | tail -3"
 
+review_guard_case() { # name expect(deny|allow) json
+    local out
+    out=$(printf '%s' "$3" | scripts/build-guard.sh)
+    cases=$((cases + 1))
+    if [ "$2" = deny ] && ! printf '%s' "$out" | grep -q 'does not record its own review'; then
+        echo "hooks selftest: FAIL build-guard should refuse: $1" >&2; exit 1
+    fi
+    if [ "$2" = allow ] && [ -n "$out" ]; then
+        echo "hooks selftest: FAIL build-guard should allow: $1" >&2; exit 1
+    fi
+}
+review_guard_case "main session records a review" deny '{"tool_input":{"command":"scripts/record-review.sh pass ok"}}'
+review_guard_case "main session mentions the script" allow '{"tool_input":{"command":"git commit -m \"the reviewer runs `scripts/record-review.sh` itself\""}}'
+review_guard_case "reviewer records a review" allow '{"agent_id":"a1","agent_type":"fold-reviewer","tool_input":{"command":"scripts/record-review.sh pass ok"}}'
+
+review_dir=$(mktemp -d)
+review_case() { # name expect(pass|fail) gate-json review-json-or-empty
+    printf '%s' "$3" > "$review_dir/gate.json"
+    [ ! -e "$review_dir/review.json" ] || mv "$review_dir/review.json" "$review_dir/previous.json"
+    [ -z "$4" ] || printf '%s' "$4" > "$review_dir/review.json"
+    cases=$((cases + 1))
+    if GATE_JSON="$review_dir/gate.json" REVIEW_JSON="$review_dir/review.json" scripts/check-fold-review.sh >/dev/null 2>&1; then got=pass; else got=fail; fi
+    if [ "$got" != "$2" ]; then
+        echo "hooks selftest: FAIL fold review should $2: $1" >&2; exit 1
+    fi
+}
+quiet='{"staged_diff_sha256":"aa","golden":[{"corpus":"k","added":[],"removed":[],"recounted":[]}]}'
+moved='{"staged_diff_sha256":"aa","golden":[{"corpus":"k","added":["x"],"removed":[],"recounted":[]}]}'
+review_case "no golden changed" pass "$quiet" ""
+review_case "golden changed, no review" fail "$moved" ""
+review_case "golden changed, review passes" pass "$moved" '{"staged_diff_sha256":"aa","verdict":"pass","summary":"k ok"}'
+review_case "review for another change" fail "$moved" '{"staged_diff_sha256":"bb","verdict":"pass","summary":"k ok"}'
+review_case "reviewer found a defect" fail "$moved" '{"staged_diff_sha256":"aa","verdict":"fail","summary":"k: a folds with b"}'
+
 echo "hooks selftest: $cases cases pass"
