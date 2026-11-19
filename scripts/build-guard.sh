@@ -6,7 +6,9 @@
 #
 # Reads the hook's JSON on stdin. A command that builds or tests is refused
 # while another cargo, rustc or nextest process is running, or while less
-# than MIN_AVAILABLE_GB of memory is available. Everything else passes.
+# than MIN_AVAILABLE_GB of memory is available. A release-check or mutants
+# run piped through tail or head is refused too: it would show nothing for
+# its whole length. Everything else passes.
 #
 #   echo '{"tool_input":{"command":"cargo build"}}' | scripts/build-guard.sh
 set -euo pipefail
@@ -14,6 +16,13 @@ set -euo pipefail
 MIN_AVAILABLE_GB="${LESSENCE_BUILD_MIN_AVAILABLE_GB:-10}"
 
 command=$(jq -r '.tool_input.command // empty')
+
+long_run='(make[[:space:]]+(release-check|mutants|mutants-full)|scripts/(release-check|mutants)\.sh)'
+if printf '%s' "$command" | grep -qE "$long_run" && printf '%s' "$command" | grep -qE '\|[[:space:]]*(tail|head)\b'; then
+    jq -n --arg reason "build-guard: this run takes many minutes and tail or head hides its progress lines until the end. Run it without them, in the background; release-check also writes target/gate/release-check.log as it goes." \
+        '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
+    exit 0
+fi
 heavy='(^|[;&|(]|[[:space:]])(cargo[[:space:]]+(build|test|nextest|clippy|doc|run|bench|mutants|install|check)|make[[:space:]]+(ci|gate|release-check|install|test|clippy|doc|distill)|scripts/(gate|release-check)\.sh)'
 if ! printf '%s' "$command" | grep -qE "$heavy"; then
     exit 0

@@ -14,6 +14,7 @@ cd "$ROOT"
 
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
+exec > >(tee "$GATE_DIR/release-check.log") 2>&1
 
 # The base is the last PUBLISHED release: what users actually run. A tag can
 # exist without a published release (v0.6.0 did), and comparing against it
