@@ -165,9 +165,12 @@ fn run(case: &Case, threads: &str) -> Run {
     if text_mode_asserts_folded_text_not_report_overview {
         args.push("--no-report".into());
     }
+    feed(&args, case.lines.iter())
+}
 
+fn feed<'a>(args: &[String], lines: impl Iterator<Item = &'a String>) -> Run {
     let mut child = crate::common::command(&*BIN)
-        .args(&args)
+        .args(args)
         .env(
             "LESSENCE_SANITIZE_KEY",
             SAME_PSEUDONYM_KEY_FOR_EVERY_THREAD_COUNT,
@@ -178,7 +181,7 @@ fn run(case: &Case, threads: &str) -> Run {
         .spawn()
         .expect("failed to spawn lessence");
     let mut stdin = child.stdin.take().expect("stdin");
-    for line in &case.lines {
+    for line in lines {
         let refused_flags_exited_before_reading_all_input = writeln!(stdin, "{line}").is_err();
         if refused_flags_exited_before_reading_all_input {
             break;
@@ -247,7 +250,10 @@ fn count_groups(stdout: &str) -> usize {
         .count()
 }
 
-fn par_map_in_case_order<T: Send>(cases: &[Case], f: impl Fn(&Case) -> Option<T> + Sync) -> Vec<T> {
+fn par_map_in_case_order<C: Sync, T: Send>(
+    cases: &[C],
+    f: impl Fn(&C) -> Option<T> + Sync,
+) -> Vec<T> {
     let workers = std::thread::available_parallelism().map_or(4, std::num::NonZero::get);
     let chunk = cases.len().div_ceil(workers).max(1);
     std::thread::scope(|s| {
@@ -375,5 +381,138 @@ fn every_case_is_identical_at_any_thread_count() {
         "{} case(s) differ at 8 threads (the parallel path batches and re-clusters):\n{}",
         diffs.len(),
         diffs.join("\n")
+    );
+}
+
+/// Cases whose line order is part of their meaning, so the reversed input is a different log: `(case id, reason)`.
+const ORDER_IS_THE_INPUT: &[(&str, &str)] = &[(
+    "092dda7#2",
+    "--frame-continuations joins an indented line to the record above it, so reversed lines are a different log",
+)];
+
+/// Cases that fold into different groups when reversed, a defect not yet fixed: `(case id, bead id)`; this table only shrinks.
+const KNOWN_ORDER_DEPENDENT: &[(&str, &str)] = &[
+    ("lessence-682#1", "lessence-v5kr"),
+    ("lessence-bek#1", "lessence-v5kr"),
+    ("lessence-1tee#5", "lessence-v5kr"),
+];
+
+const FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE: usize = 200;
+
+fn case_ids(cases: &[Case]) -> Vec<String> {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    cases
+        .iter()
+        .map(|c| {
+            let n = seen.entry(c.bead.as_str()).or_default();
+            *n += 1;
+            format!("{}#{n}", c.bead)
+        })
+        .collect()
+}
+
+fn picks_an_output_without_group_records(flags: &[String]) -> bool {
+    flags
+        .windows(2)
+        .any(|w| w[0] == "--format" && !w[1].eq_ignore_ascii_case("json"))
+        || flags
+            .iter()
+            .any(|f| matches!(f.as_str(), "--summary" | "--preflight"))
+}
+
+fn sorted_group_counts(stdout: &str) -> Vec<u64> {
+    let mut counts: Vec<u64> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("group"))
+        .map(|v| {
+            v.get("count")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or_else(|| panic!("group record without a count: {v}"))
+        })
+        .collect();
+    counts.sort_unstable();
+    counts
+}
+
+enum Reversal {
+    Skipped,
+    Same(String),
+    Differs(String, String),
+}
+
+#[test]
+fn every_case_folds_into_the_same_groups_in_reverse_order() {
+    let parsed = parse(&CORPUS);
+    let ids = case_ids(&parsed);
+    for (id, _) in ORDER_IS_THE_INPUT.iter().chain(KNOWN_ORDER_DEPENDENT) {
+        assert!(
+            ids.iter().any(|i| i == id),
+            "{id} is listed in a reversed-order table but names no case; delete the entry"
+        );
+    }
+    let cases: Vec<(String, &Case)> = ids
+        .into_iter()
+        .zip(&parsed)
+        .filter(|(id, c)| {
+            !c.todo_known_open_defect && !ORDER_IS_THE_INPUT.iter().any(|(o, _)| o == id)
+        })
+        .collect();
+
+    let outcomes = par_map_in_case_order(&cases, |(id, case)| {
+        if picks_an_output_without_group_records(&case.flags) {
+            return Some(Reversal::Skipped);
+        }
+        let mut args: Vec<String> = vec!["--threads".into(), "1".into()];
+        if !case.flags.iter().any(|f| f == "--explain") {
+            args.push("--explain".into());
+        }
+        args.extend(case.flags.iter().cloned());
+        let forward = feed(&args, case.lines.iter());
+        let forward_counts = sorted_group_counts(&forward.stdout);
+        if forward.status != 0 || forward_counts.is_empty() {
+            return Some(Reversal::Skipped);
+        }
+        let reversed_counts = sorted_group_counts(&feed(&args, case.lines.iter().rev()).stdout);
+        Some(if forward_counts == reversed_counts {
+            Reversal::Same(id.clone())
+        } else {
+            Reversal::Differs(
+                id.clone(),
+                format!("{id}  forward={forward_counts:?}  reversed={reversed_counts:?}"),
+            )
+        })
+    });
+
+    let known = |id: &str| KNOWN_ORDER_DEPENDENT.iter().any(|(k, _)| *k == id);
+    let mut compared = 0;
+    let mut skipped = 0;
+    let mut differing: Vec<String> = Vec::new();
+    let mut fixed_but_still_listed: Vec<String> = Vec::new();
+    for outcome in outcomes {
+        match outcome {
+            Reversal::Skipped => skipped += 1,
+            Reversal::Same(id) if known(&id) => fixed_but_still_listed.push(format!(
+                "{id} now folds the same in reverse order; delete its KNOWN_ORDER_DEPENDENT entry"
+            )),
+            Reversal::Differs(id, _) if known(&id) => {}
+            Reversal::Same(_) => compared += 1,
+            Reversal::Differs(_, line) => {
+                compared += 1;
+                differing.push(line);
+            }
+        }
+    }
+
+    assert!(
+        compared >= FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE,
+        "only {compared} case(s) compared ({skipped} skipped); the reversed-order test must compare at least {FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE}"
+    );
+    assert!(
+        differing.is_empty() && fixed_but_still_listed.is_empty(),
+        "{} of {compared} case(s) fold into different groups in reverse order ({skipped} skipped):\n{}\n{}",
+        differing.len(),
+        differing.join("\n"),
+        fixed_but_still_listed.join("\n")
     );
 }
