@@ -19,8 +19,10 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 make ci             # fmt + clippy + doc + test + deny + mutants-pins + comment-budget + corpus-acceptance + hooks-selftest (~20 s warm, every commit). Tests run on
                     # the test profile: the release profile (fat LTO, one codegen unit) is
                     # for the shipped binary, and GitHub CI is where it is checked to compile
-make gate           # FAILS on exactly six things: a new ##CASE that also passes on the
-                    # HEAD build (vacuous), kubelet instructions over +1%, or over +2%
+make gate           # FAILS on exactly seven things: a changed line under src/folder,
+                    # src/normalize.rs or src/patterns that no test catches a mutation of
+                    # (adds minutes, about 13 s a mutant), a new ##CASE that also passes
+                    # on the HEAD build (vacuous), kubelet instructions over +1%, or over +2%
                     # against the last release tag (the sum of small steps), --explain vs
                     # --format json disagreeing on a corpus where the HEAD build agreed,
                     # peak RSS over +32 MiB (default run and --overview all), and default
@@ -109,6 +111,7 @@ not a claim.
 | a new test can fail | `gate.json` → `cases.new_failing_on_base` |
 | memory did not grow | `gate.json` → `rss_kb`: peak RSS of the default run and `--overview all` vs the baseline's default, allowance +32 MiB |
 | the default output did not bloat | `gate.json` → `size`: stdout/stderr bytes and tiktoken `cl100k_base` tokens per corpus vs `tests/fixtures/overview-size-baseline.json` + max(128, 1%). Same caveat as the goldens — `GATE_BLESS_SIZE=1` makes any size "correct" |
+| changed lines are tested | `gate.json` → `mutants`: total and missed on the change's own lines |
 | mutation score | `mutants.out/outcomes.json` from `make release-check` |
 
 Not evidence: synthetic inputs, wall-clock numbers, a baseline binary you
@@ -132,10 +135,6 @@ the code so the wrong thing cannot be written; add a check to `make ci`,
 `make gate` or a hook whose message says what to do instead; add a test.
 Write a rule in this file only for a judgment no check can make. A check
 explains itself when it fails, so it is not listed here.
-
-One known gap has no early check: new arithmetic and boundaries without
-unit tests are found only by the mutation run in `make release-check`,
-because a per-commit run costs minutes per change.
 
 ## Commits
 

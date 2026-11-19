@@ -488,6 +488,47 @@ size_fail=0
 size_error_fail=0
 [ "$size_errors" -gt 0 ] && size_error_fail=1
 
+# ── 8. Mutants on the change itself ──────────────────────────────────────
+# New arithmetic and boundaries without a test that can fail were found
+# only at release time. This runs the mutation tool on the changed lines of
+# the folder, the normalizer and the detectors (minutes: about 13 s a
+# mutant). A missed mutant fails the gate; one that cannot change behaviour
+# gets an exclude_re entry in .cargo/mutants.toml with its proof.
+# release-check runs its own over the whole release (GATE_BASE is a tag
+# there), and GATE_SKIP_MUTANTS=1 is for testing this script.
+mutants_line="not run"
+mutants_json='{"ran": false}'
+mutants_missed=0
+mutants_broken=""
+if [ "$GATE_BASE" = "HEAD" ] && [ -z "${GATE_SKIP_MUTANTS:-}" ]; then
+    mutants_diff="$(mktemp)"
+    git diff HEAD -- src/folder src/normalize.rs src/patterns > "$mutants_diff"
+    if [ ! -s "$mutants_diff" ]; then
+        mutants_line="no change under src/folder, src/normalize.rs or src/patterns"
+    else
+        echo "Running mutants on the changed lines (progress once a minute)..." >&2
+        rm -rf mutants.out
+        mutants_rc=0
+        scripts/mutants.sh -f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**/*.rs' \
+            -C --lib --in-diff "$mutants_diff" >&2 || mutants_rc=$?
+        outcomes="mutants.out/outcomes.json"
+        case "$mutants_rc" in
+            0|2|3)
+                if jq -e '.outcomes | type == "array"' "$outcomes" >/dev/null 2>&1; then
+                    mutants_total="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant)] | length' "$outcomes")"
+                    mutants_missed="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant and .summary=="MissedMutant")] | length' "$outcomes")"
+                    mutants_line="${mutants_total} on the change, ${mutants_missed} missed"
+                    mutants_json="{\"ran\": true, \"total\": ${mutants_total}, \"missed\": ${mutants_missed}}"
+                else
+                    mutants_broken="rc=${mutants_rc}, no readable outcomes.json"
+                fi
+                ;;
+            *) mutants_broken="rc=${mutants_rc}" ;;
+        esac
+    fi
+    rm -f "$mutants_diff"
+fi
+
 # ── Verdict ──────────────────────────────────────────────────────────────
 
 verdict="PASS"
@@ -510,6 +551,14 @@ fi
 if [ "$release_perf_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("slower than ${release_ref} by ${release_delta_pct}% > ${GATE_PERF_RELEASE_MAX}%: the sum of changes since the release is over the budget; the owner decides whether to accept it (GATE_PERF_RELEASE_MAX) or what to speed up")
+fi
+if [ "$mutants_missed" -gt 0 ]; then
+    verdict="FAIL"
+    fail_reasons+=("${mutants_missed} changed line(s) no test can catch a change to; write the test, or prove the mutant equivalent in .cargo/mutants.toml: $(tr '\n' ';' < mutants.out/missed.txt)")
+fi
+if [ -n "$mutants_broken" ]; then
+    verdict="FAIL"
+    fail_reasons+=("the mutants run did not complete (${mutants_broken}); see mutants.out/")
 fi
 if [ "$modes_fail" -eq 1 ]; then
     verdict="FAIL"
@@ -557,6 +606,7 @@ if [ -n "$release_bin" ]; then
 else
     echo "perf since the last release: not measured (no tag in this clone)"
 fi
+echo "mutants: ${mutants_line}"
 if [ "$rss_ok" -eq 1 ]; then
     printf "rss: base=%sK default=%sK overview-all=%sK (allowance +%sK)\n" \
         "$rss_base" "$rss_new" "$rss_all" "$RSS_ALLOWANCE_KB"
@@ -607,6 +657,7 @@ cat > "$GATE_DIR/gate.json" <<JSON
   "rss_kb": {"base_default": ${rss_base:-null}, "new_default": ${rss_new:-null},
              "new_overview_all": ${rss_all:-null}, "allowance_kb": ${RSS_ALLOWANCE_KB}},
   "size": ${size_json},
+  "mutants": ${mutants_json},
   "verdict": "${verdict}"
 }
 JSON

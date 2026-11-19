@@ -101,4 +101,8 @@ exclude_re = [
     # pop-rarest, truncate(k-1), push-rarest is the identity on the sorted
     # vector.
     'replace > with >= in RollupComputer::varies_entry$',
+    # At len == 2 the only value the placeholder test accepts is "<>", which
+    # holds no digit and none of - . / _, so the function returns false with
+    # or without the placeholder test.
+    'replace > with >= in KubernetesDetector::is_compound_name$',
 ]

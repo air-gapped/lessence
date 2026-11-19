@@ -101,6 +101,13 @@ No target other than `make distill` reads an original corpus.
    vacuity classification of step 4) and runs as a precondition of every
    gate.
 9. Stdout ≤ 15 lines. `gate.json`:
+9. Mutants on the change (`scripts/mutants.sh ... --in-diff`), only when the
+   baseline is HEAD: the lines changed under `src/folder`, `src/normalize.rs`
+   and `src/patterns` are mutated and the unit tests run on each. FAIL on a
+   missed mutant, naming it, and on a run that did not complete. An
+   equivalent mutant gets an `exclude_re` entry in `.cargo/mutants.toml`
+   with its proof. `GATE_SKIP_MUTANTS=1` skips the step for testing the
+   script; release-check runs its own over the whole release.
 
 ```json
 { "time": "", "git_head": "", "staged_diff_sha256": "scripts/gate-diff-hash.sh: sha256(git diff HEAD, .beads/ excluded)",
