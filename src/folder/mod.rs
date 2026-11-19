@@ -1594,7 +1594,133 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
             len: len - p - q,
         });
     }
+    if !edits.is_empty() && an_object_member_is_missing(template, member) {
+        return None;
+    }
     Some(edits)
+}
+
+/// Whether a JSON object on one side holds a member whose value is an
+/// object with keys, where the object at the same path on the other side
+/// has no such key. A slot over that difference would hide that one record
+/// carries a whole structure the other lacks. A scalar member missing, or
+/// `{}` against a filled object under one key, is an absent value and
+/// folds. An object whose members the template shows as a bare slot is not
+/// read: its keys are unknown.
+fn an_object_member_is_missing(template: &str, member: &str) -> bool {
+    let ours = object_members(template);
+    let theirs = object_members(member);
+    lacks_an_object_member(&ours, &theirs) || lacks_an_object_member(&theirs, &ours)
+}
+
+fn lacks_an_object_member(
+    with: &BTreeMap<String, ObjectMembers<'_>>,
+    without: &BTreeMap<String, ObjectMembers<'_>>,
+) -> bool {
+    with.iter().any(|(path, ours)| {
+        without.get(path).is_some_and(|theirs| {
+            !ours.unreadable
+                && !theirs.unreadable
+                && ours.objects.iter().any(|key| !theirs.keys.contains(key))
+        })
+    })
+}
+
+#[derive(Default)]
+struct ObjectMembers<'a> {
+    keys: std::collections::BTreeSet<&'a str>,
+    objects: std::collections::BTreeSet<&'a str>,
+    unreadable: bool,
+}
+
+/// The members of each JSON object in `s`, by the path of keys leading to
+/// it (`/user/extra`; an array element adds `/[]`; the outermost is ``).
+/// `objects` names the members whose value is an object with keys. Objects
+/// at one path, as in an array, pool their members. Text inside a quoted
+/// string is never read as an object.
+fn object_members(s: &str) -> BTreeMap<String, ObjectMembers<'_>> {
+    let b = s.as_bytes();
+    let mut found: BTreeMap<String, ObjectMembers<'_>> = BTreeMap::new();
+    let mut frames: Vec<(bool, String, Option<&str>)> = Vec::new();
+    let mut last_key = "";
+    let mut expect_key = false;
+    let mut i = 0;
+    while i < b.len() {
+        let byte = b[i];
+        if byte.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if expect_key
+            && b[i..].starts_with(VARIES_MARK.as_bytes())
+            && let Some((_, path, _)) = frames.last()
+        {
+            found.entry(path.clone()).or_default().unreadable = true;
+        }
+        expect_key = false;
+        match byte {
+            b'"' => {
+                let mut end = i + 1;
+                while end < b.len() && b[end] != b'"' {
+                    end += if b[end] == b'\\' { 2 } else { 1 };
+                }
+                let text = &s[i + 1..end.min(b.len())];
+                let colon = b
+                    .get(end + 1..)
+                    .and_then(|rest| rest.iter().find(|c| !c.is_ascii_whitespace()))
+                    == Some(&b':');
+                if colon {
+                    last_key = text;
+                    note_key(&mut found, &frames, text);
+                }
+                i = end + 1;
+                continue;
+            }
+            b'{' | b'[' => {
+                let (path, holder) = match frames.last() {
+                    Some((true, parent, _)) => (format!("{parent}/{last_key}"), Some(last_key)),
+                    Some((false, parent, _)) => (format!("{parent}/[]"), None),
+                    None => (String::new(), None),
+                };
+                let object = byte == b'{';
+                frames.push((object, path, holder.filter(|_| object)));
+                expect_key = object;
+            }
+            b'}' | b']'
+                if frames
+                    .last()
+                    .is_some_and(|&(object, _, _)| object == (byte == b'}')) =>
+            {
+                frames.pop();
+            }
+            b',' => expect_key = frames.last().is_some_and(|&(object, _, _)| object),
+            _ => {}
+        }
+        i += 1;
+    }
+    found
+}
+
+fn note_key<'a>(
+    found: &mut BTreeMap<String, ObjectMembers<'a>>,
+    frames: &[(bool, String, Option<&'a str>)],
+    key: &'a str,
+) {
+    let Some((true, path, holder)) = frames.last() else {
+        return;
+    };
+    let members = found.entry(path.clone()).or_default();
+    members.unreadable |= key.contains(VARIES_MARK);
+    members.keys.insert(key);
+    if let (Some(holder), Some((_, parent, _))) =
+        (holder, frames.len().checked_sub(2).map(|p| &frames[p]))
+    {
+        found
+            .entry(parent.clone())
+            .or_default()
+            .objects
+            .insert(holder);
+    }
 }
 
 struct SharedAtoms<'a> {

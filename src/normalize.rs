@@ -533,7 +533,7 @@ fn exact_anchor_fields<'a>(
 }
 
 static FIELD_METHOD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)"?[a-z_.]*method"?\s*[:=]\s*"?([A-Za-z][A-Za-z0-9_./-]*)"#)
+    Regex::new(r#"(?i)"?[a-z_.]*(method|verb)"?\s*[:=]\s*"?([A-Za-z][A-Za-z0-9_./-]*)"#)
         .expect("field method anchor pattern must compile")
 });
 
@@ -1288,18 +1288,25 @@ fn protect_anchored_spans<'a>(
 
     let mut has_method = false;
     if gate(
-        original.contains("ethod") || original.contains("ETHOD"),
+        original.contains("ethod")
+            || original.contains("ETHOD")
+            || original.contains("erb")
+            || original.contains("ERB"),
         "method field",
         original,
         || FIELD_METHOD.is_match(original),
     ) {
         for caps in FIELD_METHOD.captures_iter(original) {
-            let method = caps.get(1).map_or("", |m| m.as_str());
+            let method = caps.get(2).map_or("", |m| m.as_str());
             identities.push((AnchorClass::Method, AnchorIdentity::Text(method)));
-            has_method |= matches!(
-                method.to_ascii_uppercase().as_str(),
-                "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
-            );
+            let keyed_method = caps
+                .get(1)
+                .is_some_and(|key| key.as_str().eq_ignore_ascii_case("method"));
+            has_method |= keyed_method
+                && matches!(
+                    method.to_ascii_uppercase().as_str(),
+                    "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD" | "OPTIONS"
+                );
         }
         if has_method {
             for caps in FIELD_PATH.captures_iter(original) {
@@ -4971,6 +4978,39 @@ mod e8v_normalize_2026_09_17 {
             render_route("/files/0011aabb.tar-gz"),
             "/files/<N>aabb.tar-gz"
         );
+    }
+
+    #[test]
+    fn a_verb_field_reaches_the_method_anchor() {
+        let get = r#"{"requestURI":"/api/v1/namespaces/shop/pods/web-1","verb":"get","user":{"username":"robot-a"}}"#;
+        let delete = r#"{"requestURI":"/api/v1/namespaces/shop/pods/web-1","verb":"delete","user":{"username":"robot-a"}}"#;
+        assert_ne!(normalize(get).anchor, normalize(delete).anchor);
+        assert_ne!(
+            normalize("x verb=list y").anchor,
+            normalize("x verb=deletecollection y").anchor
+        );
+        assert_ne!(
+            normalize("x request_verb=list y").anchor,
+            normalize("x request_verb=watch y").anchor
+        );
+        assert_ne!(
+            normalize("x VERB=LIST y").anchor,
+            normalize("x VERB=WATCH y").anchor
+        );
+    }
+
+    #[test]
+    fn records_differing_only_in_the_actor_share_the_verb_anchor() {
+        let a = r#"{"requestURI":"/api/v1/namespaces/shop/pods/web-1","verb":"get","user":{"username":"robot-a"}}"#;
+        let b = r#"{"requestURI":"/api/v1/namespaces/shop/pods/web-1","verb":"get","user":{"username":"robot-b"}}"#;
+        assert_eq!(normalize(a).anchor, normalize(b).anchor);
+    }
+
+    #[test]
+    fn a_verb_field_does_not_make_a_quoted_path_field_a_route() {
+        let items = normalize(r#"verb=GET path="items/42" y"#);
+        let orders = normalize(r#"verb=GET path="orders/42" y"#);
+        assert_eq!(items.anchor, orders.anchor);
     }
 
     #[test]

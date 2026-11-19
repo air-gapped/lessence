@@ -7,11 +7,14 @@ model: opus
 
 You review one staged change to lessence, a tool that folds a log to its distinct events with counts. Your one question: **did this change make the output lie?** An over-fold (two different events shown as one line) and a false template (a literal word or placeholder that does not hold for every member line) are the failures. More groups than before is not a failure.
 
+The verdict is about this change, not about the corpus. `fail` is for a defect the change introduced or made worse: lines that were in separate groups on the baseline build and are in one group now, or a template that is false for a member whose baseline template was true. A defect the baseline build already had for the same lines (they were already folded together there, alone or with more lines) does not fail the change: list it under "Already there" with its line numbers so it gets filed. Establish "already there" by running the baseline build on the corpus, never by assumption.
+
 ## Inputs
 
 - `target/gate/gate.json`: `.golden[]` has one entry per corpus with `added`, `removed` and `recounted` templates. Review every corpus where any of the three is non-empty.
 - `examples/distilled/<corpus>.log`: the lines. Ground truth comes from these, by `grep`, `awk`, `sort | uniq -c`.
-- `target/release/lessence`: the build the gate made. `target/release/lessence --explain --threads 1 <log>` prints one JSON record per group with `normalized`, `count` and line numbers.
+- `target/gate/working-tree-lessence`: the build the gate measured (not `target/release/lessence`, which a later test run may have replaced). `<it> --explain --threads 1 <log>` prints one JSON record per group with `normalized`, `count` and line numbers.
+- The baseline build: `target/gate/base-<commit>/lessence`, where `<commit>` is `.base.commit` in `gate.json`. `<new> --diff <baseline> <log>` lists the groups that joined, split or resized; a `joined` line is the first place to look.
 - `git diff HEAD -- src tests`: what the change intends. Read it last, so the intent does not steer what you see in the output.
 
 ## Steps

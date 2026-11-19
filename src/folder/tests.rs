@@ -8001,3 +8001,126 @@ fn a_glued_founder_keeps_the_plain_lines_apart_in_reversed_order() {
     assert_eq!(f.buffer[0].count(), 1);
     assert_eq!(f.buffer[1].count(), 2);
 }
+
+#[test]
+fn an_object_valued_member_absent_on_one_side_refuses_the_join_either_way() {
+    let with = r#"{"verb":"list","user":{"username":"robot-a","groups":["staff"],"extra":{"credential-id":["CERT=1f2e"]}},"code":403}"#;
+    let without = r#"{"verb":"list","user":{"username":"guest","groups":["visitors"]},"code":403}"#;
+    assert_eq!(template_edits(with, without), None);
+    assert_eq!(template_edits(without, with), None);
+}
+
+#[test]
+fn an_object_valued_member_absent_two_levels_down_refuses_the_join() {
+    let with = r#"{"verb":"list","user":{"name":"a","auth":{"kind":"cert","extra":{"id":"c-1"}}},"code":403}"#;
+    let without = r#"{"verb":"list","user":{"name":"a","auth":{"kind":"anonymous"}},"code":403}"#;
+    assert_eq!(template_edits(with, without), None);
+    assert_eq!(template_edits(without, with), None);
+}
+
+#[test]
+fn a_scalar_member_absent_on_one_side_still_folds() {
+    let with = r#"{"process":{"pid":4101,"pod":{"container":{"name":"main","start_time":"<TIMESTAMP>"}}}}"#;
+    let without = r#"{"process":{"pid":4103,"pod":{"container":{"name":"main"}}}}"#;
+    assert!(template_edits(with, without).is_some_and(|e| !e.is_empty()));
+    assert!(template_edits(without, with).is_some_and(|e| !e.is_empty()));
+}
+
+#[test]
+fn an_empty_object_against_a_filled_one_under_the_same_key_still_folds() {
+    let empty = r#"GRPC response: {"body":{}}"#;
+    let filled = r#"GRPC response: {"body":{"size":7}}"#;
+    assert!(template_edits(empty, filled).is_some_and(|e| !e.is_empty()));
+    assert!(template_edits(filled, empty).is_some_and(|e| !e.is_empty()));
+}
+
+#[test]
+fn the_same_members_with_other_values_still_fold() {
+    let a = r#"{"verb":"get","user":{"username":"robot-a","extra":{"id":"c-1"}},"code":200}"#;
+    let b = r#"{"verb":"get","user":{"username":"robot-b","extra":{"id":"c-2"}},"code":200}"#;
+    assert!(template_edits(a, b).is_some_and(|e| !e.is_empty()));
+}
+
+#[test]
+fn object_members_are_read_by_path_and_by_value_shape() {
+    let found = object_members(
+        r#"{"user":{"extra":{"t":"1"},"empty":{},"roles":[{"n":"a"}]},"x":"{\"q\":{\"r\":1}}"}"#,
+    );
+    assert_eq!(
+        found.keys().map(String::as_str).collect::<Vec<_>>(),
+        vec!["", "/user", "/user/extra", "/user/roles/[]"]
+    );
+    let names = |path: &str| found[path].keys.iter().copied().collect::<Vec<_>>();
+    let objects = |path: &str| found[path].objects.iter().copied().collect::<Vec<_>>();
+    assert_eq!(names(""), vec!["user", "x"]);
+    assert_eq!(objects(""), vec!["user"]);
+    assert_eq!(names("/user"), vec!["empty", "extra", "roles"]);
+    assert_eq!(objects("/user"), vec!["extra"]);
+    assert_eq!(names("/user/roles/[]"), vec!["n"]);
+    assert!(found.values().all(|m| !m.unreadable));
+}
+
+#[test]
+fn a_key_with_space_before_its_colon_is_still_a_key() {
+    let found = object_members(r#"{"user" : {"extra" : {"t" : 1}}}"#);
+    assert_eq!(
+        found["/user"].objects.iter().copied().collect::<Vec<_>>(),
+        vec!["extra"]
+    );
+}
+
+#[test]
+fn an_object_written_inside_a_quoted_string_is_not_read() {
+    let more = r#"{"user":{"spec":"{\"extra\":{\"k\":1}}","n":1}}"#;
+    let fewer = r#"{"user":{"spec":"{}","n":2}}"#;
+    assert!(!an_object_member_is_missing(more, fewer));
+    assert!(!an_object_member_is_missing(fewer, more));
+}
+
+#[test]
+fn arrays_of_objects_compare_their_pooled_members() {
+    let two = r#"{"items":[{"name":"a"},{"name":"b","extra":{"k":1}}]}"#;
+    let one = r#"{"items":[{"name":"a"}]}"#;
+    assert!(an_object_member_is_missing(two, one));
+    assert!(!an_object_member_is_missing(two, two));
+    assert!(!an_object_member_is_missing(
+        r#"{"items":[{"name":"a"},{"name":"b"}]}"#,
+        one
+    ));
+}
+
+#[test]
+fn a_closed_object_hands_its_later_members_back_to_its_parent() {
+    let moved = r#"{"a":{"x":{"k":1}},"y":{"k":1}}"#;
+    let nested = r#"{"a":{"x":{"k":1},"y":{"k":1}}}"#;
+    assert!(an_object_member_is_missing(moved, nested));
+    assert!(an_object_member_is_missing(nested, moved));
+}
+
+#[test]
+fn an_object_the_template_shows_as_a_bare_slot_is_not_read() {
+    let member = r#"{"user":{"name":"b","extra":{"k":1}}}"#;
+    let slotted = r#"{"user":{"name":"a",<VARIES>}}"#;
+    assert!(!an_object_member_is_missing(slotted, member));
+    assert!(!an_object_member_is_missing(member, slotted));
+    assert!(an_object_member_is_missing(
+        r#"{"user":{"name":"a"}}"#,
+        member
+    ));
+    assert!(!an_object_member_is_missing(
+        r#"{"user":{"name":"a","extra":<VARIES>}}"#,
+        member
+    ));
+    assert!(!an_object_member_is_missing(
+        r#"{"user":{"name":"a","<VARIES>":1}}"#,
+        member
+    ));
+}
+
+#[test]
+fn a_closer_that_does_not_match_the_open_frame_closes_nothing() {
+    let found = object_members(r#"{"a":{"b":1],"c":1},"d":[1},2]}"#);
+    let names = |path: &str| found[path].keys.iter().copied().collect::<Vec<_>>();
+    assert_eq!(names(""), vec!["a", "d"]);
+    assert_eq!(names("/a"), vec!["b", "c"]);
+}
