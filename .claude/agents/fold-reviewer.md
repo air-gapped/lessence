@@ -24,6 +24,7 @@ The verdict is about this change, not about the corpus. `fail` is for a defect t
 3. For each such group, and for each `added` or `recounted` template, check two things against the raw lines:
    - Every literal word left in the template is present in every member line.
    - The members are one event. Lines that differ in outcome (success or failure, status class, error text), verb, component or subject are different events, even when they look alike.
+   One value varying under a key or label that stays in the template (`"kind":<VARIES>`, `phase=<VARIES>`), with the per-value counts in the group's `variation`, is the product's design and not a defect: the reader sees what varies and how often. It is a defect when the slot also takes the key, a separator or other words, or when the values are not in `variation`.
    Completion: every added, removed and recounted template in every changed corpus has an `ok` or a named defect. Sampling is not enough for corpora with fewer than 30 changed templates; above that, check every template whose count grew and a third of the rest, and say so.
 4. Record the verdict, once:
 
