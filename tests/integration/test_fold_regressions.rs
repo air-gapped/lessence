@@ -390,10 +390,16 @@ const ORDER_IS_THE_INPUT: &[(&str, &str)] = &[(
     "--frame-continuations joins an indented line to the record above it, so reversed lines are a different log",
 )];
 
-/// Cases that fold into different groups when reversed, a defect not yet fixed: `(case id, bead id)`; this table only shrinks.
-const KNOWN_ORDER_DEPENDENT: &[(&str, &str)] = &[
-    ("lessence-682#1", "lessence-v5kr"),
-    ("lessence-bek#1", "lessence-v5kr"),
+/// Cases whose two orders merge the same lines to different depths: clustering is single-pass and founder-based, a line joins the first group whose founder accepts it, so the line that comes first decides how far groups merge. A case belongs here only when one order's groups are a refinement of the other's, which the test asserts: `(case id, reason)`.
+const FOUNDER_ORDER_DECIDES_THE_MERGE: &[(&str, &str)] = &[
+    (
+        "lessence-682#1",
+        "forward, two founders chain six lines into one group; reversed, four founders each keep their own",
+    ),
+    (
+        "lessence-bek#1",
+        "a thousand lines of converging groups and filler, where the line that founds a group decides which later lines it accepts",
+    ),
 ];
 
 const FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE: usize = 200;
@@ -419,32 +425,105 @@ fn picks_an_output_without_group_records(flags: &[String]) -> bool {
             .any(|f| matches!(f.as_str(), "--summary" | "--preflight"))
 }
 
-fn sorted_group_counts(stdout: &str) -> Vec<u64> {
-    let mut counts: Vec<u64> = stdout
+struct Group {
+    count: u64,
+    ends: [usize; 2],
+}
+
+/// The group records, their first and last line numbers counted in forward order (`reversed_input` holds the line count when the input was fed reversed). A group record names no other member, so these ends are all of a group's membership the test can see.
+fn groups_by_forward_line(stdout: &str, reversed_input: Option<usize>) -> Vec<Group> {
+    stdout
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
         .filter(|v| v.get("type").and_then(|t| t.as_str()) == Some("group"))
         .map(|v| {
-            v.get("count")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or_else(|| panic!("group record without a count: {v}"))
+            let end = |which: &str| {
+                let n = v[which]["line_no"]
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("group record without {which}.line_no: {v}"))
+                    as usize;
+                reversed_input.map_or(n, |total| total + 1 - n)
+            };
+            Group {
+                count: v["count"]
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("group record without a count: {v}")),
+                ends: [end("first"), end("last")],
+            }
         })
-        .collect();
+        .collect()
+}
+
+fn sorted_counts(groups: &[Group]) -> Vec<u64> {
+    let mut counts: Vec<u64> = groups.iter().map(|g| g.count).collect();
     counts.sort_unstable();
     counts
+}
+
+/// Why neither order's groups refine the other's, or `None` when the order with more groups only splits what the other merges, as far as the groups' end lines and counts show.
+fn crosswise_regrouping(forward: &[Group], reversed: &[Group]) -> Option<String> {
+    let (fine, coarse, fine_order, coarse_order) = if forward.len() > reversed.len() {
+        (forward, reversed, "forward", "reversed")
+    } else {
+        (reversed, forward, "reversed", "forward")
+    };
+    if fine.len() == coarse.len() {
+        return Some(format!(
+            "both orders give {} groups but of different sizes, so neither refines the other",
+            fine.len()
+        ));
+    }
+    let coarse_group_of: std::collections::HashMap<usize, usize> = coarse
+        .iter()
+        .enumerate()
+        .flat_map(|(i, g)| g.ends.map(|line| (line, i)))
+        .collect();
+    let mut held = vec![0u64; coarse.len()];
+    for group in fine {
+        let homes: Vec<(usize, usize)> = group
+            .ends
+            .iter()
+            .filter_map(|line| coarse_group_of.get(line).map(|&c| (*line, c)))
+            .collect();
+        if let [(a, home_a), (b, home_b)] = homes[..]
+            && home_a != home_b
+        {
+            return Some(format!(
+                "lines {a} and {b} share a {fine_order} group but sit in different {coarse_order} groups"
+            ));
+        }
+        if let Some(&(_, home)) = homes.first() {
+            held[home] += group.count;
+        }
+    }
+    coarse.iter().zip(&held).find_map(|(g, &inside)| {
+        (inside > g.count).then(|| {
+            format!(
+                "the {fine_order} groups ending inside the {coarse_order} group of lines {} and {} hold {inside} lines, more than its {}",
+                g.ends[0], g.ends[1], g.count
+            )
+        })
+    })
 }
 
 enum Reversal {
     Skipped,
     Same(String),
-    Differs(String, String),
+    Differs {
+        id: String,
+        counts: String,
+        crosswise: Option<String>,
+    },
 }
 
 #[test]
 fn every_case_folds_into_the_same_groups_in_reverse_order() {
     let parsed = parse(&CORPUS);
     let ids = case_ids(&parsed);
-    for (id, _) in ORDER_IS_THE_INPUT.iter().chain(KNOWN_ORDER_DEPENDENT) {
+    for (id, _) in ORDER_IS_THE_INPUT
+        .iter()
+        .chain(FOUNDER_ORDER_DECIDES_THE_MERGE)
+    {
         assert!(
             ids.iter().any(|i| i == id),
             "{id} is listed in a reversed-order table but names no case; delete the entry"
@@ -467,38 +546,54 @@ fn every_case_folds_into_the_same_groups_in_reverse_order() {
             args.push("--explain".into());
         }
         args.extend(case.flags.iter().cloned());
-        let forward = feed(&args, case.lines.iter());
-        let forward_counts = sorted_group_counts(&forward.stdout);
-        if forward.status != 0 || forward_counts.is_empty() {
+        let forward_run = feed(&args, case.lines.iter());
+        let forward = groups_by_forward_line(&forward_run.stdout, None);
+        if forward_run.status != 0 || forward.is_empty() {
             return Some(Reversal::Skipped);
         }
-        let reversed_counts = sorted_group_counts(&feed(&args, case.lines.iter().rev()).stdout);
+        let reversed = groups_by_forward_line(
+            &feed(&args, case.lines.iter().rev()).stdout,
+            Some(case.lines.len()),
+        );
+        let (forward_counts, reversed_counts) = (sorted_counts(&forward), sorted_counts(&reversed));
         Some(if forward_counts == reversed_counts {
             Reversal::Same(id.clone())
         } else {
-            Reversal::Differs(
-                id.clone(),
-                format!("{id}  forward={forward_counts:?}  reversed={reversed_counts:?}"),
-            )
+            Reversal::Differs {
+                id: id.clone(),
+                counts: format!("{id}  forward={forward_counts:?}  reversed={reversed_counts:?}"),
+                crosswise: crosswise_regrouping(&forward, &reversed),
+            }
         })
     });
 
-    let known = |id: &str| KNOWN_ORDER_DEPENDENT.iter().any(|(k, _)| *k == id);
+    let accepted = |id: &str| {
+        FOUNDER_ORDER_DECIDES_THE_MERGE
+            .iter()
+            .any(|(k, _)| *k == id)
+    };
     let mut compared = 0;
     let mut skipped = 0;
     let mut differing: Vec<String> = Vec::new();
-    let mut fixed_but_still_listed: Vec<String> = Vec::new();
+    let mut accepted_but_wrong: Vec<String> = Vec::new();
     for outcome in outcomes {
         match outcome {
             Reversal::Skipped => skipped += 1,
-            Reversal::Same(id) if known(&id) => fixed_but_still_listed.push(format!(
-                "{id} now folds the same in reverse order; delete its KNOWN_ORDER_DEPENDENT entry"
+            Reversal::Same(id) if accepted(&id) => accepted_but_wrong.push(format!(
+                "{id} now folds the same in reverse order; delete its FOUNDER_ORDER_DECIDES_THE_MERGE entry"
             )),
-            Reversal::Differs(id, _) if known(&id) => {}
+            Reversal::Differs {
+                id,
+                crosswise: Some(why),
+                ..
+            } if accepted(&id) => accepted_but_wrong.push(format!(
+                "{id} regroups crosswise in reverse order, which no founder order explains: {why}"
+            )),
+            Reversal::Differs { id, .. } if accepted(&id) => {}
             Reversal::Same(_) => compared += 1,
-            Reversal::Differs(_, line) => {
+            Reversal::Differs { counts, .. } => {
                 compared += 1;
-                differing.push(line);
+                differing.push(counts);
             }
         }
     }
@@ -508,10 +603,10 @@ fn every_case_folds_into_the_same_groups_in_reverse_order() {
         "only {compared} case(s) compared ({skipped} skipped); the reversed-order test must compare at least {FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE}"
     );
     assert!(
-        differing.is_empty() && fixed_but_still_listed.is_empty(),
+        differing.is_empty() && accepted_but_wrong.is_empty(),
         "{} of {compared} case(s) fold into different groups in reverse order ({skipped} skipped):\n{}\n{}",
         differing.len(),
         differing.join("\n"),
-        fixed_but_still_listed.join("\n")
+        accepted_but_wrong.join("\n")
     );
 }

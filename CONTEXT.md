@@ -137,6 +137,14 @@ founders in their original order — took the three journal corpora (481, 142,
 43) to zero. The retained-founder machinery was removed with eviction on
 2026-11-15.
 
+**Line order decides how far groups merge.** Clustering is one pass: a line
+joins the first group whose founder accepts it, so the same lines in another
+order can end in more, smaller groups. Both results are true of their lines.
+What is guarded is the dangerous form: the reverse-order test in
+`tests/integration/test_fold_regressions.rs` fails when a case's groups are
+regrouped crosswise between the two orders, and lists the cases where one
+order only merges further (`FOUNDER_ORDER_DECIDES_THE_MERGE`).
+
 ## The corpora
 
 `examples/` is gitignored, so **nothing in git records which corpora exist**.
