@@ -4482,24 +4482,24 @@ resource configuration cpu=750m timeout=40m worker=cedar
 Aug 29 03:10:07 gw-lab-1 daemon.err sshd: ERROR bad key from peer [id 7]
 Aug 29 03:10:09 gw-lab-1 daemon.err sshd: ERROR bad key from peer [id 9]
 
-##CASE study-container-start-time-varies out_present="start_time":"<TIMESTAMP>"×2, ∅×2 holds-on-base
-##WHY A container subtree that is present on most events and absent on freshly created ones must stay countable on the line, not silently widen. Observed on a live Tetragon export: containers created seconds earlier carry no pod.container.start_time while steady-state containers in the same capture do. The shape is asserted, not the cause.
+##CASE study-container-start-time-varies groups=2
+##WHY The events with a container start time and those without are separate lines, each with its count: a record that lacks a member another carries is another event. Observed on a live Tetragon export: containers created seconds earlier carry no pod.container.start_time while steady-state containers in the same capture do. The shape is asserted, not the cause.
 ##FROM invented process_exec records
 {"process_exec":{"process":{"exec_id":"YWxwaGE6MTAx","pid":4101,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main","start_time":"2026-01-02T03:04:05.000000000Z"}}}}}
 {"process_exec":{"process":{"exec_id":"YmV0YToxMDI=","pid":4102,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main","start_time":"2026-01-02T03:04:06.000000000Z"}}}}}
 {"process_exec":{"process":{"exec_id":"Z2FtbWE6MTAz","pid":4103,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main"}}}}}
 {"process_exec":{"process":{"exec_id":"ZGVsdGE6MTA0","pid":4104,"uid":0,"binary":"/usr/bin/probe","pod":{"namespace":"cedar","container":{"name":"main"}}}}}
 
-##CASE study-exit-signal-is-visible out_present="signal":"SIGKILL"×2 holds-on-base
-##WHY A process killed by a signal and one that exited cleanly are different outcomes. They may share a group, but the signal must remain visible with its count — an operator reading a fold of exits has to see that some were killed.
+##CASE study-exit-signal-is-visible groups=2
+##WHY A process killed by a signal and one that exited cleanly are different outcomes. The killed and the clean exits are separate lines, each with its count — an operator reading a fold of exits has to see that some were killed.
 ##FROM invented process_exit records
 {"process_exit":{"process":{"exec_id":"YWxwaGE6MjAx","pid":5201,"uid":0,"binary":"/usr/bin/worker"},"status":0}}
 {"process_exit":{"process":{"exec_id":"YmV0YToyMDI=","pid":5202,"uid":0,"binary":"/usr/bin/worker"},"status":0}}
 {"process_exit":{"process":{"exec_id":"Z2FtbWE6MjAz","pid":5203,"uid":0,"binary":"/usr/bin/worker"},"signal":"SIGKILL"}}
 {"process_exit":{"process":{"exec_id":"ZGVsdGE6MjA0","pid":5204,"uid":0,"binary":"/usr/bin/worker"},"signal":"SIGKILL"}}
 
-##CASE study-privileged-is-visible out_present="privileged":true×2, ∅×2 holds-on-base
-##WHY Whether a container is privileged is the line an operator most needs never to be hidden inside a fold. Privileged and unprivileged containers of the same image may share a group, but the flag must stay on the line with its count.
+##CASE study-privileged-is-visible groups=2
+##WHY Whether a container is privileged is the line an operator most needs never to be hidden inside a fold. The privileged containers and those with an empty security context are separate lines, each with its count.
 ##FROM invented process_exec records
 {"process_exec":{"process":{"exec_id":"YWxwaGE6MzAx","pid":6301,"uid":0,"binary":"/usr/bin/agent","pod":{"namespace":"birch","container":{"name":"main","security_context":{"privileged":true}}}}}}
 {"process_exec":{"process":{"exec_id":"YmV0YTozMDI=","pid":6302,"uid":0,"binary":"/usr/bin/agent","pod":{"namespace":"birch","container":{"name":"main","security_context":{"privileged":true}}}}}}
@@ -5195,3 +5195,40 @@ I1102 10:00:02 event.go:12] &Event{ObjectMeta:{web-b.29c1  default    0 map[] []
 ##FROM invented Kubernetes audit records
 {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"4d2a7e10-9999-4b1c-8e2f-000000000001","stage":"ResponseComplete","requestURI":"/apis/widgets.example.io/v1/gadgets?limit=500\u0026resourceVersion=0","verb":"list","user":{"username":"system:kube-scheduler","groups":["system:authenticated"],"extra":{"authentication.kubernetes.io/credential-id":["X509SHA256=3b9e1c7a5d2f8e4b6a0c9d1e7f3a5b2c8d4e6f0a1b3c5d7e9f2a4b6c8d0e1f3a"]}},"sourceIPs":["10.77.4.10"],"userAgent":"kube-scheduler/v1.40.2 (linux/amd64) kubernetes/a1b2c3d/scheduler","objectRef":{"resource":"gadgets","apiGroup":"widgets.example.io","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","message":"gadgets.widgets.example.io is forbidden: User \"system:kube-scheduler\" cannot list resource \"gadgets\" in API group \"widgets.example.io\" at the cluster scope","reason":"Forbidden","details":{"group":"widgets.example.io","kind":"gadgets"},"code":403},"requestReceivedTimestamp":"2031-06-03T10:00:01.100000Z","stageTimestamp":"2031-06-03T10:00:01.100300Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
 {"kind":"Event","apiVersion":"audit.k8s.io/v1","level":"Metadata","auditID":"4d2a7e10-9999-4b1c-8e2f-000000000002","stage":"ResponseComplete","requestURI":"/apis/widgets.example.io/v1/gadgets?limit=500\u0026resourceVersion=0","verb":"list","user":{"username":"system:anonymous","groups":["system:unauthenticated"]},"sourceIPs":["10.77.4.33"],"userAgent":"kubelet/v1.40.2 (linux/amd64) kubernetes/a1b2c3d","objectRef":{"resource":"gadgets","apiGroup":"widgets.example.io","apiVersion":"v1"},"responseStatus":{"metadata":{},"status":"Failure","message":"gadgets.widgets.example.io is forbidden: User \"system:anonymous\" cannot list resource \"gadgets\" in API group \"widgets.example.io\" at the cluster scope","reason":"Forbidden","details":{"group":"widgets.example.io","kind":"gadgets"},"code":403},"requestReceivedTimestamp":"2031-06-03T10:00:12.200000Z","stageTimestamp":"2031-06-03T10:00:12.200300Z","annotations":{"authorization.k8s.io/decision":"forbid","authorization.k8s.io/reason":""}}
+
+##CASE lessence-uw7s groups=2
+##WHY a status body that sets a phase and one that sets a seen revision in its place are two events; one line with a slot over the member would hide which field the record carries
+##FROM invented order status patch records
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Returned"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"seenRevision":2}}}
+
+##CASE lessence-uw7s groups=2
+##WHY a step that carries a status and one that carries a seen revision in its place are two events, even inside an array element
+##FROM invented order status patch records
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Returned"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"seenRevision":2,"type":"Packed"}],"phase":"Returned"}}}
+
+##CASE lessence-uw7s groups=2
+##WHY a record with an extra field is its own line: a member present on one record only makes the two records two events
+##FROM invented order status patch records
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Returned"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Returned","note":"late"}}}
+
+##CASE lessence-uw7s groups=2
+##WHY a status body that carries a list of steps and one that carries no steps member are two events
+##FROM invented order status patch records
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Returned"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"phase":"Returned"}}}
+
+##CASE lessence-uw7s groups=2
+##WHY a record that carries a seen revision in place of the phase stays its own event even after another phase value has widened the phase group
+##FROM invented order status patch records
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Returned"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"phase":"Kept"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"seenRevision":2}}}
+
+##CASE lessence-uw7s groups=2
+##WHY a record with two steps and one with three steps are separate lines, each with its count; one line would claim three steps for a record that has two
+##FROM invented order status patch records
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"type":"Packed"},{"type":"Paid"}],"phase":"Returned"}}}
+{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"phase":"Returned"}}}

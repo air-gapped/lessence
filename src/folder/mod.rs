@@ -209,7 +209,7 @@ impl PatternGroup {
         if line.hash == self.first().hash {
             return Some(Vec::new());
         }
-        template_edits(&self.template, &line.normalized)
+        admitted_edits(&self.template, &self.first().normalized, &line.normalized)
     }
 
     fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
@@ -1594,34 +1594,30 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
             len: len - p - q,
         });
     }
-    if !edits.is_empty() && an_object_member_is_missing(template, member) {
-        return None;
-    }
     Some(edits)
 }
 
-/// Whether a JSON object on one side holds a member whose value is an
-/// object with keys, where the object at the same path on the other side
-/// has no such key. A slot over that difference would hide that one record
-/// carries a whole structure the other lacks. A scalar member missing, or
-/// `{}` against a filled object under one key, is an absent value and
-/// folds. An object whose members the template shows as a bare slot is not
-/// read: its keys are unknown.
-fn an_object_member_is_missing(template: &str, member: &str) -> bool {
-    let ours = object_members(template);
-    let theirs = object_members(member);
-    lacks_an_object_member(&ours, &theirs) || lacks_an_object_member(&theirs, &ours)
+/// The edits that let `member` join a group with this template and this
+/// founder (the group's first line), or `None` when it cannot join. Keys are
+/// read off the founder, never off the template, whose slots may hide them.
+fn admitted_edits(template: &str, founder: &str, member: &str) -> Option<Vec<Edit>> {
+    let edits = template_edits(template, member)?;
+    (!object_members_differ(founder, member)).then_some(edits)
 }
 
-fn lacks_an_object_member(
-    with: &BTreeMap<String, ObjectMembers<'_>>,
-    without: &BTreeMap<String, ObjectMembers<'_>>,
-) -> bool {
-    with.iter().any(|(path, ours)| {
-        without.get(path).is_some_and(|theirs| {
-            !ours.unreadable
-                && !theirs.unreadable
-                && ours.objects.iter().any(|key| !theirs.keys.contains(key))
+/// Whether a JSON object read on both lines at the same path holds a
+/// different set of member keys on each: a record with a field the other
+/// lacks is another event, whatever the values. An object whose shape the
+/// text breaks is not read.
+fn object_members_differ(founder: &str, member: &str) -> bool {
+    if !member.contains('{') {
+        return false;
+    }
+    let ours = object_members(founder);
+    let theirs = object_members(member);
+    ours.iter().any(|(path, a)| {
+        theirs.get(path).is_some_and(|b| {
+            !a.unreadable && !b.unreadable && (a.keys != b.keys || a.elements != b.elements)
         })
     })
 }
@@ -1629,21 +1625,25 @@ fn lacks_an_object_member(
 #[derive(Default)]
 struct ObjectMembers<'a> {
     keys: std::collections::BTreeSet<&'a str>,
-    objects: std::collections::BTreeSet<&'a str>,
+    elements: usize,
     unreadable: bool,
 }
 
-/// The members of each JSON object in `s`, by the path of keys leading to
-/// it (`/user/extra`; an array element adds `/[]`; the outermost is ``).
-/// `objects` names the members whose value is an object with keys. Objects
-/// at one path, as in an array, pool their members. Text inside a quoted
-/// string is never read as an object.
+/// The members of each JSON object in `s`, wherever one starts, by the
+/// path of keys leading to it (`/user/extra`; the outermost is ``). The
+/// i-th object in an array is at `/[i]` and the array counts its objects in
+/// `elements`; an array inside an array is at `/[]`, and containers at one
+/// path pool. Text inside a quoted string is never read as
+/// an object. A normalizer token such as `<ESCAPED_JSON>` may stand as a
+/// key or a value. Where the text breaks the shape of an
+/// object (a member that is not `"key":value` followed by `,` or the
+/// closer, a closer that does not match, a string or object left open at
+/// the end), every object open there is unreadable: its boundaries cannot
+/// be trusted. Objects closed before it stay readable, and reading resumes.
 fn object_members(s: &str) -> BTreeMap<String, ObjectMembers<'_>> {
+    const STRUCTURE: &[u8] = b"{}[],:";
     let b = s.as_bytes();
-    let mut found: BTreeMap<String, ObjectMembers<'_>> = BTreeMap::new();
-    let mut frames: Vec<(bool, String, Option<&str>)> = Vec::new();
-    let mut last_key = "";
-    let mut expect_key = false;
+    let mut walk = MemberWalk::default();
     let mut i = 0;
     while i < b.len() {
         let byte = b[i];
@@ -1651,75 +1651,163 @@ fn object_members(s: &str) -> BTreeMap<String, ObjectMembers<'_>> {
             i += 1;
             continue;
         }
-        if expect_key
-            && b[i..].starts_with(VARIES_MARK.as_bytes())
-            && let Some((_, path, _)) = frames.last()
-        {
-            found.entry(path.clone()).or_default().unreadable = true;
-        }
-        expect_key = false;
-        match byte {
-            b'"' => {
-                let mut end = i + 1;
-                while end < b.len() && b[end] != b'"' {
-                    end += if b[end] == b'\\' { 2 } else { 1 };
-                }
-                let text = &s[i + 1..end.min(b.len())];
-                let colon = b
-                    .get(end + 1..)
-                    .and_then(|rest| rest.iter().find(|c| !c.is_ascii_whitespace()))
-                    == Some(&b':');
-                if colon {
-                    last_key = text;
-                    note_key(&mut found, &frames, text);
-                }
-                i = end + 1;
-                continue;
+        let mut end = i + 1;
+        if byte == b'"' {
+            while end < b.len() && b[end] != b'"' {
+                end += if b[end] == b'\\' { 2 } else { 1 };
             }
-            b'{' | b'[' => {
-                let (path, holder) = match frames.last() {
-                    Some((true, parent, _)) => (format!("{parent}/{last_key}"), Some(last_key)),
-                    Some((false, parent, _)) => (format!("{parent}/[]"), None),
-                    None => (String::new(), None),
-                };
-                let object = byte == b'{';
-                frames.push((object, path, holder.filter(|_| object)));
-                expect_key = object;
+            if end >= b.len() {
+                break;
             }
-            b'}' | b']'
-                if frames
-                    .last()
-                    .is_some_and(|&(object, _, _)| object == (byte == b'}')) =>
+            end += 1;
+        } else if !STRUCTURE.contains(&byte) {
+            while end < b.len()
+                && !b[end].is_ascii_whitespace()
+                && b[end] != b'"'
+                && !STRUCTURE.contains(&b[end])
             {
-                frames.pop();
+                end += 1;
             }
-            b',' => expect_key = frames.last().is_some_and(|&(object, _, _)| object),
-            _ => {}
         }
-        i += 1;
+        let text = &s[i..end];
+        let after = end
+            + b[end..]
+                .iter()
+                .take_while(|c| c.is_ascii_whitespace())
+                .count();
+        let colon = !STRUCTURE.contains(&byte) && b.get(after) == Some(&b':');
+        walk.step(byte, text, colon);
+        i = if colon { after + 1 } else { end };
     }
-    found
+    walk.break_shape();
+    while !walk.frames.is_empty() {
+        walk.close();
+    }
+    walk.found
 }
 
-fn note_key<'a>(
-    found: &mut BTreeMap<String, ObjectMembers<'a>>,
-    frames: &[(bool, String, Option<&'a str>)],
-    key: &'a str,
-) {
-    let Some((true, path, holder)) = frames.last() else {
-        return;
-    };
-    let members = found.entry(path.clone()).or_default();
-    members.unreadable |= key.contains(VARIES_MARK);
-    members.keys.insert(key);
-    if let (Some(holder), Some((_, parent, _))) =
-        (holder, frames.len().checked_sub(2).map(|p| &frames[p]))
-    {
-        found
-            .entry(parent.clone())
-            .or_default()
-            .objects
-            .insert(holder);
+#[derive(Clone, Copy, PartialEq)]
+enum Expect {
+    Key,
+    Value,
+    After,
+    Lost,
+}
+
+struct Frame {
+    object: bool,
+    path: String,
+    expect: Expect,
+    objects: usize,
+    unreadable: bool,
+}
+
+#[derive(Default)]
+struct MemberWalk<'a> {
+    found: BTreeMap<String, ObjectMembers<'a>>,
+    frames: Vec<Frame>,
+    last_key: &'a str,
+}
+
+impl<'a> MemberWalk<'a> {
+    fn break_shape(&mut self) {
+        for frame in &mut self.frames {
+            frame.unreadable = true;
+        }
+        if let Some(top) = self.frames.last_mut() {
+            top.expect = Expect::Lost;
+        }
+    }
+
+    fn step(&mut self, byte: u8, text: &'a str, colon: bool) {
+        let quoted = byte == b'"';
+        let key = if quoted {
+            &text[1..text.len() - 1]
+        } else {
+            text
+        };
+        let named = colon && (quoted || (key.starts_with('<') && key.ends_with('>')));
+        if named {
+            self.last_key = key;
+        }
+        let Some(top) = self.frames.last_mut() else {
+            if byte == b'{' || byte == b'[' {
+                self.open(byte);
+            }
+            return;
+        };
+        if !top.object {
+            match byte {
+                b'{' | b'[' => self.open(byte),
+                b']' => self.close(),
+                b'}' => self.break_shape(),
+                _ => {}
+            }
+            return;
+        }
+        let expect = top.expect;
+        let next = match (byte, expect) {
+            (b'{' | b'[', Expect::Value) => Some(Expect::Value),
+            (b'}', Expect::Key | Expect::After) => Some(expect),
+            (b',', Expect::After) => Some(Expect::Key),
+            (b'{' | b'[' | b'}' | b']' | b',' | b':', _) => None,
+            (_, Expect::Key) if named => Some(Expect::Value),
+            (_, Expect::Value | Expect::After) if !colon => Some(Expect::After),
+            _ => None,
+        };
+        match next {
+            Some(next) => top.expect = next,
+            None => self.break_shape(),
+        }
+        match byte {
+            b'{' | b'[' => self.open(byte),
+            b'}' => self.close(),
+            _ if next == Some(Expect::Value) => {
+                if let Some(top) = self.frames.last() {
+                    self.found
+                        .entry(top.path.clone())
+                        .or_default()
+                        .keys
+                        .insert(key);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn open(&mut self, byte: u8) {
+        let object = byte == b'{';
+        let path = match self.frames.last_mut() {
+            Some(parent) if parent.object => format!("{}/{}", parent.path, self.last_key),
+            Some(parent) if object => {
+                let at = parent.objects;
+                parent.objects += 1;
+                format!("{}/[{at}]", parent.path)
+            }
+            Some(parent) => format!("{}/[]", parent.path),
+            None => String::new(),
+        };
+        self.frames.push(Frame {
+            object,
+            path,
+            expect: if object { Expect::Key } else { Expect::After },
+            objects: 0,
+            unreadable: false,
+        });
+    }
+
+    fn close(&mut self) {
+        let Some(frame) = self.frames.pop() else {
+            return;
+        };
+        let members = self.found.entry(frame.path).or_default();
+        members.unreadable |= frame.unreadable;
+        members.elements += frame.objects;
+        if let Some(parent) = self.frames.last_mut()
+            && parent.expect == Expect::Value
+        {
+            parent.expect = Expect::After;
+        }
     }
 }
 
@@ -2590,7 +2678,8 @@ fn members_that_moved_the_template(group: &PatternGroup) -> MemberIndexes {
         if line.hash == group.lines[0].hash {
             continue;
         }
-        let edits = template_edits(&template, &line.normalized).unwrap_or_default();
+        let edits = admitted_edits(&template, &group.lines[0].normalized, &line.normalized)
+            .unwrap_or_default();
         if edits.is_empty() {
             continue;
         }
@@ -2933,7 +3022,7 @@ impl PatternFolder {
         let mut seen: HashSet<u64> = HashSet::with_capacity(guest.lines.len());
         for line in &guest.lines {
             if seen.insert(line.hash) {
-                let edits = template_edits(&template, &line.normalized)?;
+                let edits = admitted_edits(&template, &host.first().normalized, &line.normalized)?;
                 apply_edits(&mut template, &edits);
             }
         }
@@ -3118,11 +3207,20 @@ impl PatternFolder {
         let mut out: Vec<PatternGroup> = Vec::with_capacity(groups.len());
         for group in groups {
             let key = (group.template().to_string(), group.first().anchor);
-            if let Some(&at) = by_claim.get(&key) {
-                out[at].absorb(group);
-            } else {
-                by_claim.insert(key, out.len());
-                out.push(group);
+            match by_claim.get(&key) {
+                Some(&at)
+                    if !object_members_differ(
+                        &out[at].first().normalized,
+                        &group.first().normalized,
+                    ) =>
+                {
+                    out[at].absorb(group);
+                }
+                Some(_) => out.push(group),
+                None => {
+                    by_claim.insert(key, out.len());
+                    out.push(group);
+                }
             }
         }
         out

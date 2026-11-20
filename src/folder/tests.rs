@@ -8006,57 +8006,100 @@ fn a_glued_founder_keeps_the_plain_lines_apart_in_reversed_order() {
 fn an_object_valued_member_absent_on_one_side_refuses_the_join_either_way() {
     let with = r#"{"verb":"list","user":{"username":"robot-a","groups":["staff"],"extra":{"credential-id":["CERT=1f2e"]}},"code":403}"#;
     let without = r#"{"verb":"list","user":{"username":"guest","groups":["visitors"]},"code":403}"#;
-    assert_eq!(template_edits(with, without), None);
-    assert_eq!(template_edits(without, with), None);
+    assert_eq!(admitted_edits(with, with, without), None);
+    assert_eq!(admitted_edits(without, without, with), None);
 }
 
 #[test]
 fn an_object_valued_member_absent_two_levels_down_refuses_the_join() {
     let with = r#"{"verb":"list","user":{"name":"a","auth":{"kind":"cert","extra":{"id":"c-1"}}},"code":403}"#;
     let without = r#"{"verb":"list","user":{"name":"a","auth":{"kind":"anonymous"}},"code":403}"#;
-    assert_eq!(template_edits(with, without), None);
-    assert_eq!(template_edits(without, with), None);
+    assert_eq!(admitted_edits(with, with, without), None);
+    assert_eq!(admitted_edits(without, without, with), None);
 }
 
 #[test]
-fn a_scalar_member_absent_on_one_side_still_folds() {
+fn a_scalar_member_absent_on_one_side_refuses_the_join_either_way() {
     let with = r#"{"process":{"pid":4101,"pod":{"container":{"name":"main","start_time":"<TIMESTAMP>"}}}}"#;
     let without = r#"{"process":{"pid":4103,"pod":{"container":{"name":"main"}}}}"#;
-    assert!(template_edits(with, without).is_some_and(|e| !e.is_empty()));
-    assert!(template_edits(without, with).is_some_and(|e| !e.is_empty()));
+    assert_eq!(admitted_edits(with, with, without), None);
+    assert_eq!(admitted_edits(without, without, with), None);
 }
 
 #[test]
-fn an_empty_object_against_a_filled_one_under_the_same_key_still_folds() {
+fn an_empty_object_against_a_filled_one_refuses_the_join_either_way() {
     let empty = r#"GRPC response: {"body":{}}"#;
     let filled = r#"GRPC response: {"body":{"size":7}}"#;
-    assert!(template_edits(empty, filled).is_some_and(|e| !e.is_empty()));
-    assert!(template_edits(filled, empty).is_some_and(|e| !e.is_empty()));
+    assert_eq!(admitted_edits(empty, empty, filled), None);
+    assert_eq!(admitted_edits(filled, filled, empty), None);
+    assert!(object_members_differ("{}", r#"{"a":1}"#));
+    assert!(object_members_differ(r#"{"a":1}"#, "{}"));
+    assert!(!object_members_differ("{}", "{ }"));
+}
+
+#[test]
+fn an_extra_scalar_key_nested_or_in_an_array_element_refuses_the_join() {
+    for (with, without) in [
+        (r#"{"a":{"b":{"c":1,"d":2}}}"#, r#"{"a":{"b":{"c":3}}}"#),
+        (
+            r#"{"items":[{"name":"a","note":"x"}]}"#,
+            r#"{"items":[{"name":"b"}]}"#,
+        ),
+    ] {
+        assert!(object_members_differ(with, without), "{with}");
+        assert!(object_members_differ(without, with), "{with}");
+    }
+}
+
+#[test]
+fn embedded_json_after_plain_text_compares_its_keys() {
+    let both = r#"level=info payload {"a":1,"b":2} sent"#;
+    assert!(object_members_differ(
+        both,
+        r#"level=info payload {"a":3} sent"#
+    ));
+    assert!(object_members_differ(
+        r#"level=info payload {"a":3} sent"#,
+        both
+    ));
+    assert!(!object_members_differ(
+        both,
+        r#"level=info payload {"a":3,"b":4} sent"#
+    ));
+    assert!(!object_members_differ(both, "level=info payload none sent"));
 }
 
 #[test]
 fn the_same_members_with_other_values_still_fold() {
     let a = r#"{"verb":"get","user":{"username":"robot-a","extra":{"id":"c-1"}},"code":200}"#;
     let b = r#"{"verb":"get","user":{"username":"robot-b","extra":{"id":"c-2"}},"code":200}"#;
-    assert!(template_edits(a, b).is_some_and(|e| !e.is_empty()));
+    assert!(admitted_edits(a, a, b).is_some_and(|e| !e.is_empty()));
 }
 
 #[test]
-fn object_members_are_read_by_path_and_by_value_shape() {
+fn object_members_are_read_by_path() {
     let found = object_members(
-        r#"{"user":{"extra":{"t":"1"},"empty":{},"roles":[{"n":"a"}]},"x":"{\"q\":{\"r\":1}}"}"#,
+        r#"{"user":{"extra":{"t":"1"},"empty":{},"roles":[{"n":"a"}],"none":[]},"x":"{\"q\":{\"r\":1}}"}"#,
     );
     assert_eq!(
         found.keys().map(String::as_str).collect::<Vec<_>>(),
-        vec!["", "/user", "/user/extra", "/user/roles/[]"]
+        vec![
+            "",
+            "/user",
+            "/user/empty",
+            "/user/extra",
+            "/user/none",
+            "/user/roles",
+            "/user/roles/[0]"
+        ]
     );
     let names = |path: &str| found[path].keys.iter().copied().collect::<Vec<_>>();
-    let objects = |path: &str| found[path].objects.iter().copied().collect::<Vec<_>>();
     assert_eq!(names(""), vec!["user", "x"]);
-    assert_eq!(objects(""), vec!["user"]);
-    assert_eq!(names("/user"), vec!["empty", "extra", "roles"]);
-    assert_eq!(objects("/user"), vec!["extra"]);
-    assert_eq!(names("/user/roles/[]"), vec!["n"]);
+    assert_eq!(names("/user"), vec!["empty", "extra", "none", "roles"]);
+    assert!(names("/user/empty").is_empty());
+    assert_eq!(names("/user/roles/[0]"), vec!["n"]);
+    assert_eq!(found["/user/roles"].elements, 1);
+    assert_eq!(found["/user/none"].elements, 0);
     assert!(found.values().all(|m| !m.unreadable));
 }
 
@@ -8064,28 +8107,48 @@ fn object_members_are_read_by_path_and_by_value_shape() {
 fn a_key_with_space_before_its_colon_is_still_a_key() {
     let found = object_members(r#"{"user" : {"extra" : {"t" : 1}}}"#);
     assert_eq!(
-        found["/user"].objects.iter().copied().collect::<Vec<_>>(),
+        found["/user"].keys.iter().copied().collect::<Vec<_>>(),
         vec!["extra"]
     );
+    assert!(found["/user/extra"].keys.contains("t"));
 }
 
 #[test]
 fn an_object_written_inside_a_quoted_string_is_not_read() {
     let more = r#"{"user":{"spec":"{\"extra\":{\"k\":1}}","n":1}}"#;
     let fewer = r#"{"user":{"spec":"{}","n":2}}"#;
-    assert!(!an_object_member_is_missing(more, fewer));
-    assert!(!an_object_member_is_missing(fewer, more));
+    assert!(!object_members_differ(more, fewer));
+    assert!(!object_members_differ(fewer, more));
 }
 
 #[test]
-fn arrays_of_objects_compare_their_pooled_members() {
-    let two = r#"{"items":[{"name":"a"},{"name":"b","extra":{"k":1}}]}"#;
+fn arrays_of_objects_compare_their_elements_by_position() {
+    let two = r#"{"items":[{"name":"a"},{"name":"b"}]}"#;
     let one = r#"{"items":[{"name":"a"}]}"#;
-    assert!(an_object_member_is_missing(two, one));
-    assert!(!an_object_member_is_missing(two, two));
-    assert!(!an_object_member_is_missing(
-        r#"{"items":[{"name":"a"},{"name":"b"}]}"#,
-        one
+    assert!(object_members_differ(two, one));
+    assert!(object_members_differ(one, two));
+    let extra = r#"{"items":[{"name":"a"},{"name":"b","note":"x"}]}"#;
+    assert!(object_members_differ(two, extra));
+    assert!(object_members_differ(extra, two));
+    assert!(!object_members_differ(
+        two,
+        r#"{"items":[{"name":"c"},{"name":"d"}]}"#
+    ));
+    assert!(object_members_differ(
+        r#"{"items":[{"name":"a"},{"tag":"b"}]}"#,
+        r#"{"items":[{"tag":"b"},{"name":"a"}]}"#
+    ));
+}
+
+#[test]
+fn an_array_without_objects_may_change_its_length() {
+    assert!(object_members_differ(r#"{"a":[]}"#, r#"{"a":[{"a":1}]}"#));
+    assert!(object_members_differ(r#"{"a":[{"a":1}]}"#, r#"{"a":[]}"#));
+    assert!(!object_members_differ(r#"{"a":[1,2]}"#, r#"{"a":[1,2,3]}"#));
+    assert!(!object_members_differ(r#"{"a":["x"]}"#, r#"{"a":[]}"#));
+    assert!(!object_members_differ(
+        r#"{"a":[[1],[2]]}"#,
+        r#"{"a":[[1]]}"#
     ));
 }
 
@@ -8093,34 +8156,283 @@ fn arrays_of_objects_compare_their_pooled_members() {
 fn a_closed_object_hands_its_later_members_back_to_its_parent() {
     let moved = r#"{"a":{"x":{"k":1}},"y":{"k":1}}"#;
     let nested = r#"{"a":{"x":{"k":1},"y":{"k":1}}}"#;
-    assert!(an_object_member_is_missing(moved, nested));
-    assert!(an_object_member_is_missing(nested, moved));
+    assert!(object_members_differ(moved, nested));
+    assert!(object_members_differ(nested, moved));
+}
+
+fn reads_unclean(s: &str) -> bool {
+    object_members(s).get("").is_some_and(|m| m.unreadable)
 }
 
 #[test]
-fn an_object_the_template_shows_as_a_bare_slot_is_not_read() {
-    let member = r#"{"user":{"name":"b","extra":{"k":1}}}"#;
-    let slotted = r#"{"user":{"name":"a",<VARIES>}}"#;
-    assert!(!an_object_member_is_missing(slotted, member));
-    assert!(!an_object_member_is_missing(member, slotted));
-    assert!(an_object_member_is_missing(
-        r#"{"user":{"name":"a"}}"#,
-        member
-    ));
-    assert!(!an_object_member_is_missing(
-        r#"{"user":{"name":"a","extra":<VARIES>}}"#,
-        member
-    ));
-    assert!(!an_object_member_is_missing(
-        r#"{"user":{"name":"a","<VARIES>":1}}"#,
-        member
+fn a_closer_that_does_not_match_makes_only_the_open_objects_unreadable() {
+    let found = object_members(r#"{"x":{"k":{"z":1}},"d":[1},2],"e":{"m":{"z":1}}}"#);
+    assert!(found[""].unreadable);
+    assert!(!found["/x"].unreadable);
+    assert!(found["/x"].keys.contains("k"));
+    assert!(!found["/e"].unreadable);
+    assert!(found["/e"].keys.contains("m"));
+    let found = object_members(r#"{"a":{"b":1],"c":1},"y":2}"#);
+    assert!(found[""].unreadable);
+    assert!(found["/a"].unreadable);
+}
+
+#[test]
+fn a_member_replaced_by_another_key_refuses_the_join_either_way() {
+    let phase = r#"{"status":{"steps":[{"type":"Packed"}],"phase":"Returned"}}"#;
+    let revision = r#"{"status":{"steps":[{"type":"Packed"}],"seenRevision":2}}"#;
+    assert_eq!(admitted_edits(phase, phase, revision), None);
+    assert_eq!(admitted_edits(revision, revision, phase), None);
+}
+
+#[test]
+fn a_member_replaced_inside_an_array_element_refuses_the_join_either_way() {
+    let status = r#"{"steps":[{"status":"False","type":"Packed"}],"phase":"Returned"}"#;
+    let revision = r#"{"steps":[{"seenRevision":2,"type":"Packed"}],"phase":"Returned"}"#;
+    assert_eq!(admitted_edits(status, status, revision), None);
+    assert_eq!(admitted_edits(revision, revision, status), None);
+}
+
+#[test]
+fn a_member_added_on_one_side_only_refuses_the_join_either_way() {
+    let bare = r#"{"status":{"steps":[{"type":"Packed"}],"phase":"Returned"}}"#;
+    let noted = r#"{"status":{"steps":[{"type":"Packed"}],"phase":"Returned","note":"late"}}"#;
+    assert_eq!(admitted_edits(bare, bare, noted), None);
+    assert_eq!(admitted_edits(noted, noted, bare), None);
+}
+
+#[test]
+fn the_same_key_with_another_value_still_folds() {
+    let returned = r#"{"status":{"phase":"Returned"}}"#;
+    let kept = r#"{"status":{"phase":"Kept"}}"#;
+    assert!(admitted_edits(returned, returned, kept).is_some_and(|e| !e.is_empty()));
+    assert!(!object_members_differ(returned, kept));
+}
+
+#[test]
+fn a_key_missing_in_any_one_object_refuses_the_join() {
+    let a = r#"{"a":{"x":1,"p":1},"b":{"y":1}}"#;
+    let b = r#"{"a":{"x":1},"b":{"y":1,"q":1}}"#;
+    assert!(object_members_differ(a, b));
+    assert!(object_members_differ(b, a));
+    assert!(object_members_differ(
+        r#"{"a":{"x":1,"p":1},"b":{"y":1}}"#,
+        r#"{"a":{"x":1,"q":1},"b":{"y":1}}"#
     ));
 }
 
 #[test]
-fn a_closer_that_does_not_match_the_open_frame_closes_nothing() {
-    let found = object_members(r#"{"a":{"b":1],"c":1},"d":[1},2]}"#);
-    let names = |path: &str| found[path].keys.iter().copied().collect::<Vec<_>>();
-    assert_eq!(names(""), vec!["a", "d"]);
-    assert_eq!(names("/a"), vec!["b", "c"]);
+fn lines_that_are_not_json_objects_never_differ_in_members() {
+    let a = "disk sda1 is full at 90% on host alpha";
+    let b = "disk sdb2 is full at 75% on host bravo";
+    assert!(!object_members_differ(a, b));
+    assert!(admitted_edits(a, a, b).is_some_and(|e| !e.is_empty()));
+    assert!(!object_members_differ(r#"{"a":1}"#, b));
+}
+
+#[test]
+fn a_string_a_detector_cut_short_makes_its_open_objects_unreadable() {
+    let cut = r#"{"error":"failed to list <NUMBER> Get \"<PATH>": dial tcp timeout","level":"error","logger":"Unhandled","msg":"Failed to watch","type":<QUOTED_STRING>}"#;
+    let logger = r#"{"error":"failed to list <NUMBER> Get \"<PATH>": dial tcp timeout","level":"error","logger":"Watcher","msg":"Failed to watch","type":<QUOTED_STRING>}"#;
+    let kind = r#"{"error":"failed to list <NUMBER> Get \"<PATH>": dial tcp timeout","level":"error","logger":"Unhandled","msg":"Failed to watch","type":"Pod"}"#;
+    assert!(reads_unclean(cut));
+    for other in [logger, kind] {
+        assert!(!object_members_differ(cut, other));
+        assert!(!object_members_differ(other, cut));
+    }
+    let clean = r#"{"error":"dial","logger":"Unhandled"}"#;
+    assert!(object_members_differ(
+        clean,
+        r#"{"error":"dial","name":"x"}"#
+    ));
+    assert!(!object_members_differ(
+        clean,
+        r#"{"error":"dial" "name":"x"}"#
+    ));
+    let broken = r#"{"error":"failed to list X: Get \"<PATH>": dial tcp timeout","level":"error","logger":"A","msg":"m"}"#;
+    let relogged = broken.replace(r#""A""#, r#""B""#);
+    assert!(admitted_edits(broken, broken, &relogged).is_some_and(|e| !e.is_empty()));
+    let renamed = r#"{"error":"x","name":"y"}"#;
+    assert!(!object_members_differ(broken, renamed));
+    assert!(!object_members_differ(renamed, broken));
+    let closed_before =
+        r#"{"meta":{"extra":{"k":1},"n":1},"error":"Get \"<PATH>": dial","logger":"Unhandled"}"#;
+    let without = r#"{"meta":{"n":1},"error":"Get \"<PATH>": dial","logger":"Unhandled"}"#;
+    assert!(object_members_differ(closed_before, without));
+    assert!(object_members_differ(without, closed_before));
+}
+
+#[test]
+fn text_that_breaks_the_shape_of_an_object_makes_it_unreadable() {
+    for bad in [
+        r#"{"a":"open"#,
+        r#"{"a":"esc\"#,
+        r#"{"a":1"#,
+        r#"{"a":[1 2"#,
+        r#"{"a":[1,2}"#,
+        r#"{"a":{"b":1]}"#,
+        r#"{"a"}"#,
+        r#"{"a" 1}"#,
+        r#"{"a":}"#,
+        r#"{"a":,"b":1}"#,
+        r#"{"a"::1}"#,
+        r#"{"a":1:2}"#,
+        r#"{"a":<NUMBER>:2}"#,
+        r#"{"a":"x" "b":1}"#,
+        r#"{"a":1,,"b":2}"#,
+        r#"{"a":1,:"b"}"#,
+        r#"{"a":1{}}"#,
+        r#"{"a":[1][2]}"#,
+        r"{{}}",
+        r"{a:1}",
+        r"{a>:1}",
+    ] {
+        assert!(reads_unclean(bad), "{bad}");
+    }
+    for good in [
+        r#"{"a":{}}"#,
+        r#"{"a":{ }}"#,
+        r#"{"a":[]}"#,
+        r#"{"a":[1,]}"#,
+        r#"{"a":1,}"#,
+        r#"{"a":"x" , "b" : [ 1 , "y" ] }  "#,
+        r#"GRPC response: {"body":{}}"#,
+        r#"{"a":"\"q\""}"#,
+        r#"{"a":1} tail"#,
+        r#"{"a":1}}"#,
+        r#"{"a":1}:"#,
+        r#"{<ESCAPED_JSON>:{},"b":<QUOTED_STRING>}"#,
+        "no object here",
+    ] {
+        assert!(!reads_unclean(good), "{good}");
+    }
+}
+
+#[test]
+fn a_normalizer_token_stands_as_a_key() {
+    let found = object_members(r#"{"f:a":{"k":1},<ESCAPED_JSON>:{"k":1}}"#);
+    assert_eq!(
+        found[""].keys.iter().copied().collect::<Vec<_>>(),
+        vec!["<ESCAPED_JSON>", "f:a"]
+    );
+    assert!(found.contains_key("/<ESCAPED_JSON>"));
+}
+
+#[test]
+fn an_object_dump_around_embedded_json_still_refuses_a_missing_member() {
+    let with = r#"I0102 output.go:170] Widget object updated: &{{ } {widget-for-alpha  ops  <UUID> <NUMBER> 4 <TIMESTAMP> UTC <nil> <nil> map[node:alpha] map[] [{<GROUP> Update v1 <TIMESTAMP> FieldsV1 {"f:metadata":{"f:labels":{".":{},"f:node":{}},"f:name":{}},<ESCAPED_JSON>:{}}}] }} done"#;
+    let without = r#"I0102 output.go:170] Widget object updated: &{{ } {widget-for-bravo  ops  <UUID> <NUMBER> 7 <TIMESTAMP> UTC <nil> <nil> map[node:bravo] map[] [{<GROUP> Update v1 <TIMESTAMP> FieldsV1 {"f:metadata":{"f:name":{}},<ESCAPED_JSON>:{}}}] }} done"#;
+    assert!(reads_unclean(with));
+    assert!(object_members_differ(with, without));
+    assert!(object_members_differ(without, with));
+    assert!(!object_members_differ(
+        with,
+        &with.replace("alpha", "bravo")
+    ));
+}
+
+#[test]
+fn an_array_valued_member_absent_on_one_side_refuses_the_join_either_way() {
+    let with = r#"{"status":{"steps":[{"type":"Packed"}],"phase":"Returned"}}"#;
+    let without = r#"{"status":{"phase":"Returned"}}"#;
+    assert_eq!(admitted_edits(with, with, without), None);
+    assert_eq!(admitted_edits(without, without, with), None);
+    assert!(object_members_differ(
+        r#"{"s":{"tags":[1],"p":1}}"#,
+        r#"{"s":{"p":1}}"#
+    ));
+    assert!(object_members_differ(
+        r#"{"s":{"p":1}}"#,
+        r#"{"s":{"tags":[1],"p":1}}"#
+    ));
+}
+
+#[test]
+fn a_word_where_a_key_belongs_stops_the_object_from_taking_later_keys() {
+    for broken in [r#"{"k" "a":{"k":1}}"#, r#"{x "a":{"k":1}}"#] {
+        let found = object_members(broken);
+        assert!(found[""].unreadable, "{broken}");
+        assert!(!found[""].keys.contains("a"), "{broken}");
+    }
+}
+
+#[test]
+fn an_empty_array_against_an_absent_member_refuses_the_join() {
+    let without = r#"{"s":{"p":1}}"#;
+    let empty = r#"{"s":{"tags":[],"p":1}}"#;
+    assert!(object_members_differ(empty, without));
+    assert!(object_members_differ(without, empty));
+    assert!(!object_members_differ(
+        empty,
+        r#"{"s":{"tags":[1,2],"p":2}}"#
+    ));
+}
+
+#[test]
+fn spaced_json_still_refuses_a_missing_object_member() {
+    let member = r#"[pod/agent-<SUFFIX>/export-stdout] {"exec":{"parent":{"pid":<NUMBER>}, "process":{"pid":<NUMBER>, "pod":{"name":<QUOTED_STRING>, "labels":{"app":"a", "tier":"b"}}}}, "node":"n1"}"#;
+    let founder = r#"[pod/agent-<SUFFIX>/export-stdout] {"exec":{"parent":{"pid":<NUMBER>, "extra":{"k":"v"}}, "process":{"pid":<NUMBER>, "pod":{"name":<QUOTED_STRING>, "labels":{"app":"a", "tier":"b"}}}}, "node":"n1"}"#;
+    assert!(object_members_differ(founder, member));
+    assert!(object_members_differ(member, founder));
+    assert!(!object_members_differ(
+        founder,
+        &founder.replace("n1", "n2")
+    ));
+}
+
+const ORDER_PRE: &str = r#"{"kind":"Order","api":"shop/v2","stage":"Done","uri":"/shop/v2/orders/status","verb":"patch","agent":"cashier/v3.1 (linux/amd64)","ref":{"resource":"orders","part":"status"},"reply":{"code":200},"body":{"meta":{"owner":"till"},"status":{"order":[{"type":"Packed"},{"type":"Paid"},{"type":"Sent"}],"steps":[{"status":"False","type":"Packed"}],"#;
+
+#[test]
+fn a_line_that_replaces_a_founder_key_is_refused_after_the_template_widened() {
+    let mut f = make_folder();
+    for tail in [
+        r#""phase":"Returned"}}}"#,
+        r#""phase":"Kept"}}}"#,
+        r#""seenRevision":2}}}"#,
+    ] {
+        f.process_line(&format!("{ORDER_PRE}{tail}")).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2);
+    assert_eq!(f.buffer[0].count(), 2);
+    assert!(f.buffer[0].template().contains(VARIES_MARK));
+}
+
+#[test]
+fn a_member_line_is_judged_against_the_founder_not_the_template() {
+    let widened = r#"{"s":{<VARIES>}}"#;
+    let member = r#"{"s":{"seenRevision":2}}"#;
+    assert_eq!(
+        admitted_edits(widened, r#"{"s":{"phase":"Returned"}}"#, member),
+        None
+    );
+    assert_eq!(
+        admitted_edits(widened, r#"{"s":{"seenRevision":1}}"#, member),
+        template_edits(widened, member)
+    );
+}
+
+#[test]
+fn groups_with_one_template_merge_only_when_their_founders_agree_on_members() {
+    let f = make_folder();
+    let template = r#"{"s":{<VARIES>}}"#;
+    let group = |founder: &str, pos: usize| {
+        let mut g = PatternGroup::new(make_line(founder, vec![]), pos);
+        g.template = template.to_string();
+        g
+    };
+    let replaced = vec![
+        group(r#"{"s":{"phase":"Returned"}}"#, 0),
+        group(r#"{"s":{"seenRevision":2}}"#, 1),
+    ];
+    assert_eq!(f.merge_converged(replaced).len(), 2);
+    let optional = vec![
+        group(r#"{"s":{"phase":"Returned"}}"#, 0),
+        group(r#"{"s":{"phase":"Kept","note":"late"}}"#, 1),
+    ];
+    assert_eq!(f.merge_converged(optional).len(), 2);
+    let revalued = vec![
+        group(r#"{"s":{"phase":"Returned"}}"#, 0),
+        group(r#"{"s":{"phase":"Kept"}}"#, 1),
+    ];
+    assert_eq!(f.merge_converged(revalued).len(), 1);
 }
