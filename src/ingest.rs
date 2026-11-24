@@ -62,10 +62,8 @@ pub fn open_inputs(files: &[PathBuf]) -> OpenedInputs {
                 reader: Box::new(BufReader::new(io::stdin().lock())),
             });
         } else {
-            // A directory is refused before opening: Unix opens it and fails
-            // only on the first read, which would abort the whole run, and
-            // Windows refuses to open it with "Access is denied". Checking
-            // first gives every platform the same message.
+            // Windows refuses to open a directory and Unix fails only on its first
+            // read, so a directory is named before it is opened.
             let opened = if std::fs::metadata(path).is_ok_and(|m| m.is_dir()) {
                 Err(io::Error::other("Is a directory"))
             } else {
