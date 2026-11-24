@@ -439,14 +439,7 @@ fn prose_target_parts(target: &str) -> (&str, &str) {
     if let Some((scheme, rest)) = target.split_once("://") {
         let start = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         let path = &rest[start..];
-        (
-            scheme,
-            if path.starts_with(['/', '?']) {
-                path
-            } else {
-                "/"
-            },
-        )
+        (scheme, if path.starts_with('#') { "/" } else { path })
     } else {
         ("", target)
     }
@@ -2390,6 +2383,29 @@ mod tests {
 
         assert_eq!(line("x path=relative/dir/file y").anchor, 0);
         assert_eq!(line("x MountPath:/var/run/x y").anchor, 0);
+    }
+
+    #[test]
+    fn a_url_with_no_path_is_written_with_no_path() {
+        let n = Normalizer::new(Config::default());
+        let line = |s: &str| n.normalize_line(s.to_string()).unwrap().normalized;
+
+        assert_eq!(
+            line("sync --target-url=https://blob.example.test"),
+            "sync --target-url=https://<HOST>"
+        );
+        assert_eq!(
+            line("sync --target-url=https://blob.example.test done"),
+            "sync --target-url=https://<HOST> done"
+        );
+        assert_eq!(
+            line("sync --target-url=https://blob.example.test/ done"),
+            "sync --target-url=https://<HOST>/ done"
+        );
+        assert_eq!(
+            line("sync --target-url=https://blob.example.test/bucket done"),
+            "sync --target-url=https://<HOST>/bucket done"
+        );
     }
 
     #[test]
@@ -4820,6 +4836,218 @@ mod e8v_normalize_2026_09_17 {
             "{} undeclared order rule(s):\n{}",
             undeclared.len(),
             undeclared.join("\n")
+        );
+    }
+
+    fn systemd_hyphen_decoded(line: &str) -> Option<String> {
+        line.contains("\\x2d").then(|| line.replace("\\x2d", "-"))
+    }
+
+    /// Rewrites made on purpose that write text the line does not hold, each
+    /// as the line reads after that rewrite. A line passes when its normalized
+    /// form reads as the line itself or as one of these views of it.
+    type Rewrite = (&'static str, fn(&str) -> Option<String>, &'static str);
+
+    const DECLARED_REWRITES: &[Rewrite] = &[(
+        "systemd hyphen escape",
+        systemd_hyphen_decoded,
+        "systemd writes `-` inside a unit name as `\\x2d` (systemd-escape); \
+         `render_systemd_unit` shows a unit by the skeleton `visit_unit_skeleton` \
+         reads, the one its anchor hashes, so `a\\x2d1.scope` and `a-1.scope` are one unit",
+    )];
+
+    /// The placeholder starting at `at`, if one does: `<UPPER_SNAKE>` or
+    /// `<UPPER:value>` with no space in the value. Returns its end.
+    fn placeholder_end(text: &[u8], at: usize) -> Option<usize> {
+        let mut j = at + 1;
+        if text.get(at) != Some(&b'<') || !text.get(j).is_some_and(u8::is_ascii_uppercase) {
+            return None;
+        }
+        while text
+            .get(j)
+            .is_some_and(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'_')
+        {
+            j += 1;
+        }
+        match text.get(j) {
+            Some(b'>') => Some(j + 1),
+            Some(b':') => text[j..]
+                .iter()
+                .take_while(|b| !b.is_ascii_whitespace() && **b != b'<')
+                .position(|b| *b == b'>')
+                .map(|k| j + k + 1),
+            _ => None,
+        }
+    }
+
+    /// Whitespace runs read as one space, and the ends of a line not at all.
+    fn collapse_whitespace(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Where `normalized` stops reading as `original`, as a shape shared by
+    /// every line the same rewrite breaks; `None` when it reads. Linear: each
+    /// placeholder takes at least one character, then the next literal is
+    /// found leftmost, which is the match a glob of non-empty holes takes.
+    fn misreading(original: &str, normalized: &str) -> Option<String> {
+        let (original, normalized) = (
+            collapse_whitespace(original),
+            collapse_whitespace(normalized),
+        );
+        let bytes = normalized.as_bytes();
+        let (mut literals, mut holes, mut from, mut at) = (Vec::new(), Vec::new(), 0, 0);
+        while at < bytes.len() {
+            match placeholder_end(bytes, at) {
+                Some(end) => {
+                    literals.push(&normalized[from..at]);
+                    holes.push(&normalized[at..end]);
+                    (from, at) = (end, end);
+                }
+                None => at += 1,
+            }
+        }
+        literals.push(&normalized[from..]);
+        let head = literals[0];
+        if holes.is_empty() {
+            return (original != head).then(|| first_difference("line start", &original, head));
+        }
+        if !original.starts_with(head) {
+            return Some(first_difference("line start", &original, head));
+        }
+        let past_one_char = |pos: usize| original[pos..].chars().next().map(|c| pos + c.len_utf8());
+        let mut pos = head.len();
+        let last = literals.len() - 1;
+        for (k, literal) in literals.iter().enumerate().skip(1) {
+            let after = format!("after {}", holes[k - 1]);
+            let Some(start) = past_one_char(pos) else {
+                return Some(format!("{after}: nothing left in the line for it"));
+            };
+            let found = if k == last {
+                (original.len() >= start + literal.len() && original.ends_with(literal))
+                    .then(|| original.len() - literal.len() - start)
+            } else {
+                original[start..].find(literal)
+            };
+            let Some(offset) = found else {
+                let shown = literal
+                    .chars()
+                    .next()
+                    .map_or_else(|| "the line end".to_string(), |c| format!("{c:?}"));
+                return Some(format!("{after}: the form writes {shown}"));
+            };
+            pos = start + offset + literal.len();
+        }
+        None
+    }
+
+    fn first_difference(place: &str, original: &str, literal: &str) -> String {
+        let mut line = original.chars();
+        for written in literal.chars() {
+            match line.next() {
+                Some(had) if had == written => {}
+                had => {
+                    return format!(
+                        "{place}: the form writes {written:?} where the line has {had:?}"
+                    );
+                }
+            }
+        }
+        format!("{place}: the line goes on where the form ends")
+    }
+
+    #[test]
+    fn a_normalized_form_reads_as_its_line_only_when_its_text_is_there() {
+        let line = "put --endpoint-url=https://store.example.org done";
+        assert_eq!(
+            misreading(line, "put --endpoint-url=https://<HOST> done"),
+            None
+        );
+        assert_eq!(
+            misreading(line, "put --endpoint-url=https://<HOST>/ done").as_deref(),
+            Some("after <HOST>: the form writes '/'")
+        );
+        assert_eq!(misreading("a  b\tc ", "a b c "), None);
+        assert_eq!(misreading("ab=1", "ab=<N>"), None);
+        assert!(
+            misreading("ab", "a<N>b").is_some(),
+            "a hole takes a character"
+        );
+        assert!(
+            misreading("a=1", "a=1<N>").is_some(),
+            "a hole at the end takes one too"
+        );
+        assert!(misreading("abc", "abd").is_some());
+        assert!(misreading("x 1 y", "x <N> y z").is_some());
+        assert!(misreading("x 1 y 2", "x <N> z <N>").is_some());
+        assert_eq!(misreading("k=<v> ok", "k=<HOST:ab12> ok"), None);
+        assert_eq!(
+            misreading("q-a\\x2d1", "q-a-<N>"),
+            Some("line start: the form writes '-' where the line has Some('\\\\')".into())
+        );
+        assert_eq!(
+            misreading(&systemd_hyphen_decoded("q-a\\x2d1").unwrap(), "q-a-<N>"),
+            None
+        );
+    }
+
+    #[test]
+    fn every_corpus_line_reads_as_its_normalized_form() {
+        let mut lines: Vec<String> = Vec::new();
+        let corpora = match std::fs::read_dir("examples/distilled") {
+            Ok(corpora) => corpora,
+            Err(e) if std::env::var_os("CI").is_some() => {
+                eprintln!("Skipping: examples/distilled not available ({e}) — CI has no corpora");
+                return;
+            }
+            Err(e) => panic!("examples/distilled must exist: this test reads every corpus: {e}"),
+        };
+        for entry in corpora {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "log") {
+                let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+                lines.extend(text.lines().filter(|l| l.len() <= 2000).map(str::to_string));
+            }
+        }
+        assert!(lines.len() > 1000, "only {} corpus lines", lines.len());
+        let n = Normalizer::new(Config::default());
+        let mut shapes: std::collections::BTreeMap<String, (usize, usize, String)> =
+            std::collections::BTreeMap::new();
+        for (at, line) in lines.iter().enumerate() {
+            let normalized = n.normalize_line(line.clone()).unwrap().normalized;
+            let Some(shape) = misreading(line, &normalized) else {
+                continue;
+            };
+            let declared = DECLARED_REWRITES.iter().any(|(_, view, _)| {
+                view(line).is_some_and(|seen| misreading(&seen, &normalized).is_none())
+            });
+            if declared {
+                continue;
+            }
+            let slot = shapes.entry(shape).or_insert((0, at, normalized.clone()));
+            slot.0 += 1;
+            if line.len() < lines[slot.1].len() {
+                (slot.1, slot.2) = (at, normalized);
+            }
+        }
+        let mut report: Vec<_> = shapes.into_iter().collect();
+        report.sort_by_key(|(_, (count, _, _))| std::cmp::Reverse(*count));
+        let total: usize = report.iter().map(|(_, (count, _, _))| count).sum();
+        let shown: Vec<String> = report
+            .iter()
+            .map(|(shape, (count, at, normalized))| {
+                format!(
+                    "{shape}: {count} corpus lines, the shortest:\n  line: {}\n  form: {normalized}",
+                    lines[*at]
+                )
+            })
+            .collect();
+        assert!(
+            shown.is_empty(),
+            "{total} corpus line(s) do not read as their normalized form, in {} shape(s). \
+             Fix the detector so it writes only text the line has, or declare the rewrite \
+             in DECLARED_REWRITES with a reason a reader accepts:\n{}",
+            shown.len(),
+            shown.join("\n")
         );
     }
 

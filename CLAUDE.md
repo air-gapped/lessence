@@ -138,6 +138,19 @@ the code so the wrong thing cannot be written; add a check to `make ci`,
 Write a rule in this file only for a judgment no check can make. A check
 explains itself when it fails, so it is not listed here.
 
+## Rules and what enforces them
+
+| Rule | Enforced by |
+|---|---|
+| A normalized line states only text the original line has | `every_corpus_line_reads_as_its_normalized_form` (src/normalize.rs, `make ci`); deliberate rewrites go in its `DECLARED_REWRITES` with a reason |
+| Every word of a template holds for every member | `assert_claim_holds` on every join (debug builds, every test); the fold reviewer reads changed goldens |
+| A detector-order dependence is declared in `DETECTOR_ORDER` | `every_order_dependence_on_a_corpus_line_is_declared`, run by `make gate` when detectors change |
+| A changed line under src/folder, normalize or patterns is tested | `make gate` mutants; `check-mutants-pins.sh --repin` re-places pins that only shifted |
+| A new `##CASE` fails on the HEAD build | `make gate` → `cases.vacuous` |
+| The truth layer only grows | commit-msg hook (`Truth-Layer-Change:`) |
+| Nothing private is published | `check-public-text.sh` in the pre-commit and commit-msg hooks |
+| Workers edit src/ and tests/; one build at a time | `edit-guard.sh`, `build-guard.sh` |
+
 ## Commits
 
 Conventional commits decide what reaches the changelog, which is now written

@@ -5271,3 +5271,10 @@ time="2026-03-01T10:00:00Z" level=warning msg="Could not locate vk/b.json: vk/b.
 [pod/quorum-watch-node-0/watch] 1:X 12 Mar 2026 04:20:11.118 # +sdown watcher 7c41d2e9a0b35f86c17e4d29b0a36f58e1c27d94 bravo-node-2.east-ring.cluster.local 27001 @ primary bravo-node-1.east-ring.cluster.local 7001
 [pod/quorum-watch-node-0/watch] 1:X 12 Mar 2026 04:21:15.402 # -sdown watcher 3e8f17a2c94d05b6e81a7f3c2d49b06e5a1f8c37 alpha-node-3.east-ring.cluster.local 27001 @ primary bravo-node-1.east-ring.cluster.local 7001
 
+
+##CASE lessence-hostonly template_absent=https://<HOST>/
+##WHY a URL with no path is written with no path; the form wrote `https://<HOST>/`, a slash none of the lines has
+##FROM invented sync commands
+sync --target-url=https://blob-a.example.test done
+sync --target-url=https://blob-b.example.test done
+sync --target-url=https://blob-c.example.test done
