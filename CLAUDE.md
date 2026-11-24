@@ -19,7 +19,7 @@ lessence --diff <old-binary> app.log   # what an older build folds differently
 make ci             # fmt + clippy + doc + test + deny + mutants-pins + comment-budget + corpus-acceptance + hooks-selftest (~20 s warm, every commit). Tests run on
                     # the test profile: the release profile (fat LTO, one codegen unit) is
                     # for the shipped binary, and GitHub CI is where it is checked to compile
-make gate           # FAILS on exactly seven things: a changed line under src/folder,
+make gate           # FAILS on exactly eight things: a changed line under src/folder,
                     # src/normalize.rs or src/patterns that no test catches a mutation of
                     # (adds minutes, about 13 s a mutant), a new ##CASE that also passes
                     # on the HEAD build (vacuous), kubelet instructions over +1%, or over +2%
@@ -27,7 +27,9 @@ make gate           # FAILS on exactly seven things: a changed line under src/fo
                     # --format json disagreeing on a corpus where the HEAD build agreed,
                     # peak RSS over +32 MiB (default run and --overview all), and default
                     # stdout/stderr bytes or tokens over the reviewed size baseline in
-                    # tests/fixtures + max(128, 1%). The golden
+                    # tests/fixtures + max(128, 1%), and, when src/normalize.rs or
+                    # src/patterns changed, a detector-order dependence on a corpus line
+                    # that DETECTOR_ORDER does not declare (about a minute). The golden
                     # diff it prints is material for you to READ, not a verdict — a changed
                     # golden never fails the gate. ≤15 lines, target/gate/gate.json (seconds)
 make goldens        # re-record the goldens the last `make gate` reports as changed, after

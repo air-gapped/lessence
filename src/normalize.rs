@@ -187,6 +187,10 @@ static DETECTOR_ORDER: &[DetectorEntry] = &[
                 "network",
                 r#"grantors=pam_namespace,pam_unix acct="some_user" exe="/usr/sbin/sshd" hostname=gw-204.286.40.28.lab.example.net addr=10.20.30.40 terminal=ssh res=success"#,
             ),
+            (
+                "hash",
+                r#"apparmor="STATUS" operation="profile_load" name=0A1B2C3D4E5F60718293A4B5C6D7E8 pid=42"#,
+            ),
         ],
         enabled: |c| c.normalize_kubernetes,
         only_when: None,

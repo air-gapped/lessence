@@ -526,6 +526,11 @@ if [ "$GATE_BASE" = "HEAD" ] && [ -z "${GATE_SKIP_MUTANTS:-}" ]; then
                     mutants_missed="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant and .summary=="MissedMutant")] | length' "$outcomes")"
                     mutants_line="${mutants_total} on the change, ${mutants_missed} missed"
                     mutants_json="{\"ran\": true, \"total\": ${mutants_total}, \"missed\": ${mutants_missed}}"
+                elif [ "$mutants_rc" -eq 0 ] && [ ! -e mutants.out ]; then
+                    # cargo-mutants found no mutant in the changed lines (a
+                    # changed string or comment only) and wrote nothing.
+                    mutants_line="0 on the change (no mutable code in the changed lines)"
+                    mutants_json='{"ran": true, "total": 0, "missed": 0}'
                 else
                     mutants_broken="rc=${mutants_rc}, no readable outcomes.json"
                 fi
@@ -534,6 +539,25 @@ if [ "$GATE_BASE" = "HEAD" ] && [ -z "${GATE_SKIP_MUTANTS:-}" ]; then
         esac
     fi
     rm -f "$mutants_diff"
+fi
+
+# ── Detector order rules ──────────────────────────────────────────────────
+# A change to the normalizer or a detector can make the detector order decide
+# a corpus line in a way no `after` entry in DETECTOR_ORDER declares. The test
+# that finds it reads every corpus under every pairwise swap (about a minute),
+# so it lives in the slow profile; it runs here whenever those files change,
+# instead of first surfacing at release time.
+order_line="no change under src/normalize.rs or src/patterns"
+order_fail=0
+if [ "$GATE_BASE" = "HEAD" ] && [ -n "$(git diff HEAD --name-only -- src/normalize.rs src/patterns)" ]; then
+    echo "Checking that every detector-order dependence is declared (about a minute)..." >&2
+    if cargo nextest run --release --profile slow \
+        -E 'test(every_order_dependence_on_a_corpus_line_is_declared)' >"$GATE_DIR/order-rules.log" 2>&1; then
+        order_line="every order dependence declared"
+    else
+        order_line="undeclared order dependence (see $GATE_DIR/order-rules.log)"
+        order_fail=1
+    fi
 fi
 
 # ── Verdict ──────────────────────────────────────────────────────────────
@@ -583,6 +607,10 @@ if [ "$size_error_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("size check could not run cleanly on ${size_errors} count(s) — see size.errors in gate.json")
 fi
+if [ "$order_fail" -eq 1 ]; then
+    verdict="FAIL"
+    fail_reasons+=("the detector order decides a corpus line that no \`after\` entry in DETECTOR_ORDER declares: add the entry with an invented probe line; the failing pair is in $GATE_DIR/order-rules.log")
+fi
 if [ "$size_fail" -eq 1 ]; then
     verdict="FAIL"
     fail_reasons+=("default output grew past the reviewed baseline + max(128, 1%) on ${size_over} corpus/field pair(s)")
@@ -598,6 +626,7 @@ else
     echo "cases: ${n_new} new, ${#vacuous[@]} vacuous"
 fi
 echo "golden: ${#distilled_corpora[@]} corpora, ${#golden_table_rows[@]} changed"
+echo "order rules: ${order_line}"
 for row in "${golden_table_rows[@]}"; do
     echo "  $row"
 done
@@ -665,6 +694,7 @@ cat > "$GATE_DIR/gate.json" <<JSON
              "new_overview_all": ${rss_all:-null}, "allowance_kb": ${RSS_ALLOWANCE_KB}},
   "size": ${size_json},
   "mutants": ${mutants_json},
+  "order_rules": {"ran": $([ "$order_line" = "no change under src/normalize.rs or src/patterns" ] && echo false || echo true), "failed": $([ "$order_fail" -eq 1 ] && echo true || echo false)},
   "verdict": "${verdict}"
 }
 JSON
