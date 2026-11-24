@@ -160,19 +160,19 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Real-World Compression
 
 <!-- gen:compression:begin -->
-<!-- gen:compression:at 4d58da8db -->
-Measured on v0.8.1 (commit 4d58da8db) on production logs that are not
+<!-- gen:compression:at d29f354ad -->
+Measured on v0.9.0 (commit d29f354ad) on production logs that are not
 distributable. Every distinct message is its own event, so these counts are
 lower than a looser folder would give.
 
 | Log source | Lines in | Lines out | Reduction |
 |-----------|--------:|---------:|----------:|
-| Kubernetes kubelet | 70,548 | 733 | 99.0% |
+| Kubernetes kubelet | 70,548 | 939 | 98.7% |
 | ArgoCD server | 60,849 | 21 | 99.97% |
 | PostgreSQL primary | 54,066 | 96 | 99.8% |
-| Cilium networking | 38,145 | 1,038 | 97.3% |
-| Rancher | 22,433 | 311 | 98.6% |
-| journalctl (7 days) | 655,103 | 3,386 | 99.5% |
+| Cilium networking | 38,145 | 1,452 | 96.2% |
+| Rancher | 22,433 | 337 | 98.5% |
+| journalctl (7 days) | 655,103 | 3,437 | 99.5% |
 <!-- gen:compression:end -->
 
 Measured before each release on production logs that are not distributable;
