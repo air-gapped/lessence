@@ -56,7 +56,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 pub(crate) static CREDENTIAL_ASSIGNMENT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|master[_-]?key|access[_-]?key)"?\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)"#,
+        r#"(?i)([A-Za-z0-9_.-]*(?:password|passwd|secret|token|api[_-]?key|master[_-]?key|access[_-]?key)"?\s*[=:]\s*)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;&]+)"#,
     )
     .expect("static regex")
 });
@@ -111,6 +111,41 @@ fn capture_spans(re: &Regex, text: &str) -> Vec<Range<usize>> {
 
 static EMAILS: LazyLock<EmailPatternDetector> =
     LazyLock::new(|| EmailPatternDetector::new().expect("static regex"));
+
+/// An address `EMAILS` does not read: a local part with Unicode letters or
+/// digits, or an `@` written as `%40` (percent-encoded, either case). Used
+/// only for masking; the fold shapes stay with `EMAILS`.
+static ENCODED_OR_UNICODE_EMAIL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b[\p{L}\p{N}](?:[\p{L}\p{N}._+-]|%[0-9a-f]{2}){0,63}(?:@|%40)[a-z0-9][a-z0-9.-]{0,252}\.[a-z]{2,}\b",
+    )
+    .expect("static regex")
+});
+
+/// Spans of the addresses `ENCODED_OR_UNICODE_EMAIL` finds that `EMAILS`
+/// cannot: each holds `%40` or a non-ASCII letter, so a plain ASCII address
+/// is left to `EMAILS` alone and masks as before.
+fn encoded_or_unicode_email_spans(text: &str) -> Vec<Range<usize>> {
+    if !text.contains('@') && !text.contains("%40") {
+        return Vec::new();
+    }
+    ENCODED_OR_UNICODE_EMAIL
+        .find_iter(text)
+        .filter(|m| {
+            let found = m.as_str();
+            let at_written_as = if found.contains('@') { "@" } else { "%40" };
+            if found.is_ascii() && at_written_as == "@" {
+                return false;
+            }
+            let Some(at) = found.rfind(at_written_as) else {
+                return false;
+            };
+            let decoded = format!("{}@{}", &found[..at], &found[at + at_written_as.len()..]);
+            EMAILS.validate_email(&decoded)
+        })
+        .map(|m| m.range())
+        .collect()
+}
 
 static SYSLOG_HOST_PLACER: LazyLock<Normalizer> = LazyLock::new(|| {
     let mut config = Config::default();
@@ -351,6 +386,11 @@ impl Sanitizer {
             return;
         }
         let mut detector_tokens = scanned_entities_without_syslog_host(text, email, ip, host);
+        if email {
+            for range in encoded_or_unicode_email_spans(text) {
+                spans.push(Span::entity(range.start, range.end, Kind::Email));
+            }
+        }
         if host {
             if let Ok(line) = SYSLOG_HOST_PLACER.normalize_line(text.to_string()) {
                 detector_tokens.extend(line.tokens);
@@ -780,6 +820,22 @@ mod tests {
             z.mask_text("fetch http://[2001:db8::9]:8080/health"),
             "fetch http://[<IP>]:8080/health"
         );
+        assert_eq!(
+            z.mask_text("GET /r?email=ann%40example.org"),
+            "GET /r?email=<EMAIL>"
+        );
+        assert_eq!(
+            z.mask_text("GET /r?EMAIL=ANN%40EXAMPLE.ORG&x=1"),
+            "GET /r?EMAIL=<EMAIL>&x=1"
+        );
+        assert_eq!(z.mask_text("to jörg@example.org"), "to <EMAIL>");
+        assert_eq!(z.mask_text("100%40 done"), "100%40 done");
+        let z = s(&["email:pseudonym"], false).unwrap();
+        let out = z.mask_text("GET /r?email=ann%40example.org");
+        assert!(
+            out.starts_with("GET /r?email=<EMAIL:") && out.ends_with('>'),
+            "{out}"
+        );
     }
 
     #[test]
@@ -815,6 +871,15 @@ mod tests {
                 "session Bearer eyJhbGciOi.eyJzdWIiOi.SflKxwRJ",
                 "session Bearer <JWT>",
             ),
+            (
+                r#"{"level":"info","msg":"login","password":"ab\"cd-Rook9Tail ef-Moss4Tail"}"#,
+                r#"{"level":"info","msg":"login","password":<SECRET>}"#,
+            ),
+            (
+                r"login password='ab\'cd-Rook9Tail ef' next",
+                "login password=<SECRET> next",
+            ),
+            (r#"password="ab\"cd-Rook9Tail"#, r"password=<SECRET>"),
         ] {
             assert_eq!(z.mask_text(line), masked, "{line}");
         }

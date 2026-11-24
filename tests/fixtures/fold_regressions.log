@@ -181,6 +181,24 @@ user alice@example.com logged in from the console
 ##FLAGS --sanitize-pii
 service token=sk-abcdefghijklmnopqrstuvwx accepted
 
+##CASE lessence-mask-escaped-quote out_absent=Rook9Tail
+##WHY --sanitize-pii masks the whole quoted credential value, escaped quotes included
+##FROM a JSON password value holding a backslash-escaped quote
+##FLAGS --sanitize-pii
+{"level":"info","msg":"login","password":"ab\"cd-Rook9Tail ef-Moss4Tail"}
+
+##CASE lessence-mask-email-shapes out_absent=ann%40example.org
+##WHY --sanitize-pii masks an address whose @ is percent-encoded as %40
+##FROM an address carried in a URL query string
+##FLAGS --sanitize-pii
+GET /reset?email=ann%40example.org HTTP/1.1
+
+##CASE lessence-mask-email-shapes out_absent=jörg
+##WHY --sanitize-pii masks an address whose local part has non-ASCII letters
+##FROM an address with an accented local part in a mail log
+##FLAGS --sanitize-pii
+mail to jörg@example.org queued
+
 ##CASE lessence-arch-2026-08-r98.8 out_absent=\e[
 ##WHY --preflight strips terminal escapes before analysing
 ##FROM preflight was the one mode that skipped escape stripping

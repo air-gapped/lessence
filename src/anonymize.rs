@@ -968,6 +968,19 @@ mod credential_tests {
             "overlapping credential and address matches must agree"
         );
     }
+
+    #[test]
+    fn a_quoted_credential_is_invented_whole_escapes_included() {
+        let line = r#"{"level":"info","msg":"login","password":"ab\"cd-Rook9Tail ef-Moss4Tail"}"#;
+        let spans = credential_spans(line);
+        let value = r#""ab\"cd-Rook9Tail ef-Moss4Tail""#;
+        let start = line.find(value).unwrap();
+        assert_eq!(spans, vec![start..start + value.len()]);
+        let mut a = Anonymizer::new(1, Vec::new()).seal();
+        let out = a.rewrite(line);
+        assert!(!out.contains("Rook9Tail"), "{out}");
+        assert!(!out.contains("Moss4Tail"), "{out}");
+    }
 }
 
 #[cfg(test)]
