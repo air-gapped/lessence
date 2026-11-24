@@ -3,14 +3,14 @@
     "apache_error_production": {
       "corpus_sha256": "fa8a058ea939d334af2eb4bad6894d7f44de2757ae43b7d55be6482743e1b361",
       "omitted": 0,
-      "previewed": 7,
-      "printed": 27,
-      "selected": 27,
+      "previewed": 6,
+      "printed": 31,
+      "selected": 31,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13654,
-      "stdout_tokens": 4882,
-      "total": 27
+      "stdout_bytes": 14075,
+      "stdout_tokens": 4966,
+      "total": 31
     },
     "apache_sample": {
       "corpus_sha256": "0c08701f7a53ae1c688bfbc970d215e347bfd2098ae29eeef5d68bda7ae9ff6e",
@@ -26,15 +26,15 @@
     },
     "apiserver_production": {
       "corpus_sha256": "89afb6f443c479d2b5fc03a450a5827b631079791e1c1f3dd9e32a8d8b8dbe6e",
-      "omitted": 69,
+      "omitted": 70,
       "previewed": 11,
       "printed": 39,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15642,
-      "stdout_tokens": 5348,
-      "total": 108
+      "stdout_bytes": 15531,
+      "stdout_tokens": 5267,
+      "total": 109
     },
     "argocd_controller_production": {
       "corpus_sha256": "b26849621e2f271f638b9c646e02866c18aaba8a385a02ba3d53830255729d07",
@@ -62,15 +62,15 @@
     },
     "cilium_full": {
       "corpus_sha256": "fca4bf76b25cdc6622c709c5613345e325f7e2a06bdf8adbddf3c5deef885334",
-      "omitted": 536,
-      "previewed": 8,
-      "printed": 28,
+      "omitted": 582,
+      "previewed": 9,
+      "printed": 29,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15010,
-      "stdout_tokens": 5520,
-      "total": 564
+      "stdout_bytes": 15568,
+      "stdout_tokens": 5819,
+      "total": 611
     },
     "enhanced_timestamps": {
       "corpus_sha256": "93007238648bc4605e48bf5a55cc092a600439b73244d896aa1a6ee121a68e03",
@@ -86,15 +86,15 @@
     },
     "epyc_7days_journalctl": {
       "corpus_sha256": "12073d132be332bcd596d0ef99b9ad4ccd9a5e10e42510fcc4965103c3ebbce5",
-      "omitted": 632,
+      "omitted": 652,
       "previewed": 11,
       "printed": 32,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15314,
-      "stdout_tokens": 5826,
-      "total": 664
+      "stdout_bytes": 15299,
+      "stdout_tokens": 5819,
+      "total": 684
     },
     "harbor_postgres_primary": {
       "corpus_sha256": "b102e940621d22020dd4a1d6083efe3d6af04f0e4658750e0c5e32e32f8aeb3c",
@@ -134,39 +134,39 @@
     },
     "host_fedora_journal": {
       "corpus_sha256": "c2d3d5b07c4815d979397aecc03c731103f0c79f21378140c5dbfe5b3874fd6e",
-      "omitted": 215,
-      "previewed": 10,
-      "printed": 27,
+      "omitted": 233,
+      "previewed": 8,
+      "printed": 28,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15447,
-      "stdout_tokens": 5956,
-      "total": 242
+      "stdout_bytes": 15244,
+      "stdout_tokens": 5766,
+      "total": 261
     },
     "host_fedora_user_journal": {
       "corpus_sha256": "58e4c4cbd23e14620877d2f5aab583298b4dc808c88295bae184c990ca68c37f",
-      "omitted": 124,
+      "omitted": 134,
       "previewed": 4,
       "printed": 31,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15704,
-      "stdout_tokens": 5760,
-      "total": 155
+      "stdout_bytes": 15703,
+      "stdout_tokens": 5708,
+      "total": 165
     },
     "host_pi_dmesg": {
       "corpus_sha256": "af6124271a63369fb4263db4728e7a9b5680b446ed4039e44fc72f77bec0d720",
-      "omitted": 20,
-      "previewed": 5,
+      "omitted": 23,
+      "previewed": 4,
       "printed": 40,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 12894,
-      "stdout_tokens": 4442,
-      "total": 60
+      "stdout_bytes": 12966,
+      "stdout_tokens": 4502,
+      "total": 63
     },
     "host_pi_journal": {
       "corpus_sha256": "13fb4a76fea55b3f18b919cbc1cb8dcd81a2e1b96556f3efe5eb4bdf65cc74e1",
@@ -182,63 +182,63 @@
     },
     "host_rke2_journal": {
       "corpus_sha256": "915eee77a5f206fd31c7ac6040b0ebb1108fd33d5ea16e41011da4f2875a5513",
-      "omitted": 174,
-      "previewed": 8,
-      "printed": 26,
+      "omitted": 176,
+      "previewed": 7,
+      "printed": 29,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 14990,
-      "stdout_tokens": 5808,
-      "total": 200
+      "stdout_bytes": 15003,
+      "stdout_tokens": 5865,
+      "total": 205
     },
     "k8s_apiserver_audit": {
       "corpus_sha256": "bddbf8b3dbd6cd57b363d6fc4385034b3412483f8f0ba1bba248dcc51ebb57b4",
-      "omitted": 539,
+      "omitted": 548,
       "previewed": 1,
       "printed": 15,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15531,
-      "stdout_tokens": 4994,
-      "total": 554
+      "stdout_bytes": 15533,
+      "stdout_tokens": 4996,
+      "total": 563
     },
     "k8s_argocd_aux": {
       "corpus_sha256": "b4420ad251f5b4344ee1897ca3cfb0ef9c4e75d45fb7c2bdad1462ba44c126d8",
-      "omitted": 25,
+      "omitted": 23,
       "previewed": 9,
-      "printed": 15,
-      "selected": 40,
+      "printed": 16,
+      "selected": 39,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15203,
-      "stdout_tokens": 5181,
-      "total": 40
+      "stdout_bytes": 15718,
+      "stdout_tokens": 5372,
+      "total": 39
     },
     "k8s_cert_manager": {
       "corpus_sha256": "6cb991bd4f18e27c55e099db9e0e1b753c530a69628945a486378044d0703514",
-      "omitted": 16,
-      "previewed": 6,
-      "printed": 27,
+      "omitted": 15,
+      "previewed": 7,
+      "printed": 28,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15270,
-      "stdout_tokens": 5001,
+      "stdout_bytes": 15810,
+      "stdout_tokens": 5189,
       "total": 43
     },
     "k8s_cilium_operator": {
       "corpus_sha256": "bb9da987241ffb8f2c1838c59966314d6c3becb66cce534d7a4b2f5290a24888",
-      "omitted": 270,
-      "previewed": 0,
-      "printed": 32,
+      "omitted": 274,
+      "previewed": 1,
+      "printed": 33,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15117,
-      "stdout_tokens": 5239,
-      "total": 302
+      "stdout_bytes": 15564,
+      "stdout_tokens": 5366,
+      "total": 307
     },
     "k8s_cloudflared": {
       "corpus_sha256": "ccc083b751cda51f71cce2015a7e786028c231f270c2a08b01e1ad883132b55f",
@@ -248,8 +248,8 @@
       "selected": 18,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11100,
-      "stdout_tokens": 4116,
+      "stdout_bytes": 10687,
+      "stdout_tokens": 3984,
       "total": 18
     },
     "k8s_controller_mgr": {
@@ -272,21 +272,21 @@
       "selected": 10,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7451,
-      "stdout_tokens": 2779,
+      "stdout_bytes": 7450,
+      "stdout_tokens": 2777,
       "total": 10
     },
     "k8s_etcd": {
       "corpus_sha256": "7e23f8d8039f191b87e4cef05d9b4c29569781e09dd7e37e380365d4cc4bed78",
-      "omitted": 28,
-      "previewed": 6,
-      "printed": 19,
+      "omitted": 44,
+      "previewed": 5,
+      "printed": 21,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15466,
-      "stdout_tokens": 5516,
-      "total": 47
+      "stdout_bytes": 15734,
+      "stdout_tokens": 5593,
+      "total": 65
     },
     "k8s_events_all": {
       "corpus_sha256": "7fc14feba1786b01e6984efc1f4098b319688efc05591941f11be0d6139cbdb2",
@@ -302,27 +302,27 @@
     },
     "k8s_gitlab": {
       "corpus_sha256": "7c86ed6af979ebb9f8ed67a22b00249b675c8ed42de4fb7fe9cb1b5e670dc7d8",
-      "omitted": 140,
+      "omitted": 159,
       "previewed": 6,
       "printed": 24,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
       "stdout_bytes": 15490,
-      "stdout_tokens": 5528,
-      "total": 164
+      "stdout_tokens": 5519,
+      "total": 183
     },
     "k8s_gpu_operator": {
       "corpus_sha256": "cd3370b0b0e25d095a8182acdf201bf76bacfbae04c17e59cbcb602e181f3a81",
-      "omitted": 59,
+      "omitted": 68,
       "previewed": 2,
-      "printed": 33,
+      "printed": 37,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15699,
-      "stdout_tokens": 5332,
-      "total": 92
+      "stdout_bytes": 15596,
+      "stdout_tokens": 5271,
+      "total": 105
     },
     "k8s_grafana": {
       "corpus_sha256": "508859451620acb489ca7baeb2ad197bb0a743074debd6022bd17ff3e7271300",
@@ -344,8 +344,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 14898,
-      "stdout_tokens": 5856,
+      "stdout_bytes": 14897,
+      "stdout_tokens": 5855,
       "total": 95
     },
     "k8s_hubble": {
@@ -356,7 +356,7 @@
       "selected": 7,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6721,
+      "stdout_bytes": 6719,
       "stdout_tokens": 2378,
       "total": 7
     },
@@ -388,24 +388,24 @@
       "corpus_sha256": "62d794e826fe560dd551cfc41002cf41b258208e2312e82af97999133b7a2622",
       "omitted": 15,
       "previewed": 3,
-      "printed": 27,
+      "printed": 29,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15799,
-      "stdout_tokens": 5645,
-      "total": 42
+      "stdout_bytes": 15568,
+      "stdout_tokens": 5637,
+      "total": 44
     },
     "k8s_kube_state_metrics": {
       "corpus_sha256": "b38876099bb70934da9fcc3179513ba9a46c7e7d9494ec4246ad24875a2ddd1a",
-      "omitted": 7,
+      "omitted": 8,
       "previewed": 5,
-      "printed": 25,
+      "printed": 24,
       "selected": 32,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15724,
-      "stdout_tokens": 5339,
+      "stdout_bytes": 15406,
+      "stdout_tokens": 5242,
       "total": 32
     },
     "k8s_litellm": {
@@ -428,33 +428,33 @@
       "selected": 6,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 6646,
-      "stdout_tokens": 2247,
+      "stdout_bytes": 6755,
+      "stdout_tokens": 2262,
       "total": 6
     },
     "k8s_netbox": {
       "corpus_sha256": "17c70d10ef455983b8924cfc552dc326d25a9347c87331fb63d2e608856d3890",
-      "omitted": 31,
+      "omitted": 37,
       "previewed": 9,
       "printed": 40,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15414,
-      "stdout_tokens": 5388,
-      "total": 71
+      "stdout_bytes": 14465,
+      "stdout_tokens": 5033,
+      "total": 77
     },
     "k8s_oauth2_proxy": {
       "corpus_sha256": "567cc230f0d906d9588a60a4cf877dcc3cb1188ab53a77879c96ae6572f10508",
-      "omitted": 15,
-      "previewed": 10,
+      "omitted": 20,
+      "previewed": 11,
       "printed": 27,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15586,
-      "stdout_tokens": 5792,
-      "total": 42
+      "stdout_bytes": 15613,
+      "stdout_tokens": 5834,
+      "total": 47
     },
     "k8s_openebs": {
       "corpus_sha256": "c364a5866b623e7d48c0996f294d789ee78685f2916436c2e38cf721176cd6f3",
@@ -464,45 +464,45 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15317,
-      "stdout_tokens": 5257,
+      "stdout_bytes": 15304,
+      "stdout_tokens": 5244,
       "total": 65
     },
     "k8s_postgres_operator": {
       "corpus_sha256": "aeb603a8b625a88170793e3b3bda4d6a6fa93fd0ea1fe11bf09349b3a94e738a",
-      "omitted": 6,
-      "previewed": 9,
-      "printed": 20,
-      "selected": 26,
+      "omitted": 8,
+      "previewed": 8,
+      "printed": 24,
+      "selected": 32,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15614,
-      "stdout_tokens": 5197,
-      "total": 26
+      "stdout_bytes": 15559,
+      "stdout_tokens": 5157,
+      "total": 32
     },
     "k8s_redis_sentinel": {
       "corpus_sha256": "5ebaf46e496bc91e5238858c0a6bc1e157ff1252665189416b182059dcf1576e",
       "omitted": 0,
-      "previewed": 8,
-      "printed": 26,
-      "selected": 26,
+      "previewed": 7,
+      "printed": 33,
+      "selected": 33,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 12859,
-      "stdout_tokens": 4876,
-      "total": 26
+      "stdout_bytes": 14225,
+      "stdout_tokens": 5317,
+      "total": 33
     },
     "k8s_rook_ceph": {
       "corpus_sha256": "a6c8ab9758aa25f42c8b87285cba9723fdc6d7c243f464631925756708acf08a",
-      "omitted": 245,
-      "previewed": 7,
-      "printed": 24,
+      "omitted": 251,
+      "previewed": 5,
+      "printed": 25,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15424,
-      "stdout_tokens": 5799,
-      "total": 269
+      "stdout_bytes": 15165,
+      "stdout_tokens": 5642,
+      "total": 276
     },
     "k8s_scheduler": {
       "corpus_sha256": "03490b18c6e8aa31cf7a6db56de81e0c212e2280cad0bf0e6713b3bb7963e57c",
@@ -512,21 +512,21 @@
       "selected": 10,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 9329,
-      "stdout_tokens": 3205,
+      "stdout_bytes": 9327,
+      "stdout_tokens": 3203,
       "total": 10
     },
     "k8s_tetragon": {
       "corpus_sha256": "29807c95ec128ef81ebe10c0f034eb5ad85cbed65ff6b189bc1f129d8cf067da",
-      "omitted": 28,
+      "omitted": 32,
       "previewed": 5,
       "printed": 5,
-      "selected": 33,
+      "selected": 37,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
       "stdout_bytes": 15114,
       "stdout_tokens": 6129,
-      "total": 33
+      "total": 37
     },
     "k8s_tetragon_cred_ns": {
       "corpus_sha256": "f5ac0df3c470292cc5d85802ae7ac0dd6ad8285592492c0e3d6c056d81f48422",
@@ -548,8 +548,8 @@
       "selected": 7,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 10800,
-      "stdout_tokens": 3784,
+      "stdout_bytes": 10798,
+      "stdout_tokens": 3782,
       "total": 7
     },
     "k8s_vllm": {
@@ -578,27 +578,27 @@
     },
     "kubelet": {
       "corpus_sha256": "59cd6abddfe382a8aeca63efeef13ca7e1265b9668d5fbf42b6457932c234771",
-      "omitted": 213,
-      "previewed": 7,
-      "printed": 7,
+      "omitted": 224,
+      "previewed": 4,
+      "printed": 12,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15132,
-      "stdout_tokens": 5523,
-      "total": 220
+      "stdout_bytes": 15081,
+      "stdout_tokens": 5205,
+      "total": 236
     },
     "linux_auditd": {
       "corpus_sha256": "ed295ff375fbfe3c790b6b3f93caea73e610d36dd2ab91c8b700c15c2e346573",
-      "omitted": 100,
-      "previewed": 14,
+      "omitted": 108,
+      "previewed": 13,
       "printed": 25,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15663,
-      "stdout_tokens": 5573,
-      "total": 125
+      "stdout_bytes": 15769,
+      "stdout_tokens": 5590,
+      "total": 133
     },
     "linux_auth_secure": {
       "corpus_sha256": "f1ec1aeebbe7d60927fba5465baccfc0e6f5ed8ae9d06f9b95eb7d6ba061d00c",
@@ -620,21 +620,21 @@
       "selected": 13,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7665,
-      "stdout_tokens": 2639,
+      "stdout_bytes": 7663,
+      "stdout_tokens": 2636,
       "total": 13
     },
     "nas_dmesg": {
       "corpus_sha256": "7c75dd06b4d84ba3aa9345a5b33027c90668e283bae2abf81f07ee64da23765a",
-      "omitted": 92,
+      "omitted": 94,
       "previewed": 3,
       "printed": 40,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 12202,
-      "stdout_tokens": 4507,
-      "total": 132
+      "stdout_bytes": 12200,
+      "stdout_tokens": 4502,
+      "total": 134
     },
     "nginx_sample": {
       "corpus_sha256": "b2d89434e13d4f2387eb83d70c31c3069fe48669e2138f7295206a22c402bbb7",
@@ -674,15 +674,15 @@
     },
     "rancher_production": {
       "corpus_sha256": "b218f2b44862bbfbe27fd9d7f52b1690397257dadc29a3cdb188d7f86bfa8e92",
-      "omitted": 36,
-      "previewed": 5,
-      "printed": 26,
+      "omitted": 42,
+      "previewed": 7,
+      "printed": 28,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15466,
-      "stdout_tokens": 5610,
-      "total": 62
+      "stdout_bytes": 15779,
+      "stdout_tokens": 5467,
+      "total": 70
     },
     "realistic_repetitive": {
       "corpus_sha256": "315f676115a4bf40b5dd049f50e348276cf3fa30008310f9024e9cfe1627b248",
@@ -740,45 +740,45 @@
       "selected": 19,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 8758,
-      "stdout_tokens": 3212,
+      "stdout_bytes": 8753,
+      "stdout_tokens": 3202,
       "total": 19
     },
     "uap_messages": {
       "corpus_sha256": "d844fba845ad4b342e57dfbb3ee7d8355f24976045e0fa157bef0008ae31aeb8",
-      "omitted": 32,
-      "previewed": 10,
-      "printed": 28,
+      "omitted": 39,
+      "previewed": 9,
+      "printed": 29,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15615,
-      "stdout_tokens": 5935,
-      "total": 60
+      "stdout_bytes": 15440,
+      "stdout_tokens": 5833,
+      "total": 68
     },
     "usw_dmesg": {
       "corpus_sha256": "ad5deef008b61d1b7b7ec5864047e60d099a2e7d716a95c1d5816e5988c5a6b2",
-      "omitted": 0,
+      "omitted": 1,
       "previewed": 2,
-      "printed": 38,
-      "selected": 38,
+      "printed": 40,
+      "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 12395,
-      "stdout_tokens": 4460,
-      "total": 38
+      "stdout_bytes": 12228,
+      "stdout_tokens": 4406,
+      "total": 41
     },
     "usw_messages": {
       "corpus_sha256": "2e3554655c189ec5318535c3c8087ca478a04e17219b8fd1ec021b2b5527c725",
       "omitted": 0,
       "previewed": 7,
-      "printed": 28,
-      "selected": 28,
+      "printed": 31,
+      "selected": 31,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 14160,
-      "stdout_tokens": 5268,
-      "total": 28
+      "stdout_bytes": 14733,
+      "stdout_tokens": 5438,
+      "total": 31
     },
     "usw_rc": {
       "corpus_sha256": "300cb623370a65068cf3ad73080eb7c1732a8bc4059dd2d73f0ae1bc2484d932",
@@ -796,25 +796,25 @@
       "corpus_sha256": "9df9c322a542effbe22c9b8c57ac75820c15b3872936a97deab8c24111935a88",
       "omitted": 0,
       "previewed": 9,
-      "printed": 14,
-      "selected": 14,
+      "printed": 15,
+      "selected": 15,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11326,
-      "stdout_tokens": 3962,
-      "total": 14
+      "stdout_bytes": 11435,
+      "stdout_tokens": 3995,
+      "total": 15
     },
     "uxg_auth": {
       "corpus_sha256": "74b19ebc68eb20b99bb04158fbaddedcc87330dbf59aea5c078723187e7433c4",
       "omitted": 0,
       "previewed": 0,
-      "printed": 12,
-      "selected": 12,
+      "printed": 14,
+      "selected": 14,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 7053,
-      "stdout_tokens": 2669,
-      "total": 12
+      "stdout_bytes": 7372,
+      "stdout_tokens": 2798,
+      "total": 14
     },
     "uxg_cron": {
       "corpus_sha256": "84ec7caf580b7031012eefa6c0b307a04556ffa2758e655c77388a6f4b9576f7",
@@ -836,21 +836,21 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15733,
-      "stdout_tokens": 6130,
+      "stdout_bytes": 15717,
+      "stdout_tokens": 6124,
       "total": 54
     },
     "uxg_dmesg_boot": {
       "corpus_sha256": "e183cb5dc24ea028b80c7513de43ee45f3cd78a83bf3232be0b15892d2490b4c",
-      "omitted": 6,
+      "omitted": 8,
       "previewed": 3,
       "printed": 40,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 14416,
-      "stdout_tokens": 4985,
-      "total": 46
+      "stdout_bytes": 14012,
+      "stdout_tokens": 4880,
+      "total": 48
     },
     "uxg_dnscrypt-proxy": {
       "corpus_sha256": "26f7a932ff56f80670d243be51de1ba96dd27787419f2f7fae112c6771a3a556",
@@ -868,37 +868,37 @@
       "corpus_sha256": "ab11db3b88014d793e0d994c1c32b8f889603f1ea1ce33a6b08df621d96810d4",
       "omitted": 0,
       "previewed": 6,
-      "printed": 21,
-      "selected": 21,
+      "printed": 22,
+      "selected": 22,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 10883,
-      "stdout_tokens": 4132,
-      "total": 21
+      "stdout_bytes": 11097,
+      "stdout_tokens": 4205,
+      "total": 22
     },
     "uxg_journal_7d": {
       "corpus_sha256": "948bd942d6633acbd82b3e8b3a8bd7d396fcf478eaa39bbb60158cf3e3b70dbb",
       "omitted": 29,
       "previewed": 7,
-      "printed": 34,
+      "printed": 37,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15686,
-      "stdout_tokens": 6080,
-      "total": 63
+      "stdout_bytes": 15797,
+      "stdout_tokens": 6146,
+      "total": 66
     },
     "uxg_kern": {
       "corpus_sha256": "2728d58c90332ad51be48db28031ded3424f77bdc62eb6e4f7af9fd829263f37",
-      "omitted": 3,
+      "omitted": 5,
       "previewed": 3,
       "printed": 40,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 13791,
-      "stdout_tokens": 5212,
-      "total": 43
+      "stdout_bytes": 13599,
+      "stdout_tokens": 5131,
+      "total": 45
     },
     "uxg_messages": {
       "corpus_sha256": "a67d3f1696dae65f0ab077ab564e2708fa3dacd1ff93e003f337733b44df5d0b",
@@ -908,8 +908,8 @@
       "selected": 14,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 8311,
-      "stdout_tokens": 3084,
+      "stdout_bytes": 8307,
+      "stdout_tokens": 3077,
       "total": 14
     },
     "uxg_network-init": {
@@ -968,21 +968,21 @@
       "selected": 2,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 2274,
-      "stdout_tokens": 832,
+      "stdout_bytes": 2273,
+      "stdout_tokens": 828,
       "total": 2
     },
     "vllm_embedding_production": {
       "corpus_sha256": "fbfe6aaf3453cae0ee03aac61c075d748d7c4168ac9fde9c426a79cbacb1e862",
       "omitted": 0,
-      "previewed": 4,
-      "printed": 27,
-      "selected": 27,
+      "previewed": 3,
+      "printed": 30,
+      "selected": 30,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 11466,
-      "stdout_tokens": 3781,
-      "total": 27
+      "stdout_bytes": 11960,
+      "stdout_tokens": 3942,
+      "total": 30
     }
   },
   "note": "reviewed size baseline; + max(128, 1%) is the gate allowance",

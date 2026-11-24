@@ -1631,6 +1631,33 @@ fn explain_records_the_nearest_group_and_the_first_differing_token() {
 }
 
 #[test]
+fn explain_marks_a_split_the_slot_check_refused_and_no_other() {
+    let mut f = explaining_folder();
+    f.process_line("task beta closed in region north").unwrap();
+    f.process_line("task beta closed in region north, south")
+        .unwrap();
+    assert_eq!(f.buffer.len(), 2, "the slot check keeps the lines apart");
+    assert!(f.buffer[1].refugee);
+    assert!(
+        f.buffer[1].nearest.as_ref().unwrap().slot_refused,
+        "a line the slot check refused says so"
+    );
+
+    let mut f = explaining_folder();
+    f.process_line("req took 111 ms").unwrap();
+    f.process_line("req took 333 sec").unwrap();
+    let founded = f.buffer.last().unwrap();
+    assert!(!founded.refugee);
+    let nearest = founded
+        .nearest
+        .as_ref()
+        .expect("a miss records its nearest");
+    assert!(!nearest.slot_refused, "an ordinary split is not marked");
+    let json = serde_json::to_string(nearest).unwrap();
+    assert!(!json.contains("slot_refused"), "{json}");
+}
+
+#[test]
 fn explain_leaves_the_first_group_and_hash_hits_unexplained() {
     let mut f = explaining_folder();
     f.process_line("alpha one").unwrap();
@@ -4973,18 +5000,20 @@ fn a_slot_keeps_both_quotes_of_a_pair_or_neither() {
 }
 
 #[test]
-fn a_member_of_another_length_is_counted_by_its_value_not_as_absent() {
-    let r = rollup_of(&[
+fn a_member_with_two_words_where_the_others_have_one_founds_its_own_group() {
+    let mut f = make_folder();
+    for l in [
         "sync worker finished copying layer img.v1 into the local cache store ok",
         "sync worker finished copying layer img.v2 into the local cache store ok",
         "sync worker finished copying layer img.v3 img.v4 into the local cache store ok",
-    ]);
-    assert_eq!(
-        r[VARIES].samples,
-        vec!["img.v1", "img.v2", "img.v3 img.v4"],
-        "the member with two units in the slot is counted by its value, not as absent"
-    );
-    assert_eq!(r[VARIES].counts, Some(vec![1, 1, 1]));
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2, "one slot may not hold two words");
+    assert_eq!(f.buffer[0].count(), 2);
+    assert_eq!(f.buffer[1].count(), 1);
+    let r = f.rollup_computer.compute(&f.buffer[0]);
+    assert_eq!(r[VARIES].samples, vec!["img.v1", "img.v2"]);
 }
 
 #[test]
@@ -7495,7 +7524,9 @@ fn a_line_equal_to_the_founder_calls_for_no_edit() {
     let mut group = PatternGroup::new(plain_line("a <VARIES> c"), 0);
     group.template = "a <VARIES>".into();
     assert_eq!(
-        group.edits_for(&plain_line("a <VARIES> c")),
+        group
+            .edits_for(&plain_line("a <VARIES> c"), &mut None, &mut None)
+            .ok(),
         Some(Vec::new())
     );
 }
@@ -8250,8 +8281,18 @@ fn a_string_a_detector_cut_short_makes_its_open_objects_unreadable() {
         r#"{"error":"dial" "name":"x"}"#
     ));
     let broken = r#"{"error":"failed to list X: Get \"<PATH>": dial tcp timeout","level":"error","logger":"A","msg":"m"}"#;
+    let relisted = broken.replace("list X:", "list Y:");
+    assert!(admitted_edits(broken, broken, &relisted).is_some_and(|e| !e.is_empty()));
     let relogged = broken.replace(r#""A""#, r#""B""#);
-    assert!(admitted_edits(broken, broken, &relogged).is_some_and(|e| !e.is_empty()));
+    let mut widened = broken.to_string();
+    apply_edits(
+        &mut widened,
+        &admitted_edits(broken, broken, &relogged).expect("one value varies"),
+    );
+    assert!(
+        widened.ends_with(r#""logger":<VARIES>,"msg":"m"}"#),
+        "past the cut the slot still ends at the comma, so the next key stays on the line: {widened}"
+    );
     let renamed = r#"{"error":"x","name":"y"}"#;
     assert!(!object_members_differ(broken, renamed));
     assert!(!object_members_differ(renamed, broken));
@@ -8399,7 +8440,7 @@ fn a_line_that_replaces_a_founder_key_is_refused_after_the_template_widened() {
 
 #[test]
 fn a_member_line_is_judged_against_the_founder_not_the_template() {
-    let widened = r#"{"s":{<VARIES>}}"#;
+    let widened = r#"{"s":{"seenRevision":<VARIES>}}"#;
     let member = r#"{"s":{"seenRevision":2}}"#;
     assert_eq!(
         admitted_edits(widened, r#"{"s":{"phase":"Returned"}}"#, member),
@@ -8435,4 +8476,275 @@ fn groups_with_one_template_merge_only_when_their_founders_agree_on_members() {
         group(r#"{"s":{"phase":"Kept"}}"#, 1),
     ];
     assert_eq!(f.merge_converged(revalued).len(), 1);
+}
+
+#[test]
+fn a_slot_reads_one_value_and_never_a_key_a_separator_or_a_second_word() {
+    assert!(slots_read_one_value(
+        "worker <VARIES> ready",
+        "worker c3 ready"
+    ));
+    assert!(slots_read_one_value(
+        "worker <VARIES> ready",
+        "worker ready"
+    ));
+    assert!(slots_read_one_value("<VARIES> worker", "worker"));
+    assert!(slots_read_one_value("worker <VARIES>", "worker"));
+    assert!(!slots_read_one_value(
+        "worker <VARIES> ready",
+        "worker is now ready"
+    ));
+    assert!(!slots_read_one_value("a <VARIES> b", "ab"));
+    assert!(slots_read_one_value(
+        r#""k":<VARIES>,"m":1"#,
+        r#""k":"a b","m":1"#
+    ));
+    assert!(slots_read_one_value(r#""k":<VARIES>}"#, r#""k":\"a b\"}"#));
+    assert!(
+        !slots_read_one_value(r#""k":<VARIES>"m":1"#, r#""k":"a","m":1"#),
+        "the comma and the next key are not part of the value"
+    );
+    assert!(!slots_read_one_value(
+        "set a=1 <VARIES>, c=3",
+        "set a=1, b=2, c=3"
+    ));
+    assert!(!slots_read_one_value("[0,<VARIES>]", "[0,1,2]"));
+    assert!(!slots_read_one_value("[0,<VARIES> <VARIES>", "[0,1]"));
+    assert!(slots_read_one_value(
+        "job <VARIES> done",
+        "job 10:30:01 done"
+    ));
+    assert!(!slots_read_one_value(
+        "list <VARIES> Get",
+        "list v1.Pod: Get"
+    ));
+    assert!(slots_read_one_value(
+        "list <VARIES>: Get",
+        "list v1.Pod: Get"
+    ));
+    assert!(
+        slots_read_one_value("fail(): <VARIES> (x)", "fail(): Unknown[13] (x)"),
+        "an index glued to a word is part of the word"
+    );
+    assert!(!slots_read_one_value(
+        "inputs: <VARIES> <VARIES>",
+        "inputs: [5(3KB)]"
+    ));
+    assert!(!slots_read_one_value(
+        "inputs: <VARIES>",
+        "inputs: 6(64MB)]"
+    ));
+    assert!(!slots_read_one_value(
+        "{range_end:<VARIES> }",
+        "{range_end:; }"
+    ));
+    assert_eq!(
+        marked("{range_end:a; }", "{range_end:b; }"),
+        "{range_end:<VARIES>; }",
+        "a semicolon both values end with stays beside the slot"
+    );
+}
+
+#[test]
+fn every_literal_of_the_template_is_on_the_member() {
+    assert!(slots_read_one_value("a  b", "a b"));
+    assert!(!slots_read_one_value("[pod] {", "[pod]     },"));
+    assert!(!slots_read_one_value("[pod] <VARIES>,", "[pod] x"));
+    assert!(!slots_read_one_value(r#"{"s":{}}"#, r#"{"s":{"a":1}}"#));
+}
+
+#[test]
+fn a_colon_both_words_end_with_stays_beside_the_slot() {
+    assert_eq!(shared_affixes("v1.Secret:", "v1.Pod:"), (0, 1));
+    assert_eq!(
+        marked(
+            r#"x err="open alpha denied" y"#,
+            r#"x err="open bravo denied" y"#
+        ),
+        r#"x err="open <VARIES> denied" y"#,
+        "the words a quoted run shares stay beside the one word that varies"
+    );
+    assert_eq!(
+        marked(
+            r#"x err="open \"alpha\" denied" y"#,
+            r#"x err="open \"bravo\" denied" y"#
+        ),
+        r#"x err="open <VARIES> denied" y"#
+    );
+    assert_eq!(
+        marked(r#"x e="a:{k},n:47,t:on" y"#, r#"x e="a:{k},n:48,t:on" y"#),
+        r#"x e="a:{k},n:<VARIES>,t:on" y"#,
+        "inside a quoted list the slot ends at the comma"
+    );
+    assert_eq!(
+        marked("list v1.Secret: Get", "list v1.Pod: Get"),
+        "list <VARIES>: Get"
+    );
+}
+
+fn fold_texts(lines: &[&str]) -> PatternFolder {
+    let mut f = make_folder();
+    for l in lines {
+        f.process_line(l).unwrap();
+    }
+    f
+}
+
+#[test]
+fn a_varying_value_keeps_the_comma_and_the_next_key_after_an_escaped_url() {
+    let f = fold_texts(&[
+        r#"{"error":"Get \"https://h.example/a\": dial","level":"error","logger":"Unhandled","msg":"Failed to watch","reflector":"cache/reflector.go:290","stage":"list","kind":"Secret","shard":"east","team":"core","zone":"b","pass":"first","mode":"watch"}"#,
+        r#"{"error":"Get \"https://h.example/a\": dial","level":"error","logger":"kq.Unhandled","msg":"Failed to watch","reflector":"cache/reflector.go:290","stage":"list","kind":"Secret","shard":"east","team":"core","zone":"b","pass":"first","mode":"watch"}"#,
+    ]);
+    assert_eq!(f.buffer.len(), 1);
+    assert!(
+        f.buffer[0]
+            .template()
+            .contains(r#""logger":<VARIES>,"msg":"Failed to watch""#),
+        "{}",
+        f.buffer[0].template()
+    );
+}
+
+#[test]
+fn number_arrays_of_other_lengths_do_not_share_a_line() {
+    let f = fold_texts(&[
+        r#"{"kind":"Pod","user":{"gid":7,"groups":[0,1,2,4]},"phase":"Running","node":"east","ready":true,"zone":"a","tier":"web"}"#,
+        r#"{"kind":"Pod","user":{"gid":7,"groups":[0,1]},"phase":"Running","node":"east","ready":true,"zone":"a","tier":"web"}"#,
+    ]);
+    assert_eq!(
+        f.buffer.len(),
+        2,
+        "{:?}",
+        f.buffer
+            .iter()
+            .map(PatternGroup::template)
+            .collect::<Vec<_>>()
+    );
+    let f = fold_texts(&[
+        r#"{"kind":"Pod","user":{"gid":7,"groups":[0,1,2]},"phase":"Running","node":"east","ready":true,"zone":"a","tier":"web"}"#,
+        r#"{"kind":"Pod","user":{"gid":7,"groups":[0,1,9]},"phase":"Running","node":"east","ready":true,"zone":"a","tier":"web"}"#,
+    ]);
+    assert_eq!(f.buffer.len(), 1);
+    assert!(
+        f.buffer[0]
+            .template()
+            .contains(r#""groups":[0,1,<VARIES>]}"#),
+        "{}",
+        f.buffer[0].template()
+    );
+}
+
+#[test]
+fn a_line_whose_separators_differ_founds_its_own_group() {
+    let f = fold_texts(&["[cfg] {", "[cfg]     },", "[cfg] }"]);
+    assert_eq!(f.buffer.len(), 3);
+    for group in &f.buffer {
+        assert_eq!(group.template(), group.first().normalized);
+    }
+}
+
+#[test]
+fn a_sign_flip_is_another_event() {
+    assert!(sign_flipped("x # +sdown w", "x # -sdown w"));
+    assert!(!sign_flipped("x # +sdown w", "x # +odown w"));
+    assert!(!sign_flipped("delta +5 ok", "delta -5 ok"));
+    assert_eq!(
+        admitted_edits(
+            "x # +sdown watcher a1",
+            "x # +sdown watcher a1",
+            "x # -sdown watcher b2"
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_group_founded_by_a_refused_line_takes_only_copies_of_its_founder() {
+    let mut f = make_folder();
+    for l in [
+        "job alpha finished in zone east",
+        "job alpha finished in zone east, west",
+    ] {
+        f.process_line(l).unwrap();
+    }
+    assert_eq!(f.buffer.len(), 2);
+    assert!(!f.buffer[0].refugee);
+    assert!(
+        f.buffer[1].refugee,
+        "the first group fits the line but cannot show it truly"
+    );
+    f.process_line("job gamma finished in zone east, west")
+        .unwrap();
+    f.process_line("job alpha finished in zone east, west")
+        .unwrap();
+    assert_eq!(
+        f.buffer[1].count(),
+        2,
+        "an exact copy joins the refused line"
+    );
+    assert_eq!(
+        f.buffer.len(),
+        3,
+        "any other line founds a group of its own"
+    );
+}
+
+#[test]
+fn a_slot_reading_stops_where_one_value_stops() {
+    assert!(
+        !sign_flipped("a + b", "a - b"),
+        "a lone sign is not a marked word"
+    );
+    assert!(!slots_read_one_value("k=<VARIES> z", r#"k="abc z"#));
+    assert!(slots_read_one_value("k=<VARIES> z", r#"k="a\"b" z"#));
+    assert!(!slots_read_one_value("n1<VARIES> z", "n1:5 z"));
+    assert!(!slots_read_one_value("k <VARIES> z", "k a:5 z"));
+    assert!(!slots_read_one_value("k <VARIES> z", "k 5:a z"));
+    assert!(!slots_read_one_value("job <VARIES>30 x", "job 10:30 x"));
+    assert!(!slots_read_one_value("fail <VARIES>3] x", "fail U[13] x"));
+    assert!(slots_read_one_value("worker <VARIES>", "worker c3"));
+    assert!(!slots_read_one_value("a<VARIES> a", "a"));
+    assert!(
+        slots_read_one_value("a <VARIES> <VARIES>x", "a bx"),
+        "an end the next whitespace cannot follow is kept when the empty slot after it may be skipped"
+    );
+}
+
+#[test]
+fn a_template_without_a_slot_reads_every_byte_of_the_member() {
+    assert!(!slots_read_one_value("worker ready", "worker ready now"));
+    assert!(!slots_read_one_value("worker ready now", "worker ready"));
+    assert!(slots_read_one_value("worker  ready", "worker\tready"));
+}
+
+#[test]
+fn a_group_founded_by_a_refused_line_is_never_absorbed_or_absorbing() {
+    let group = |founder: &str, template: &str, refugee: bool| {
+        let mut g = PatternGroup::new(make_line(founder, vec![]), 0);
+        g.template = template.to_string();
+        g.slot_units = Some(unit_spans(template));
+        g.refugee = refugee;
+        g
+    };
+    let covering = |host_refugee: bool, guest_refugee: bool| {
+        let mut f = make_folder();
+        f.buffer.push(group(
+            r#"job "alpha" done in 5"#,
+            "job <VARIES> done in 5",
+            host_refugee,
+        ));
+        f.buffer.push(group(
+            r#"job "beta" done in 5"#,
+            r#"job "beta" done in 5"#,
+            guest_refugee,
+        ));
+        f.template_covering(0, 1)
+    };
+    assert_eq!(
+        covering(false, false).as_deref(),
+        Some("job <VARIES> done in 5")
+    );
+    assert_eq!(covering(false, true), None);
+    assert_eq!(covering(true, false), None);
 }

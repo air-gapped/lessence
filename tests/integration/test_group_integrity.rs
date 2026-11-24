@@ -80,8 +80,8 @@ fn shown_last_line_does_not_depend_on_thread_count() {
     let input = "\
 [pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"+    imageName registry.example.test/vessel-9\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:07:25Z\"}
 [pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"+    imageName registry.example.test/skiff-4\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:07:26Z\"}
-[pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"-              limit 1Gi\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:43:30Z\"}
-[pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"-              limit unset\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:43:31Z\"}
+[pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"+    imageName registry.example.test/cutter-2\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:43:30Z\"}
+[pod/probe-6c9d-abcde/probe] {\"cluster-name\":\"alder/alder-db\",\"level\":\"debug\",\"msg\":\"+    imageName registry.example.test/barge-7\",\"pkg\":\"cluster\",\"time\":\"2026-02-01T05:43:31Z\"}
 ";
     let one = stdout(&["--no-report", "-q", "--threads", "1"], input);
     let four = stdout(&["--no-report", "-q", "--threads", "4"], input);

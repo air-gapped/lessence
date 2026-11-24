@@ -400,6 +400,10 @@ const FOUNDER_ORDER_DECIDES_THE_MERGE: &[(&str, &str)] = &[
         "lessence-bek#1",
         "a thousand lines of converging groups and filler, where the line that founds a group decides which later lines it accepts",
     ),
+    (
+        "lessence-veg#4",
+        "forward, the one-word founder refuses the two-word line, since one slot may not hold two words; reversed, the two-word founder takes the one-word lines with its second slot empty",
+    ),
 ];
 
 const FEWEST_CASES_THE_REVERSED_ORDER_TEST_MUST_COMPARE: usize = 200;

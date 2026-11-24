@@ -92,7 +92,8 @@ fn kubelet_fold_matches_golden_and_every_near_miss_shape_names_its_bead() {
             continue;
         }
         let anchor_split_is_on_purpose = nearest["anchor_mismatch"] == true;
-        if anchor_split_is_on_purpose {
+        let slot_split_is_on_purpose = nearest["slot_refused"] == true;
+        if anchor_split_is_on_purpose || slot_split_is_on_purpose {
             continue;
         }
         let score = nearest["score"].as_f64().unwrap_or(0.0);
@@ -160,6 +161,10 @@ fn kubelet_fold_matches_golden_and_every_near_miss_shape_names_its_bead() {
         (
             "<W>=[<NAME>],",
             "struct field naming another volume, by design (lessence-a8t)",
+        ),
+        (
+            "<W>],",
+            "a bracketed error list with one more item, by design (lessence-35si)",
         ),
         (
             "<W>=\"<NAME>,<W>:<W>{<W>:<W>,<W>:<NAME>,<W>:<NAME>,<W>:<NAME>,<W>:<W>,<W>:<NAME>,<W>:<W>{<NAME>},},<W>:<W>,<W>:<W>",
@@ -1015,12 +1020,15 @@ fn cpu_resources_keep_quantity_values_in_configuration_diffs() {
         assert!(cpu.is_match(&clean(row["last"]["line"].as_str().unwrap())));
         let normalized = clean(row["normalized"].as_str().unwrap());
         assert!(!normalized.contains("cpu:<DURATION>"));
-        let facts = &row["variation"]["CPU_QUANTITY"];
-        assert_eq!(facts["samples_complete"], true, "{row}");
-        for value in facts["samples"].as_array().unwrap() {
-            values.insert(value.as_str().unwrap().to_string());
+        let count = row["count"].as_u64().unwrap();
+        if count > 1 {
+            let facts = &row["variation"]["CPU_QUANTITY"];
+            assert_eq!(facts["samples_complete"], true, "{row}");
+            for value in facts["samples"].as_array().unwrap() {
+                values.insert(value.as_str().unwrap().to_string());
+            }
         }
-        counted += row["count"].as_u64().unwrap();
+        counted += count;
     }
     assert_eq!(counted, input_lines);
     assert_eq!(quantities, input_quantities);

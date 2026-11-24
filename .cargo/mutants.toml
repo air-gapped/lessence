@@ -62,10 +62,10 @@ exclude_re = [
 
     # lessence-e8v: at a mismatch the current LCS cell is max(down, right).
     # down >= max(down, right) and down >= right choose the same branch.
-    '^src/folder/mod\.rs:1049:54: replace \+ with \* in align_exact$',
+    '^src/folder/mod\.rs:1080:54: replace \+ with \* in align_exact$',
     # An opening quote and an option's leading dash cannot occupy the same
     # byte, so option.start() == opening_quote is impossible.
-    '^src/folder/mod\.rs:2029:85: replace < with <= in cli_option_units$',
+    '^src/folder/mod\.rs:2444:85: replace < with <= in cli_option_units$',
 
     # --- lessence-e8v: non-folder equivalents, measured MISSED on 4029625
     # (evidence: /var/tmp/lessence-claude-nonfolder/mutants.out) and excluded
@@ -105,4 +105,27 @@ exclude_re = [
     # holds no digit and none of - . / _, so the function returns false with
     # or without the placeholder test.
     'replace > with >= in KubernetesDetector::is_compound_name$',
+    # slots_read_one_value stops early once two piece steps in a row reach
+    # no position: no later step can then add one (the only step that reads
+    # back two steps, an empty slot after whitespace, reads the step just
+    # emptied). Never stopping early returns the same false, later.
+    'replace Positions::is_empty -> bool with false$',
+    # end_can_continue only drops a slot's end that the next piece would
+    # drop anyway (or, at the end of the template, an end the final
+    # contains(len) never asks for); keeping every end gives the same answer.
+    'replace end_can_continue -> bool with true$',
+    # The `after2 == Some(Piece::Slot)` exception keeps an end before
+    # whitespace-then-slot; the empty-slot step that reads back past the
+    # emptied whitespace reaches the same end, so the answer is unchanged
+    # (a test reading "a <VARIES> <VARIES>x" against "a bx" passes either way).
+    'replace == with != in end_can_continue$',
+    # Pieces::next: the byte at `start` already passed both loop tests (it
+    # is not the start of a slot and its whitespace class is `space`), so
+    # starting the scan at `start` instead of `start + 1` reads the same
+    # piece. With `&&` a literal ends after each byte; consecutive one-byte
+    # literals match exactly the bytes the whole literal matches, and a
+    # whitespace run ends at the same byte either way (a slot starts with
+    # `<`, never whitespace).
+    "replace \\+ with \\* in <impl Iterator for Pieces<'t>>::next$",
+    "replace \\|\\| with && in <impl Iterator for Pieces<'t>>::next$",
 ]

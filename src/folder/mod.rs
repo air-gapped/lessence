@@ -67,6 +67,10 @@ struct PatternGroup {
     count: usize,
     slot_units: Option<Vec<(usize, usize)>>,
     timeline: timeline::Timeline,
+    /// Founded by a line an earlier group fit but could not show truly.
+    /// Such a group takes only exact copies of its founder: any other line
+    /// it took would be a join the line's first fitting group never made.
+    refugee: bool,
 }
 
 #[derive(Debug)]
@@ -167,6 +171,10 @@ pub(super) struct Nearest {
     pub score: f64,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub anchor_mismatch: bool,
+    /// The base rules admitted the line, but joining would have made a slot
+    /// stand for more than one value, so the line founded its own group.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub slot_refused: bool,
     pub first_diff: Option<FirstDiff>,
 }
 
@@ -196,20 +204,43 @@ impl PatternGroup {
             count: 1,
             slot_units: None,
             timeline: timeline::Timeline::default(),
+            refugee: false,
         }
     }
 
     #[cfg(test)]
     fn add_line(&mut self, line: LogLine, line_no: usize) {
-        let edits = self.edits_for(&line).unwrap_or_default();
+        let edits = self
+            .edits_for(&line, &mut None, &mut None)
+            .unwrap_or_default();
         self.add_line_at(line, LineLocation::new(SourceId::STDIN, line_no), &edits);
     }
 
-    fn edits_for(&self, line: &LogLine) -> Option<Vec<Edit>> {
+    fn edits_for<'l>(
+        &self,
+        line: &'l LogLine,
+        line_units: &mut Option<Vec<(usize, usize)>>,
+        line_objects: &mut Option<Members<'l>>,
+    ) -> Result<Vec<Edit>, Refused> {
         if line.hash == self.first().hash {
-            return Some(Vec::new());
+            return Ok(Vec::new());
         }
-        admitted_edits(&self.template, &self.first().normalized, &line.normalized)
+        let computed;
+        let units = if let Some(units) = &self.slot_units {
+            units.as_slice()
+        } else {
+            computed = unit_spans(&self.template);
+            computed.as_slice()
+        };
+        let member_units = line_units.get_or_insert_with(|| unit_spans(&line.normalized));
+        admitted_edits_over(
+            &self.template,
+            units,
+            &self.first().normalized,
+            &line.normalized,
+            member_units,
+            line_objects,
+        )
     }
 
     fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
@@ -1149,6 +1180,11 @@ fn is_closing_bracket(b: u8) -> bool {
     matches!(b, b']' | b')')
 }
 
+/// A byte both words end with that stays beside the slot, never in it.
+fn ends_a_field(b: u8) -> bool {
+    is_closing_bracket(b) || b == b':' || b == b';'
+}
+
 fn after_last_field_delimiter(bytes: &[u8]) -> usize {
     bytes
         .iter()
@@ -1160,12 +1196,17 @@ fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
     let (rb, wb) = (r.as_bytes(), w.as_bytes());
     let common = rb.iter().zip(wb).take_while(|(x, y)| x == y).count();
     let common = common.min(r.len() - 1).min(w.len() - 1);
-    let prefix = after_last_field_delimiter(&rb[..common]);
+    let prefix = rb[..common]
+        .iter()
+        .rposition(|&b| {
+            is_field_delimiter(b) || b.is_ascii_whitespace() || matches!(b, b',' | b'{')
+        })
+        .map_or(0, |i| i + 1);
     let mut suffix = 0;
     while prefix + suffix + 1 < rb.len()
         && prefix + suffix + 1 < wb.len()
         && rb[rb.len() - 1 - suffix] == wb[wb.len() - 1 - suffix]
-        && is_closing_bracket(rb[rb.len() - 1 - suffix])
+        && ends_a_field(rb[rb.len() - 1 - suffix])
     {
         suffix += 1;
     }
@@ -1176,7 +1217,22 @@ fn shared_affixes(r: &str, w: &str) -> (usize, usize) {
     {
         shared += 1;
     }
-    (prefix, suffix.max(words_at_the_end(rb, shared)))
+    (prefix, suffix.max(from_the_first_boundary(rb, shared)))
+}
+
+/// A byte inside one unit that ends a word: a unit may hold a quoted run of
+/// words, or a quoted list whose commas and braces did not split it.
+fn ends_a_word_inside_a_unit(b: u8) -> bool {
+    b.is_ascii_whitespace() || matches!(b, b',' | b';' | b'{' | b'}' | b']')
+}
+
+/// The shared tail kept beside the slot: from its first word boundary on,
+/// so the slot ends where the varying word ends.
+fn from_the_first_boundary(bytes: &[u8], shared: usize) -> usize {
+    bytes[bytes.len() - shared..]
+        .iter()
+        .position(|&b| ends_a_word_inside_a_unit(b))
+        .map_or(0, |at| shared - at)
 }
 
 fn words_at_the_end(bytes: &[u8], shared: usize) -> usize {
@@ -1478,9 +1534,18 @@ fn respaced_gap(template: &str, spans: &[(usize, usize)], gap: usize) -> Option<
     })
 }
 
+#[cfg(test)]
 fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
-    let spans = unit_spans(template);
-    let member_spans = unit_spans(member);
+    template_edits_over(template, &unit_spans(template), member, &unit_spans(member))
+}
+
+/// `template_edits` with the units of both lines already read.
+fn template_edits_over(
+    template: &str,
+    spans: &[(usize, usize)],
+    member: &str,
+    member_spans: &[(usize, usize)],
+) -> Option<Vec<Edit>> {
     let tmpl: Vec<&str> = spans
         .iter()
         .map(|&(at, len)| &template[at..at + len])
@@ -1514,9 +1579,9 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
         while let Some(run) = unshown.next_if(|run| run.before_unit == i) {
             edits.push(slot_opening(
                 template,
-                &spans,
+                spans,
                 member,
-                &member_spans,
+                member_spans,
                 i,
                 run.member_units,
             )?);
@@ -1535,22 +1600,20 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
         let absent = absent_at(i);
         if absent
             && tmpl[i] != VARIES_MARK
-            && absent_run_is_glued_to_a_kept_unit(&spans, template.len(), i, absent_at)
+            && absent_run_is_glued_to_a_kept_unit(spans, template.len(), i, absent_at)
         {
             return None;
         }
         let beside_has_separator = |gap: usize| {
-            separator_bytes(&template[gap_between(&spans, template.len(), gap)])
+            separator_bytes(&template[gap_between(spans, template.len(), gap)])
                 .next()
                 .is_some()
         };
         if absent && (beside_has_separator(i) || beside_has_separator(i + 1)) {
             if touched_gap != Some(i) {
-                edits.extend(respaced_gap(template, &spans, i));
+                edits.extend(respaced_gap(template, spans, i));
             }
-            if unshown.peek().is_none_or(|next| next.before_unit != i + 1) {
-                gap_after = respaced_gap(template, &spans, i + 1);
-            }
+            gap_after = respaced_gap(template, spans, i + 1);
         }
         let r = tmpl[i];
         if aligned[i].is_some_and(|j| mem[j] == r) {
@@ -1565,7 +1628,7 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
                 None => ranges[i],
             };
             let (p, q) = range.map_or((0, 0), |range| {
-                let w = range_text(member, &member_spans, range);
+                let w = range_text(member, member_spans, range);
                 let (p, q) = kept_affixes(prefix, suffix, w);
                 let (p, q) = balance_quotes(r, w, p, q);
                 (p.min(prefix.len()), q.min(suffix.len()))
@@ -1600,9 +1663,349 @@ fn template_edits(template: &str, member: &str) -> Option<Vec<Edit>> {
 /// The edits that let `member` join a group with this template and this
 /// founder (the group's first line), or `None` when it cannot join. Keys are
 /// read off the founder, never off the template, whose slots may hide them.
+/// The widened template must still read one value per slot on both the
+/// member and the founder, so no edit can hide a key, a separator or a
+/// neighbouring word, and no literal can stand that the member lacks.
 fn admitted_edits(template: &str, founder: &str, member: &str) -> Option<Vec<Edit>> {
-    let edits = template_edits(template, member)?;
-    (!object_members_differ(founder, member)).then_some(edits)
+    admitted_edits_over(
+        template,
+        &unit_spans(template),
+        founder,
+        member,
+        &unit_spans(member),
+        &mut None,
+    )
+    .ok()
+}
+
+/// `admitted_edits` with the units of the template and the member already
+/// read; the widened template is built in one reused buffer.
+fn admitted_edits_over<'m>(
+    template: &str,
+    spans: &[(usize, usize)],
+    founder: &str,
+    member: &'m str,
+    member_spans: &[(usize, usize)],
+    member_objects: &mut Option<Members<'m>>,
+) -> Result<Vec<Edit>, Refused> {
+    thread_local! {
+        static WIDENED: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+    }
+    let edits = template_edits_over(template, spans, member, member_spans).ok_or(Refused::Unfit)?;
+    if object_members_differ_from(founder, member, member_objects) {
+        return Err(Refused::Unfit);
+    }
+    if sign_flipped(founder, member) {
+        return Err(Refused::FalseClaim);
+    }
+    let holds = if edits.is_empty() {
+        slots_read_one_value(template, member)
+    } else {
+        WIDENED.with_borrow_mut(|widened| {
+            widened.clear();
+            widened.push_str(template);
+            apply_edits(widened, &edits);
+            slots_read_one_value(widened, member) && slots_read_one_value(widened, founder)
+        })
+    };
+    if holds {
+        Ok(edits)
+    } else {
+        Err(Refused::FalseClaim)
+    }
+}
+
+/// Whether the two lines hold, at the same word, one word marked `+` and
+/// the same word marked `-` (`+sdown` and `-sdown`): a sign flip names the
+/// opposite event, never another value of the same one.
+fn sign_flipped(founder: &str, member: &str) -> bool {
+    founder
+        .split_ascii_whitespace()
+        .zip(member.split_ascii_whitespace())
+        .any(|(a, b)| {
+            let (a, b) = (a.as_bytes(), b.as_bytes());
+            a.len() == b.len()
+                && a.len() > 1
+                && matches!((a[0], b[0]), (b'+', b'-') | (b'-', b'+'))
+                && a[1].is_ascii_alphabetic()
+                && a[1..] == b[1..]
+        })
+}
+
+/// Why a line does not join a group: it does not fit the group at all, or
+/// it fits but the widened template would say something false of a member.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refused {
+    Unfit,
+    FalseClaim,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Piece<'t> {
+    Literal(&'t [u8]),
+    Space,
+    Slot,
+}
+
+/// The template read as literals, whitespace runs and slots, in order,
+/// without collecting them.
+#[derive(Clone)]
+struct Pieces<'t> {
+    b: &'t [u8],
+    at: usize,
+}
+
+impl<'t> Iterator for Pieces<'t> {
+    type Item = Piece<'t>;
+
+    fn next(&mut self) -> Option<Piece<'t>> {
+        let (b, start) = (self.b, self.at);
+        if start >= b.len() {
+            return None;
+        }
+        let mark = VARIES_MARK.as_bytes();
+        if b[start..].starts_with(mark) {
+            self.at += mark.len();
+            return Some(Piece::Slot);
+        }
+        let space = b[start].is_ascii_whitespace();
+        let mut i = start + 1;
+        while i < b.len()
+            && b[i].is_ascii_whitespace() == space
+            && (space || !b[i..].starts_with(mark))
+        {
+            i += 1;
+        }
+        self.at = i;
+        Some(if space {
+            Piece::Space
+        } else {
+            Piece::Literal(&b[start..i])
+        })
+    }
+}
+
+/// A small set of member positions; it spills to the heap only past its
+/// inline room, which one-value slots almost never reach.
+struct Positions {
+    inline: [usize; 8],
+    len: usize,
+    spill: Vec<usize>,
+}
+
+impl Positions {
+    fn new() -> Self {
+        Self {
+            inline: [0; 8],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    fn insert(&mut self, at: usize) {
+        if self.contains(at) {
+            return;
+        }
+        if self.len < self.inline.len() {
+            self.inline[self.len] = at;
+            self.len += 1;
+        } else {
+            self.spill.push(at);
+        }
+    }
+
+    fn contains(&self, at: usize) -> bool {
+        self.inline[..self.len].contains(&at) || self.spill.contains(&at)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+        self.spill.clear();
+    }
+
+    fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.inline[..self.len].iter().chain(&self.spill).copied()
+    }
+}
+
+/// A byte a slot's value never holds outside quotes: whitespace (the next
+/// word), a structural separator, or a quote that opens another value.
+fn ends_a_bare_value(b: u8) -> bool {
+    b.is_ascii_whitespace()
+        || matches!(
+            b,
+            b',' | b':' | b';' | b'=' | b'[' | b']' | b'{' | b'}' | b'"'
+        )
+}
+
+/// Where one value read from `at` may end: nowhere (the slot reads
+/// nothing), the close of one quoted string, or anywhere inside one bare
+/// word that holds no separator. A colon between digits (`10:30:01`) is
+/// part of the number, and a bracket pair glued to the word (`Unknown[13]`)
+/// is part of the word, not a list.
+fn value_ends(m: &[u8], at: usize, mut end: impl FnMut(usize)) {
+    end(at);
+    let escaped = m[at..].starts_with(b"\\\"");
+    if escaped || m.get(at) == Some(&b'"') {
+        let open = if escaped { 2 } else { 1 };
+        let mut i = at + open;
+        while i < m.len() {
+            if escaped && m[i..].starts_with(b"\\\"") {
+                end(i + 2);
+                return;
+            }
+            if !escaped && m[i] == b'"' && m[i - 1] != b'\\' {
+                end(i + 1);
+                return;
+            }
+            i += 1;
+        }
+        return;
+    }
+    let mut depth = 0usize;
+    let mut i = at;
+    while i < m.len() {
+        let digit = |k: usize| m.get(k).is_some_and(u8::is_ascii_digit);
+        let inside_a_number = m[i] == b':' && i > at && digit(i - 1) && digit(i + 1);
+        let opens_an_index = m[i] == b'[' && i > at;
+        let closes_an_index = m[i] == b']' && depth > 0;
+        if ends_a_bare_value(m[i]) && !inside_a_number && !opens_an_index && !closes_an_index {
+            return;
+        }
+        if opens_an_index {
+            depth += 1;
+        } else if closes_an_index {
+            depth -= 1;
+        }
+        i += 1;
+        if !inside_a_number && depth == 0 {
+            end(i);
+        }
+    }
+}
+
+fn space_run(m: &[u8], at: usize) -> usize {
+    m[at..]
+        .iter()
+        .take_while(|b| b.is_ascii_whitespace())
+        .count()
+}
+
+/// Whether a slot's value may end at `end`, judged by the piece after the
+/// slot: an end the next piece cannot continue from is dropped at once,
+/// unless the piece after that is a slot an empty reading may skip to.
+fn end_can_continue(
+    m: &[u8],
+    end: usize,
+    after: Option<Piece<'_>>,
+    after2: Option<Piece<'_>>,
+) -> bool {
+    match after {
+        None => end == m.len(),
+        Some(Piece::Literal(text)) => m[end..].starts_with(text),
+        Some(Piece::Space) => {
+            after2 == Some(Piece::Slot) || m.get(end).is_some_and(u8::is_ascii_whitespace)
+        }
+        Some(Piece::Slot) => true,
+    }
+}
+
+/// Whether two texts are equal once every run of whitespace counts as one:
+/// what the slot reading below decides for a template without a slot.
+fn same_but_for_space_runs(t: &[u8], m: &[u8]) -> bool {
+    let (mut i, mut j) = (0, 0);
+    while i < t.len() && j < m.len() {
+        let (ts, ms) = (t[i].is_ascii_whitespace(), m[j].is_ascii_whitespace());
+        if ts != ms {
+            return false;
+        }
+        if ts {
+            i += space_run(t, i);
+            j += space_run(m, j);
+        } else if t[i] == m[j] {
+            i += 1;
+            j += 1;
+        } else {
+            return false;
+        }
+    }
+    i == t.len() && j == m.len()
+}
+
+/// Whether `template` reads true on `member` with every slot holding one
+/// value: each literal is on the member in order (a run of whitespace
+/// stands for any run), and each slot reads one quoted string, one bare
+/// word without a separator, or nothing where whitespace stands beside it.
+pub(super) fn slots_read_one_value(template: &str, member: &str) -> bool {
+    if template == member {
+        return true;
+    }
+    if !template.contains(VARIES_MARK) {
+        return same_but_for_space_runs(template.as_bytes(), member.as_bytes());
+    }
+    let m = member.as_bytes();
+    let mut pieces = Pieces {
+        b: template.as_bytes(),
+        at: 0,
+    };
+    let mut before_prev = Positions::new();
+    let mut prev = Positions::new();
+    prev.insert(0);
+    let mut next = Positions::new();
+    let mut carry = false;
+    let mut last: Option<Piece<'_>> = None;
+    while let Some(piece) = pieces.next() {
+        next.clear();
+        if std::mem::take(&mut carry) {
+            next.insert(0);
+        }
+        match piece {
+            Piece::Literal(text) => {
+                for at in prev.iter() {
+                    if m[at..].starts_with(text) {
+                        next.insert(at + text.len());
+                    }
+                }
+            }
+            Piece::Space => {
+                for at in prev.iter() {
+                    let run = space_run(m, at);
+                    if run > 0 {
+                        next.insert(at + run);
+                    }
+                }
+            }
+            Piece::Slot => {
+                let mut ahead = pieces.clone();
+                let (after, after2) = (ahead.next(), ahead.next());
+                for at in prev.iter() {
+                    value_ends(m, at, |end| {
+                        if end_can_continue(m, end, after, after2) {
+                            next.insert(end);
+                        }
+                    });
+                }
+                if last == Some(Piece::Space) {
+                    for at in before_prev.iter() {
+                        next.insert(at);
+                    }
+                } else if last.is_none() && after == Some(Piece::Space) {
+                    carry = true;
+                }
+            }
+        }
+        if next.is_empty() && prev.is_empty() {
+            return false;
+        }
+        std::mem::swap(&mut before_prev, &mut prev);
+        std::mem::swap(&mut prev, &mut next);
+        last = Some(piece);
+    }
+    prev.contains(m.len())
 }
 
 /// Whether a JSON object read on both lines at the same path holds a
@@ -1610,11 +2013,23 @@ fn admitted_edits(template: &str, founder: &str, member: &str) -> Option<Vec<Edi
 /// lacks is another event, whatever the values. An object whose shape the
 /// text breaks is not read.
 fn object_members_differ(founder: &str, member: &str) -> bool {
+    object_members_differ_from(founder, member, &mut None)
+}
+
+type Members<'a> = BTreeMap<String, ObjectMembers<'a>>;
+
+/// `object_members_differ` with the member's objects read once per line
+/// and kept in `theirs` for the next group it is compared with.
+fn object_members_differ_from<'m>(
+    founder: &str,
+    member: &'m str,
+    theirs: &mut Option<Members<'m>>,
+) -> bool {
     if !member.contains('{') {
         return false;
     }
     let ours = object_members(founder);
-    let theirs = object_members(member);
+    let theirs = theirs.get_or_insert_with(|| object_members(member));
     ours.iter().any(|(path, a)| {
         theirs.get(path).is_some_and(|b| {
             !a.unreadable && !b.unreadable && (a.keys != b.keys || a.elements != b.elements)
@@ -2904,6 +3319,7 @@ impl PatternFolder {
             group_line_no: nearest.first_line_no,
             score: (score * 10.0).round() / 10.0,
             anchor_mismatch: line.anchor != nearest.first().anchor,
+            slot_refused: false,
             first_diff: first_diff(line, nearest.first()),
         })
     }
@@ -2915,23 +3331,36 @@ impl PatternFolder {
         epoch: Option<i64>,
     ) {
         let mut edits = Vec::new();
+        let mut false_claim = false;
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
             let mut line_units: Option<Vec<(usize, usize)>> = None;
+            let mut line_objects = None;
             let threshold = self.config.threshold;
-            self.buffer.iter().position(|group| {
+            let found = self.buffer.iter().position(|group| {
+                if group.refugee {
+                    return false;
+                }
                 let first = group.first();
                 let similar = self.normalizer.are_similar(&normalized_line, first)
                     || (group.slot_units.is_some()
                         && group.joins_through_slots(&normalized_line, &mut line_units, threshold));
                 similar
                     && within_plain_word_allowance(&normalized_line.normalized, &first.normalized)
-                    && group
-                        .edits_for(&normalized_line)
-                        .map(|found| edits = found)
-                        .is_some()
-            })
+                    && match group.edits_for(&normalized_line, &mut line_units, &mut line_objects) {
+                        Ok(found) => {
+                            edits = found;
+                            true
+                        }
+                        Err(Refused::FalseClaim) => {
+                            false_claim = true;
+                            true
+                        }
+                        Err(Refused::Unfit) => false,
+                    }
+            });
+            found.filter(|_| !false_claim)
         };
 
         let distill_line_no = self
@@ -2958,7 +3387,11 @@ impl PatternFolder {
                 .config
                 .explain
                 .then(|| self.nearest_group(&normalized_line))
-                .flatten();
+                .flatten()
+                .map(|nearest| Nearest {
+                    slot_refused: false_claim,
+                    ..nearest
+                });
 
             let rep_hash = normalized_line.hash;
             let mut group = if let Some(location) = location {
@@ -2967,6 +3400,7 @@ impl PatternFolder {
                 PatternGroup::new(normalized_line, self.position_counter)
             };
             group.nearest = nearest;
+            group.refugee = false_claim;
             if let Some(epoch) = epoch {
                 group.timeline.record(epoch);
             }
@@ -3011,6 +3445,9 @@ impl PatternFolder {
     fn template_covering(&self, widened: usize, other: usize) -> Option<String> {
         let host = &self.buffer[widened];
         let guest = &self.buffer[other];
+        if host.refugee || guest.refugee {
+            return None;
+        }
         let founder = guest.first();
         let mut founder_units = None;
         let covered = host.joins_through_slots(founder, &mut founder_units, self.config.threshold)
@@ -3206,6 +3643,10 @@ impl PatternFolder {
         let mut by_claim: HashMap<(String, u64), usize> = HashMap::with_capacity(groups.len());
         let mut out: Vec<PatternGroup> = Vec::with_capacity(groups.len());
         for group in groups {
+            if group.refugee {
+                out.push(group);
+                continue;
+            }
             let key = (group.template().to_string(), group.first().anchor);
             match by_claim.get(&key) {
                 Some(&at)

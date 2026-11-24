@@ -128,7 +128,7 @@ physical line, so a match hiding inside a frame still fails the run.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--explain` | off | Annotate each JSON group record with `nearest`: `group_line_no` (the `first.line_no` of the existing group this line scored highest against before founding its own), the `score` (percent), `anchor_mismatch: true` when an exact-match field kept them apart whatever the score, and `first_diff` — `{ours, theirs, at}`, the first whitespace token where the two disagree and its position. Implies `--format json`. |
+| `--explain` | off | Annotate each JSON group record with `nearest`: `group_line_no` (the `first.line_no` of the existing group this line scored highest against before founding its own), the `score` (percent), `anchor_mismatch: true` when an exact-match field kept them apart whatever the score, `slot_refused: true` when joining would have made a `<VARIES>` slot stand for more than one value, and `first_diff` — `{ours, theirs, at}`, the first whitespace token where the two disagree and its position. Implies `--format json`. |
 
 Reach for it when a log folds worse than expected and the question is *why
 these lines did not join*. A singleton whose `nearest.score` sits just under

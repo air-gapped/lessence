@@ -11,12 +11,12 @@ span:    E0909 13:07:09.181236 → E0909 13:21:46.847407  (14m 37s, 2.281 lines/
 shape:   █▇▇▆▆▆▆▅▇▆█▅▇▅▇▆▆▇▅▇▆▇▅▅  busiest 09-09 13:07 +37s holds 70 (5.8%)
 format:  plain 2,000 (100%)
 levels:  error 925 (78.9%), warn 68 (5.8%), info 179 (15.3%) — on 1,172 lines (59%)
-top templates (10 of 56, 68% of all lines):
+top templates (10 of 64, 67.2% of all lines):
    13.1%  261                	Is the agent running?
    13.1%  261                	rpc error: code = Unknown desc = failed to setup network for sandbox "<HASH>": plugin type=<QUOTED_…
     8.7%  174                 > pod="<NAMESPACE>/<POD_NAME>"
 ...
-report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <n> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
+report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <n> bytes  groups: 64 total, 40 selected, 18 printed, 46 omitted
 [73x] id=0 E0909 13:07:09.181236 → E0909 13:21:02.461198
 <TIMESTAMP>    <PID> nestedpendingoperations.go:348] Operation for "{volumeName:<K8S_NAME> podName:<UUID> nodeName:}" failed. No retries permitted until <TIMESTAMP> UTC m=+<DECIMAL> (durationBeforeRetry <DURATION>). Error: MountVolume.SetUp failed for volume <VARIES> (UniqueName: "<K8S_NAME>") pod <VARIES> (UID: "<UUID>") : failed to fetch token: Post "<PATH>": read tcp <IP>:<PORT>-><IP>:<PORT>: read: connection reset by peer
 variation: DURATION>=64 …[report kept 0]  IPV4=1 [127.0.0.1]  K8S_NAME=16 [kubernetes.io/projected/<UUID>-kube-api-access-bv6ln|kubernetes.io/projected/<UUID>-kube-api-access-gv7vf|kubernetes.io/projected/<UUID>-kube-api-access-jwjsk] …[showing 3 of 7] …[report kept 7]  K8S_VOLUME=1 [oidc-token]  NAME=29 [cilium-envoy-jt466|host-netns-2x5fz|kube-api-access-cmzsb] …[showing 3 of 7] …[report kept 7]  PATH=15 [https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/node-featu|https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-dev|https://127.0.0.1:6443/api/v1/namespaces/gpu-operator/serviceaccounts/nvidia-gpu] …[showing 3 of 7] …[report kept 7]  PID=1 …[report kept 0]  PORT>=64 …[report kept 0]  QUOTED_STRING=21 ["<PATH>"|"cilium-<SUFFIX>"|"gpu-feature-discovery-<SUFFIX>"] …[showing 3 of 7] …[report kept 7]  TIMESTAMP>=64 …[report kept 0]  UUID=15 [01af48d9-3471-4acf-93aa-689c01b31dff|15ce5dcd-a340-4a36-b0fb-a447de233210|1b34b529-42d3-46d9-82c0-d82adbd397d7] …[showing 3 of 7] …[report kept 7]  VARIES#1=2 ["kube-api-access-<SUFFIX>"×69|"<VOLUME_NAME>"×4]  VARIES#2=15 ["csi-rbdplugin-<SUFFIX>"×8|"cilium-<SUFFIX>"×5|"cilium-envoy-<SUFFIX>"×5] …[showing 3 of 7] …[report kept 7]  (report-sampled: DURATION, K8S_NAME, NAME, PATH, PID, PORT, QUOTED_STRING, TIMESTAMP, UUID, VARIES#2 — the report itself holds fewer values than the group had)
@@ -25,7 +25,7 @@ previewed here: samples
 <TIMESTAMP>    <PID> transport.go:356] Unable to cancel request for *otelhttp.Transport
 variation: PID=1 …[report kept 0]  TIMESTAMP=39 …[report kept 0]  (report-sampled: PID, TIMESTAMP — the report itself holds fewer values than the group had)
 ...
-report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <n> bytes  groups: 56 total, 40 selected, 17 printed, 39 omitted
+report: ~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl  file: complete  input: complete  run: run-<date>-<id>  size: <n> bytes  groups: 64 total, 40 selected, 18 printed, 46 omitted
 recipes (the report is JSONL; none of these prints the whole file):
   top 40 by count:   jq -r 'select(.type=="group")|"\(.count)\t\(.id)\t\(.normalized[0:120])"' -- '~/.local/state/lessence/reports/run-<date>-<id>/report.jsonl' | sort -rn | head -40
   ...

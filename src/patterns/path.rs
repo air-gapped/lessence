@@ -144,7 +144,9 @@ impl PathDetector {
         *result = FULL_URL
             .replace_all(result, |caps: &regex::Captures| {
                 let whole = caps.get(0).unwrap().as_str();
-                let url = whole.trim_end_matches(SENTENCE_PUNCTUATION_AFTER_A_URL);
+                let url = whole
+                    .trim_end_matches(SENTENCE_PUNCTUATION_AFTER_A_URL)
+                    .trim_end_matches('\\');
                 tokens.push(Token::Path(url.to_string()));
                 format!("<PATH>{}", &whole[url.len()..])
             })
@@ -664,6 +666,20 @@ mod tests {
         assert_eq!(r, "Unreachable (<PATH>) rc=3");
         let (r, _) = PathDetector::detect_and_replace("see https://example.com/a/b. Then");
         assert_eq!(r, "see <PATH>. Then");
+    }
+
+    #[test]
+    fn a_url_inside_an_escaped_string_leaves_the_escaped_quote_whole() {
+        let (r, tokens) = PathDetector::detect_and_replace(
+            r#"{"error":"Get \"https://h.example:443/a?b=1\": dial"}"#,
+        );
+        assert_eq!(r, r#"{"error":"Get \"<PATH>\": dial"}"#);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::Path(url) if url == "https://h.example:443/a?b=1")),
+            "{tokens:?}"
+        );
     }
 
     #[test]
