@@ -11,7 +11,7 @@ cases=0
 
 edit_case() { # name expect(deny|allow) json
     local out
-    out=$(printf '%s' "$3" | scripts/edit-guard.sh)
+    out=$(printf '%s' "$3" | .claude/hooks/edit-guard.sh)
     cases=$((cases + 1))
     if [ "$2" = deny ] && ! printf '%s' "$out" | grep -q '"permissionDecision": *"deny"'; then
         echo "hooks selftest: FAIL edit-guard should deny: $1" >&2; exit 1
@@ -23,7 +23,7 @@ edit_case() { # name expect(deny|allow) json
 
 stop_case() { # name expect(block|allow) json
     local out
-    out=$(printf '%s' "$3" | scripts/stop-guard.sh)
+    out=$(printf '%s' "$3" | .claude/hooks/stop-guard.sh)
     cases=$((cases + 1))
     if [ "$2" = block ] && ! printf '%s' "$out" | grep -q '"decision": *"block"'; then
         echo "hooks selftest: FAIL stop-guard should block: $1" >&2; exit 1
@@ -62,7 +62,7 @@ stop_case "background task" allow "$(stop_json "$announce" '{"background_tasks":
 
 build_case() { # name expect(deny|allow) command
     local out
-    out=$(jq -nc --arg c "$3" '{tool_input: {command: $c}}' | scripts/build-guard.sh)
+    out=$(jq -nc --arg c "$3" '{tool_input: {command: $c}}' | .claude/hooks/build-guard.sh)
     cases=$((cases + 1))
     if [ "$2" = deny ] && ! printf '%s' "$out" | grep -q 'hides its progress'; then
         echo "hooks selftest: FAIL build-guard should refuse: $1" >&2; exit 1
@@ -79,7 +79,7 @@ build_case "long run named in text, then head elsewhere" allow $'echo "run make 
 
 review_guard_case() { # name expect(deny|allow) json
     local out
-    out=$(printf '%s' "$3" | scripts/build-guard.sh)
+    out=$(printf '%s' "$3" | .claude/hooks/build-guard.sh)
     cases=$((cases + 1))
     if [ "$2" = deny ] && ! printf '%s' "$out" | grep -q 'does not record its own review'; then
         echo "hooks selftest: FAIL build-guard should refuse: $1" >&2; exit 1

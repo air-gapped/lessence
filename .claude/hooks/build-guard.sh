@@ -12,7 +12,7 @@
 # session: a review is recorded by the agent that did it. Everything else
 # passes.
 #
-#   echo '{"tool_input":{"command":"cargo build"}}' | scripts/build-guard.sh
+#   echo '{"tool_input":{"command":"cargo build"}}' | .claude/hooks/build-guard.sh
 set -euo pipefail
 
 MIN_AVAILABLE_GB="${LESSENCE_BUILD_MIN_AVAILABLE_GB:-10}"

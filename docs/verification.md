@@ -212,7 +212,7 @@ test by accident and `make release-check` always runs all of them.
   `staged_diff_sha256` (`scripts/check-fold-review.sh`). The fold-reviewer
   agent (`.claude/agents/fold-reviewer.md`) reads the golden diff against
   the corpus lines and writes that file with `scripts/record-review.sh`;
-  `scripts/build-guard.sh` refuses that script from the main session.
+  `.claude/hooks/build-guard.sh` refuses that script from the main session.
 - `commit-msg`: diff `##CASE`/`##TODO` headers in
   `tests/fixtures/fold_regressions.log` and entries in the `known` tables of
   `tests/integration/test_constitutional_compliance.rs` between `HEAD` and
@@ -231,7 +231,7 @@ test by accident and `make release-check` always runs all of them.
 - `pre-push`: `scripts/check-public-text.sh --outgoing` runs the same
   checks on every commit the push would send, then `make ci`.
 
-`.claude/settings.json` registers `scripts/build-guard.sh` as a PreToolUse
+`.claude/settings.json` registers `.claude/hooks/build-guard.sh` as a PreToolUse
 hook on Bash: a command that builds or tests is refused while another
 cargo, rustc or nextest process runs, or while less than 10 GB of memory is
 available (`LESSENCE_BUILD_MIN_AVAILABLE_GB`).

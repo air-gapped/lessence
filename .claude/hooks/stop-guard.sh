@@ -14,7 +14,7 @@
 # you." The second is refused when the same message lists open work or
 # offers a choice, unless it says why with a "Not doing now:" line.
 #
-#   echo '{"last_assistant_message":"Next I go on with the types."}' | scripts/stop-guard.sh
+#   echo '{"last_assistant_message":"Next I go on with the types."}' | .claude/hooks/stop-guard.sh
 set -euo pipefail
 
 input=$(cat)

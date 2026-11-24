@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Records the fold reviewer's verdict on the change the last gate run
-# measured. Only the fold-reviewer agent runs this (scripts/build-guard.sh
+# measured. Only the fold-reviewer agent runs this (.claude/hooks/build-guard.sh
 # refuses it from the main session); the pre-commit hook reads the result
 # through scripts/check-fold-review.sh.
 #

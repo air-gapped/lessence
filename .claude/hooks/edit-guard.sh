@@ -6,7 +6,7 @@
 # session; only subagent calls carry it) whose file_path resolves inside
 # this repo under src/ or tests/ is refused. Everything else passes.
 #
-#   echo '{"tool_input":{"file_path":"src/x.rs"}}' | scripts/edit-guard.sh
+#   echo '{"tool_input":{"file_path":"src/x.rs"}}' | .claude/hooks/edit-guard.sh
 set -euo pipefail
 
 input=$(cat)

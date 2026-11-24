@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$(git rev-parse --show-toplevel)/scripts/build-guard.sh\"",
+            "command": "\"$(git rev-parse --show-toplevel)/.claude/hooks/build-guard.sh\"",
             "timeout": 10,
             "statusMessage": "One build at a time"
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$(git rev-parse --show-toplevel)/scripts/edit-guard.sh\"",
+            "command": "\"$(git rev-parse --show-toplevel)/.claude/hooks/edit-guard.sh\"",
             "timeout": 10,
             "statusMessage": "Workers edit src and tests"
           }
@@ -43,7 +43,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"$(git rev-parse --show-toplevel)/scripts/stop-guard.sh\"",
+            "command": "\"$(git rev-parse --show-toplevel)/.claude/hooks/stop-guard.sh\"",
             "timeout": 10
           }
         ]
