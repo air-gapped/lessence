@@ -5,6 +5,161 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0](https://github.com/air-gapped/lessence/compare/v0.8.1...v0.9.0) (2026-11-24)
+
+This release is about one promise: a folded line is true for every line it
+stands for. Two different events no longer share a line because a detector
+swallowed the word that told them apart, every word and placeholder on a
+template now holds for each of its members, and a `<VARIES>` slot stands for
+exactly one value. One new feature says when a group's lines happened. It is
+also 12.6% faster than 0.8.1. A few flag combinations that used to be
+silently ignored are now usage errors; they are under **Upgrading From 0.8.1**.
+
+### Highlights
+
+#### Fields Keep Their Names
+
+A placeholder now replaces a field's value and keeps its name. `timeout=30`
+and `retries=30` used to read as one `<KEY_VALUE>` event; they now read
+`timeout=<KEY_VALUE>` and `retries=<KEY_VALUE>`. The same holds for duration
+fields, generated names (`nginx-<SUFFIX>` and `redis-<SUFFIX>` are two
+events), URL routes (`/login` and `/logout` stay apart; only hosts, ids and
+query values fold), log levels in brackets or after `level=`, Apache, nginx,
+systemd and Java logger names, and the type and reason of a Kubernetes Event.
+A log level is never a placeholder: an error and an info line are always two
+events.
+
+#### Templates Are Claims
+
+Every literal word on a shown line now holds for every member of its group.
+Words only some members carry open a `<VARIES>` slot where they sit, instead
+of disappearing; a slot keeps both quotes of a pair or neither, keeps the
+shared text around it, and never hides a field name. JSON records fold only
+when they have the same fields, a request verb never folds into another, and
+records with a nested object the other lacks stay apart. The same lines fold
+the same way in any order and at any `--threads`.
+
+#### One Slot, One List
+
+A group with several `<VARIES>` slots lists each slot's values separately,
+in template order, in the text output, the default view and the JSON
+(`variation.VARIES.slots`). A value is counted as the member's own text, so
+`∅` now means only a real absence, and a group of two lines shows what varies
+between them.
+
+#### When It Happened
+
+A group whose lines are bunched in time says so on its line, for example
+"95% in 14:02–14:05", and names the day once when the run falls inside one
+day. In JSON each group's `time_range` carries `buckets` on the briefing
+histogram's grid and, for a bunched group, `bunched`. The JSON briefing also
+says `year_inferred` when a timestamp carried no year.
+
+#### Masking Runs Once
+
+With `--sanitize`, each line is masked once, when it is read, and the
+template, the rollup, the shown lines and the `--explain` first difference
+are all built from the masked line. Lines that differ only in a masked value
+fold into one group, the template shows the class tag (`<IP>`), and every
+value is replaced over exactly its own span. `--sanitize credential` also
+masks Authorization and Proxy-Authorization credentials, Bearer tokens and
+the password in URL userinfo.
+
+#### Speed
+
+lessence is 12.6% faster than 0.8.1.
+
+#### Upgrading From 0.8.1
+
+- **Templates read differently.** A script that matches whole-field
+  placeholders such as `<KEY_VALUE>`, `<DURATION_FIELD>`, `<LOG_WITH_MODULE>`
+  or `<COMPONENT>-<SUFFIX>` now sees the field name or component beside them.
+- **Ignored flags are refused.** `--preflight` with `--top`, `--summary`,
+  `--fit`, `--explain` or `--stats-json`, `--explain` with a non-JSON
+  `--format`, and `--diff` with fold flags are usage errors (exit 2).
+- **`--diff` exits 2 when the comparison itself fails**, keeping 1 for
+  "something moved".
+
+### ⚠ BREAKING CHANGES
+
+* `--preflight` with `--top`, `--summary`, `--fit`, `--explain` or `--stats-json`, and `--explain` with a non-JSON `--format`, are usage errors instead of being ignored ([2f14a49](https://github.com/air-gapped/lessence/commit/2f14a49e36a4390940816821c867c5ba6b4b10d6)) ([7dc4db8](https://github.com/air-gapped/lessence/commit/7dc4db8b35248639134947aaa5bb83af473b837a))
+* `--diff` needs a file path, refuses fold flags it would ignore, and exits 2 when the comparison fails ([7dc4db8](https://github.com/air-gapped/lessence/commit/7dc4db8b35248639134947aaa5bb83af473b837a))
+
+
+### Features
+
+* a group whose lines are bunched in time says when on its line, and JSON carries per-group time buckets ([0d8fd6e](https://github.com/air-gapped/lessence/commit/0d8fd6ea1018e8903dbe6a5c588af98dbecced16)) ([42dc41c](https://github.com/air-gapped/lessence/commit/42dc41c823fc7e921051b1ef872ea4d88baa653e))
+
+
+### Bug Fixes
+
+#### Distinct events stay apart
+
+* key=value pairs keep their key, and `level=error` no longer folds with `level=info` ([d9793f0](https://github.com/air-gapped/lessence/commit/d9793f0b3927bb23806b9b38709d2cf387ad528a))
+* duration fields keep their key, so two different measurements are no longer one event ([227f03e](https://github.com/air-gapped/lessence/commit/227f03e7c7a78c4c73dfc5005841ea19b795861f))
+* log levels in brackets stay on the line, and Apache, nginx, systemd and Java logger lines keep their level and logger name ([8b92630](https://github.com/air-gapped/lessence/commit/8b9263095c850d6cb7702006cd98deed29153128)) ([dc8c5c8](https://github.com/air-gapped/lessence/commit/dc8c5c8d2405b156152dc25899a891f3314cea3a)) ([76acf0b](https://github.com/air-gapped/lessence/commit/76acf0b2d9affde120591a6eb2d7ae910c520b0c))
+* bracketed words such as `[domain]` and `[remainder]` no longer fold together as one bracket context ([9ed77da](https://github.com/air-gapped/lessence/commit/9ed77dafa8aef571b51a0b7820d5065f19f09efa))
+* `session=`, `trace=` and `correlation_id=` followed by a plain word keep the word instead of reading `<UUID>` ([bce4e4c](https://github.com/air-gapped/lessence/commit/bce4e4c02debbf97f06859cb26c017704aee9e91))
+* URL routes stay on the line, in a request, after `url=` or `path=`, and in a quoted `path = "/users"`; only hosts, ids and query values fold ([9ff1bfc](https://github.com/air-gapped/lessence/commit/9ff1bfc683e5e21ba21efc53cad49977f58acd57)) ([aef1ad5](https://github.com/air-gapped/lessence/commit/aef1ad560044cbe3e671cd2a81ed352552931ea0)) ([933afb9](https://github.com/air-gapped/lessence/commit/933afb912fc7fe6fb5e3dc2a496bff1ba320e289))
+* a request path shows its query string as `?<QUERY>`, and a generated pod name or the line's own name in a path segment reads as an id ([263ae10](https://github.com/air-gapped/lessence/commit/263ae1073a94b44df26a5055f7fb91611441e1cd)) ([edce2dd](https://github.com/air-gapped/lessence/commit/edce2dda23430d0bd01dbf52299ecc32f4293eb8))
+* a generated name keeps its component (`nginx-<SUFFIX>`, `redis-<SUFFIX>`), and two lines differing only in the component always split ([a9ba11b](https://github.com/air-gapped/lessence/commit/a9ba11bcee61e79eb4a568f22b6cf9ce84ce71d4)) ([7ed770b](https://github.com/air-gapped/lessence/commit/7ed770b32b122fb9c8ad8eb210bca9f9f183c216))
+* a name field folds on its own value, not on a word elsewhere on the line ([9681c35](https://github.com/air-gapped/lessence/commit/9681c359b0e254f483ab3b977e4fb84ffa811819))
+* a request verb such as get or delete never folds into another ([277f114](https://github.com/air-gapped/lessence/commit/277f114db1e0c4545bc27dbcbb1bad722bcfed6c))
+* JSON records with different fields, or a nested object the other lacks, no longer share a line ([d4f6c9d](https://github.com/air-gapped/lessence/commit/d4f6c9d30ec4ed580e583730a40889c550816c18)) ([277f114](https://github.com/air-gapped/lessence/commit/277f114db1e0c4545bc27dbcbb1bad722bcfed6c))
+* a 5xx inside a status object no longer folds into a 2xx ([edce2dd](https://github.com/air-gapped/lessence/commit/edce2dda23430d0bd01dbf52299ecc32f4293eb8))
+* a status code is never read out of a longer number or after a word that merely ends in "code" or "status", and words between two codes stay ([dc0c718](https://github.com/air-gapped/lessence/commit/dc0c7180f7555c612f1bb9a8e6dd7093ba5d7ab3)) ([e30aa9d](https://github.com/air-gapped/lessence/commit/e30aa9de0d857c8d7054af8d0d027b0da7b8af48))
+* a Kubernetes Event keeps its type and reason, an escaped struct keeps its values, and option names inside an escaped JSON string stay visible ([f2c2d08](https://github.com/air-gapped/lessence/commit/f2c2d08d45f78b931ee14925f3013716206c7a7e)) ([53008cc](https://github.com/air-gapped/lessence/commit/53008cccf67130a0865274b55995306d68834cdc)) ([ba57f17](https://github.com/air-gapped/lessence/commit/ba57f17161e96a0a883610ed51404a32f4285614))
+* a number that is not a plausible pid is no longer shown as `<PID>` ([0fd3560](https://github.com/air-gapped/lessence/commit/0fd3560b2e174d11edc57b8b75712e5544e49a24))
+* a source file's line number reads the same for every language; `handler.ts:123` is no longer a host and port ([e003ea7](https://github.com/air-gapped/lessence/commit/e003ea77c1f9c5ab5bbbde8f856be1fa09b210a0))
+* a word glued to an address stays visible whichever line comes first ([66e3deb](https://github.com/air-gapped/lessence/commit/66e3debbcb2b030d821f0ee26bf4cffa99e09430))
+* a word elsewhere on a line, such as a Kubernetes term or `update`, no longer switches a detector off for the whole line ([aa66ba0](https://github.com/air-gapped/lessence/commit/aa66ba01705203b778b4c2d1995c090debe4c99d)) ([e77c5b6](https://github.com/air-gapped/lessence/commit/e77c5b6b6194de395ecb3c84e544b175c3867746))
+* long lines that differ in a word stay apart, and long lines that differ by an inserted field fold with a true template ([e1ac5b3](https://github.com/air-gapped/lessence/commit/e1ac5b38d904c30ca81c71661f5fc707febf011d)) ([8111439](https://github.com/air-gapped/lessence/commit/811143974a1d76bc8d04ad4893af98772092ac48))
+
+#### Templates and `<VARIES>` slots
+
+* a `<VARIES>` slot never hides a field name or shows a word one of its lines lacks: each slot stands for exactly one value, and `--explain` marks a line kept apart for this with `slot_refused: true` ([c7d88be](https://github.com/air-gapped/lessence/commit/c7d88be204876569f12dd9e60a19f2adbffcd3cb))
+* words that only some lines of a group have show as a `<VARIES>` slot instead of disappearing from the template ([42dc109](https://github.com/air-gapped/lessence/commit/42dc109403c75c03de55a6e51c9b28f7829751f5))
+* text kept beside a `<VARIES>` slot holds for every member of the group ([53ff66d](https://github.com/air-gapped/lessence/commit/53ff66d805fe77ff7c181a69d04047bdb0d1a220))
+* a slot keeps both quotes of a pair or neither, and a slot inside a quoted value keeps the shared words after it ([c06d73a](https://github.com/air-gapped/lessence/commit/c06d73a7fa4a2f14f2278093e963978a953aa390)) ([aba5031](https://github.com/air-gapped/lessence/commit/aba5031c4c5816bcfd35b7136ccdac0c73ad44f0))
+* no comma or brace is left beside a value some lines of a group lack ([aba5031](https://github.com/air-gapped/lessence/commit/aba5031c4c5816bcfd35b7136ccdac0c73ad44f0))
+* a group with several slots lists each slot's values separately, in template order, in text, the default view and JSON ([8320992](https://github.com/air-gapped/lessence/commit/8320992a7bd4f5bb69fbb374e982c13c63e1aae4)) ([edfbeb4](https://github.com/air-gapped/lessence/commit/edfbeb48744c823ac41925ca6ffda9c39e00f2d0))
+* a slot's value is counted as the member's own text, so `∅` means only a real absence ([43ad36b](https://github.com/air-gapped/lessence/commit/43ad36b515184e1e6e65c22695d545f44b4c04a1))
+* a group of two lines shows what varies between them ([e8e0385](https://github.com/air-gapped/lessence/commit/e8e03852be54e6c872aa30740b23205f2503a942))
+* the same lines fold the same way in any order, and capped samples are the same at any order or thread count ([7ed770b](https://github.com/air-gapped/lessence/commit/7ed770b32b122fb9c8ad8eb210bca9f9f183c216)) ([8bb6857](https://github.com/air-gapped/lessence/commit/8bb6857294161f9264214846fb37bafcb9fa678e))
+* `--threads 1` gives the same output as the default on logs with more than 1,000 distinct events ([3ead7e7](https://github.com/air-gapped/lessence/commit/3ead7e75f7b7146a36842e12993baac359693018))
+
+#### Masking with `--sanitize`
+
+* each line is masked once, before it is folded, so lines that differ only in a masked value fold into one group ([8aec602](https://github.com/air-gapped/lessence/commit/8aec602405d99b0b7c290c303684f6de4d296e45))
+* masking replaces whole values in every output mode, and `--sanitize credential` masks Authorization headers, Bearer tokens and URL userinfo passwords ([1ab889e](https://github.com/air-gapped/lessence/commit/1ab889e70b6ce792ba91ef09653f91158fa8358a))
+* every rollup sample masks its whole value, including an address, host, email or folded credential ([644ba3b](https://github.com/air-gapped/lessence/commit/644ba3b1f808209ebefe83af424872be485e4ec4)) ([159987e](https://github.com/air-gapped/lessence/commit/159987e8cf41274d921f053e18f71414a74b92fa))
+* the first difference `--explain` reports is masked like the line it comes from ([a71fe35](https://github.com/air-gapped/lessence/commit/a71fe357d4906d679f1a73bcc361d6dc07513899))
+* an entity named by `--sanitize` keeps the detectors that find it, even under `--disable-patterns` ([ede8b40](https://github.com/air-gapped/lessence/commit/ede8b40cca4a65e6e54dedcc44dc2f49637d8da0))
+
+#### Timestamps and detectors
+
+* an asctime, git, RFC 822 or klog timestamp no longer swallows the end of the word in front of it ([62f6b7a](https://github.com/air-gapped/lessence/commit/62f6b7ad3e832a7e97e5619239690f0f32ff2fbd))
+* an ISO timestamp with an hour-only zone offset (`+05`) folds with one carrying minutes (`+0530`) ([6f7872e](https://github.com/air-gapped/lessence/commit/6f7872e9339713b731bba5ee0d0d50c1c7ba31ec))
+* the JSON briefing says `year_inferred` when a timestamp carried no year ([5b09b42](https://github.com/air-gapped/lessence/commit/5b09b42b718e8926c91461ea47ec48ae9900d2a9))
+* `--disable-patterns` also reaches inside quoted strings, and `--disable-patterns json` turns off the event-object fold ([1cf6a94](https://github.com/air-gapped/lessence/commit/1cf6a941b3029157f362a3c462b1a85d4b1af98e)) ([9681c35](https://github.com/air-gapped/lessence/commit/9681c359b0e254f483ab3b977e4fb84ffa811819))
+
+#### CLI flags and modes
+
+* `--top 0` shows every pattern in every mode, and `--top` shows the same groups as the default run ([51ce013](https://github.com/air-gapped/lessence/commit/51ce01334e20a7587d65a692d87e1a1a8de1887d)) ([f755ca9](https://github.com/air-gapped/lessence/commit/f755ca97a0af9e84f7b525903b7e50afd3e4a2f6))
+* lines saved, compression and collapsed groups are the same under `--top`, `--summary`, `--fit` and `--essence` as in the default run ([e8e0385](https://github.com/air-gapped/lessence/commit/e8e03852be54e6c872aa30740b23205f2503a942)) ([f0fdba9](https://github.com/air-gapped/lessence/commit/f0fdba93140ae9684eec7fb87af7e5f85f5369d1)) ([e1ac5b3](https://github.com/air-gapped/lessence/commit/e1ac5b38d904c30ca81c71661f5fc707febf011d))
+* with `--threads 1`, no line is dropped with `--min-collapse` above 3, and each group's last line and time range are its own ([e1ac5b3](https://github.com/air-gapped/lessence/commit/e1ac5b38d904c30ca81c71661f5fc707febf011d))
+* `| head` no longer turns a failed run into exit 0 in any mode ([974ca32](https://github.com/air-gapped/lessence/commit/974ca32d283bf2a6ae05f1da140dc04752f2eef6))
+* bad arguments fail cleanly: a repeated `-` no longer hangs, an oversized size is a usage error, and a directory is skipped ([7dc4db8](https://github.com/air-gapped/lessence/commit/7dc4db8b35248639134947aaa5bb83af473b837a))
+* `--no-report` is accepted in every mode ([e1fad17](https://github.com/air-gapped/lessence/commit/e1fad174d3034998ffde1792cf8382926825b26f))
+* with `--frame-continuations`, a record still open when `--max-lines` stops reading is shown ([3beeb3c](https://github.com/air-gapped/lessence/commit/3beeb3c8295575c50a02414dcd6af8f4d3d3915e))
+* `--skill` prints one provenance line ([ee8406c](https://github.com/air-gapped/lessence/commit/ee8406c2acca8b5a6fa0c83c345485401fb14ec0))
+
+
+### Performance Improvements
+
+* each anchor pattern runs once per line instead of twice ([c4f442f](https://github.com/air-gapped/lessence/commit/c4f442f6b057eb808fda36bd2e012c1a65f861b6))
+* an input line with nothing to strip is no longer copied on read ([06d0630](https://github.com/air-gapped/lessence/commit/06d0630efcd89c6d714022cbc6efcebaa44b076b))
+
 ## [0.8.1](https://github.com/air-gapped/lessence/compare/v0.5.0...v0.8.1) (2026-09-23)
 
 The first release since 0.5.0. 0.6.0 and 0.7.0 were tagged but never
