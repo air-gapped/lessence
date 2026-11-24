@@ -160,8 +160,8 @@ Two patterns. The timestamps don't matter — the database is down and auth is w
 ## Real-World Compression
 
 <!-- gen:compression:begin -->
-<!-- gen:compression:at d29f354ad -->
-Measured on v0.9.0 (commit d29f354ad) on production logs that are not
+<!-- gen:compression:at 0400b4ad9 -->
+Measured on v0.9.0 (commit 0400b4ad9) on production logs that are not
 distributable. Every distinct message is its own event, so these counts are
 lower than a looser folder would give.
 
