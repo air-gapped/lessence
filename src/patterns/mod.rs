@@ -434,7 +434,7 @@ impl SimTokens {
 #[derive(Debug, Clone)]
 pub struct LogLine {
     pub original: String,
-    pub normalized: String,
+    normalized: String,
     pub tokens: Vec<Token>,
     pub hash: u64,
     pub(crate) anchor: u64,
@@ -461,6 +461,11 @@ impl LogLine {
     pub(crate) fn sim(&self) -> &SimTokens {
         self.sim_cache
             .get_or_init(|| SimTokens::from_normalized(&self.normalized))
+    }
+
+    /// The normalized text; read-only, because the similarity cache is built from it.
+    pub fn normalized(&self) -> &str {
+        &self.normalized
     }
 }
 

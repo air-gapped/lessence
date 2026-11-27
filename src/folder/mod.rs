@@ -60,6 +60,8 @@ struct PatternGroup {
     position: usize,
     first_line_no: usize,
     last_line_no: usize,
+    /// Ingestion position of the newest member, comparable across sources.
+    last_position: usize,
     first_source_id: SourceId,
     last_source_id: SourceId,
     nearest: Option<Nearest>,
@@ -133,11 +135,11 @@ impl VariesCounts {
 }
 
 fn first_diff(line: &LogLine, rep: &LogLine) -> Option<FirstDiff> {
-    let (ours, theirs) = first_diff_ranges(&line.normalized, &rep.normalized)?;
+    let (ours, theirs) = first_diff_ranges(line.normalized(), rep.normalized())?;
     Some(FirstDiff {
         at: ours.start,
-        ours: line.normalized[ours].to_string(),
-        theirs: rep.normalized[theirs].to_string(),
+        ours: line.normalized()[ours].to_string(),
+        theirs: rep.normalized()[theirs].to_string(),
     })
 }
 
@@ -192,11 +194,12 @@ impl PatternGroup {
 
     fn new_at(line: LogLine, position: usize, location: LineLocation) -> Self {
         Self {
-            template: line.normalized.clone(),
+            template: line.normalized().to_string(),
             lines: vec![line],
             position,
             first_line_no: location.line_no,
             last_line_no: location.line_no,
+            last_position: position,
             first_source_id: location.source_id,
             last_source_id: location.source_id,
             nearest: None,
@@ -213,7 +216,12 @@ impl PatternGroup {
         let edits = self
             .edits_for(&line, &mut None, &mut None)
             .unwrap_or_default();
-        self.add_line_at(line, LineLocation::new(SourceId::STDIN, line_no), &edits);
+        self.add_line_at(
+            line,
+            LineLocation::new(SourceId::STDIN, line_no),
+            line_no,
+            &edits,
+        );
     }
 
     fn edits_for<'l>(
@@ -232,22 +240,29 @@ impl PatternGroup {
             computed = unit_spans(&self.template);
             computed.as_slice()
         };
-        let member_units = line_units.get_or_insert_with(|| unit_spans(&line.normalized));
+        let member_units = line_units.get_or_insert_with(|| unit_spans(line.normalized()));
         admitted_edits_over(
             &self.template,
             units,
-            &self.first().normalized,
-            &line.normalized,
+            self.first().normalized(),
+            line.normalized(),
             member_units,
             line_objects,
         )
     }
 
-    fn add_line_at(&mut self, line: LogLine, location: LineLocation, edits: &[Edit]) {
+    fn add_line_at(
+        &mut self,
+        line: LogLine,
+        location: LineLocation,
+        position: usize,
+        edits: &[Edit],
+    ) {
         self.apply_template_edits(edits);
-        self.assert_claim_holds(&line.normalized);
+        self.assert_claim_holds(line.normalized());
         self.lines.push(line);
         self.last_line_no = location.line_no;
+        self.last_position = position;
         self.last_source_id = location.source_id;
         self.count += 1;
         self.assert_members_held();
@@ -261,20 +276,18 @@ impl PatternGroup {
         debug_assert_eq!(self.template, other.template);
         self.count += other.count;
         self.timeline.absorb(std::mem::take(&mut other.timeline));
-        let other_is_later = other.last_line_no > self.last_line_no
-            || (other.last_line_no == self.last_line_no && other.position > self.position);
+        let other_is_later = other.last_position > self.last_position;
         if other_is_later {
             self.last_line_no = other.last_line_no;
+            self.last_position = other.last_position;
             self.last_source_id = other.last_source_id;
-        }
-        let own_last = self.lines.pop().unwrap();
-        let mut other_lines = other.lines;
-        if other_is_later {
-            self.lines.push(own_last);
-            self.lines.append(&mut other_lines);
+            self.lines.append(&mut other.lines);
         } else {
-            self.lines.append(&mut other_lines);
-            self.lines.push(own_last);
+            let after_founder_before_newest = (self.lines.len() - 1).max(1);
+            self.lines.splice(
+                after_founder_before_newest..after_founder_before_newest,
+                other.lines,
+            );
         }
         self.assert_members_held();
     }
@@ -295,12 +308,12 @@ impl PatternGroup {
     ) -> bool {
         self.slot_units.as_ref().is_some_and(|units| {
             line.anchor == self.first().anchor
-                && first_difference_may_vary(&self.template, &line.normalized)
+                && first_difference_may_vary(&self.template, line.normalized())
                 && joins_through_slots(
                     &self.template,
                     units,
-                    &line.normalized,
-                    line_units.get_or_insert_with(|| unit_spans(&line.normalized)),
+                    line.normalized(),
+                    line_units.get_or_insert_with(|| unit_spans(line.normalized())),
                     threshold,
                 )
         })
@@ -313,10 +326,10 @@ impl PatternGroup {
             self.template
         );
         debug_assert!(
-            template_holds(&self.template, &self.lines[0].normalized),
+            template_holds(&self.template, self.lines[0].normalized()),
             "the template no longer holds for the group's first line:\n  template: {}\n  first:    {}",
             self.template,
-            self.lines[0].normalized
+            self.lines[0].normalized()
         );
     }
 
@@ -373,8 +386,7 @@ pub struct PatternFolder {
     group_index: ahash::AHashMap<u64, usize>,
     stats: FoldingStats,
     position_counter: usize,
-    batch_buffer: Vec<String>,
-    batch_locations: Vec<LineLocation>,
+    batch_buffer: Vec<(String, Option<LineLocation>)>,
     sources: Vec<String>,
     next_json_id: usize,
     input_facts: InputFacts,
@@ -1254,6 +1266,9 @@ fn kept_affixes(prefix: &str, suffix: &str, w: &str) -> (usize, usize) {
     let mut q = 0;
     while q < sb.len() && p + q + 1 < wb.len() && sb[sb.len() - 1 - q] == wb[wb.len() - 1 - q] {
         q += 1;
+    }
+    while !suffix.is_char_boundary(sb.len() - q) {
+        q -= 1;
     }
     if q < sb.len() && sb.iter().any(u8::is_ascii_whitespace) {
         p = field_prefix();
@@ -2922,7 +2937,7 @@ impl RollupComputer {
 
     fn accumulate_varies(&self, lines: &[LogLine], template: &str, varies: &mut SlotCounts) {
         self.accumulate_varies_counted(
-            lines.iter().map(|line| (line.normalized.as_str(), 1)),
+            lines.iter().map(|line| (line.normalized(), 1)),
             template,
             varies,
         );
@@ -2988,7 +3003,7 @@ impl RollupComputer {
         let mut varies = SlotCounts::new();
         let template = group.template();
         self.accumulate_varies(&group.lines, template, &mut varies);
-        self.finalize(per_type, varies, template, &group.first().normalized)
+        self.finalize(per_type, varies, template, group.first().normalized())
     }
 
     fn finalize(
@@ -3087,13 +3102,13 @@ type MemberIndexes = std::collections::BTreeSet<usize>;
 
 fn members_that_moved_the_template(group: &PatternGroup) -> MemberIndexes {
     let mut chosen = MemberIndexes::new();
-    let mut template = group.lines[0].normalized.clone();
+    let mut template = group.lines[0].normalized().to_string();
     chosen.insert(0);
     for (idx, line) in group.lines.iter().enumerate().skip(1) {
         if line.hash == group.lines[0].hash {
             continue;
         }
-        let edits = admitted_edits(&template, &group.lines[0].normalized, &line.normalized)
+        let edits = admitted_edits(&template, group.lines[0].normalized(), line.normalized())
             .unwrap_or_default();
         if edits.is_empty() {
             continue;
@@ -3207,7 +3222,6 @@ impl PatternFolder {
             stats: FoldingStats::default(),
             position_counter: 0,
             batch_buffer: Vec::new(),
-            batch_locations: Vec::new(),
             sources: Vec::new(),
             next_json_id: 0,
             input_facts: InputFacts::default(),
@@ -3283,10 +3297,7 @@ impl PatternFolder {
             let normalized_line = self.ingest(line.to_string())?;
             return self.place_line(normalized_line, location);
         }
-        self.batch_buffer.push(line.to_string());
-        if let Some(location) = location {
-            self.batch_locations.push(location);
-        }
+        self.batch_buffer.push((line.to_string(), location));
         if self.batch_buffer.len() >= BATCH_LINES {
             self.process_batch()?;
         }
@@ -3347,7 +3358,7 @@ impl PatternFolder {
                     || (group.slot_units.is_some()
                         && group.joins_through_slots(&normalized_line, &mut line_units, threshold));
                 similar
-                    && within_plain_word_allowance(&normalized_line.normalized, &first.normalized)
+                    && within_plain_word_allowance(normalized_line.normalized(), first.normalized())
                     && match group.edits_for(&normalized_line, &mut line_units, &mut line_objects) {
                         Ok(found) => {
                             edits = found;
@@ -3375,7 +3386,12 @@ impl PatternFolder {
             }
             let location = location
                 .unwrap_or_else(|| LineLocation::new(SourceId::STDIN, self.position_counter));
-            self.buffer[index].add_line_at(normalized_line, location, &edits);
+            self.buffer[index].add_line_at(
+                normalized_line,
+                location,
+                self.position_counter,
+                &edits,
+            );
             if let Some(line_no) = distill_line_no {
                 self.buffer[index].member_line_nos.push(line_no);
             }
@@ -3451,7 +3467,7 @@ impl PatternFolder {
         let founder = guest.first();
         let mut founder_units = None;
         let covered = host.joins_through_slots(founder, &mut founder_units, self.config.threshold)
-            && within_plain_word_allowance(&founder.normalized, &host.first().normalized);
+            && within_plain_word_allowance(founder.normalized(), host.first().normalized());
         if !covered {
             return None;
         }
@@ -3459,7 +3475,8 @@ impl PatternFolder {
         let mut seen: HashSet<u64> = HashSet::with_capacity(guest.lines.len());
         for line in &guest.lines {
             if seen.insert(line.hash) {
-                let edits = admitted_edits(&template, &host.first().normalized, &line.normalized)?;
+                let edits =
+                    admitted_edits(&template, host.first().normalized(), line.normalized())?;
                 apply_edits(&mut template, &edits);
             }
         }
@@ -3651,8 +3668,8 @@ impl PatternFolder {
             match by_claim.get(&key) {
                 Some(&at)
                     if !object_members_differ(
-                        &out[at].first().normalized,
-                        &group.first().normalized,
+                        out[at].first().normalized(),
+                        group.first().normalized(),
                     ) =>
                 {
                     out[at].absorb(group);
@@ -3773,22 +3790,23 @@ impl PatternFolder {
 
     fn process_batch(&mut self) -> Result<()> {
         let batch = std::mem::take(&mut self.batch_buffer);
-        let locations = std::mem::take(&mut self.batch_locations);
-        debug_assert!(locations.is_empty() || locations.len() == batch.len());
         let processed_lines = self.parallel_pattern_detection(&batch)?;
-        for (index, processed_line) in processed_lines.into_iter().enumerate() {
-            self.place_line(processed_line, locations.get(index).copied())?;
+        for (processed_line, (_, location)) in processed_lines.into_iter().zip(&batch) {
+            self.place_line(processed_line, *location)?;
         }
         Ok(())
     }
 
-    fn parallel_pattern_detection(&self, lines: &[String]) -> Result<Vec<LogLine>> {
+    fn parallel_pattern_detection(
+        &self,
+        lines: &[(String, Option<LineLocation>)],
+    ) -> Result<Vec<LogLine>> {
         use rayon::prelude::*;
 
         let detect = || {
             lines
                 .par_iter()
-                .map(|line| self.ingest(line.clone()))
+                .map(|(line, _)| self.ingest(line.clone()))
                 .collect::<Result<Vec<_>, _>>()
         };
         let processed_lines: Vec<LogLine> = match &self.detection {
@@ -3796,7 +3814,7 @@ impl PatternFolder {
             LineDetection::GlobalPool => detect()?,
             LineDetection::Inline => lines
                 .iter()
-                .map(|line| self.ingest(line.clone()))
+                .map(|(line, _)| self.ingest(line.clone()))
                 .collect::<Result<Vec<_>, _>>()?,
         };
 

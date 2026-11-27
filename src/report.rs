@@ -146,6 +146,7 @@ fn accept_backing(dir: &Path, magic: u64, name: &str) -> Result<()> {
 
 pub struct Spool {
     dir: PathBuf,
+    dirs_to_sync: Vec<PathBuf>,
     partial: PathBuf,
     final_path: PathBuf,
     run_id: String,
@@ -229,20 +230,40 @@ fn create_exclusive_dir_0700(path: &Path) -> std::io::Result<()> {
     fs::DirBuilder::new().create(path)
 }
 
-fn create_missing_parents_0700(dir: &Path) -> Result<()> {
+fn create_missing_parents_0700(dir: &Path, created: &mut Vec<PathBuf>) -> Result<()> {
     if dir.is_dir() {
         return Ok(());
     }
     if let Some(parent) = dir.parent()
         && !parent.as_os_str().is_empty()
     {
-        create_missing_parents_0700(parent)?;
+        create_missing_parents_0700(parent, created)?;
     }
     match create_exclusive_dir_0700(dir) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            created.push(dir.to_path_buf());
+            Ok(())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(anyhow!("cannot create {}: {e}", dir.display())),
     }
+}
+
+/// The directories whose entries a finished report depends on: the run
+/// directory (the rename), the base (the run directory's entry), and the
+/// parent of every ancestor this run created.
+fn dirs_holding_new_entries(run_dir: &Path, base: &Path, created: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs = vec![run_dir.to_path_buf(), base.to_path_buf()];
+    for dir in created {
+        let parent = match dir.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        if !dirs.contains(&parent) {
+            dirs.push(parent);
+        }
+    }
+    dirs
 }
 
 #[cfg(unix)]
@@ -265,7 +286,8 @@ fn open_0600(path: &Path) -> std::io::Result<File> {
 
 impl Spool {
     pub fn create(base: &Path, max_bytes: u64) -> Result<Self> {
-        create_missing_parents_0700(base)?;
+        let mut created = Vec::new();
+        create_missing_parents_0700(base, &mut created)?;
         let stamp = jiff::Timestamp::now().strftime("%Y%m%d-%H%M%S").to_string();
         let mut last_err = None;
         for _ in 0..8 {
@@ -280,6 +302,7 @@ impl Spool {
                     })?;
                     return Ok(Self {
                         final_path: dir.join(COMPLETE_NAME),
+                        dirs_to_sync: dirs_holding_new_entries(&dir, base, &created),
                         dir,
                         partial,
                         run_id,
@@ -399,7 +422,9 @@ impl Spool {
 
     #[cfg(not(feature = "test-hooks"))]
     fn fsync_dir_to_make_rename_durable(&self) -> std::io::Result<()> {
-        make_rename_durable(&self.dir)
+        self.dirs_to_sync
+            .iter()
+            .try_for_each(|d| make_rename_durable(d))
     }
 
     #[cfg(feature = "test-hooks")]
@@ -409,7 +434,9 @@ impl Spool {
                 "injected directory fsync failure (LESSENCE_TEST_FAIL_DIR_FSYNC)",
             ))
         } else {
-            make_rename_durable(&self.dir)
+            self.dirs_to_sync
+                .iter()
+                .try_for_each(|d| make_rename_durable(d))
         }
     }
 
@@ -423,6 +450,34 @@ impl Spool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finishing_syncs_the_base_and_the_parent_of_every_directory_this_run_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().join("made").join("base");
+        let spool = Spool::create(&base, DEFAULT_PER_RUN_MAX_BYTES).unwrap();
+        let run_dir = spool.final_path().parent().unwrap().to_path_buf();
+        assert_eq!(
+            spool
+                .dirs_to_sync
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([
+                run_dir,
+                base.clone(),
+                tmp.path().join("made"),
+                tmp.path().to_path_buf()
+            ])
+        );
+
+        let again = Spool::create(&base, DEFAULT_PER_RUN_MAX_BYTES).unwrap();
+        assert_eq!(
+            again.dirs_to_sync.len(),
+            2,
+            "an existing base adds no ancestors"
+        );
+    }
 
     #[test]
     fn explicit_dir_wins_over_environment_and_default() {

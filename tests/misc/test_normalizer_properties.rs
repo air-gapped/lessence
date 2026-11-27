@@ -12,7 +12,7 @@ proptest! {
         let normalizer = default_normalizer();
         let result = normalizer.normalize_line(input).unwrap();
         prop_assert!(
-            !result.normalized.is_empty() || result.original.is_empty(),
+            !result.normalized().is_empty() || result.original.is_empty(),
             "a non-empty line never normalizes to an empty one"
         );
     }
@@ -66,7 +66,11 @@ fn masked_forms(spec: &str, planted: &str, before: &str, after: &str) -> Vec<Str
     vec![
         z.mask_line(&line, &normalized.tokens),
         z.mask_text(&line),
-        normalizer.normalize_line(normalizable).unwrap().normalized,
+        normalizer
+            .normalize_line(normalizable)
+            .unwrap()
+            .normalized()
+            .to_string(),
     ]
 }
 

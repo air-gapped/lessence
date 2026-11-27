@@ -161,11 +161,6 @@ impl Ingestor {
         self.max_lines.filter(|&max_lines| lines_seen >= max_lines)
     }
 
-    fn is_overlong(&self, line: &str) -> bool {
-        self.max_line_length
-            .is_some_and(|max_length| line.len() > max_length)
-    }
-
     fn fail_pattern_matches_raw(&self, raw_line: &str) -> bool {
         self.fail_regex
             .as_ref()
@@ -197,7 +192,8 @@ impl Ingestor {
             let mut framer = RecordFramer::default();
             let mut source_hash = self.hash_input.then(SourceHash::default);
             let mut reader = hash_below_line_decoder(reader, source_hash.as_mut());
-            for (line_index, line) in reader.by_ref().lines().enumerate() {
+            let lines = PhysicalLines::new(reader.by_ref(), self.max_line_length);
+            for (line_index, line) in lines.enumerate() {
                 let line_number = SourceLineNumber::of_physical_line_index(line_index);
                 let line = line.map_err(|e| {
                     anyhow::anyhow!("{}: line {}: {e}", source.display_name(), line_number.get())
@@ -210,10 +206,10 @@ impl Ingestor {
                 }
                 lines_seen += 1;
 
-                if self.is_overlong(&line) {
+                let Physical::Text(line) = line else {
                     report.overlong_lines_skipped += 1;
                     continue;
-                }
+                };
 
                 if self.fail_pattern_matches_raw(&line) {
                     report.fail_pattern_matched = true;
@@ -305,6 +301,117 @@ impl RecordFramer {
 
     fn finish_at_end_of_input_or_line_limit(self) -> Option<Record> {
         self.open
+    }
+}
+
+const CRLF_ROOM: usize = "\r\n".len();
+
+enum Physical {
+    Text(String),
+    Overlong,
+}
+
+/// `BufRead::lines` with a length limit that is applied while reading: a
+/// line longer than the limit is consumed without being kept, so memory is
+/// bounded by the limit rather than by the longest line. Line ends, CRLF and
+/// UTF-8 errors are what `lines` gives.
+struct PhysicalLines<R> {
+    reader: R,
+    max_length: Option<usize>,
+}
+
+fn not_utf8() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "stream did not contain valid UTF-8",
+    )
+}
+
+/// The bytes at the end of `bytes` that may start a UTF-8 sequence the next
+/// chunk completes, or an error when `bytes` cannot be UTF-8.
+fn utf8_tail(bytes: &[u8]) -> io::Result<&[u8]> {
+    match std::str::from_utf8(bytes) {
+        Ok(_) => Ok(&[]),
+        Err(e) if e.error_len().is_none() => Ok(&bytes[e.valid_up_to()..]),
+        Err(_) => Err(not_utf8()),
+    }
+}
+
+impl<R: BufRead> PhysicalLines<R> {
+    fn new(reader: R, max_length: Option<usize>) -> Self {
+        Self { reader, max_length }
+    }
+
+    fn read_physical(&mut self) -> io::Result<Option<Physical>> {
+        let mut buf = Vec::new();
+        let read = match self.max_length {
+            None => self.reader.read_until(b'\n', &mut buf)?,
+            Some(max_length) => {
+                let keep = max_length.saturating_add(CRLF_ROOM);
+                let read = (&mut self.reader)
+                    .take(keep as u64)
+                    .read_until(b'\n', &mut buf)?;
+                if read == keep && buf.last() != Some(&b'\n') {
+                    return self.drain_overlong(&buf).map(Some);
+                }
+                read
+            }
+        };
+        if read == 0 {
+            return Ok(None);
+        }
+        if buf.last() == Some(&b'\n') {
+            buf.pop();
+            if buf.last() == Some(&b'\r') {
+                buf.pop();
+            }
+        }
+        let line = String::from_utf8(buf).map_err(|_| not_utf8())?;
+        if self
+            .max_length
+            .is_some_and(|max_length| line.len() > max_length)
+        {
+            return Ok(Some(Physical::Overlong));
+        }
+        Ok(Some(Physical::Text(line)))
+    }
+
+    fn drain_overlong(&mut self, kept: &[u8]) -> io::Result<Physical> {
+        let mut valid = utf8_tail(kept).map(<[u8]>::to_vec);
+        loop {
+            let available = match self.reader.fill_buf() {
+                Ok(available) => available,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            if available.is_empty() {
+                break;
+            }
+            let newline = available.iter().position(|&b| b == b'\n');
+            let segment = &available[..newline.unwrap_or(available.len())];
+            if let Ok(pending) = &valid {
+                let mut joined = pending.clone();
+                joined.extend_from_slice(segment);
+                valid = utf8_tail(&joined).map(<[u8]>::to_vec);
+            }
+            let used = newline.map_or(available.len(), |i| i + 1);
+            self.reader.consume(used);
+            if newline.is_some() {
+                break;
+            }
+        }
+        match valid {
+            Ok(pending) if pending.is_empty() => Ok(Physical::Overlong),
+            _ => Err(not_utf8()),
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for PhysicalLines<R> {
+    type Item = io::Result<Physical>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.read_physical().transpose()
     }
 }
 
@@ -433,6 +540,49 @@ mod tests {
 
     fn ingestor(config: &Config) -> Ingestor {
         Ingestor::from_config(config).unwrap()
+    }
+
+    fn physical(bytes: &[u8], max_length: Option<usize>) -> Vec<Result<Option<String>, String>> {
+        PhysicalLines::new(io::BufReader::with_capacity(4, bytes), max_length)
+            .map(|line| match line {
+                Ok(Physical::Text(text)) => Ok(Some(text)),
+                Ok(Physical::Overlong) => Ok(None),
+                Err(e) => Err(e.to_string()),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_overlong_line_is_read_past_without_keeping_it_and_reads_like_lines() {
+        let input = b"abc\r\nabcd\r\nabcdefghij\nok\nlast-no-newline";
+        let lines_of = |bytes: &[u8]| {
+            bytes
+                .lines()
+                .map(|l| {
+                    l.map(|t| if t.len() > 3 { None } else { Some(t) })
+                        .map_err(|e| e.to_string())
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(physical(input, Some(3)), lines_of(input));
+        assert_eq!(
+            physical(input, Some(3)),
+            vec![
+                Ok(Some("abc".to_string())),
+                Ok(None),
+                Ok(None),
+                Ok(Some("ok".to_string())),
+                Ok(None),
+            ]
+        );
+        assert_eq!(physical(input, None).len(), 5);
+
+        let tail_not_utf8 = b"abcdefgh\xff\nok\n";
+        assert_eq!(physical(tail_not_utf8, Some(3)), lines_of(tail_not_utf8));
+        let split_char = "abcdef\u{e9}\u{e9}\nok\n".as_bytes();
+        assert_eq!(physical(split_char, Some(3)), lines_of(split_char));
+        let cut_char = b"abcdef\xc3\n";
+        assert_eq!(physical(cut_char, Some(3)), lines_of(cut_char));
     }
 
     #[test]

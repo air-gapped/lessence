@@ -55,7 +55,7 @@ impl HistogramBuilder {
         }
         let key = epoch.div_euclid(self.bucket_seconds as i64);
         *self.buckets.entry(key).or_insert(0) += 1;
-        if self.buckets.len() > HISTOGRAM_BUCKET_CAP {
+        while self.buckets.len() > HISTOGRAM_BUCKET_CAP {
             let old = std::mem::take(&mut self.buckets);
             self.bucket_seconds *= 2;
             for (k, v) in old {
@@ -1269,6 +1269,19 @@ pub fn render_text(b: &Briefing) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn histogram_builder_doubles_until_under_the_cap() {
+        let mut builder = HistogramBuilder::default();
+        for i in 0..=HISTOGRAM_BUCKET_CAP as i64 {
+            builder.record(i * 4);
+        }
+        assert!(builder.buckets.len() <= HISTOGRAM_BUCKET_CAP);
+        assert_eq!(
+            builder.bucket_seconds, 8,
+            "the same width a group's counts reach"
+        );
+    }
 
     #[test]
     fn add_one_year_utc_has_no_29_february_in_a_non_leap_year() {

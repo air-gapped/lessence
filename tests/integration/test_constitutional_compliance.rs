@@ -987,7 +987,7 @@ fn cpu_resources_keep_quantity_values_in_configuration_diffs() {
         let line = normalizer_before_clustering
             .normalize_line(raw.to_string())
             .unwrap();
-        let normalized = clean(&line.normalized);
+        let normalized = clean(&line.normalized());
         assert_eq!(
             normalized.matches("cpu:<CPU_QUANTITY>").count(),
             expected,

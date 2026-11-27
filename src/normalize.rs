@@ -1618,8 +1618,8 @@ impl Normalizer {
     }
 
     pub fn similarity_score(&self, line1: &LogLine, line2: &LogLine) -> f64 {
-        let s1 = &line1.normalized;
-        let s2 = &line2.normalized;
+        let s1 = &line1.normalized();
+        let s2 = &line2.normalized();
 
         if s1 == s2 {
             return 100.0;
@@ -1777,8 +1777,8 @@ impl Normalizer {
             && !a.is_empty()
             && !b.is_empty()
         {
-            let s1 = &line1.normalized;
-            let s2 = &line2.normalized;
+            let s1 = &line1.normalized();
+            let s2 = &line2.normalized();
             let min_len = s1.len().min(s2.len());
             let max_len = s1.len().max(s2.len());
             let length_ratio = min_len as f64 / max_len as f64;
@@ -1822,9 +1822,9 @@ mod tests {
         ] {
             let line = n.normalize_line(text.to_string()).unwrap();
             assert!(
-                line.normalized.contains("<CPU_QUANTITY>"),
+                line.normalized().contains("<CPU_QUANTITY>"),
                 "{}",
-                line.normalized
+                line.normalized()
             );
             assert_eq!(
                 line.tokens
@@ -1845,9 +1845,9 @@ mod tests {
                     .any(|t| matches!(t, Token::Duration(v) if v.contains("750m")))
             );
             assert!(
-                line.normalized.contains("<DURATION>"),
+                line.normalized().contains("<DURATION>"),
                 "{}",
-                line.normalized
+                line.normalized()
             );
         }
     }
@@ -1864,7 +1864,7 @@ mod tests {
             let line = n
                 .normalize_line(format!(r#"{{"elapsed_ms":{value}}}"#))
                 .unwrap();
-            assert_eq!(line.normalized, r#"{"elapsed_ms":<DECIMAL>}"#);
+            assert_eq!(line.normalized(), r#"{"elapsed_ms":<DECIMAL>}"#);
             assert!(
                 line.tokens
                     .iter()
@@ -1882,10 +1882,10 @@ mod tests {
         let same = norm("making GET http request: http://worker.example:9000/items/71?view=two");
         assert_eq!(first.anchor, same.anchor);
         assert_eq!(
-            first.normalized,
+            first.normalized(),
             "making GET http request: http://<HOST>/items/<N>?<QUERY>"
         );
-        assert_eq!(first.normalized, same.normalized);
+        assert_eq!(first.normalized(), same.normalized());
         assert!(
             first.tokens.iter().any(
                 |t| matches!(t, Token::Path(p) if p == "http://10.2.3.4:8080/items/42?view=one")
@@ -1914,7 +1914,7 @@ mod tests {
             ),
         ] {
             let line = norm(text);
-            assert!(line.normalized.contains(shown), "{}", line.normalized);
+            assert!(line.normalized().contains(shown), "{}", line.normalized());
             assert_ne!(line.anchor, 0);
         }
         for text in [
@@ -1929,7 +1929,7 @@ mod tests {
             let get = norm(&format!("\"GET {target} HTTP/1.1\" 200 5"));
             let post = norm(&format!("\"POST {target} HTTP/1.1\" 200 5"));
             assert_eq!(get.anchor, post.anchor);
-            assert!(get.normalized.contains(target));
+            assert!(get.normalized().contains(target));
         }
     }
 
@@ -1965,7 +1965,7 @@ mod tests {
         for (unit, shown) in units {
             assert_eq!(render_systemd_unit(unit), shown);
             let line = normalize(&format!("systemd[1]: {unit}: Deactivated successfully."));
-            assert!(line.normalized.contains(shown), "{}", line.normalized);
+            assert!(line.normalized().contains(shown), "{}", line.normalized());
             assert_ne!(line.anchor, 0);
             if shown != unit {
                 assert!(
@@ -1973,7 +1973,7 @@ mod tests {
                         .iter()
                         .any(|t| matches!(t, Token::Name(name) if name == unit)),
                     "{}",
-                    line.normalized
+                    line.normalized()
                 );
             }
             lines.push((line, shown));
@@ -2013,9 +2013,13 @@ mod tests {
                 .normalize_line(shape.replace("ADDRESS", "0000:3a:00.1"))
                 .unwrap();
             assert_ne!(a.anchor, b.anchor);
-            assert_ne!(a.normalized, b.normalized);
-            assert!(a.normalized.contains("0000:3a:00.0"), "{}", a.normalized);
-            assert!(!a.normalized.contains('\0'));
+            assert_ne!(a.normalized(), b.normalized());
+            assert!(
+                a.normalized().contains("0000:3a:00.0"),
+                "{}",
+                a.normalized()
+            );
+            assert!(!a.normalized().contains('\0'));
         }
     }
 
@@ -2029,21 +2033,21 @@ mod tests {
             .normalize_line(r#"method=GET path="/devices/0000:21:00.0?peer=0000:21:00.0""#.into())
             .unwrap();
         assert_ne!(one.anchor, two.anchor);
-        assert_ne!(one.normalized, two.normalized);
-        assert_eq!(one.normalized.matches("0000:21:00.0").count(), 1);
-        assert_eq!(two.normalized.matches("0000:21:00.0").count(), 2);
+        assert_ne!(one.normalized(), two.normalized());
+        assert_eq!(one.normalized().matches("0000:21:00.0").count(), 1);
+        assert_eq!(two.normalized().matches("0000:21:00.0").count(), 2);
         let literal = normalizer
             .normalize_line(r#"exe="/devices/0000:21:00.0/tool""#.into())
             .unwrap();
-        assert_eq!(literal.normalized.matches("0000:21:00.0").count(), 1);
+        assert_eq!(literal.normalized().matches("0000:21:00.0").count(), 1);
         let ordered = normalizer
             .normalize_line(
                 r#"method=GET path="/devices?first=0000:21:00.0&second=0000:04:00.0""#.into(),
             )
             .unwrap();
         assert!(
-            ordered.normalized.find("0000:21:00.0").unwrap()
-                < ordered.normalized.find("0000:04:00.0").unwrap()
+            ordered.normalized().find("0000:21:00.0").unwrap()
+                < ordered.normalized().find("0000:04:00.0").unwrap()
         );
     }
 
@@ -2068,8 +2072,8 @@ mod tests {
             .normalize_line(r#"method=GET path="/health?status=200&status=204""#.into())
             .unwrap();
         assert_ne!(one.anchor, two.anchor);
-        assert_ne!(one.normalized, two.normalized);
-        assert_eq!(two.normalized.matches("<STATUS_2XX>").count(), 2);
+        assert_ne!(one.normalized(), two.normalized());
+        assert_eq!(two.normalized().matches("<STATUS_2XX>").count(), 2);
     }
 
     #[test]
@@ -2108,11 +2112,11 @@ mod tests {
             let line = normalizer.normalize_line(shape.into()).unwrap();
             assert_ne!(line.anchor, 0, "{shape}");
             assert!(
-                line.normalized.contains(identity),
+                line.normalized().contains(identity),
                 "{} must show {identity}",
-                line.normalized
+                line.normalized()
             );
-            assert!(!line.normalized.contains('\0'), "{}", line.normalized);
+            assert!(!line.normalized().contains('\0'), "{}", line.normalized());
         }
     }
 
@@ -2123,9 +2127,9 @@ mod tests {
             .normalize_line(raw.into())
             .unwrap();
         assert!(
-            line.normalized.contains("<PID> controller.go:137]"),
+            line.normalized().contains("<PID> controller.go:137]"),
             "{}",
-            line.normalized
+            line.normalized()
         );
         assert!(line.tokens.iter().any(|t| matches!(t, Token::Pid(8))));
         let config = Config {
@@ -2134,7 +2138,7 @@ mod tests {
         };
         let off = Normalizer::new(config).normalize_line(raw.into()).unwrap();
         assert!(!off.tokens.iter().any(|t| matches!(t, Token::Pid(_))));
-        assert!(off.normalized.contains("controller.go:137]"));
+        assert!(off.normalized().contains("controller.go:137]"));
     }
 
     #[test]
@@ -2150,7 +2154,7 @@ mod tests {
         .collect();
         for pair in lines.windows(2) {
             assert_ne!(pair[0].anchor, pair[1].anchor);
-            assert_ne!(pair[0].normalized, pair[1].normalized);
+            assert_ne!(pair[0].normalized(), pair[1].normalized());
         }
     }
 
@@ -2182,17 +2186,17 @@ mod tests {
             let c = run("503");
             assert_eq!(a.anchor, b.anchor, "{shape}");
             assert_ne!(a.anchor, c.anchor, "{shape}");
-            assert_eq!(a.normalized, b.normalized, "{shape}");
-            assert_ne!(a.normalized, c.normalized, "{shape}");
+            assert_eq!(a.normalized(), b.normalized(), "{shape}");
+            assert_ne!(a.normalized(), c.normalized(), "{shape}");
             assert!(
-                a.normalized.contains(&format!("<{marker}_2XX>")),
+                a.normalized().contains(&format!("<{marker}_2XX>")),
                 "{}",
-                a.normalized
+                a.normalized()
             );
             assert!(
-                c.normalized.contains(&format!("<{marker}_5XX>")),
+                c.normalized().contains(&format!("<{marker}_5XX>")),
                 "{}",
-                c.normalized
+                c.normalized()
             );
             if marker == "STATUS" {
                 assert!(
@@ -2224,11 +2228,11 @@ mod tests {
             )
             .unwrap();
         assert!(
-            line.normalized.contains("status=<STATUS_1XX>"),
+            line.normalized().contains("status=<STATUS_1XX>"),
             "{}",
-            line.normalized
+            line.normalized()
         );
-        assert!(!line.normalized.contains("<HTTP_STATUS_"));
+        assert!(!line.normalized().contains("<HTTP_STATUS_"));
         assert!(
             line.tokens
                 .iter()
@@ -2284,7 +2288,7 @@ mod tests {
         ] {
             let line = normalizer.normalize_line(text.into()).unwrap();
             assert_eq!(line.anchor, 0, "{text}");
-            assert!(!line.normalized.contains("<HTTP_STATUS_"), "{text}");
+            assert!(!line.normalized().contains("<HTTP_STATUS_"), "{text}");
         }
     }
 
@@ -2351,7 +2355,7 @@ mod tests {
         let login = line("GET ok url=https://shop.example/login?u=1 user=a1");
         let logout = line("GET ok url=https://shop.example/logout?u=1 user=a1");
         assert_eq!(
-            login.normalized,
+            login.normalized(),
             "GET ok url=https://<HOST>/login?<QUERY> user=a1"
         );
         assert_ne!(login.hash, logout.hash);
@@ -2364,20 +2368,23 @@ mod tests {
 
         let a = line(r#"x url="https://a.example/item/1001?ref=a" y"#);
         let b = line(r#"x url="https://b.example/item/1002?ref=b" y"#);
-        assert_eq!(a.normalized, r#"x url="https://<HOST>/item/<N>?<QUERY>" y"#);
-        assert_eq!(a.normalized, b.normalized);
+        assert_eq!(
+            a.normalized(),
+            r#"x url="https://<HOST>/item/<N>?<QUERY>" y"#
+        );
+        assert_eq!(a.normalized(), b.normalized());
         assert_eq!(a.hash, b.hash);
 
         let users = line("x path=/api/v1/users/42 y");
         let users2 = line("x path=/api/v1/users/43 y");
         let orders = line("x path=/api/v1/orders/42 y");
-        assert_eq!(users.normalized, "x path=/api/v<N>/users/<N> y");
+        assert_eq!(users.normalized(), "x path=/api/v<N>/users/<N> y");
         assert_eq!(users.hash, users2.hash);
         assert_ne!(users.hash, orders.hash);
 
         let listed = line("contact failed, url=http://10.0.0.7:8080/inform, rc=1");
         assert_eq!(
-            listed.normalized.split(", ").nth(1),
+            listed.normalized().split(", ").nth(1),
             Some("url=http://<HOST>/inform")
         );
 
@@ -2388,7 +2395,12 @@ mod tests {
     #[test]
     fn a_url_with_no_path_is_written_with_no_path() {
         let n = Normalizer::new(Config::default());
-        let line = |s: &str| n.normalize_line(s.to_string()).unwrap().normalized;
+        let line = |s: &str| {
+            n.normalize_line(s.to_string())
+                .unwrap()
+                .normalized()
+                .to_string()
+        };
 
         assert_eq!(
             line("sync --target-url=https://blob.example.test"),
@@ -2465,14 +2477,14 @@ mod tests {
         };
         let (failed, ok, created) = (line("500"), line("200"), line("201"));
         assert_ne!(failed.anchor, ok.anchor);
-        assert_ne!(failed.normalized, ok.normalized);
+        assert_ne!(failed.normalized(), ok.normalized());
         assert!(
-            failed.normalized.contains(r#""code":<STATUS_5XX>"#),
+            failed.normalized().contains(r#""code":<STATUS_5XX>"#),
             "{}",
-            failed.normalized
+            failed.normalized()
         );
         assert_eq!(ok.anchor, created.anchor, "one class, one anchor");
-        assert_eq!(ok.normalized, created.normalized);
+        assert_eq!(ok.normalized(), created.normalized());
         assert!(
             failed
                 .tokens
@@ -2537,10 +2549,10 @@ mod tests {
         );
         assert!(
             orbit
-                .normalized
+                .normalized()
                 .contains(r#""requestURI":"/apis/rbac.example.io/v<N>/clusterroles/<NAME>""#),
             "{}",
-            orbit.normalized
+            orbit.normalized()
         );
         assert_eq!(orbit.anchor, lantern.anchor);
         assert!(
@@ -2560,10 +2572,10 @@ mod tests {
         );
         assert!(
             orchard
-                .normalized
+                .normalized()
                 .contains("/namespaces/<NAME>/limitranges"),
             "{}",
-            orchard.normalized
+            orchard.normalized()
         );
         assert_eq!(orchard.anchor, tundra.anchor);
     }
@@ -2583,10 +2595,10 @@ mod tests {
         let other_lines_name = line("/clusterroles/lantern-editor", "orbit-reader");
         assert!(
             other_lines_name
-                .normalized
+                .normalized()
                 .contains("/clusterroles/lantern-editor"),
             "{}",
-            other_lines_name.normalized
+            other_lines_name.normalized()
         );
         assert_ne!(named.anchor, other_lines_name.anchor);
     }
@@ -2712,17 +2724,17 @@ mod tests {
         let line = normalizer
             .normalize_line(r#"exe="/usr/bin/sudo""#.to_string())
             .unwrap();
-        assert_eq!(line.normalized, r#"exe="/usr/bin/sudo""#);
+        assert_eq!(line.normalized(), r#"exe="/usr/bin/sudo""#);
 
         let line = normalizer
             .normalize_line("workerEnv.init() ok /var/log/app/42/status".to_string())
             .unwrap();
-        assert_eq!(line.normalized, "workerEnv.init() ok <PATH>");
+        assert_eq!(line.normalized(), "workerEnv.init() ok <PATH>");
 
         let line = normalizer
             .normalize_line("saw pod/x/y earlier".to_string())
             .unwrap();
-        assert_eq!(line.normalized, "saw <PATH> earlier");
+        assert_eq!(line.normalized(), "saw <PATH> earlier");
     }
 
     fn rendered_prefix(line: &str) -> String {
@@ -2779,7 +2791,13 @@ mod tests {
     #[test]
     fn the_kubectl_prefix_is_on_the_line() {
         let normalizer = Normalizer::new(Config::default());
-        let normalize = |s: &str| normalizer.normalize_line(s.to_string()).unwrap().normalized;
+        let normalize = |s: &str| {
+            normalizer
+                .normalize_line(s.to_string())
+                .unwrap()
+                .normalized()
+                .to_string()
+        };
 
         let first = normalize("[pod/llm-d-sim-67cb674c47-d6ms5/vllm-render] GET /health");
         let second = normalize("[pod/llm-d-sim-67cb674c47-f86lm/vllm-render] GET /health");
@@ -2805,13 +2823,14 @@ mod tests {
         let k8s = norm("[proxy] [upstream] probe failed for pod/web-0 on kubelet");
         assert!(
             plain
-                .normalized
+                .normalized()
                 .starts_with("<BRACKET_CONTEXT> probe failed")
         );
         assert!(
-            k8s.normalized.starts_with("<BRACKET_CONTEXT> probe failed"),
+            k8s.normalized()
+                .starts_with("<BRACKET_CONTEXT> probe failed"),
             "{}",
-            k8s.normalized
+            k8s.normalized()
         );
         let json = norm(
             r#"{"level":"info","ts":"2024-01-01T10:00:00.000Z","component":"kubelet","msg":"Starting container"}"#,
@@ -2838,7 +2857,7 @@ mod tests {
                 .iter()
                 .any(|t| matches!(t, Token::StructuredMessage { .. })),
             "non-k8s structured line must still match, got: {}",
-            line.normalized
+            line.normalized()
         );
     }
 
@@ -2851,7 +2870,7 @@ mod tests {
             .normalize_line("2025-01-20 10:15:30 Error occurred".to_string())
             .unwrap();
 
-        assert_eq!(line.normalized, "<TIMESTAMP> Error occurred");
+        assert_eq!(line.normalized(), "<TIMESTAMP> Error occurred");
         assert_eq!(line.tokens.len(), 1);
         assert!(matches!(line.tokens[0], Token::Timestamp(_)));
     }
@@ -2865,7 +2884,7 @@ mod tests {
             .normalize_line("Connection to 192.168.1.100:8080 failed".to_string())
             .unwrap();
 
-        assert_eq!(line.normalized, "Connection to <IP>:<PORT> failed");
+        assert_eq!(line.normalized(), "Connection to <IP>:<PORT> failed");
         assert_eq!(line.tokens.len(), 2);
     }
 
@@ -2925,7 +2944,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            line.normalized,
+            line.normalized(),
             "2025-01-20 10:15:30 Connection to <NUMBER>.<NUMBER>.1.<NUMBER> failed"
         );
     }
@@ -2939,7 +2958,7 @@ mod tests {
             .normalize_line("2025-01-20 10:15:30 Connection failed".to_string())
             .unwrap();
 
-        assert_eq!(line1.normalized, "<TIMESTAMP> Connection failed");
+        assert_eq!(line1.normalized(), "<TIMESTAMP> Connection failed");
         assert!(
             line1
                 .tokens
@@ -2952,14 +2971,14 @@ mod tests {
             .normalize_line("Connection to localhost:8080 failed".to_string())
             .unwrap();
 
-        assert_eq!(line2.normalized, "Connection to localhost:<PORT> failed");
+        assert_eq!(line2.normalized(), "Connection to localhost:<PORT> failed");
         assert!(line2.tokens.iter().any(|t| matches!(t, Token::Port(8080))));
 
         let line3 = normalizer
             .normalize_line("Connection to 192.168.1.1:3000 failed".to_string())
             .unwrap();
 
-        assert_eq!(line3.normalized, "Connection to <IP>:<PORT> failed");
+        assert_eq!(line3.normalized(), "Connection to <IP>:<PORT> failed");
         assert!(line3.tokens.iter().any(|t| matches!(t, Token::IPv4(_))));
         assert!(line3.tokens.iter().any(|t| matches!(t, Token::Port(3000))));
 
@@ -2967,7 +2986,7 @@ mod tests {
             .normalize_line("Connection to [2001:db8::1]:8080 failed".to_string())
             .unwrap();
 
-        assert_eq!(line4.normalized, "Connection to [<IP>]:<PORT> failed");
+        assert_eq!(line4.normalized(), "Connection to [<IP>]:<PORT> failed");
         assert!(line4.tokens.iter().any(|t| matches!(t, Token::IPv6(_))));
         assert!(line4.tokens.iter().any(|t| matches!(t, Token::Port(8080))));
     }
@@ -3409,14 +3428,14 @@ mod tests {
             },
             input,
         );
-        assert_eq!(json_on.normalized, "<EVENT_OBJECT>,Reason:Pulled}");
+        assert_eq!(json_on.normalized(), "<EVENT_OBJECT>,Reason:Pulled}");
         assert!(
             json_on
                 .tokens
                 .iter()
                 .any(|t| matches!(t, Token::EmbeddedJson(_)))
         );
-        assert_eq!(json_off.normalized, input);
+        assert_eq!(json_off.normalized(), input);
         assert!(
             !json_off
                 .tokens
@@ -3634,7 +3653,7 @@ mod tests {
             r#"127.0.0.1 - - [25/Dec/2023:10:15:30 +0000] "POST /api/login HTTP/1.1" 401 256"#;
         let on = run(|_| {}, input);
         let off = run(|c| c.normalize_http_status = false, input);
-        assert!(off.normalized.contains("<HTTP_STATUS_4XX>"));
+        assert!(off.normalized().contains("<HTTP_STATUS_4XX>"));
         assert!(
             on.tokens
                 .iter()
@@ -3823,8 +3842,8 @@ mod tests {
                         normalizer.are_similar(x, y),
                         expected,
                         "disagreement at threshold {threshold}: {:?} vs {:?}",
-                        x.normalized,
-                        y.normalized
+                        x.normalized(),
+                        y.normalized()
                     );
                 }
             }
@@ -4070,8 +4089,8 @@ mod tests {
         let yes = normalize(&format!("{header} success=yes exit=0"));
         let no = normalize(&format!("{header} success=no exit=-2"));
         assert_ne!(yes.anchor, no.anchor);
-        assert!(yes.normalized.contains("success=yes"));
-        assert!(no.normalized.contains("success=no"));
+        assert!(yes.normalized().contains("success=yes"));
+        assert!(no.normalized().contains("success=no"));
         let another = normalize(
             "type=SYSCALL msg=audit(1789430999.456:912): arch=c000003e syscall=42 success=yes exit=4",
         );
@@ -4111,12 +4130,12 @@ mod tests {
         let other = normalize(r#"{"msg":"worker --scope alpha -t 120"}"#);
         assert_eq!(first.anchor, second.anchor);
         assert_ne!(first.anchor, other.anchor);
-        assert!(first.normalized.contains("--mode"));
-        assert!(first.normalized.contains("-t"));
+        assert!(first.normalized().contains("--mode"));
+        assert!(first.normalized().contains("-t"));
         assert_eq!(normalize("event -sdown master example").anchor, 0);
         assert_eq!(normalize("event -namespace example").anchor, 0);
         let numeric_name = normalize("worker --http1234-port=4567");
-        assert!(numeric_name.normalized.contains("--http1234-port="));
+        assert!(numeric_name.normalized().contains("--http1234-port="));
     }
 
     #[test]
@@ -4124,13 +4143,13 @@ mod tests {
         let verbose = normalize(r#"{"spec":"{\"argv\":[\"agent\",\"--verbose\",\"--port\"]}"}"#);
         let quiet = normalize(r#"{"spec":"{\"argv\":[\"agent\",\"--quiet\",\"--port\"]}"}"#);
         assert!(
-            verbose.normalized.contains(r#"\"--verbose\""#),
+            verbose.normalized().contains(r#"\"--verbose\""#),
             "{}",
-            verbose.normalized
+            verbose.normalized()
         );
-        assert!(verbose.normalized.contains(r#"\"--port\""#));
-        assert!(!verbose.normalized.contains("<ESCAPED_JSON>"));
-        assert!(!verbose.normalized.contains('\0'));
+        assert!(verbose.normalized().contains(r#"\"--port\""#));
+        assert!(!verbose.normalized().contains("<ESCAPED_JSON>"));
+        assert!(!verbose.normalized().contains('\0'));
         assert_ne!(verbose.anchor, quiet.anchor);
         assert_eq!(
             AnchorRender::CliOption.sentinel(),
@@ -4202,7 +4221,8 @@ mod tests {
             r#"[2026-08-16 14:08:34 +0200] ::ffff - "GET /admin/ HTTP/1.1" 200 17450.949"#,
         );
         assert_ne!(
-            login.normalized, admin.normalized,
+            login.normalized(),
+            admin.normalized(),
             "an anchored route renders as its skeleton, so a split it forces is visible on the line"
         );
         assert_ne!(
@@ -4308,25 +4328,26 @@ mod anchor_tests_2026_08_29 {
             "another workload, same container name"
         );
         assert_ne!(first.anchor, fourth.anchor, "another container");
-        assert_eq!(first.normalized, second.normalized);
+        assert_eq!(first.normalized(), second.normalized());
         assert!(
             first
-                .normalized
+                .normalized()
                 .contains("[pod/llm-d-sim-<SUFFIX>/vllm-render]")
         );
-        assert_ne!(first.normalized, third.normalized);
-        assert_ne!(first.normalized, fourth.normalized);
+        assert_ne!(first.normalized(), third.normalized());
+        assert_ne!(first.normalized(), fourth.normalized());
         assert!(
-            !first.normalized.contains("<PATH>"),
+            !first.normalized().contains("<PATH>"),
             "no <PATH> in the kubectl prefix: {}",
-            first.normalized
+            first.normalized()
         );
         let ord0 = normalize("[pod/gitaly-0/gitaly] x");
         let ord1 = normalize("[pod/gitaly-1/gitaly] x");
         assert_eq!(ord0.anchor, ord1.anchor, "statefulset ordinals");
-        assert_eq!(ord0.normalized, ord1.normalized);
+        assert_eq!(ord0.normalized(), ord1.normalized());
         assert_eq!(
-            ord0.normalized, "[pod/gitaly-<SUFFIX>/gitaly] x",
+            ord0.normalized(),
+            "[pod/gitaly-<SUFFIX>/gitaly] x",
             "the ordinal strips"
         );
         let osd0 = normalize("[pod/rook-ceph-osd-0-56d5fdf8f8-ltzv5/osd] x");
@@ -4337,11 +4358,11 @@ mod anchor_tests_2026_08_29 {
             osd0.anchor, osd1.anchor,
             "the same daemon on another instance"
         );
-        assert_eq!(osd0.normalized, osd1.normalized);
+        assert_eq!(osd0.normalized(), osd1.normalized());
         assert_eq!(mon_bp.anchor, mon_cc.anchor, "instance letters");
-        assert_eq!(mon_bp.normalized, mon_cc.normalized);
+        assert_eq!(mon_bp.normalized(), mon_cc.normalized());
         assert_ne!(osd0.anchor, mon_bp.anchor, "osd is not mon");
-        assert_ne!(osd0.normalized, mon_bp.normalized);
+        assert_ne!(osd0.normalized(), mon_bp.normalized());
     }
 
     #[test]
@@ -4435,7 +4456,8 @@ mod key_value_gate_2026_08_29 {
         let normalized = Normalizer::new(Config::default())
             .normalize_line(line.to_string())
             .unwrap()
-            .normalized;
+            .normalized()
+            .to_string();
         assert!(!normalized.contains("<KEY_VALUE>"), "{normalized}");
     }
 }
@@ -4471,9 +4493,9 @@ mod program_anchor_2026_08_29 {
         );
         assert_ne!(runc.anchor, redis.anchor);
         assert!(
-            runc.normalized.contains(r#""exec_id":"<UUID>""#),
+            runc.normalized().contains(r#""exec_id":"<UUID>""#),
             "{}",
-            runc.normalized
+            runc.normalized()
         );
     }
 }
@@ -4494,12 +4516,12 @@ mod syslog_host_tests_2026_08_29 {
         let bare_tag = normalize("Aug 29 08:40:15 usw-core-2 kernel: link up");
         let facility_level = normalize("Aug 29 08:40:15 ap-hall-3 daemon.err syslogd: restart");
         assert_eq!(
-            bracket_pid.normalized,
+            bracket_pid.normalized(),
             "<TIMESTAMP> <HOST> dnsmasq[<PID>]: query[A] x"
         );
-        assert_eq!(bare_tag.normalized, "<TIMESTAMP> <HOST> kernel: link up");
+        assert_eq!(bare_tag.normalized(), "<TIMESTAMP> <HOST> kernel: link up");
         assert_eq!(
-            facility_level.normalized,
+            facility_level.normalized(),
             "<TIMESTAMP> <HOST> daemon.err syslogd: restart"
         );
         assert!(
@@ -4514,7 +4536,7 @@ mod syslog_host_tests_2026_08_29 {
     fn rfc5424_timestamp_hosts_fold_too() {
         let line = normalize("2026-08-29T08:40:15Z node7 sshd[1]: accepted");
         assert!(
-            line.normalized
+            line.normalized()
                 .starts_with("<TIMESTAMP> <HOST> sshd[<PID>]:")
         );
     }
@@ -4522,25 +4544,37 @@ mod syslog_host_tests_2026_08_29 {
     #[test]
     fn a_severity_word_in_the_host_slot_is_left_alone() {
         let line = normalize("Aug 29 08:40:15 INFO main: starting up");
-        assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
-        assert_eq!(line.normalized, "<TIMESTAMP> INFO main: starting up");
+        assert!(
+            !line.normalized().contains("<HOST>"),
+            "{}",
+            line.normalized()
+        );
+        assert_eq!(line.normalized(), "<TIMESTAMP> INFO main: starting up");
     }
 
     #[test]
     fn a_second_word_with_no_tag_is_left_alone() {
         let line = normalize("Aug 29 08:40:15 gw-core rebooted after power loss");
-        assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
+        assert!(
+            !line.normalized().contains("<HOST>"),
+            "{}",
+            line.normalized()
+        );
     }
 
     #[test]
     fn an_already_tokenised_host_is_left_as_is() {
         let line = normalize("Aug 29 08:40:15 gw-core.example.com kernel: link up");
         assert!(
-            !line.normalized.contains("<HOST>"),
+            !line.normalized().contains("<HOST>"),
             "an FQDN host stays <FQDN>: {}",
-            line.normalized
+            line.normalized()
         );
-        assert!(line.normalized.contains("<FQDN>"), "{}", line.normalized);
+        assert!(
+            line.normalized().contains("<FQDN>"),
+            "{}",
+            line.normalized()
+        );
     }
 }
 
@@ -4591,14 +4625,14 @@ mod e8v_normalize_2026_09_17 {
     fn a_lowercase_cpu_field_reaches_the_cpu_quantity_pass() {
         let line = normalize("resources cpu=500m memory=256Mi");
         assert!(
-            line.normalized.contains("<CPU_QUANTITY>"),
+            line.normalized().contains("<CPU_QUANTITY>"),
             "{}",
-            line.normalized
+            line.normalized()
         );
         assert!(
-            !line.normalized.contains("cpu=<KEY_VALUE>"),
+            !line.normalized().contains("cpu=<KEY_VALUE>"),
             "{}",
-            line.normalized
+            line.normalized()
         );
     }
 
@@ -4657,7 +4691,11 @@ mod e8v_normalize_2026_09_17 {
     #[test]
     fn a_kernel_uptime_line_has_no_syslog_host() {
         let line = normalize("[    5.450000] usb usb1: New USB bus registered");
-        assert!(!line.normalized.contains("<HOST>"), "{}", line.normalized);
+        assert!(
+            !line.normalized().contains("<HOST>"),
+            "{}",
+            line.normalized()
+        );
     }
 
     #[test]
@@ -4675,9 +4713,9 @@ mod e8v_normalize_2026_09_17 {
                 l.tokens
             );
             assert!(
-                !l.normalized.contains("<LOG_WITH_MODULE>"),
+                !l.normalized().contains("<LOG_WITH_MODULE>"),
                 "{line}: {}",
-                l.normalized
+                l.normalized()
             );
         }
     }
@@ -4691,16 +4729,28 @@ mod e8v_normalize_2026_09_17 {
     #[test]
     fn a_leading_dot_with_a_colon_does_not_panic_the_pci_prefilter() {
         let line = normalize(".5 a:b done");
-        assert!(!line.normalized.is_empty());
+        assert!(!line.normalized().is_empty());
     }
 
     #[test]
     fn a_facility_level_word_is_not_a_host_but_lookalikes_are() {
         let shape = normalize("Aug 29 08:40:15 daemon.info syslogd: started");
-        assert!(!shape.normalized.contains("<HOST>"), "{}", shape.normalized);
-        assert!(!shape.normalized.contains("<FQDN>"), "{}", shape.normalized);
+        assert!(
+            !shape.normalized().contains("<HOST>"),
+            "{}",
+            shape.normalized()
+        );
+        assert!(
+            !shape.normalized().contains("<FQDN>"),
+            "{}",
+            shape.normalized()
+        );
         let bare = normalize("Aug 29 08:40:15 daemon. syslogd: started");
-        assert!(bare.normalized.contains("<HOST>"), "{}", bare.normalized);
+        assert!(
+            bare.normalized().contains("<HOST>"),
+            "{}",
+            bare.normalized()
+        );
 
         assert!(is_facility_level_shape("daemon.info"));
         assert!(is_facility_level_shape("authpriv.notice"));
@@ -4719,9 +4769,17 @@ mod e8v_normalize_2026_09_17 {
     #[test]
     fn a_colon_word_is_not_a_host_and_a_trailing_bracket_does_not_disqualify() {
         let colon = normalize("Aug 29 08:40:15 gw:1 kernel: link up");
-        assert!(!colon.normalized.contains("<HOST>"), "{}", colon.normalized);
+        assert!(
+            !colon.normalized().contains("<HOST>"),
+            "{}",
+            colon.normalized()
+        );
         let angle = normalize("Aug 29 08:40:15 gw> kernel: link up");
-        assert!(angle.normalized.contains("<HOST>"), "{}", angle.normalized);
+        assert!(
+            angle.normalized().contains("<HOST>"),
+            "{}",
+            angle.normalized()
+        );
     }
 
     #[test]
@@ -4734,8 +4792,12 @@ mod e8v_normalize_2026_09_17 {
     #[test]
     fn a_lowercase_method_field_alone_reaches_the_method_anchor() {
         let line = normalize(r#"method=GET path="/api/v1/items" status=200"#);
-        assert!(!line.normalized.contains("<PATH>"), "{}", line.normalized);
-        assert!(line.normalized.contains("/api/"), "{}", line.normalized);
+        assert!(
+            !line.normalized().contains("<PATH>"),
+            "{}",
+            line.normalized()
+        );
+        assert!(line.normalized().contains("/api/"), "{}", line.normalized());
     }
 
     #[test]
@@ -4759,7 +4821,8 @@ mod e8v_normalize_2026_09_17 {
             order.insert(to, moved);
             n.normalize_in_order(line.to_string(), order.into_iter())
                 .unwrap()
-                .normalized
+                .normalized()
+                .to_string()
         };
         (run(at + 1), run(at))
     }
@@ -4801,7 +4864,8 @@ mod e8v_normalize_2026_09_17 {
         let run = |line: &str, order: &[&DetectorEntry]| {
             n.normalize_in_order(line.to_string(), order.iter().copied())
                 .unwrap()
-                .normalized
+                .normalized()
+                .to_string()
         };
         let table: Vec<&DetectorEntry> = DETECTOR_ORDER.iter().collect();
         let mut undeclared = Vec::new();
@@ -5013,7 +5077,11 @@ mod e8v_normalize_2026_09_17 {
         let mut shapes: std::collections::BTreeMap<String, (usize, usize, String)> =
             std::collections::BTreeMap::new();
         for (at, line) in lines.iter().enumerate() {
-            let normalized = n.normalize_line(line.clone()).unwrap().normalized;
+            let normalized = n
+                .normalize_line(line.clone())
+                .unwrap()
+                .normalized()
+                .to_string();
             let Some(shape) = misreading(line, &normalized) else {
                 continue;
             };
@@ -5296,7 +5364,7 @@ mod e8v_multiset_2026_09_18 {
     fn cpu_quantities_are_recognized_before_a_path_consumes_the_cpu_label() {
         let n = Normalizer::new(Config::default());
         let line = n.normalize_line("/sys/fs/cgroup/cpu 500m".into()).unwrap();
-        assert_eq!(line.normalized, "<PATH> <CPU_QUANTITY>");
+        assert_eq!(line.normalized(), "<PATH> <CPU_QUANTITY>");
         assert!(
             line.tokens
                 .iter()

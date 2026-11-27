@@ -375,7 +375,7 @@ fn main() -> Result<()> {
         if ingest_report.fail_pattern_matched {
             output::record_failure();
         }
-        folder.finish_summary(
+        let reader = folder.finish_summary(
             &SummaryRequest {
                 top_n: config.top_n,
                 fit_budget,
@@ -386,6 +386,9 @@ fn main() -> Result<()> {
             &mut io::stdout().lock(),
             &mut io::stderr(),
         )?;
+        if reader == output::Reader::Closed {
+            output::exit_closed_pipe_keeping_failure();
+        }
         if config.stats_json {
             folder.print_stats_json(start_time.elapsed(), &mut io::stderr().lock())?;
         }
@@ -489,7 +492,9 @@ fn main() -> Result<()> {
 
     if config.output_format == OutputFormat::Markdown {
         let entries = folder.finish_markdown()?;
-        folder.emit_markdown(&entries, &mut io::stdout())?;
+        if folder.emit_markdown(&entries, &mut io::stdout())? == output::Reader::Closed {
+            output::exit_closed_pipe_keeping_failure();
+        }
         if pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }

@@ -1627,7 +1627,7 @@ fn explain_records_the_nearest_group_and_the_first_differing_token() {
         "the same shape up to the unit: the lines differ first at the unit"
     );
     assert_eq!(diff.theirs, "ms");
-    assert_eq!(&founded.first().normalized[diff.at..diff.at + 3], "sec");
+    assert_eq!(&founded.first().normalized()[diff.at..diff.at + 3], "sec");
 }
 
 #[test]
@@ -1704,7 +1704,7 @@ fn explain_first_diff_reports_a_surplus_token_when_one_line_is_a_prefix() {
         .unwrap();
     assert_eq!(diff.ours, "retrying");
     assert_eq!(diff.theirs, "");
-    let normalized = &f.buffer.last().unwrap().first().normalized;
+    let normalized = &f.buffer.last().unwrap().first().normalized();
     assert_eq!(&normalized[diff.at..], "retrying");
 }
 
@@ -1742,7 +1742,7 @@ fn compact_json_lines_differing_in_one_field_value_fold_into_one_group() {
          whatever the length of the value: {:?}",
         f.buffer
             .iter()
-            .map(|g| g.first().normalized.clone())
+            .map(|g| g.first().normalized().to_string())
             .collect::<Vec<_>>()
     );
 }
@@ -2571,7 +2571,7 @@ fn a_masked_line_is_normalized_after_masking() {
         let seen = format!(
             "{} | {} | {} | {nearest:?}",
             f.buffer[0].template(),
-            line.normalized,
+            line.normalized(),
             line.original
         );
         f.process_line(&second).unwrap();
@@ -3718,18 +3718,21 @@ fn finish_summary_accounts_only_the_rows_a_fit_budget_shows() {
             i + 1,
         ));
     }
-    f.finish_summary(
-        &SummaryRequest {
-            top_n: None,
-            fit_budget: Some(3),
-            max_width: None,
-        },
-        &IngestReport::default(),
-        0,
-        &mut Vec::new(),
-        &mut Vec::new(),
-    )
-    .unwrap();
+    assert_eq!(
+        f.finish_summary(
+            &SummaryRequest {
+                top_n: None,
+                fit_budget: Some(3),
+                max_width: None,
+            },
+            &IngestReport::default(),
+            0,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap(),
+        crate::output::Reader::Open
+    );
     assert_eq!(
         f.stats.output_lines, 2,
         "a fit budget of 3 over 10 patterns prints budget - 1 rows"
@@ -3737,11 +3740,44 @@ fn finish_summary_accounts_only_the_rows_a_fit_budget_shows() {
 }
 
 #[test]
+fn finish_summary_declares_the_patterns_a_fit_budget_leaves_out() {
+    let mut f = make_folder();
+    f.stats.total_lines = 100;
+    for i in 0..10 {
+        f.buffer.push(PatternGroup::new(
+            make_line(&format!("pattern {i}"), vec![]),
+            i + 1,
+        ));
+    }
+    let mut out = Vec::new();
+    assert_eq!(
+        f.finish_summary(
+            &SummaryRequest {
+                top_n: None,
+                fit_budget: Some(3),
+                max_width: None,
+            },
+            &IngestReport::default(),
+            0,
+            &mut out,
+            &mut Vec::new(),
+        )
+        .unwrap(),
+        crate::output::Reader::Open
+    );
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        out.contains("more patterns (remove --fit for full output)"),
+        "{out}"
+    );
+}
+
+#[test]
 fn finish_top_n_flushes_batch_buffer() {
     let mut f = make_folder();
     f.stats.total_lines = 5;
-    f.batch_buffer.push("error one".to_string());
-    f.batch_buffer.push("error two".to_string());
+    f.batch_buffer.push(("error one".to_string(), None));
+    f.batch_buffer.push(("error two".to_string(), None));
     let TopGroups {
         shown: output,
         total_groups: total,
@@ -4257,9 +4293,9 @@ fn finish_summary_flushes_batch_buffer() {
     let mut f = make_folder();
     f.stats.total_lines = 5;
     f.batch_buffer
-        .push("2024-01-01 ERROR one 10.0.0.1".to_string());
+        .push(("2024-01-01 ERROR one 10.0.0.1".to_string(), None));
     f.batch_buffer
-        .push("2024-01-01 ERROR two 10.0.0.2".to_string());
+        .push(("2024-01-01 ERROR two 10.0.0.2".to_string(), None));
     assert!(!f.batch_buffer.is_empty());
     let result = f.finish_summary(
         &SummaryRequest {
@@ -4527,7 +4563,10 @@ fn markdown_document_masks_pii_and_shares_fold_metrics() {
         "markdown mode returns the entries the document is built from"
     );
     let mut buf = Vec::new();
-    f.emit_markdown(&entries, &mut buf).unwrap();
+    assert_eq!(
+        f.emit_markdown(&entries, &mut buf).unwrap(),
+        crate::output::Reader::Open
+    );
     let doc = String::from_utf8(buf).unwrap();
     assert!(!doc.contains("example.com"), "raw email in markdown: {doc}");
     let stats = f.get_stats();
@@ -4882,6 +4921,15 @@ fn a_kept_prefix_widens_for_a_member_that_lacks_it() {
     );
     let r = f.rollup_computer.compute(&f.buffer[0]);
     assert_eq!(r[VARIES].samples, vec!["10:30:01", "10:31:02", "11:08:43"]);
+}
+
+#[test]
+fn kept_suffix_ends_on_a_char_boundary() {
+    assert_eq!(
+        kept_affixes("v=\"", ",é\"", "v=\"blue,©\""),
+        (3, 1),
+        "`é` and `©` share their last byte; the kept suffix must not split them"
+    );
 }
 
 #[test]
@@ -5589,7 +5637,60 @@ fn absorb_uses_position_to_break_equal_source_line_numbers() {
     let mut second = second;
     second.template = first.template.clone();
     first.absorb(second);
-    assert_eq!(first.last().normalized, "svc beta");
+    assert_eq!(first.last().normalized(), "svc beta");
+}
+
+#[test]
+fn absorb_keeps_the_founder_when_a_guest_has_lower_line_numbers_from_another_source() {
+    let mut host = PatternGroup::new_at(
+        make_line("svc alpha", vec![]),
+        0,
+        LineLocation::new(SourceId(1), 50),
+    );
+    let mut guest = PatternGroup::new_at(
+        make_line("svc beta", vec![]),
+        1,
+        LineLocation::new(SourceId(2), 1),
+    );
+    guest.template = "svc <VARIES>".into();
+    guest.add_line_at(
+        make_line("svc gamma", vec![]),
+        LineLocation::new(SourceId(2), 2),
+        2,
+        &[],
+    );
+    host.template = guest.template.clone();
+    host.absorb(guest);
+    assert_eq!(host.first().normalized(), "svc alpha");
+    assert_eq!(host.last().normalized(), "svc gamma");
+    assert_eq!((host.last_source_id, host.last_line_no), (SourceId(2), 2));
+}
+
+#[test]
+fn a_located_line_after_an_unlocated_one_keeps_its_own_location() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(2),
+        ..Config::default()
+    });
+    f.process_line("alpha unlocated event").unwrap();
+    f.process_line_at("zeta located record here", Some(SourceId(1)), 7)
+        .unwrap();
+    f.process_batch().unwrap();
+    let located = f
+        .buffer
+        .iter()
+        .find(|g| g.first().normalized().starts_with("zeta"))
+        .expect("the located line founds its own group");
+    assert_eq!(
+        (located.first_source_id, located.first_line_no),
+        (SourceId(1), 7)
+    );
+    let unlocated = f
+        .buffer
+        .iter()
+        .find(|g| g.first().normalized().starts_with("alpha"))
+        .expect("the unlocated line founds its own group");
+    assert_eq!(unlocated.first_source_id, SourceId::STDIN);
 }
 
 fn summary_json(f: &PatternFolder) -> serde_json::Value {
@@ -5807,7 +5908,10 @@ fn an_unfolded_markdown_entry_with_a_plus_is_not_marked_folded() {
     f.process_line("sum a+b done").unwrap();
     let entries = f.finish_markdown().unwrap();
     let mut buf = Vec::new();
-    f.emit_markdown(&entries, &mut buf).unwrap();
+    assert_eq!(
+        f.emit_markdown(&entries, &mut buf).unwrap(),
+        crate::output::Reader::Open
+    );
     let doc = String::from_utf8(buf).unwrap();
     assert!(doc.contains("```\nsum a+b done\n```"), "{doc}");
     assert!(!doc.contains("(Folded)"), "{doc}");
@@ -7516,7 +7620,7 @@ fn a_line_whose_extra_word_cannot_open_a_slot_founds_its_own_group() {
     }
     assert_eq!(f.buffer.len(), 2);
     assert_eq!(f.buffer[0].count(), 2);
-    assert_eq!(f.buffer[0].template(), f.buffer[0].first().normalized);
+    assert_eq!(f.buffer[0].template(), f.buffer[0].first().normalized());
 }
 
 #[test]
@@ -7602,19 +7706,22 @@ fn a_summary_run_saves_what_top_n_and_the_default_run_save() {
     top.finish_top_n(TOP_SHOWS_EVERY_GROUP, None, false)
         .unwrap();
     let mut summary = fed();
-    summary
-        .finish_summary(
-            &SummaryRequest {
-                top_n: None,
-                fit_budget: None,
-                max_width: None,
-            },
-            &IngestReport::default(),
-            0,
-            &mut Vec::new(),
-            &mut Vec::new(),
-        )
-        .unwrap();
+    assert_eq!(
+        summary
+            .finish_summary(
+                &SummaryRequest {
+                    top_n: None,
+                    fit_budget: None,
+                    max_width: None,
+                },
+                &IngestReport::default(),
+                0,
+                &mut Vec::new(),
+                &mut Vec::new(),
+            )
+            .unwrap(),
+        crate::output::Reader::Open
+    );
     assert_eq!(
         saved(&summary),
         saved(&default_run),
@@ -7638,18 +7745,21 @@ fn the_summary_coverage_counts_records_read_before_the_ingest_report_adds_contin
         ..IngestReport::default()
     };
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    f.finish_summary(
-        &SummaryRequest {
-            top_n: Some(TOP_SHOWS_EVERY_GROUP),
-            fit_budget: None,
-            max_width: None,
-        },
-        &report,
-        0,
-        &mut out,
-        &mut err,
-    )
-    .unwrap();
+    assert_eq!(
+        f.finish_summary(
+            &SummaryRequest {
+                top_n: Some(TOP_SHOWS_EVERY_GROUP),
+                fit_budget: None,
+                max_width: None,
+            },
+            &report,
+            0,
+            &mut out,
+            &mut err,
+        )
+        .unwrap(),
+        crate::output::Reader::Open
+    );
     let err = String::from_utf8(err).unwrap();
     assert!(
         err.contains("4 of 4 lines"),
@@ -7688,7 +7798,10 @@ fn a_markdown_entry_is_marked_folded_exactly_when_its_group_collapsed() {
     f.process_line("a+b is similar to c").unwrap();
     let entries = f.finish_markdown().unwrap();
     let mut buf = Vec::new();
-    f.emit_markdown(&entries, &mut buf).unwrap();
+    assert_eq!(
+        f.emit_markdown(&entries, &mut buf).unwrap(),
+        crate::output::Reader::Open
+    );
     let doc = String::from_utf8(buf).unwrap();
     assert!(doc.contains("### Entry 1 (Folded)"), "{doc}");
     assert!(
@@ -8640,7 +8753,7 @@ fn a_line_whose_separators_differ_founds_its_own_group() {
     let f = fold_texts(&["[cfg] {", "[cfg]     },", "[cfg] }"]);
     assert_eq!(f.buffer.len(), 3);
     for group in &f.buffer {
-        assert_eq!(group.template(), group.first().normalized);
+        assert_eq!(group.template(), group.first().normalized());
     }
 }
 
@@ -8747,4 +8860,77 @@ fn a_group_founded_by_a_refused_line_is_never_absorbed_or_absorbing() {
     );
     assert_eq!(covering(false, true), None);
     assert_eq!(covering(true, false), None);
+}
+
+#[test]
+fn a_guest_that_reads_through_the_slots_but_differs_from_the_host_founder_in_two_words_is_not_covered()
+ {
+    let group = |founder: &str, template: &str| {
+        let mut g = PatternGroup::new(make_line(founder, vec![]), 0);
+        g.template = template.to_string();
+        g.slot_units = Some(unit_spans(template));
+        g
+    };
+    let mut f = make_folder();
+    f.buffer.push(group(
+        r#"job "alpha" ended now 5"#,
+        "job <VARIES> done in 5",
+    ));
+    f.buffer
+        .push(group(r#"job "beta" done in 5"#, r#"job "beta" done in 5"#));
+    let guest = f.buffer[1].first();
+    assert!(f.buffer[0].joins_through_slots(guest, &mut None, f.config.threshold));
+    assert!(!within_plain_word_allowance(
+        guest.normalized(),
+        f.buffer[0].first().normalized()
+    ));
+    assert_eq!(f.template_covering(0, 1), None);
+}
+
+struct ReaderGoneAway;
+
+impl std::io::Write for ReaderGoneAway {
+    fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_closed_reader_is_returned_to_the_library_caller_not_turned_into_an_exit() {
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        ..Config::default()
+    });
+    f.process_line("hello world").unwrap();
+    let request = SummaryRequest {
+        top_n: None,
+        fit_budget: None,
+        max_width: None,
+    };
+    assert_eq!(
+        f.finish_summary(
+            &request,
+            &IngestReport::default(),
+            0,
+            &mut ReaderGoneAway,
+            &mut Vec::new(),
+        )
+        .unwrap(),
+        crate::output::Reader::Closed
+    );
+
+    let mut f = PatternFolder::new(Config {
+        thread_count: Some(1),
+        output_format: OutputFormat::Markdown,
+        ..Config::default()
+    });
+    f.process_line("hello world").unwrap();
+    let entries = f.finish_markdown().unwrap();
+    assert_eq!(
+        f.emit_markdown(&entries, &mut ReaderGoneAway).unwrap(),
+        crate::output::Reader::Closed
+    );
 }

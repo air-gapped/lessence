@@ -17,9 +17,9 @@ fn test_pattern_detection_unchanged() {
     for (input, expected_token) in test_cases {
         let result = normalizer.normalize_line(input.to_string()).unwrap();
         assert!(
-            result.normalized.contains(expected_token),
+            result.normalized().contains(expected_token),
             "Pattern detection failed for '{input}': expected '{expected_token}' in '{}'",
-            result.normalized
+            result.normalized()
         );
     }
 }
