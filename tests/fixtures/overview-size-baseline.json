@@ -230,15 +230,15 @@
     },
     "k8s_cilium_operator": {
       "corpus_sha256": "f2c803c57dc2979d0ef37207bcf2862954e6c87c9ef68a97b4bd8350f2b066c1",
-      "omitted": 318,
-      "previewed": 5,
-      "printed": 31,
+      "omitted": 320,
+      "previewed": 4,
+      "printed": 30,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15542,
-      "stdout_tokens": 5253,
-      "total": 349
+      "stdout_bytes": 15301,
+      "stdout_tokens": 5149,
+      "total": 350
     },
     "k8s_cloudflared": {
       "corpus_sha256": "c533b9523ba78354d60b663e29446b467c85ee36ec02426021384bd85d10e215",
@@ -260,8 +260,8 @@
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15354,
-      "stdout_tokens": 4727,
+      "stdout_bytes": 15554,
+      "stdout_tokens": 4784,
       "total": 113
     },
     "k8s_coredns": {
@@ -578,15 +578,15 @@
     },
     "kubelet": {
       "corpus_sha256": "a1a80e55bb0329d9150cbe6bcd284b66f7c5b4fac717585edb7b971b5f7eea8b",
-      "omitted": 354,
+      "omitted": 358,
       "previewed": 6,
-      "printed": 11,
+      "printed": 10,
       "selected": 40,
       "stderr_bytes": 0,
       "stderr_tokens": 0,
-      "stdout_bytes": 15587,
-      "stdout_tokens": 5517,
-      "total": 365
+      "stdout_bytes": 15728,
+      "stdout_tokens": 5540,
+      "total": 368
     },
     "linux_auditd": {
       "corpus_sha256": "92a711817bb198f7c5c8a316e09ffdb1264330991a60cf08e767a07ef62d9093",

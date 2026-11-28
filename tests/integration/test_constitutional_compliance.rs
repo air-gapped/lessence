@@ -151,6 +151,10 @@ fn kubelet_fold_matches_golden_and_every_near_miss_shape_names_its_bead() {
             "distinct container named in a quoted error sentence, by design (lessence-t8q)",
         ),
         (
+            "\\\"<NAME>\\\"",
+            "distinct action named in an escaped error payload, by design (lessence-8bfp)",
+        ),
+        (
             "\"<W>",
             "another sentence opens, verb and cause differ, by design (lessence-a8t)",
         ),

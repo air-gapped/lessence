@@ -189,8 +189,16 @@ const NESTED_CASCADE_PATHS_BEFORE_NETWORK_UUIDS_BEFORE_HASHES: [NestedPass; 8] =
 
 fn is_escaped_blob(quoted_content: &str) -> bool {
     let no_words = !quoted_content.contains(char::is_whitespace);
-    let opens_a_structure_with_escaped_quotes =
-        quoted_content.trim_start().starts_with(['{', '[']) && quoted_content.contains("\\\"");
+    let opens_a_structure_with_escaped_quotes = quoted_content
+        .trim_start()
+        .strip_prefix(['{', '['])
+        .is_some_and(|inner| {
+            let inner = inner.trim_start();
+            inner.starts_with("\\\"")
+                || inner.starts_with(['{', '[', ']', '}'])
+                || inner.starts_with(|c: char| c.is_ascii_digit())
+        })
+        && quoted_content.contains("\\\"");
     (no_words || opens_a_structure_with_escaped_quotes)
         && quoted_content.contains('\\')
         && (quoted_content.contains(':')
@@ -826,6 +834,38 @@ mod json_key_veto_edges {
         assert!(out.starts_with(r#""abc123xyz" :"#), "{out}");
         let (plain, _) = QuotedStringDetector::detect_and_replace(r#"saw "abc123xyz" today"#);
         assert!(!plain.contains("abc123xyz"), "{plain}");
+    }
+
+    #[test]
+    fn an_escaped_prose_payload_keeps_its_words() {
+        let start = r#"err="failed to \"StartContainer\" for \"web\" with CrashLoopBackOff: \"back-off 5m0s\"""#;
+        let kill = r#"err="[failed to \"KillContainer\" for \"web\" with KillContainerError: \"rpc error\"]""#;
+        let (s, _) = QuotedStringDetector::detect_and_replace(start);
+        let (k, _) = QuotedStringDetector::detect_and_replace(kill);
+        assert!(!s.contains("<ESCAPED_JSON>"), "{s}");
+        assert!(!k.contains("<ESCAPED_JSON>"), "{k}");
+        assert!(s.contains("CrashLoopBackOff"), "{s}");
+        assert!(k.contains("KillContainerError"), "{k}");
+        assert_ne!(s, k);
+    }
+
+    #[test]
+    fn a_wordless_escaped_payload_is_opaque_without_a_bracket() {
+        let (r, _) = QuotedStringDetector::detect_and_replace(r#"x "id\:7\:north" y"#);
+        assert_eq!(r, "x <ESCAPED_JSON> y");
+    }
+
+    #[test]
+    fn an_escaped_json_array_or_object_stays_opaque() {
+        for blob in [
+            r#"x "[{\"a\":1}]" y"#,
+            r#"x "[\"a\",\"b c\"]" y"#,
+            r#"x "{ \"k\": \"v w\"}" y"#,
+            r#"x "[1, \"a b\"]" y"#,
+        ] {
+            let (r, _) = QuotedStringDetector::detect_and_replace(blob);
+            assert_eq!(r, "x <ESCAPED_JSON> y", "{blob}");
+        }
     }
 
     #[test]
