@@ -41,13 +41,18 @@ static DEVICE_TREE_NODE_ADDR: LazyLock<Regex> =
 static SHORT_HEX_RUN: LazyLock<Regex> =
     LazyLock::new(|| hex_run(format!("{MIN_SHORT_HASH_LEN},{MAX_SHORT_HASH_LEN}")));
 
-static SSH_MD5_FINGERPRINT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\b(?:[a-fA-F0-9]{2}:){15}[a-fA-F0-9]{2}\b").unwrap());
+static SSH_MD5_FINGERPRINT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(?P<pair_before>[a-fA-F0-9]{2}:)?(?:[a-fA-F0-9]{2}:){15}[a-fA-F0-9]{2}\b(?P<pair_after>:[a-fA-F0-9]{2})?",
+    )
+    .unwrap()
+});
 
 const SSH_SHA256_LABEL: &str = "SHA256:";
 
-static SSH_SHA256_FINGERPRINT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\bSHA256:(?P<digest>[A-Za-z0-9+/]{43}=?)").unwrap());
+static SSH_SHA256_FINGERPRINT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\bSHA256:(?P<digest>[A-Za-z0-9+/]{43}=?)(?P<longer>[A-Za-z0-9+/=]?)").unwrap()
+});
 
 pub struct HashDetector;
 
@@ -112,10 +117,12 @@ impl HashDetector {
         let mut tokens = Vec::new();
 
         super::fold_matches(&mut result, &mut tokens, &SSH_SHA256_FINGERPRINT, |caps| {
-            Some((
-                Token::Hash(HashType::SHA256, caps["digest"].to_string()),
-                format!("{SSH_SHA256_LABEL}<HASH>"),
-            ))
+            caps["longer"].is_empty().then(|| {
+                (
+                    Token::Hash(HashType::SHA256, caps["digest"].to_string()),
+                    format!("{SSH_SHA256_LABEL}<HASH>"),
+                )
+            })
         });
 
         let ssh_md5 = (&*SSH_MD5_FINGERPRINT, HashType::MD5);
@@ -125,7 +132,9 @@ impl HashDetector {
         for (regex, hash_type) in std::iter::once(ssh_md5).chain(fixed_widths) {
             super::fold_matches(&mut result, &mut tokens, regex, |caps| {
                 let m = &caps[0];
-                (!Self::is_number(m)).then(|| {
+                let longer_chain =
+                    caps.name("pair_before").is_some() || caps.name("pair_after").is_some();
+                (!longer_chain && !Self::is_number(m)).then(|| {
                     (
                         Token::Hash(hash_type.clone(), m.to_string()),
                         "<HASH>".to_string(),
@@ -176,6 +185,34 @@ mod tests {
             "ssh2: ED25519 SHA256:Zm9vYmFyYmF6cXV4Zm9vYmFyYmF6cXV4Zm9vYmFyYmE",
         );
         assert_eq!(r, "ssh2: ED25519 SHA256:<HASH>");
+    }
+
+    #[test]
+    fn a_fingerprint_folds_only_when_it_is_the_whole_value() {
+        let digest_43 = &"Ab3/".repeat(11)[..43];
+        let sha_long = format!("key SHA256:{digest_43}XYZ");
+        let (r, tokens) = HashDetector::detect_and_replace(&sha_long);
+        assert!(!r.contains("SHA256:<HASH>"), "{r}");
+        assert!(
+            !tokens
+                .iter()
+                .any(|t| matches!(t, Token::Hash(HashType::SHA256, _)))
+        );
+        let (r, _) = HashDetector::detect_and_replace(&format!("key SHA256:{digest_43}= ok"));
+        assert_eq!(r, "key SHA256:<HASH> ok");
+        let sixteen = "aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99";
+        let (r, _) = HashDetector::detect_and_replace(&format!("key {sixteen} ok"));
+        assert_eq!(r, "key <HASH> ok");
+        for chain in [format!("{sixteen}:ab"), format!("ab:{sixteen}")] {
+            let (r, tokens) = HashDetector::detect_and_replace(&format!("key {chain} ok"));
+            assert!(!r.contains("<HASH>:") && !r.contains(":<HASH>"), "{r}");
+            assert!(
+                !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Hash(HashType::MD5, _))),
+                "{r}"
+            );
+        }
     }
 
     #[test]

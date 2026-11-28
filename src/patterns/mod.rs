@@ -502,7 +502,7 @@ pub(crate) fn is_source_file_name(name: &str) -> bool {
 
 pub(crate) static EVENT_OBJECT_META: std::sync::LazyLock<regex::Regex> =
     std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"&Event\{ObjectMeta:\{[^}]*\}")
+        regex::Regex::new(r"&Event\{ObjectMeta:\{(?:[^{}]|\{[^{}]*\})*\}")
             .expect("Failed to compile event object regex")
     });
 

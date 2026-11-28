@@ -4,16 +4,15 @@ pub struct JsonDetector;
 
 impl JsonDetector {
     pub fn detect_and_replace(text: &str) -> (String, Vec<Token>) {
-        let mut result = text.to_string();
         let mut tokens = Vec::new();
 
-        result = super::EVENT_OBJECT_META
-            .replace_all(&result, |caps: &regex::Captures| {
+        let result = super::EVENT_OBJECT_META
+            .replace_all(text, |caps: &regex::Captures| {
                 let event = caps.get(0).unwrap().as_str();
                 tokens.push(Token::EmbeddedJson(event.to_string()));
-                "<EVENT_OBJECT>".to_string()
+                "<EVENT_OBJECT>"
             })
-            .to_string();
+            .into_owned();
 
         (result, tokens)
     }
@@ -47,6 +46,14 @@ mod tests {
             "the reason and everything after the metadata block stay"
         );
         assert_eq!(tokens.len(), 1);
+    }
+
+    #[test]
+    fn an_event_object_with_a_nested_annotation_folds_its_whole_metadata_block() {
+        let (result, _) = JsonDetector::detect_and_replace(
+            r#"&Event{ObjectMeta:{web-a default map[example.test/config:{"ready":true}]},Reason:Pulled}"#,
+        );
+        assert_eq!(result, "<EVENT_OBJECT>,Reason:Pulled}");
     }
 
     #[test]

@@ -76,18 +76,19 @@ impl BracketContextDetector {
     }
 
     fn apply_single_bracket_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = SINGLE_BRACKET_REGEX
-            .replace_all(text, |caps: &regex::Captures| {
-                let context = caps.get(1).unwrap().as_str();
+        let replaced = SINGLE_BRACKET_REGEX.replace_all(text, |caps: &regex::Captures| {
+            let context = caps.get(1).unwrap().as_str();
 
-                if Self::is_logging_context(context) {
-                    tokens.push(Token::BracketContext(vec![context.to_lowercase()]));
-                    "<BRACKET_CONTEXT>".to_string()
-                } else {
-                    caps.get(0).unwrap().as_str().to_string()
-                }
-            })
-            .to_string();
+            if Self::is_logging_context(context) {
+                tokens.push(Token::BracketContext(vec![context.to_lowercase()]));
+                "<BRACKET_CONTEXT>".to_string()
+            } else {
+                caps.get(0).unwrap().as_str().to_string()
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = replaced {
+            *text = s;
+        }
     }
 
     fn is_level(context: &str) -> bool {

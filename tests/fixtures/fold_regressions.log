@@ -5296,3 +5296,9 @@ time="2026-03-01T10:00:00Z" level=warning msg="Could not locate vk/b.json: vk/b.
 sync --target-url=https://blob-a.example.test done
 sync --target-url=https://blob-b.example.test done
 sync --target-url=https://blob-c.example.test done
+
+##CASE lessence-f1vp template_absent=<K8S_NAME> holds-on-base
+##WHY a name value holding markup is not a Kubernetes name; only a placeholder token may bring angle brackets into one
+##FROM invented blocked-request lines
+[03/Feb/2026:08:14:02 +0000] 10.20.30.41 GET "/user.php?name=<em>window.top='http://bad.example'</em>" 403 "Blocked: markup in query"
+[03/Feb/2026:08:14:09 +0000] 10.20.30.42 GET "/user.php?name=<em>window.top='http://bad.example'</em>" 403 "Blocked: markup in query"

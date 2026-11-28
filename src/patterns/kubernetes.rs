@@ -2,7 +2,7 @@ use super::Token;
 use regex::Regex;
 use std::sync::LazyLock;
 
-const DNS_LABEL: &str = "[a-z0-9][a-z0-9-]*[a-z0-9]";
+const DNS_LABEL: &str = "[a-z0-9](?:[a-z0-9-]*[a-z0-9])?";
 
 static NS_REGEXES: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     let namespace_field_upper = format!("Namespace:({DNS_LABEL})");
@@ -32,7 +32,7 @@ static PLUGIN_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"plugin type="([^"]+)""#).unwrap());
 
 static POD_REGEXES: LazyLock<[Regex; 3]> = LazyLock::new(|| {
-    let name_field = format!("Name:(?P<pod>{DNS_LABEL}-[a-z0-9]+)");
+    let name_field = format!(r"\bName:(?P<pod>{DNS_LABEL}-[a-z0-9]+)");
     let pod_slash_ref = format!("pod ({DNS_LABEL})/(?P<pod>(?:[a-z0-9-]|<[A-Z_]+>)+)");
     let klog_pod_ref = format!(r#"pod="({DNS_LABEL})/(?P<pod>[^"]+)""#);
     [name_field, pod_slash_ref, klog_pod_ref].map(|pattern| Regex::new(&pattern).unwrap())
@@ -42,11 +42,11 @@ static GROUP_VERSION_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?:\b[a-z0-9]+(?:[.-][a-z0-9]+)*)?/v\d+(?:(?:alpha|beta)\d+)?\b").unwrap()
 });
 
-const NOT_A_PLACEHOLDER_START: &str = "[A-Za-z0-9]";
+const UNQUOTED_VALUE_START: &str = "(?:[A-Za-z0-9]|<[A-Z_]+>)";
 const UNQUOTED_VALUE_BODY: &str = r#"(?:[^\s,"'()\[\]{};:=]*[^\s,"'()\[\]{};:=.])?"#;
 
 static NAME_FIELD_REGEXES: LazyLock<[Regex; 4]> = LazyLock::new(|| {
-    let unquoted_value = format!("{NOT_A_PLACEHOLDER_START}{UNQUOTED_VALUE_BODY}");
+    let unquoted_value = format!("{UNQUOTED_VALUE_START}{UNQUOTED_VALUE_BODY}");
     [
         r#"([a-zA-Z]*[Nn]ame): "([^"]+)""#.to_string(),
         r#"([a-zA-Z]*[Nn]ame)="([^"]+)""#.to_string(),
@@ -88,7 +88,7 @@ impl KubernetesDetector {
     }
 
     fn has_kubernetes_indicators(text: &str) -> bool {
-        ["kube", "namespace", "pod", "volume", "/v"]
+        ["kube", "namespace", "Namespace", "pod", "volume", "/v"]
             .iter()
             .any(|indicator| text.contains(indicator))
     }
@@ -118,14 +118,12 @@ impl KubernetesDetector {
         let mut tokens = Vec::new();
 
         for re in NS_REGEXES.iter() {
-            for capture in re.captures_iter(&result) {
-                tokens.push(Token::KubernetesNamespace(capture[1].to_string()));
-            }
-            result = re
-                .replace_all(&result, |caps: &regex::Captures| {
-                    Self::replace_capture_by_position(caps, caps.get(1), "<NAMESPACE>")
-                })
-                .to_string();
+            super::fold_matches(&mut result, &mut tokens, re, |caps| {
+                Some((
+                    Token::KubernetesNamespace(caps[1].to_string()),
+                    Self::replace_capture_by_position(caps, caps.get(1), "<NAMESPACE>"),
+                ))
+            });
         }
 
         (result, tokens)
@@ -148,14 +146,12 @@ impl KubernetesDetector {
         let mut tokens = Vec::new();
 
         for re in VOLUME_REGEXES.iter() {
-            for capture in re.captures_iter(&result) {
-                tokens.push(Token::VolumeName(capture[1].to_string()));
-            }
-            result = re
-                .replace_all(&result, |caps: &regex::Captures| {
-                    Self::replace_capture_by_position(caps, caps.get(1), "<VOLUME_NAME>")
-                })
-                .to_string();
+            super::fold_matches(&mut result, &mut tokens, re, |caps| {
+                Some((
+                    Token::VolumeName(caps[1].to_string()),
+                    Self::replace_capture_by_position(caps, caps.get(1), "<VOLUME_NAME>"),
+                ))
+            });
         }
 
         (result, tokens)
@@ -183,14 +179,12 @@ impl KubernetesDetector {
         let mut tokens = Vec::new();
 
         for re in POD_REGEXES.iter() {
-            for capture in re.captures_iter(&result) {
-                tokens.push(Token::PodName(capture["pod"].to_string()));
-            }
-            result = re
-                .replace_all(&result, |caps: &regex::Captures| {
-                    Self::replace_capture_by_position(caps, caps.name("pod"), "<POD_NAME>")
-                })
-                .to_string();
+            super::fold_matches(&mut result, &mut tokens, re, |caps| {
+                Some((
+                    Token::PodName(caps["pod"].to_string()),
+                    Self::replace_capture_by_position(caps, caps.name("pod"), "<POD_NAME>"),
+                ))
+            });
         }
 
         (result, tokens)
@@ -200,7 +194,9 @@ impl KubernetesDetector {
         for re in NAME_FIELD_REGEXES.iter() {
             super::fold_matches(result, tokens, re, |caps| {
                 let value = caps.get(2).unwrap();
-                Self::is_compound_name(value.as_str()).then(|| {
+                (Self::is_compound_name(value.as_str())
+                    && Self::angle_brackets_are_placeholders(value.as_str()))
+                .then(|| {
                     (
                         Token::KubernetesName(value.as_str().to_string()),
                         Self::replace_capture_by_position(caps, Some(value), "<K8S_NAME>"),
@@ -208,6 +204,22 @@ impl KubernetesDetector {
                 })
             });
         }
+    }
+
+    fn angle_brackets_are_placeholders(value: &str) -> bool {
+        let mut rest = value;
+        while let Some(open) = rest.find(['<', '>']) {
+            let after = &rest[open..];
+            let Some(close) = after.find('>').filter(|_| after.starts_with('<')) else {
+                return false;
+            };
+            let inner = &after[1..close];
+            if inner.is_empty() || !inner.bytes().all(|b| b.is_ascii_uppercase() || b == b'_') {
+                return false;
+            }
+            rest = &after[close + 1..];
+        }
+        true
     }
 
     fn is_compound_name(value: &str) -> bool {
@@ -348,6 +360,52 @@ mod tests {
             KubernetesDetector::detect_and_replace(r#"host hostName="<IP_ADDR>-b" up"#);
         assert_eq!(r, r#"host hostName="<K8S_NAME>" up"#);
         assert_eq!(tokens, vec![Token::KubernetesName("<IP_ADDR>-b".into())]);
+    }
+
+    #[test]
+    fn a_one_character_namespace_folds_like_any_other() {
+        let (r, tokens) = KubernetesDetector::detect_and_replace("for pod a/web-0: failed");
+        assert_eq!(r, "for pod <NAMESPACE>/<POD_NAME>: failed");
+        assert!(
+            tokens.contains(&Token::KubernetesNamespace("a".into())),
+            "{tokens:?}"
+        );
+    }
+
+    #[test]
+    fn a_capitalised_namespace_field_alone_is_a_kubernetes_line() {
+        let (r, tokens) = KubernetesDetector::detect_and_replace("Namespace:team-blue ready");
+        assert_eq!(r, "Namespace:<NAMESPACE> ready");
+        assert_eq!(tokens, vec![Token::KubernetesNamespace("team-blue".into())]);
+    }
+
+    #[test]
+    fn a_key_ending_in_name_is_not_a_pod_name_field() {
+        let (r, tokens) = KubernetesDetector::detect_and_replace("mount volumeName:data-disk ok");
+        assert_eq!(r, "mount volumeName:<K8S_NAME> ok");
+        assert_eq!(tokens, vec![Token::KubernetesName("data-disk".into())]);
+    }
+
+    #[test]
+    fn an_unquoted_name_value_may_start_with_a_placeholder() {
+        let (r, tokens) = KubernetesDetector::detect_and_replace("host hostName=<IP_ADDR>-b up");
+        assert_eq!(r, "host hostName=<K8S_NAME> up");
+        assert_eq!(tokens, vec![Token::KubernetesName("<IP_ADDR>-b".into())]);
+        let line = "host hostName=<IP_ADDR> up";
+        assert_eq!(KubernetesDetector::detect_and_replace(line).0, line);
+    }
+
+    #[test]
+    fn a_name_value_with_markup_is_never_a_kubernetes_name() {
+        for line in [
+            "GET /p?name=<b>x-1</b> 400",
+            "GET /p?name=<IP_ADDR>-<b>x-1 400",
+            r#"GET /p?name="<i>x-1</i>" 400"#,
+        ] {
+            let (r, tokens) = KubernetesDetector::detect_and_replace(line);
+            assert_eq!(r, line);
+            assert!(tokens.is_empty(), "{line}: {tokens:?}");
+        }
     }
 
     #[test]

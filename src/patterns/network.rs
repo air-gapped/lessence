@@ -9,7 +9,8 @@ static IPV4_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"\b(?:{OCTET}\.){{3}}{OCTET}\b")).unwrap());
 
 static IPV6_LOOSE_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:%[a-z0-9]+)?").unwrap()
+    Regex::new(r"(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}(?:%[a-z0-9_]+(?:[.-][a-z0-9_]+)*)?")
+        .unwrap()
 });
 
 const DOTTED_HOST: &str = r"(?:[a-zA-Z0-9-]+\.)+[a-zA-Z0-9-]+";
@@ -20,16 +21,17 @@ static DOTTED_HOST_PORT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static IPV4_PORT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!(r"\b(?:{OCTET}\.){{3}}{OCTET}:(\d{{1,5}})\b")).unwrap());
+    LazyLock::new(|| Regex::new(&format!(r"\b((?:{OCTET}\.){{3}}{OCTET}):(\d{{1,5}})\b")).unwrap());
 
 static RFC3986_IPV6_LITERAL_PORT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:.]+(?:%\w+)?)\]:(\d{1,5})\b").unwrap());
+    LazyLock::new(|| Regex::new(r"\[([a-fA-F0-9:.]+(?:%\w+(?:[.-]\w+)*)?)\]:(\d{1,5})\b").unwrap());
 
 static TAGGED_ADDRESS_PORT_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(<IP>|\[<IP>\]):(\d{1,5})\b").unwrap());
 
-static IPV4_MAPPED_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)::ffff:(?:\d{1,3}\.){3}\d{1,3}\b").unwrap());
+static IPV4_MAPPED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){1,6}:(?:\d{1,3}\.){3}\d{1,3}\b").unwrap()
+});
 
 static MAC_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b[0-9a-f]{2}(?::[0-9a-f]{2}){5}\b").unwrap());
@@ -165,7 +167,10 @@ impl NetworkDetector {
         let b = haystack.as_bytes();
         let glued_to_letter = (m.start() > 0 && b[m.start() - 1].is_ascii_alphanumeric())
             || (m.end() < b.len() && b[m.end()].is_ascii_alphanumeric());
-        glued_to_letter || Self::in_longer_colon_chain(haystack, m)
+        let dotted_tail_follows = haystack[m.end()..]
+            .strip_prefix('.')
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        glued_to_letter || dotted_tail_follows || Self::in_longer_colon_chain(haystack, m)
     }
 
     fn parses_as_ipv6(candidate: &str) -> bool {
@@ -225,6 +230,10 @@ impl NetworkDetector {
             || Self::is_source_file(hostname)
     }
 
+    fn touches_ipv6_compression(haystack: &str, m: &regex::Match) -> bool {
+        haystack[m.end()..].starts_with("::") || haystack[..m.start()].ends_with("::")
+    }
+
     fn in_longer_colon_chain(haystack: &str, m: &regex::Match) -> bool {
         let b = haystack.as_bytes();
         let before =
@@ -257,7 +266,7 @@ impl NetworkDetector {
 
         if normalize_ips {
             Self::fold_macs_before_ports_and_sizes_can_split_them(text, &mut result, &mut tokens);
-            Self::fold_ipv4_with_port(text, &mut result, &mut tokens, normalize_ports);
+            Self::fold_ipv4_with_port(&mut result, &mut tokens, normalize_ports);
             Self::fold_ipv6_literal_with_port(&mut result, &mut tokens, normalize_ports);
             Self::fold_port_after_an_address_tag(&mut result, &mut tokens, normalize_ports);
             Self::fold_ipv4_mapped_before_ipv4_takes_its_tail(&mut result, &mut tokens);
@@ -284,7 +293,8 @@ impl NetworkDetector {
         }
         let folded = MAC_REGEX.replace_all(result, |caps: &regex::Captures| {
             let m = caps.get(0).unwrap();
-            if Self::in_longer_colon_chain(result, &m) {
+            if Self::in_longer_colon_chain(result, &m) || Self::touches_ipv6_compression(result, &m)
+            {
                 m.as_str().to_string()
             } else {
                 tokens.push(Token::Mac(m.as_str().to_string()));
@@ -296,31 +306,27 @@ impl NetworkDetector {
         }
     }
 
-    fn fold_ipv4_with_port(
-        text: &str,
-        result: &mut String,
-        tokens: &mut Vec<Token>,
-        normalize_ports: bool,
-    ) {
-        for cap in IPV4_PORT_REGEX.captures_iter(text) {
-            let full_match = cap.get(0).unwrap().as_str();
-            let port_str = cap.get(1).unwrap().as_str();
-            let ip = &full_match[..full_match.len() - port_str.len() - 1];
-            tokens.push(Token::IPv4(ip.to_string()));
-            if normalize_ports && let Ok(port) = port_str.parse::<u16>() {
-                tokens.push(Token::Port(port));
+    fn fold_ipv4_with_port(result: &mut String, tokens: &mut Vec<Token>, normalize_ports: bool) {
+        let folded = IPV4_PORT_REGEX.replace_all(result, |caps: &regex::Captures| {
+            let ip = caps.get(1).unwrap();
+            if !Self::is_ipv4_address(result, &ip) {
+                return caps[0].to_string();
             }
-        }
-        *result = IPV4_PORT_REGEX
-            .replace_all(result, |caps: &regex::Captures| {
-                let port = caps.get(1).unwrap().as_str();
-                if port.parse::<u16>().is_ok() {
+            tokens.push(Token::IPv4(ip.as_str().to_string()));
+            let port_str = caps.get(2).unwrap().as_str();
+            match port_str.parse::<u16>() {
+                Ok(port) => {
+                    if normalize_ports {
+                        tokens.push(Token::Port(port));
+                    }
                     "<IP>:<PORT>".to_string()
-                } else {
-                    format!("<IP>:{port}")
                 }
-            })
-            .to_string();
+                Err(_) => format!("<IP>:{port_str}"),
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_ipv6_literal_with_port(
@@ -332,6 +338,9 @@ impl NetworkDetector {
             .replace_all(result, |caps: &regex::Captures| {
                 let ipv6_str = caps.get(1).unwrap().as_str();
                 let port = caps.get(2).unwrap().as_str();
+                if !Self::parses_as_ipv6(ipv6_str) {
+                    return caps[0].to_string();
+                }
                 tokens.push(Token::IPv6(ipv6_str.to_string()));
                 let parsed = port.parse::<u16>();
                 if normalize_ports && let Ok(port) = parsed {
@@ -375,8 +384,12 @@ impl NetworkDetector {
     fn fold_ipv4_mapped_before_ipv4_takes_its_tail(result: &mut String, tokens: &mut Vec<Token>) {
         *result = IPV4_MAPPED_REGEX
             .replace_all(result, |caps: &regex::Captures| {
-                tokens.push(Token::IPv6(caps[0].to_string()));
-                "<IP>"
+                let m = caps.get(0).unwrap();
+                if Self::ipv6_rejected_by_context(result, &m) || !Self::parses_as_ipv6(m.as_str()) {
+                    return m.as_str().to_string();
+                }
+                tokens.push(Token::IPv6(m.as_str().to_string()));
+                "<IP>".to_string()
             })
             .to_string();
     }
@@ -423,10 +436,12 @@ impl NetworkDetector {
                 if Self::port_rejected(result, &whole, hostname) {
                     return whole.as_str().to_string();
                 }
-                if let Ok(port) = caps.get(2).unwrap().as_str().parse::<u16>()
-                    && !tokens
-                        .iter()
-                        .any(|t| matches!(t, Token::Port(p) if *p == port))
+                let Ok(port) = caps.get(2).unwrap().as_str().parse::<u16>() else {
+                    return whole.as_str().to_string();
+                };
+                if !tokens
+                    .iter()
+                    .any(|t| matches!(t, Token::Port(p) if *p == port))
                 {
                     tokens.push(Token::Port(port));
                 }
@@ -476,7 +491,7 @@ impl NetworkDetector {
         name.matches('.').count() >= 2
             || name
                 .rsplit_once('.')
-                .is_some_and(|(_, tld)| SCRUB_TLDS.contains(&tld))
+                .is_some_and(|(_, tld)| SCRUB_TLDS.iter().any(|t| t.eq_ignore_ascii_case(tld)))
     }
 
     pub fn dns_shaped_spans(text: &str) -> Vec<(usize, usize)> {
@@ -508,15 +523,17 @@ impl NetworkDetector {
     }
 
     fn has_dns_only_suffix(name: &str) -> bool {
-        name.rsplit_once('.')
-            .is_some_and(|(_, last)| DNS_ONLY_SUFFIXES.contains(&last))
+        name.rsplit_once('.').is_some_and(|(_, last)| {
+            DNS_ONLY_SUFFIXES
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(last))
+        })
     }
 
     fn has_port_after(b: &[u8], m: &regex::Match) -> bool {
-        m.end() + 1 < b.len()
-            && b[m.end()] == b':'
-            && b[m.end() + 1].is_ascii_digit()
-            && !Self::is_source_file(m.as_str())
+        let rest = &b[m.end()..];
+        let numeric_port = rest.len() >= 2 && rest[0] == b':' && rest[1].is_ascii_digit();
+        (numeric_port || rest.starts_with(b":<PORT>")) && !Self::is_source_file(m.as_str())
     }
 
     fn has_scheme_before(haystack: &str, m: &regex::Match) -> bool {
@@ -841,6 +858,42 @@ mod tests {
             tokens.iter().any(|t| matches!(t, Token::Port(8))),
             "should extract port 8, got: {tokens:?}"
         );
+    }
+
+    #[test]
+    fn an_endpoint_is_folded_only_when_its_parts_are_valid() {
+        for (line, want) in [
+            (
+                "dial pkg.12.51.100.77:443 ok",
+                "dial pkg.12.51.100.77:<PORT> ok",
+            ),
+            ("v 0.8.10.3:443 ok", "v 0.8.10.3:<PORT> ok"),
+            ("dial [1234]:443 ok", "dial [1234]:443 ok"),
+            ("from ::ffff:999.1.1.1 ok", "from ::ffff:999.1.1.1 ok"),
+            ("from 2001:db8::ffff:192.0.2.1 ok", "from <IP> ok"),
+            ("from 64:ff9b::192.0.2.33 ok", "from <IP> ok"),
+            ("dial [aa:bb:cc:dd:ee:ff::]:443 ok", "dial [<IP>]:<PORT> ok"),
+            ("ping fe80::1%eth0.100 ok", "ping <IP> ok"),
+            ("dial localhost:65536 ok", "dial localhost:65536 ok"),
+            ("connect example.com:443 ok", "connect <FQDN>:<PORT> ok"),
+            ("dial db.LOCAL ok", "dial <FQDN> ok"),
+        ] {
+            let (r, tokens) = NetworkDetector::detect_and_replace(line, true, true, true);
+            assert_eq!(r, want, "{line}: {tokens:?}");
+        }
+        let (_, tokens) =
+            NetworkDetector::detect_and_replace("ping fe80::1%eth0.100 ok", true, true, true);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| matches!(t, Token::IPv6(s) if s == "fe80::1%eth0.100")),
+            "{tokens:?}"
+        );
+        assert_eq!(
+            NetworkDetector::dns_shaped_names("see EXAMPLE.COM now"),
+            vec!["EXAMPLE.COM"]
+        );
+        assert!(NetworkDetector::dns_shaped_spans("see report.XYZ and notes.Abc now").is_empty());
     }
 
     #[test]

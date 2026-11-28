@@ -85,7 +85,13 @@ impl HistogramBuilder {
         let display_bucket_seconds = grid.bucket_seconds;
         let mut buckets = vec![0u64; grid.len];
         for (&key, &count) in &self.buckets {
-            buckets[grid.index(key)] += count;
+            let start = key * grid.collected_seconds as i64;
+            let rolled_into_next_year = add_one_year_utc(start).filter(|_| start < first_epoch);
+            let start = match rolled_into_next_year {
+                Some(next_year) if next_year <= last_epoch => next_year,
+                _ => start,
+            };
+            buckets[grid.index_at(start)] += count;
         }
 
         let (busiest_index, &busiest_count) = buckets
@@ -230,11 +236,15 @@ fn is_json_line(line: &str) -> bool {
     matches!(
         (b.first(), b.last()),
         (Some(b'{'), Some(b'}')) | (Some(b'['), Some(b']'))
-    )
+    ) && serde_json::from_str::<serde::de::IgnoredAny>(t).is_ok()
 }
 
 pub(crate) fn format_from_line(tokens: &[Token], line: &str) -> FormatClass {
-    if is_json_line(line) || tokens.iter().any(|t| matches!(t, Token::EmbeddedJson(_))) {
+    if is_json_line(line)
+        || tokens
+            .iter()
+            .any(|t| matches!(t, Token::EmbeddedJson(payload) if is_json_line(payload)))
+    {
         return FormatClass::Json;
     }
     const LOGFMT_MIN_KEY_VALUE_TOKENS: usize = 2;
@@ -319,7 +329,9 @@ fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
         scan.bracket_level = word_to_level(inner);
     }
 
-    if scan.level_eq.is_none() {
+    let starts_a_field =
+        i == 0 || !(window[i - 1].is_ascii_alphanumeric() || window[i - 1] == b'_');
+    if scan.level_eq.is_none() && starts_a_field {
         let key = b"level=";
         if i + key.len() <= window.len()
             && window[i..i + key.len()].eq_ignore_ascii_case(key)
@@ -328,7 +340,7 @@ fn scan_level_at(window: &[u8], i: usize, b: u8, scan: &mut LevelScan) {
             scan.level_eq = Some(level);
         }
     }
-    if scan.severity_eq.is_none() {
+    if scan.severity_eq.is_none() && starts_a_field {
         let key = b"severity=";
         if i + key.len() <= window.len()
             && window[i..i + key.len()].eq_ignore_ascii_case(key)
@@ -635,6 +647,9 @@ thread_local! {
 }
 
 fn ymd_hms_to_epoch(year: i32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> Option<i64> {
+    if hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
     let midnight = LAST_DATE_MIDNIGHT.with(|cell| {
         if let Some((y, m, d, epoch)) = cell.get()
             && (y, m, d) == (year, month, day)
@@ -703,7 +718,32 @@ fn parse_iso_epoch(b: &[u8]) -> Option<i64> {
         return None;
     }
     let sec = d2(&b[17..19])?;
-    ymd_hms_to_epoch(year, month, day, hour, min, sec)
+    Some(ymd_hms_to_epoch(year, month, day, hour, min, sec)? - utc_offset_seconds(&b[19..]))
+}
+
+fn utc_offset_seconds(rest: &[u8]) -> i64 {
+    let mut rest = rest;
+    if rest.first() == Some(&b'.') || rest.first() == Some(&b',') {
+        let digits = rest[1..].iter().take_while(|c| c.is_ascii_digit()).count();
+        rest = &rest[1 + digits..];
+    }
+    while rest.first() == Some(&b' ') {
+        rest = &rest[1..];
+    }
+    let sign = match rest.first() {
+        Some(b'+') => 1,
+        Some(b'-') => -1,
+        _ => return 0,
+    };
+    let hours = rest.get(1..3).and_then(d2);
+    let minutes_at = if rest.get(3) == Some(&b':') { 4 } else { 3 };
+    let minutes = rest.get(minutes_at..minutes_at + 2).and_then(d2);
+    match (hours, minutes) {
+        (Some(h), Some(m)) if h <= 23 && m <= 59 => {
+            sign * (i64::from(h) * 3600 + i64::from(m) * 60)
+        }
+        _ => 0,
+    }
 }
 
 fn parse_slash_date_epoch(b: &[u8]) -> Option<i64> {
@@ -734,7 +774,9 @@ fn parse_slash_date_epoch(b: &[u8]) -> Option<i64> {
     ymd_hms_to_epoch(year, month, day, hour, min, sec)
 }
 
-fn parse_clf_epoch(b: &[u8]) -> Option<i64> {
+fn parse_clf_epoch(bracketed: &[u8]) -> Option<i64> {
+    let b = bracketed.strip_prefix(b"[").unwrap_or(bracketed);
+    let b = b.strip_suffix(b"]").unwrap_or(b);
     if b.len() < 20 {
         return None;
     }
@@ -759,7 +801,7 @@ fn parse_clf_epoch(b: &[u8]) -> Option<i64> {
         return None;
     }
     let sec = d2(&b[18..20])?;
-    ymd_hms_to_epoch(year, month, day, hour, min, sec)
+    Some(ymd_hms_to_epoch(year, month, day, hour, min, sec)? - utc_offset_seconds(&b[20..]))
 }
 
 fn parse_compact_epoch(b: &[u8]) -> Option<i64> {
@@ -818,7 +860,7 @@ fn add_one_year_utc(epoch: i64) -> Option<i64> {
 pub(crate) fn span_epochs(first: &str, last: &str) -> Option<(i64, i64)> {
     let first_epoch = epoch_seconds(first)?;
     let mut last_epoch = epoch_seconds(last)?;
-    if last_epoch < first_epoch {
+    if last_epoch < first_epoch && !(carries_year(first) && carries_year(last)) {
         last_epoch = add_one_year_utc(last_epoch).unwrap_or(last_epoch);
     }
     Some((first_epoch, last_epoch))
@@ -1053,7 +1095,11 @@ pub(crate) fn carries_year(ts: &str) -> bool {
             i += 1;
         }
         let run = &ts[start..i];
+        if start > 0 && b[start - 1] == b'.' {
+            continue;
+        }
         match run.len() {
+            8 if is_plausible_year(&run[..4]) => return true,
             4 => {
                 if is_plausible_year(run) {
                     return true;
@@ -2177,5 +2223,83 @@ mod tests {
         };
         let json = serde_json::to_value(span).unwrap();
         assert_eq!(json["year_inferred"], serde_json::Value::Bool(true));
+    }
+    #[test]
+    fn epoch_seconds_iso8601_applies_numeric_offset() {
+        assert_eq!(
+            epoch_seconds("2025-09-09T15:07:09+02:00"),
+            epoch_seconds("2025-09-09T13:07:09Z")
+        );
+        assert_eq!(
+            epoch_seconds("2025-09-09T15:07:09.123+0200"),
+            epoch_seconds("2025-09-09T13:07:09Z")
+        );
+    }
+
+    #[test]
+    fn epoch_seconds_bracketed_clf_applies_offset() {
+        assert_eq!(
+            epoch_seconds("[09/Sep/2025:13:07:09 -0700]"),
+            ymd_hms_to_epoch(2025, 9, 9, 20, 7, 9)
+        );
+    }
+
+    #[test]
+    fn epoch_seconds_rejects_hour_past_23() {
+        assert_eq!(epoch_seconds("2025-09-09T25:00:00Z"), None);
+    }
+
+    #[test]
+    fn span_of_dated_records_out_of_order_is_not_rolled_a_year() {
+        assert_eq!(
+            span_duration_seconds("2025-09-09T13:07:10", "2025-09-09T13:07:09"),
+            None
+        );
+    }
+
+    #[test]
+    fn histogram_places_rolled_over_january_records_after_december() {
+        let first = "Dec 31 23:00:00";
+        let last = "Jan  1 01:00:00";
+        let mut builder = HistogramBuilder::default();
+        builder.record(epoch_seconds(first).unwrap());
+        builder.record(epoch_seconds(last).unwrap());
+        let (f, l) = span_epochs(first, last).unwrap();
+        let hist = builder.build(f, l).unwrap();
+        assert_eq!(hist.buckets[0], 1, "{:?}", hist.buckets);
+        assert_eq!(*hist.buckets.last().unwrap(), 1, "{:?}", hist.buckets);
+    }
+
+    #[test]
+    fn format_from_line_bracket_or_brace_prose_is_not_json() {
+        assert_eq!(format_from_line(&[], "[ERROR]"), FormatClass::Plain);
+        assert_eq!(
+            format_from_line(&[], "{worker stopped}"),
+            FormatClass::Plain
+        );
+    }
+
+    #[test]
+    fn format_from_line_go_event_struct_token_is_not_json() {
+        let tokens = vec![Token::EmbeddedJson(
+            "&Event{ObjectMeta:{web-a.17f3  default    0 map[] []}".to_string(),
+        )];
+        assert_eq!(format_from_line(&tokens, ""), FormatClass::Plain);
+    }
+
+    #[test]
+    fn classify_level_ignores_level_key_suffixes() {
+        assert_eq!(classify_level("start loglevel=debug done"), None);
+        assert_eq!(classify_level("start min_severity=warn done"), None);
+        assert_eq!(
+            classify_level("cfg loglevel=debug level=error"),
+            Some(Level::Error)
+        );
+    }
+
+    #[test]
+    fn carries_year_reads_compact_dates_and_skips_fractions() {
+        assert!(carries_year("20250909T130709"));
+        assert!(!carries_year("E0909 13:07:09.2025"));
     }
 }
