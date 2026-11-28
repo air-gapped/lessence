@@ -1130,6 +1130,41 @@ mod tests {
         (groups, alone)
     }
 
+    fn same_words_groups(counts: [usize; 3]) -> Vec<DistillGroup> {
+        ["other <NUM>", "same <NUM>", "same <HEX>"]
+            .iter()
+            .zip(counts)
+            .enumerate()
+            .map(|(i, (template, count))| DistillGroup {
+                template: (*template).to_string(),
+                token_types: vec!["A"],
+                all_types: vec!["A"],
+                anchor: 0,
+                avg_bytes: 10,
+                kept: vec![i + 1],
+                capping_extra: Vec::new(),
+                count,
+                distinct_forms: 1,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_literal_word_set_keeps_its_busiest_group_and_the_earliest_on_a_tie() {
+        let members = [0, 1, 2];
+        for (counts, want) in [
+            ([100, 5, 9], vec![2]),
+            ([100, 9, 5], vec![1]),
+            ([100, 7, 7], vec![1]),
+        ] {
+            assert_eq!(
+                one_group_per_literal_word_set(&same_words_groups(counts), &members, 0),
+                want,
+                "counts {counts:?}"
+            );
+        }
+    }
+
     fn kept_templates(cover: &Cover) -> Vec<&str> {
         cover
             .must_stay_distinct

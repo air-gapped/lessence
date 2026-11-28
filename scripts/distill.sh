@@ -59,6 +59,19 @@ golden_diff() {
         <(LC_ALL=C sort "$1") <(LC_ALL=C sort "$2")
 }
 
+missing_events() {
+    # $1 = output, $2 = .added -> the templates of $2 whose event $1 lacks.
+    # Present: some template of $1 whose literal words (every <...>
+    # placeholder dropped) equal or are a subset of its own, since more
+    # lines can widen a word to <VARIES>.
+    awk -F'\t' '
+        function words(t, w,   n, i, a) { gsub(/<[^<> ]*>/, " ", t); n = split(t, a, " "); for (i = 1; i <= n; i++) w[a[i]] = 1 }
+        NR == FNR { nt++; nw = 0; delete tmp; words($2, tmp); for (k in tmp) { W[nt, ++nw] = k }; N[nt] = nw; next }
+        { delete o; words($2, o); found = 0
+          for (t = 1; t <= nt && !found; t++) { ok = 1; for (i = 1; i <= N[t]; i++) if (!(W[t, i] in o)) { ok = 0; break }; if (ok) found = 1 }
+          if (!found) print $2 }' <(golden_of "$1") <(golden_of "$2") | LC_ALL=C sort -u
+}
+
 fail() {
     echo "distill FAILED: $1" >&2
     exit "${2:-1}"
@@ -105,22 +118,42 @@ for f in examples/originals/*.log; do
         fail "$name (forbid scan exited $rc)"
     fi
     # Lines added by hand at acceptance live in <name>.added, scrubbed with
-    # the same --anonymize --seed 1, so their words match the new output.
-    # Each one's event must be present: some new template whose literal
-    # words (every <...> placeholder dropped) equal or are a subset of its
-    # own, since more lines can widen a word to <VARIES>.
+    # the same --anonymize --seed 1. Each one whose event the new output
+    # lacks is appended, and the result is scanned again before the rename.
     added_file="$DIST_DIR/${name}.added"
     if [ -f "$added_file" ]; then
-        missing="$(awk -F'\t' '
-            function words(t, w,   n, i, a) { gsub(/<[^<> ]*>/, " ", t); n = split(t, a, " "); for (i = 1; i <= n; i++) w[a[i]] = 1 }
-            NR == FNR { nt++; nw = 0; delete tmp; words($2, tmp); for (k in tmp) { W[nt, ++nw] = k }; N[nt] = nw; next }
-            { delete o; words($2, o); found = 0
-              for (t = 1; t <= nt && !found; t++) { ok = 1; for (i = 1; i <= N[t]; i++) if (!(W[t, i] in o)) { ok = 0; break }; if (ok) found = 1 }
-              if (!found) print $2 }' <(golden_of "$pending") <(golden_of "$added_file") | LC_ALL=C sort -u)"
+        missing="$(missing_events "$pending" "$added_file")"
+        appended=0
+        appended_lines=""
         if [ -n "$missing" ]; then
-            lost="$(printf '%s\n' "$missing" | wc -l)"
-            fail "$name: $lost events missing from the new --distill output that $added_file holds (no new template shares their literal words); fix --distill or re-accept the corpus. First missing: $(printf '%s\n' "$missing" | head -3 | paste -sd'|')"
+            one="$(mktemp)"
+            while IFS= read -r line || [ -n "$line" ]; do
+                printf '%s\n' "$line" >"$one"
+                if golden_of "$one" | cut -f2- | grep -qxF -f <(printf '%s\n' "$missing"); then
+                    printf '%s\n' "$line" >>"$pending"
+                    appended_lines+="$line"$'\n'
+                    appended=$((appended + 1))
+                fi
+            done <"$added_file"
+            rm -f "$one"
+            set +e
+            grep -qE -e "$forbid_regex" "$pending"
+            rc=$?
+            set -e
+            if [ "$rc" -eq 0 ]; then
+                fail "$name (forbidden string found in an appended line of $added_file)"
+            elif [ "$rc" -ne 1 ]; then
+                fail "$name (forbid scan exited $rc)"
+            fi
+            # After the merge an appended line is present because it is
+            # literally in the file; re-deriving templates would not show it,
+            # since the merged lines can fold into a wider template.
+            still="$(grep -vxF -f "$pending" <(printf '%s' "$appended_lines") || true)"
+            if [ -n "$still" ]; then
+                fail "$name: $(printf '%s\n' "$still" | wc -l) lines of $added_file still missing after the merge; fix --distill or re-accept the corpus. First missing: $(printf '%s\n' "$still" | head -3 | paste -sd'|')"
+            fi
         fi
+        echo "$name: $appended accepted line(s) appended" >&2
     fi
     mv -f "$pending" "$dist_log"
     pending=""

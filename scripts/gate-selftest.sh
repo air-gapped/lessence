@@ -478,7 +478,7 @@ if [ -e "$rg/target/gate/gate.json" ]; then bad "a gate run that stops early lea
 ds_root="$WORK/ds-root"; mkdir -p "$ds_root/scripts" "$ds_root/target/release" "$ds_root/examples/originals" "$ds_root/examples/distilled" "$ds_root/bin"
 cp "$ROOT/scripts/distill.sh" "$ds_root/scripts/"
 printf '#!/usr/bin/env bash\nexit 0\n' >"$ds_root/bin/cargo"; chmod +x "$ds_root/bin/cargo"
-printf '#!/usr/bin/env bash\nif [ "$1" = --explain ]; then while IFS= read -r l; do printf '"'"'{"type":"group","count":1,"normalized":"%%s"}\\n'"'"' "$l"; done <"${!#}"; exit 0; fi\nif [ -f "%s" ]; then cat "%s"; else echo "fresh line"; fi\n' "$ds_root/out" "$ds_root/out" >"$ds_root/target/release/lessence"; chmod +x "$ds_root/target/release/lessence"
+printf '#!/usr/bin/env bash\nif [ "$1" = --explain ] && [ -f "%s" ] && [ "$(wc -l <"${!#}")" -ge 2 ]; then printf '"'"'{"type":"group","count":2,"normalized":"%%%%s"}\\n'"'"' "$(cat "%s")"; exit 0; fi\nif [ "$1" = --explain ]; then while IFS= read -r l; do printf '"'"'{"type":"group","count":1,"normalized":"%%s"}\\n'"'"' "$l"; done <"${!#}"; exit 0; fi\nif [ -f "%s" ]; then cat "%s"; else echo "fresh line"; fi\n' "$ds_root/fold" "$ds_root/fold" "$ds_root/out" "$ds_root/out" >"$ds_root/target/release/lessence"; chmod +x "$ds_root/target/release/lessence"
 echo "raw" >"$ds_root/examples/originals/k.log"
 : >"$ds_root/vocab"
 ds_run() { # ds_run <forbid regex> -> exit code; resets the earlier log first
@@ -501,14 +501,22 @@ ds_ev() { # ds_ev <.added line> <new output line> -> exit code
     echo "$1" >"$ds_root/examples/distilled/k.added"; echo "$2" >"$ds_root/out"
     PATH="$ds_root/bin:$PATH" SCRUB_VOCAB="$ds_root/vocab" SCRUB_FORBID="$ds_root/forbid" "$ds_root/scripts/distill.sh"
 }
-ds_ev "conn closed by peer" "conn closed by peer" >/dev/null 2>&1; ds_rc=$?
-check "distill: an added event kept as is is present" "rc=0 conn closed by peer" "rc=$ds_rc $(cat "$ds_root/examples/distilled/k.log")"
+ds_err="$(ds_ev "conn closed by peer" "conn closed by peer" 2>&1 >/dev/null)"; ds_rc=$?
+check "distill: a present added event is not duplicated" "rc=0 [conn closed by peer]" "rc=$ds_rc [$(paste -sd'|' "$ds_root/examples/distilled/k.log")]"
+check "distill: a present added event reports none appended" "k: 0 accepted line(s) appended" "$ds_err"
 ds_ev "conn closed by peer" "conn <VARIES> by peer" >/dev/null 2>&1; ds_rc=$?
-check "distill: a widened added event counts as present" "rc=0 conn <VARIES> by peer" "rc=$ds_rc $(cat "$ds_root/examples/distilled/k.log")"
+check "distill: a widened added event is not appended" "rc=0 [conn <VARIES> by peer]" "rc=$ds_rc [$(paste -sd'|' "$ds_root/examples/distilled/k.log")]"
 ds_err="$(ds_ev "conn closed by peer" "disk <VARIES> full" 2>&1 >/dev/null)"; ds_rc=$?
-check "distill: an added event absent from the new output is refused" "rc=1 earlier" "rc=$ds_rc $(cat "$ds_root/examples/distilled/k.log")"
-check "distill: the refusal names the corpus, count and event" "k: 1 events missing" "$ds_err"
-check "distill: the refusal lists the missing event" "First missing: conn closed by peer" "$ds_err"
+check "distill: an absent added event is appended" "rc=0 [disk <VARIES> full|conn closed by peer]" "rc=$ds_rc [$(paste -sd'|' "$ds_root/examples/distilled/k.log")]"
+check "distill: the append is reported with its count" "k: 1 accepted line(s) appended" "$ds_err"
+echo 'k=<VARIES>' >"$ds_root/fold"
+ds_err="$(ds_ev "k=v" "disk full" 2>&1 >/dev/null)"; ds_rc=$?
+check "distill: an appended line that folds into a wider template counts as present" "rc=0 [disk full|k=v]" "rc=$ds_rc [$(paste -sd'|' "$ds_root/examples/distilled/k.log")] $ds_err"
+rm -f "$ds_root/fold"
+printf '%s\n' 'secretword' >"$ds_root/forbid"
+echo "earlier" >"$ds_root/examples/distilled/k.log"; echo "secretword here" >"$ds_root/examples/distilled/k.added"; echo "disk full" >"$ds_root/out"
+PATH="$ds_root/bin:$PATH" SCRUB_VOCAB="$ds_root/vocab" SCRUB_FORBID="$ds_root/forbid" "$ds_root/scripts/distill.sh" >/dev/null 2>&1; ds_rc=$?
+check "distill: an appended line holding a forbidden string is refused" "rc=1 earlier" "rc=$ds_rc $(cat "$ds_root/examples/distilled/k.log")"
 rm -f "$ds_root/out" "$ds_root/examples/distilled/k.added"
 check "release-check keeps scratch files in its own temporary directory" "0" "$(grep -c '/tmp/' "$ROOT/scripts/release-check.sh")"
 

@@ -23,6 +23,10 @@ cap_lints = true
 # that matches no mutant and says how to re-pin it. Closures in DETECTOR_ORDER have no
 # function name, so those entries can only be pinned.
 exclude_re = [
+    # one_group_per_literal_word_set: the compared tuples carry Reverse(index),
+    # so two of them are equal only when a group is compared with itself (the
+    # primary, inserted before the loop); > and >= then both keep it.
+    'replace > with >= in one_group_per_literal_word_set$',
     # --- 0.4.5 similarity-cache equivalents ---
     # from_normalized: the s.len() > u32::MAX guard needs a > 4 GiB string
     # to distinguish >, >=, == — unconstructible in a test. (`<` makes every
