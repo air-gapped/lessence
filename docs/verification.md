@@ -261,9 +261,13 @@ ran) and the original file:
    miss.
 3. For every miss, append the earliest original line of that family to the
    distilled file through `lessence --anonymize --seed 1` (same seed, same
-   inventions) and record the family in `examples/distilled/<name>.accept`
+   inventions), append the same scrubbed line to
+   `examples/distilled/<name>.added` (one line each), and record the family in `examples/distilled/<name>.accept`
    as `added: <shape>`; a distillation with misses is also a `--distill`
-   defect — file the shape as a `##TODO` on the fixture.
+   defect — file the shape as a `##TODO` on the fixture. `make distill`
+   refuses a new output that lacks the event of any `.added` line (its
+   literal words, placeholders dropped, must be matched or widened), so a
+   re-run never silently drops an acceptance addition.
 4. Re-run every `##CASE` that names this corpus's bead against the
    distilled copy.
 5. Write `<name>.accept`: `accepted-by`, `study`, `families`, `found`,

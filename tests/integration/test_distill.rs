@@ -474,3 +474,42 @@ fn the_distilled_log_is_a_subset_of_its_input_and_says_nothing_on_stdout() {
         "the rare event survives: it is the reason to distil"
     );
 }
+
+#[test]
+fn every_set_of_literal_words_keeps_a_representative() {
+    let mut text = String::new();
+    for i in 0..40 {
+        text.push_str(&format!(
+            "2025-02-11T08:15:{:02}.000Z INFO 02-11 08:15:{:02} [ledger.py:{}] Routes: Methods: GET, POST\n",
+            i % 60,
+            i % 60,
+            100 + i
+        ));
+    }
+    let rare_lines = [
+        "2025-02-11T08:16:01.000Z INFO 02-11 08:16:01 [ledger.py:212] Routes: Methods: GET\n",
+        "2025-02-11T08:16:02.000Z INFO 02-11 08:16:02 [ledger.py:213] Pantry: Shelves: GET, POST\n",
+        "2025-02-11T08:16:03.000Z INFO 02-11 08:16:03 [ledger.py:214] Orchard: Methods: GET, POST\n",
+    ];
+    for line in rare_lines {
+        text.push_str(line);
+    }
+    let out = run_stdin(&["--distill", "--threads", "1"], text.as_bytes());
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let distilled = String::from_utf8_lossy(&out.stdout);
+    for words in [
+        "Routes: Methods: GET, POST",
+        "Routes: Methods: GET\n",
+        "Pantry: Shelves: GET, POST",
+        "Orchard: Methods: GET, POST",
+    ] {
+        assert!(
+            distilled.contains(words),
+            "lines with their own literal words keep a representative ({words:?}):\n{distilled}"
+        );
+    }
+}

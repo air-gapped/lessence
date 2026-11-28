@@ -64,8 +64,11 @@ its own group):
 5. every line of a group below `--min-collapse` (unfolded lines) as is.
 
 Then across groups, one bucket per structure. Each bucket keeps the busiest
-group, the group nearest it by shared template prefix, and one group per
-distinct anchor value. Where the lines are small (mean at most
+group, the group nearest it by shared template prefix, one group per
+distinct anchor value, and one group per distinct set of literal words (the
+busiest; groups that differ only inside placeholders share a set). On long
+lines the literal-word sets are handed out after the anchor values, the same
+way, from what the anchor values left of the budget. Where the lines are small (mean at most
 `DISTILL_CHEAP_LINE_BYTES`, 512) it keeps all of them. Where they are not,
 proving an anchor costs another copy of the event, which is nothing on a
 syslog line and megabytes on a 23 KB Kubernetes event, so the further values

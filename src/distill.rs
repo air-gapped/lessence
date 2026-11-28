@@ -411,6 +411,33 @@ fn anchor_values_busiest_then_first_seen(
     values
 }
 
+/// Different literal words are different events: every set of literal words
+/// in a bucket keeps its busiest group, in first-seen order. Groups whose
+/// templates differ only inside placeholders share one set.
+fn one_group_per_literal_word_set(
+    groups: &[DistillGroup],
+    members: &[usize],
+    primary: usize,
+) -> Vec<usize> {
+    let mut by_words: BTreeMap<Vec<&str>, usize> = BTreeMap::new();
+    by_words.insert(literal_words(&groups[primary].template), primary);
+    for &i in members {
+        by_words
+            .entry(literal_words(&groups[i].template))
+            .and_modify(|best| {
+                if (groups[i].count, std::cmp::Reverse(i))
+                    > (groups[*best].count, std::cmp::Reverse(*best))
+                {
+                    *best = i;
+                }
+            })
+            .or_insert(i);
+    }
+    let mut kept: Vec<usize> = by_words.into_values().filter(|&i| i != primary).collect();
+    kept.sort_unstable();
+    kept
+}
+
 fn lines_are_cheap_to_repeat(avg_line_bytes: usize) -> bool {
     avg_line_bytes <= DISTILL_CHEAP_LINE_BYTES
 }
@@ -462,6 +489,7 @@ fn covering_subset(
 
     let mut chosen: BTreeSet<usize> = BTreeSet::new();
     let mut further_anchor_values: Vec<Vec<usize>> = Vec::new();
+    let mut further_word_sets: Vec<Vec<usize>> = Vec::new();
     for (key, members) in &buckets {
         let primary = busiest_earliest(groups, members);
         chosen.insert(primary);
@@ -476,11 +504,16 @@ fn covering_subset(
             chosen.extend(farthest_by_words(groups, members, primary));
         }
         let anchor_values = anchor_values_busiest_then_first_seen(groups, members, primary);
+        let word_sets = one_group_per_literal_word_set(groups, members, primary);
         if lines_are_cheap_to_repeat(groups[primary].avg_bytes) {
             chosen.extend(anchor_values);
+            chosen.extend(word_sets);
         } else if let Some((&free, further)) = anchor_values.split_first() {
             chosen.insert(free);
             further_anchor_values.push(further.to_vec());
+            further_word_sets.push(word_sets);
+        } else {
+            further_word_sets.push(word_sets);
         }
     }
     let within_budget = further_anchor_values_within_budget(
@@ -489,7 +522,19 @@ fn covering_subset(
         &chosen,
         anchor_proof_budget_bytes,
     );
+    let spent: usize = within_budget
+        .iter()
+        .filter(|g| !chosen.contains(g))
+        .map(|&g| bytes_kept_for(&groups[g]))
+        .sum();
     chosen.extend(within_budget);
+    let word_sets_within_budget = further_anchor_values_within_budget(
+        groups,
+        &further_word_sets,
+        &chosen,
+        anchor_proof_budget_bytes.saturating_sub(spent),
+    );
+    chosen.extend(word_sets_within_budget);
 
     top_up_missing_properties(groups, &mut chosen);
 
@@ -842,7 +887,7 @@ mod tests {
     }
 
     #[test]
-    fn many_spellings_of_one_structure_cost_two_groups() {
+    fn one_structure_with_different_literal_words_keeps_every_event() {
         let spellings = [
             "payment declined for order 7",
             "kitchen light switched off 7",
@@ -880,8 +925,8 @@ mod tests {
         );
         assert_eq!(
             cover.must_stay_distinct.len(),
-            2,
-            "one structure, two groups kept: the busiest and its nearest, not all of them: {:?}",
+            spellings.len(),
+            "different literal words are different events: each keeps a group: {:?}",
             cover.must_stay_distinct
         );
     }

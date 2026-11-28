@@ -104,6 +104,24 @@ for f in examples/originals/*.log; do
     elif [ "$rc" -ne 1 ]; then
         fail "$name (forbid scan exited $rc)"
     fi
+    # Lines added by hand at acceptance live in <name>.added, scrubbed with
+    # the same --anonymize --seed 1, so their words match the new output.
+    # Each one's event must be present: some new template whose literal
+    # words (every <...> placeholder dropped) equal or are a subset of its
+    # own, since more lines can widen a word to <VARIES>.
+    added_file="$DIST_DIR/${name}.added"
+    if [ -f "$added_file" ]; then
+        missing="$(awk -F'\t' '
+            function words(t, w,   n, i, a) { gsub(/<[^<> ]*>/, " ", t); n = split(t, a, " "); for (i = 1; i <= n; i++) w[a[i]] = 1 }
+            NR == FNR { nt++; nw = 0; delete tmp; words($2, tmp); for (k in tmp) { W[nt, ++nw] = k }; N[nt] = nw; next }
+            { delete o; words($2, o); found = 0
+              for (t = 1; t <= nt && !found; t++) { ok = 1; for (i = 1; i <= N[t]; i++) if (!(W[t, i] in o)) { ok = 0; break }; if (ok) found = 1 }
+              if (!found) print $2 }' <(golden_of "$pending") <(golden_of "$added_file") | LC_ALL=C sort -u)"
+        if [ -n "$missing" ]; then
+            lost="$(printf '%s\n' "$missing" | wc -l)"
+            fail "$name: $lost events missing from the new --distill output that $added_file holds (no new template shares their literal words); fix --distill or re-accept the corpus. First missing: $(printf '%s\n' "$missing" | head -3 | paste -sd'|')"
+        fi
+    fi
     mv -f "$pending" "$dist_log"
     pending=""
 
