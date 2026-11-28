@@ -27,7 +27,7 @@ struct Fold {
 impl Fold {
     fn run(bin: &Path, files: &[PathBuf], threads: &str) -> Result<Self> {
         let out = Command::new(bin)
-            .args(["--format", "json", "--threads", threads, "-q"])
+            .args(["--format", "json", "--threads", threads, "-q", "--"])
             .args(files)
             .output()
             .with_context(|| format!("could not run {}", bin.display()))?;
@@ -82,14 +82,20 @@ pub fn print_moved_groups(
                 key,
                 format!("was its own group of {}; now folds into another", g.count),
             ),
-            Some(n) if n.count != g.count => report(
-                "resized",
-                key,
-                format!(
-                    "{} -> {} lines (last line {} -> {})",
-                    g.count, n.count, g.last.line_no, n.last.line_no
-                ),
-            ),
+            Some(n)
+                if n.count != g.count
+                    || n.last.line_no != g.last.line_no
+                    || n.last.source != g.last.source =>
+            {
+                report(
+                    "resized",
+                    key,
+                    format!(
+                        "{} -> {} lines (last line {} -> {})",
+                        g.count, n.count, g.last.line_no, n.last.line_no
+                    ),
+                );
+            }
             Some(_) => {}
         }
     }
@@ -151,6 +157,40 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn equal_counts_with_different_members_are_reported_as_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("in.log");
+        let rec = |last: usize| {
+            format!(
+                r#"{{"type":"group","count":2,"first":{{"source":{src:?},"line":"x","line_no":1}},"last":{{"source":{src:?},"line":"x","line_no":{last}}}}}"#,
+                src = log.display().to_string()
+            )
+        };
+        let script = |name: &str, last: usize| {
+            use std::os::unix::fs::PermissionsExt;
+            let p = dir.path().join(name);
+            std::fs::write(&p, format!("#!/bin/sh\necho '{}'\n", rec(last))).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+            p
+        };
+        std::fs::write(&log, "x\n").unwrap();
+        let old = script("old", 2);
+        let new = script("new", 3);
+        let mut moved = print_moved_groups(&old, &new, std::slice::from_ref(&log), "1");
+        for _ in 0..20 {
+            match &moved {
+                Err(e) if format!("{e:#}").contains("Text file busy") => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    moved = print_moved_groups(&old, &new, std::slice::from_ref(&log), "1");
+                }
+                _ => break,
+            }
+        }
+        assert_eq!(moved.unwrap(), 1);
+    }
+
+    #[cfg(unix)]
     mod process {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
@@ -204,9 +244,9 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let bin = binary(
                 dir.path(),
-                r#"[ "$#" = 7 ] && [ "$1" = --format ] && [ "$2" = json ] &&
-[ "$3" = --threads ] && [ "$4" = 3 ] && [ "$5" = -q ] &&
-[ "$6" = first.log ] && [ "$7" = 'second log' ] || exit 9
+                r#"[ "$#" = 8 ] && [ "$1" = --format ] && [ "$2" = json ] &&
+[ "$3" = --threads ] && [ "$4" = 3 ] && [ "$5" = -q ] && [ "$6" = -- ] &&
+[ "$7" = first.log ] && [ "$8" = 'second log' ] || exit 9
 cat <<'JSON'
 {"count":3,"first":{"source":"first.log","line_no":1},"last":{"line_no":7}}
 {"count":2,"first":{"source":"second log","line_no":1},"last":{"line_no":5}}

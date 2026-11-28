@@ -59,7 +59,7 @@ fn reject_report_flags_outside_fold(cli: &Cli) {
     }
 }
 
-fn early_dispatch(cli: &Cli) -> Option<Result<()>> {
+fn early_dispatch(cli: &Cli, matches: &clap::ArgMatches) -> Option<Result<()>> {
     if cli.help_human {
         return Some(
             io::stdout()
@@ -85,7 +85,7 @@ fn early_dispatch(cli: &Cli) -> Option<Result<()>> {
         let checked = if cli.distilling() {
             cli.validate_distill()
         } else {
-            cli.validate_diff()
+            cli.validate_diff(matches)
         };
         if let Err(e) = checked {
             exit_usage_error(e);
@@ -199,7 +199,7 @@ fn main() -> Result<()> {
     let format_given = matches.value_source("format") == Some(ValueSource::CommandLine);
 
     reject_report_flags_outside_fold(&cli);
-    if let Some(done) = early_dispatch(&cli) {
+    if let Some(done) = early_dispatch(&cli, &matches) {
         return done;
     }
 
@@ -282,7 +282,7 @@ fn main() -> Result<()> {
         },
         ..Config::default()
     };
-    for name in &cli.disable_patterns {
+    for name in cli.disable_patterns.iter().filter(|n| !n.is_empty()) {
         let known = config.set_pattern_enabled(name, false);
         debug_assert!(
             known,
@@ -495,6 +495,7 @@ fn main() -> Result<()> {
         if folder.emit_markdown(&entries, &mut io::stdout())? == output::Reader::Closed {
             output::exit_closed_pipe_keeping_failure();
         }
+        print_run_trailer(&folder, &config, start_time.elapsed(), false)?;
         if pattern_matched || failed_sources != 0 {
             std::process::exit(1);
         }

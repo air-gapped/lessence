@@ -5352,3 +5352,12 @@ https://ex.com/a/b/c host /usr/bin/demo[123]: ready
 https://ex.com/a/b/c host /usr/bin/demo[124]: ready
 https://ex.com/a/b/c host /usr/bin/demo[125]: ready
 https://ex.com/a/b/c host /usr/bin/demo[126]: ready
+
+##CASE lessence-y6lb out_absent=<KEY_VALUE>,
+##WHY a quoted value is folded with both of its quotes or with neither, never with only the opening one
+##FROM invented queue lines
+##FLAGS --explain
+queue_size="12,40" worker=north
+queue_size="13,41" worker=north
+queue_size="14,42" worker=north
+queue_size="15,43" worker=north

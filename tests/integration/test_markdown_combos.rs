@@ -58,6 +58,28 @@ fn markdown_with_preflight_is_rejected() {
 }
 
 #[test]
+fn markdown_with_stats_json_is_rejected() {
+    assert_rejected(&["--format", "markdown", "--stats-json"]);
+}
+
+#[test]
+fn markdown_prints_the_briefing_on_stderr_unless_no_stats() {
+    let briefed = run_with_flags(&["--format", "markdown"]);
+    let quiet = run_with_flags(&["--format", "markdown", "--no-stats"]);
+    assert_eq!(briefed.status.code(), Some(0));
+    assert_eq!(
+        briefed.stdout, quiet.stdout,
+        "the briefing never enters the markdown document"
+    );
+    assert!(
+        !briefed.stderr.is_empty() && quiet.stderr.is_empty(),
+        "briefing: {:?} / no-stats: {:?}",
+        String::from_utf8_lossy(&briefed.stderr),
+        String::from_utf8_lossy(&quiet.stderr)
+    );
+}
+
+#[test]
 fn markdown_alone_still_works() {
     let out = run_with_flags(&["--format", "markdown"]);
     assert_eq!(out.status.code(), Some(0));

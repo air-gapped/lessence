@@ -394,7 +394,9 @@ impl Cli {
         }))
     }
 
-    pub fn validate_diff(&self) -> Result<(), String> {
+    pub fn validate_diff(&self, matches: &clap::ArgMatches) -> Result<(), String> {
+        let given =
+            |id: &str| matches.value_source(id) == Some(clap::parser::ValueSource::CommandLine);
         if self.files.is_empty() || self.files.iter().any(|f| f.as_os_str() == "-") {
             return Err(
                 "--diff needs a file path to compare on (stdin cannot be read by both builds)"
@@ -402,15 +404,12 @@ impl Cli {
             );
         }
         let ignored = [
-            (
-                self.threshold != crate::config::DEFAULT_THRESHOLD,
-                "--threshold",
-            ),
-            (
-                self.min_collapse != crate::config::DEFAULT_MIN_COLLAPSE,
-                "--min-collapse",
-            ),
+            (given("threshold"), "--threshold"),
+            (given("min_collapse"), "--min-collapse"),
             (!self.disable_patterns.is_empty(), "--disable-patterns"),
+            (self.max_lines.is_some(), "--max-lines"),
+            (self.max_line_length.is_some(), "--max-line-length"),
+            (self.fail_on_pattern.is_some(), "--fail-on-pattern"),
             (self.frame_continuations, "--frame-continuations"),
             (self.essence, "--essence"),
         ];
@@ -452,10 +451,10 @@ impl Cli {
 
     pub fn validate_markdown(&self, format: OutputFormat) -> Result<(), String> {
         if format == OutputFormat::Markdown
-            && (self.top.is_some() || self.summary || self.fit || self.preflight)
+            && (self.top.is_some() || self.summary || self.fit || self.preflight || self.stats_json)
         {
             return Err("--format markdown supports only the default fold output; \
-                 drop --top/--summary/--fit/--preflight or use --format text or json"
+                 drop --top/--summary/--fit/--preflight/--stats-json or use --format text or json"
                 .to_string());
         }
         Ok(())
@@ -525,6 +524,7 @@ mod tests {
             &["--summary"][..],
             &["--fit"][..],
             &["--preflight"][..],
+            &["--stats-json"][..],
         ] {
             let cli = Cli::parse_from(
                 ["lessence", "--format", "markdown"]

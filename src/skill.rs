@@ -47,15 +47,12 @@ mod tests {
     #[test]
     fn the_skill_keeps_its_frontmatter_at_byte_zero() {
         let out = render("skill", "9.9.9 (test)").unwrap();
-        assert!(out.starts_with("---\nname: lessence\n"), "{}", &out[..40]);
+        assert!(out.starts_with("---\nname: lessence\n"), "{out}");
         let after = out.find("\n---\n").unwrap() + 5;
-        assert!(
-            out[after..]
-                .starts_with("<!-- Printed by `lessence --skill` from lessence 9.9.9 (test)."),
-            "{}",
-            &out[after..after + 80]
-        );
-        assert!(out.ends_with(&SKILL[SKILL.len() - 40..]));
+        let note = provenance("9.9.9 (test)");
+        assert_eq!(&out[..after], &SKILL[..after]);
+        assert_eq!(&out[after..after + note.len()], note);
+        assert_eq!(&out[after + note.len()..], &SKILL[after..]);
     }
 
     #[test]

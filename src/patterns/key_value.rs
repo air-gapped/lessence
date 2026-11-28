@@ -208,7 +208,15 @@ impl KeyValueDetector {
         let mut out = String::new();
         let mut last = 0;
         for m in regex.find_iter(text) {
+            if m.start() < last {
+                continue;
+            }
             let (key, value) = Self::split_pair(m.as_str());
+            let value_start = m.end() - value.len();
+            let Some(value_end) = Self::quoted_value_end(text, value_start, value) else {
+                continue;
+            };
+            let value = &text[value_start..value_end];
             if Self::already_folded(value)
                 || !Self::is_valid_key_value_pair(key, value)
                 || Self::owned_by_duration_detector(value)
@@ -216,14 +224,30 @@ impl KeyValueDetector {
                 continue;
             }
             tokens.push(Self::pair(key, value));
-            out.push_str(&text[last..m.end() - value.len()]);
+            out.push_str(&text[last..value_start]);
             out.push_str("<KEY_VALUE>");
-            last = m.end();
+            last = value_end;
         }
         if last > 0 {
             out.push_str(&text[last..]);
             *text = out;
         }
+    }
+
+    fn quoted_value_end(text: &str, value_start: usize, value: &str) -> Option<usize> {
+        let end = value_start + value.len();
+        let Some(quote) = value.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+            return Some(end);
+        };
+        if value.len() > 1 && value.ends_with(quote) {
+            return Some(end);
+        }
+        let inner_start = value_start + 1;
+        let close = inner_start + text[inner_start..].find(quote)?;
+        if text[inner_start..close].contains(char::is_whitespace) {
+            return None;
+        }
+        Some(close + 1)
     }
 
     fn split_pair(m: &str) -> (&str, &str) {
@@ -338,6 +362,22 @@ impl KeyValueDetector {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_quoted_value_keeps_both_quotes_or_neither() {
+        let cases = [
+            (r#"queue_size="12,40" w=a"#, "queue_size=<KEY_VALUE> w=a"),
+            (r#"retry_count="3 left" w=a"#, r#"retry_count="3 left" w=a"#),
+            (r#"queue_size="12" w=a"#, "queue_size=<KEY_VALUE> w=a"),
+            ("queue_size='7;8' w=a", "queue_size=<KEY_VALUE> w=a"),
+            (r#"queue_size=" 5" w=a"#, r#"queue_size=" 5" w=a"#),
+            (r#"queue_size="" w=a"#, "queue_size=<KEY_VALUE> w=a"),
+            (r#"queue_size="a"b" w=a"#, "queue_size=<KEY_VALUE> w=a"),
+        ];
+        for (line, want) in cases {
+            assert_eq!(KeyValueDetector::detect_and_replace(line).0, want, "{line}");
+        }
+    }
+
     use super::*;
 
     fn accepted(key: &str, value: &str, line: &str) -> bool {

@@ -57,3 +57,61 @@ fn diff_reports_changes_and_uses_diff_exit_status() {
         "groups: 3 -> 3   moved: 0\n"
     );
 }
+
+#[test]
+fn diff_passes_a_dash_named_file_as_a_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("-q"), "alpha\nbeta\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_lessence");
+    let output = crate::common::command(bin)
+        .current_dir(dir.path())
+        .args(["--diff", bin, "--", "-q"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!text.contains("groups: 0 -> 0"), "{text}");
+}
+
+#[test]
+fn diff_refuses_flags_its_folds_would_ignore_even_at_default_values() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("in.log");
+    std::fs::write(&log, "alpha\n").unwrap();
+    let bin = env!("CARGO_BIN_EXE_lessence");
+    for flag in [
+        ["--threshold", "83"],
+        ["--min-collapse", "3"],
+        ["--max-lines", "10"],
+        ["--max-line-length", "100"],
+        ["--fail-on-pattern", "x"],
+    ] {
+        let output = crate::common::command(bin)
+            .args(["--diff", bin])
+            .args(flag)
+            .arg(&log)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{flag:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(flag[0]),
+            "{flag:?}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_name_in_disable_patterns_is_a_no_op() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("in.log");
+    std::fs::write(&log, "alpha\n").unwrap();
+    let output = crate::common::command(env!("CARGO_BIN_EXE_lessence"))
+        .args(["--disable-patterns", "json,"])
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

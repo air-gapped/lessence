@@ -483,6 +483,8 @@ impl Anonymizer {
                     "{kept}{}",
                     invent_hex_same_case(&mut self.rng, &group[2..])
                 ));
+            } else if group.contains('.') {
+                groups.push(self.draw_ipv4_keeping_subnet_membership(group));
             } else {
                 groups.push(invent_hex_same_case(&mut self.rng, group));
             }
@@ -969,6 +971,24 @@ mod ipv6_tests {
         assert_ne!(groups[2], "fe80", "only the first group defines the class");
         assert_ne!(groups[3], "fd12", "host groups must be invented");
         assert_ne!(groups[4], "fc34", "host groups must be invented");
+    }
+
+    #[test]
+    fn mixed_ipv6_gets_an_invented_dotted_ipv4_tail() {
+        for seed in 0..8 {
+            let mut a = Anonymizer::new(seed, Vec::new());
+            for original in ["::ffff:10.1.2.3", "fe80::1:192.168.7.9"] {
+                let out = a.draw_ipv6_keeping_prefix_class(original);
+                assert!(out.parse::<Ipv6Addr>().is_ok(), "invalid IPv6: {out}");
+                let tail = out.rsplit(':').next().unwrap_or_default();
+                let original_tail = original.rsplit(':').next().unwrap_or_default();
+                assert!(
+                    tail.parse::<std::net::Ipv4Addr>().is_ok(),
+                    "the IPv4 tail must stay dotted IPv4: {out}"
+                );
+                assert_ne!(tail, original_tail, "the IPv4 tail must be invented: {out}");
+            }
+        }
     }
 }
 
