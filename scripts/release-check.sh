@@ -199,6 +199,16 @@ fi
 slow_tail="$(tail -8 "$SCRATCH/slow")"
 rm -f "$SCRATCH/slow"
 
+# ── value eval: S (lessence) must beat R (raw log) per scripts/value-eval.py ──
+
+echo "Running value eval (python3 scripts/value-eval.py --release)..." >&2
+value_status="pass"
+if ! python3 "$ROOT/scripts/value-eval.py" --release --lessence "$ROOT/target/release/lessence" >"$SCRATCH/value" 2>&1; then
+    value_status="FAIL"
+fi
+value_tail="$(tail -12 "$SCRATCH/value")"
+rm -f "$SCRATCH/value"
+
 # ── Output ───────────────────────────────────────────────────────────────
 
 echo ""
@@ -216,6 +226,10 @@ fi
 echo "README compression table: $readme_status ($readme_msg)"
 echo "agent skill: $skill_status ($skill_msg)"
 echo "release targets: $targets_status${targets_msg:+ ($targets_msg)}"
+echo "value eval: $value_status (see target/gate/value.json)"
+if [ "$value_status" = "FAIL" ]; then
+    echo "$value_tail"
+fi
 
 # ── release.json ─────────────────────────────────────────────────────────
 
@@ -227,12 +241,12 @@ jq -n --arg time "$now" --arg head "$(git rev-parse HEAD)" --arg base "$last_tag
     --arg base_commit "$base_commit" --arg gate "$gate_status" \
     --argjson caught "$mutants_caught" --argjson total "$mutants_total" --arg score "$mutation_score" \
     --arg ci "$ci_status" --arg slow "$slow_status" --arg readme "$readme_status" \
-    --arg skill "$skill_status" --arg targets "$targets_status" \
+    --arg skill "$skill_status" --arg targets "$targets_status" --arg value "$value_status" \
     '{time: $time, git_head: $head, base_tag: $base, base_commit: $base_commit, gate: $gate,
       mutants: {caught: $caught, total: $total, score_pct: $score},
       ci: $ci, slow: $slow, readme_compression: $readme, agent_skill: $skill,
-      release_targets: $targets}' >"$GATE_DIR/release.json.tmp"
+      release_targets: $targets, value_eval: $value}' >"$GATE_DIR/release.json.tmp"
 mv -f "$GATE_DIR/release.json.tmp" "$GATE_DIR/release.json"
 
 [ "$gate_status" != "FAIL" ] && [ "$ci_status" = "pass" ] && [ "$slow_status" = "pass" ] \
-    && [ "$readme_status" = "pass" ] && [ "$skill_status" = "pass" ] && [ "$targets_status" = "pass" ]
+    && [ "$readme_status" = "pass" ] && [ "$skill_status" = "pass" ] && [ "$targets_status" = "pass" ] && [ "$value_status" = "pass" ]

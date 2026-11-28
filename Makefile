@@ -4,7 +4,7 @@
 
 .PHONY: ci fmt clippy doc build test deny mutants-pins comment-budget corpus-acceptance goldens docs install clean help \
        coverage fuzz fuzz-fold mutants mutants-full check-fuzz-prereqs check-mutants-prereqs \
-       gate release-check distill hooks-selftest
+       gate release-check distill hooks-selftest value-eval
 
 #---------------------------------------------------------------------------
 # CI pipeline (matches GitHub Actions step-for-step)
@@ -69,6 +69,10 @@ goldens:
 ## release-check: Gate vs the last published release + mutants on the diff + make ci + slow tests + README table/skill freshness (~20 min)
 release-check:
 	./scripts/release-check.sh
+
+## value-eval: Blind agent eval, R (raw log + grep) vs S (+ lessence); RELEASE=1 adds the full bank + Haiku; PREVIEW=1 spends no tokens
+value-eval:
+	python3 scripts/value-eval.py $(if $(RELEASE),--release) $(if $(PREVIEW),--preview)
 
 ## distill: Regenerate examples/distilled/*.log + .golden from examples/originals/*.log
 distill:
