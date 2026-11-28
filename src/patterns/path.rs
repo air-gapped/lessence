@@ -106,7 +106,8 @@ impl PathDetector {
             Self::fold_event_object_meta(&mut result, &mut tokens, tag);
         }
         for pass in Self::PASSES_FULL_URL_BEFORE_FILE_PATH {
-            pass(&mut result, &mut tokens, tag);
+            let tag_now = tag.and_then(|_| Self::syslog_program_tag_span(&result));
+            pass(&mut result, &mut tokens, tag_now);
         }
         (result, tokens)
     }
@@ -116,13 +117,14 @@ impl PathDetector {
         tokens: &mut Vec<Token>,
         _: Option<SyslogProgramTag>,
     ) {
-        *result = super::EVENT_OBJECT_META
-            .replace_all(result, |caps: &regex::Captures| {
-                let event = caps.get(0).unwrap().as_str();
-                tokens.push(Token::Path(event.to_string()));
-                "<EVENT_OBJECT>".to_string()
-            })
-            .to_string();
+        let folded = super::EVENT_OBJECT_META.replace_all(result, |caps: &regex::Captures| {
+            let event = caps.get(0).unwrap().as_str();
+            tokens.push(Token::Path(event.to_string()));
+            "<EVENT_OBJECT>".to_string()
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_source_line_numbers(
@@ -130,27 +132,29 @@ impl PathDetector {
         tokens: &mut Vec<Token>,
         _: Option<SyslogProgramTag>,
     ) {
-        *result = SOURCE_LINE
-            .replace_all(result, |caps: &regex::Captures| {
-                let matched = caps.get(0).unwrap().as_str();
-                let filename = caps.get(1).unwrap().as_str();
-                tokens.push(Token::Path(matched.to_string()));
-                format!("{filename}:<LINE>]")
-            })
-            .to_string();
+        let folded = SOURCE_LINE.replace_all(result, |caps: &regex::Captures| {
+            let matched = caps.get(0).unwrap().as_str();
+            let filename = caps.get(1).unwrap().as_str();
+            tokens.push(Token::Path(matched.to_string()));
+            format!("{filename}:<LINE>]")
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_full_urls(result: &mut String, tokens: &mut Vec<Token>, _: Option<SyslogProgramTag>) {
-        *result = FULL_URL
-            .replace_all(result, |caps: &regex::Captures| {
-                let whole = caps.get(0).unwrap().as_str();
-                let url = whole
-                    .trim_end_matches(SENTENCE_PUNCTUATION_AFTER_A_URL)
-                    .trim_end_matches('\\');
-                tokens.push(Token::Path(url.to_string()));
-                format!("<PATH>{}", &whole[url.len()..])
-            })
-            .to_string();
+        let folded = FULL_URL.replace_all(result, |caps: &regex::Captures| {
+            let whole = caps.get(0).unwrap().as_str();
+            let url = whole
+                .trim_end_matches(SENTENCE_PUNCTUATION_AFTER_A_URL)
+                .trim_end_matches('\\');
+            tokens.push(Token::Path(url.to_string()));
+            format!("<PATH>{}", &whole[url.len()..])
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_file_paths(
@@ -158,20 +162,21 @@ impl PathDetector {
         tokens: &mut Vec<Token>,
         tag: Option<SyslogProgramTag>,
     ) {
-        *result = FILE_PATH
-            .replace_all(result, |caps: &regex::Captures| {
-                let path = caps.get(1).unwrap().as_str();
-                if Self::is_likely_file_path(path)
-                    && !Self::is_glued_to_word(result, &caps.get(0).unwrap())
-                    && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
-                {
-                    tokens.push(Token::Path(path.to_string()));
-                    "<PATH>".to_string()
-                } else {
-                    caps[0].to_string()
-                }
-            })
-            .to_string();
+        let folded = FILE_PATH.replace_all(result, |caps: &regex::Captures| {
+            let path = caps.get(1).unwrap().as_str();
+            if Self::is_likely_file_path(path)
+                && !Self::is_glued_to_word(result, &caps.get(0).unwrap())
+                && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
+            {
+                tokens.push(Token::Path(path.to_string()));
+                "<PATH>".to_string()
+            } else {
+                caps[0].to_string()
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_relative_paths(
@@ -201,31 +206,33 @@ impl PathDetector {
         tokens: &mut Vec<Token>,
         _: Option<SyslogProgramTag>,
     ) {
-        *result = WINDOWS_PATH
-            .replace_all(result, |caps: &regex::Captures| {
-                let path = caps.get(1).unwrap().as_str();
-                tokens.push(Token::Path(path.to_string()));
-                "<PATH>".to_string()
-            })
-            .to_string();
+        let folded = WINDOWS_PATH.replace_all(result, |caps: &regex::Captures| {
+            let path = caps.get(1).unwrap().as_str();
+            tokens.push(Token::Path(path.to_string()));
+            "<PATH>".to_string()
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn fold_url_paths(result: &mut String, tokens: &mut Vec<Token>, tag: Option<SyslogProgramTag>) {
-        *result = URL_PATH
-            .replace_all(result, |caps: &regex::Captures| {
-                let path = caps.get(1).unwrap().as_str();
-                if Self::is_likely_url_path(path)
-                    && !Self::is_glued_to_word(result, &caps.get(0).unwrap())
-                    && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
-                {
-                    let normalized = Self::normalize_url_path(path);
-                    tokens.push(Token::Path(path.to_string()));
-                    normalized
-                } else {
-                    caps[0].to_string()
-                }
-            })
-            .to_string();
+        let folded = URL_PATH.replace_all(result, |caps: &regex::Captures| {
+            let path = caps.get(1).unwrap().as_str();
+            if Self::is_likely_url_path(path)
+                && !Self::is_glued_to_word(result, &caps.get(0).unwrap())
+                && !Self::in_syslog_tag(tag, &caps.get(0).unwrap())
+            {
+                let normalized = Self::normalize_url_path(path);
+                tokens.push(Token::Path(path.to_string()));
+                normalized
+            } else {
+                caps[0].to_string()
+            }
+        });
+        if let std::borrow::Cow::Owned(s) = folded {
+            *result = s;
+        }
     }
 
     fn has_multiple_segments(path: &str) -> bool {
@@ -321,6 +328,14 @@ impl PathDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_event_object_dump_folds_to_one_placeholder() {
+        let (result, tokens) =
+            PathDetector::detect_and_replace("got &Event{ObjectMeta:{name:a ns:{b}}} done");
+        assert_eq!(result, "got <EVENT_OBJECT>} done");
+        assert_eq!(tokens.len(), 1, "{tokens:?}");
+    }
 
     #[test]
     fn test_file_path_detection() {

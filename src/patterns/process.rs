@@ -26,7 +26,7 @@ const FOLDED_KLOG_CALL_SITE_END: &str = ".go:<LINE>]";
 
 static KLOG_PID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"(?P<timestamp><TIMESTAMP>\s+)(?P<pid>\d+)(?P<call_site> (?:{KLOG_GO_CALL_SITE}|{}\d+\x00)\])",
+        r"(?P<timestamp><TIMESTAMP>\s+)(?P<pid>[0-9]+)(?P<call_site> (?:{KLOG_GO_CALL_SITE}|{}\d+\x00)\])",
         regex::escape(AnchorSentinel::KlogCallSiteVisibleToPid.start())
     ))
     .unwrap()
@@ -44,7 +44,7 @@ impl ProcessDetector {
         {
             super::fold_matches(&mut result, &mut tokens, &KLOG_PID_REGEX, |caps| {
                 Some((
-                    Token::Pid(caps["pid"].parse().unwrap_or(0)),
+                    Token::Pid(caps["pid"].parse().ok()?),
                     format!("{}<PID>{}", &caps["timestamp"], &caps["call_site"]),
                 ))
             });
@@ -141,6 +141,14 @@ mod tests {
         }
         let (r, _) = ProcessDetector::detect_and_replace("<TIMESTAMP> 1 status.go:<LINE>] x 1 y");
         assert_eq!(r, "<TIMESTAMP> <PID> status.go:<LINE>] x 1 y");
+    }
+
+    #[test]
+    fn a_klog_pid_column_too_wide_for_a_pid_stays_as_written() {
+        let line = "<TIMESTAMP> 4294967296 status.go:<LINE>] done";
+        let (r, t) = ProcessDetector::detect_and_replace(line);
+        assert_eq!(r, line);
+        assert!(!t.iter().any(|t| matches!(t, Token::Pid(_))), "{t:?}");
     }
 
     #[test]
@@ -276,8 +284,9 @@ mod tests {
 
     #[test]
     fn paren_pid_dedup_no_duplicate_tokens() {
-        let text = "pid=12345 process (12345) running";
-        let (_result, tokens) = ProcessDetector::detect_and_replace(text);
+        let text = "pid=12345 process(12345) running";
+        let (result, tokens) = ProcessDetector::detect_and_replace(text);
+        assert_eq!(result, "pid=<PID> process(<PID>) running");
         let pid_count = tokens
             .iter()
             .filter(|t| matches!(t, Token::Pid(12345)))

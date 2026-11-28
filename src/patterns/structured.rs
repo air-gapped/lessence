@@ -22,7 +22,7 @@ fn level_values() -> String {
 
 static JSON_LEVEL_FIRST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"\{{"[^"]*(?:{LEVEL_KEYS})"[^"]*:\s*"({})"[^}}]*"(?:{COMPONENT_KEYS})"[^"]*:\s*"([^"]+)"[^}}]*\}}"#,
+        r#"\{{"(?:{LEVEL_KEYS})"\s*:\s*"({})"[^}}]*"(?:{COMPONENT_KEYS})"\s*:\s*"([^"]+)"[^}}]*\}}"#,
         level_values()
     ))
     .unwrap()
@@ -30,7 +30,7 @@ static JSON_LEVEL_FIRST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 static JSON_COMPONENT_FIRST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"\{{"[^"]*"(?:{COMPONENT_KEYS})"[^"]*:\s*"([^"]+)"[^}}]*"(?:{LEVEL_KEYS})"[^"]*:\s*"({})"[^}}]*\}}"#,
+        r#"\{{"(?:{COMPONENT_KEYS})"\s*:\s*"([^"]+)"[^}}]*"(?:{LEVEL_KEYS})"\s*:\s*"({})"[^}}]*\}}"#,
         level_values()
     ))
     .unwrap()
@@ -38,14 +38,14 @@ static JSON_COMPONENT_FIRST_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 static LOGFMT_STRUCTURED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"(?:{LEVEL_KEYS})=({})\s+(?:{COMPONENT_KEYS})=([^\s]+)",
+        r"(?:^|\s)(?:{LEVEL_KEYS})=({})\s+(?:{COMPONENT_KEYS})=([^\s]+)",
         level_values()
     ))
     .unwrap()
 });
 
 static DOCKER_JSON_FILE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"\{"[^}]*"log":\s*"[^"]*\[(INFO|ERROR|WARN|DEBUG)\]\s+([^:]+):[^"]*"[^}]*\}"#)
+    Regex::new(r#"\{[^}]*"log":\s*"[^"]*\[(INFO|ERROR|WARN|DEBUG)\]\s+([^:]+):[^"]*"[^}]*\}"#)
         .unwrap()
 });
 
@@ -128,6 +128,9 @@ impl StructuredMessageDetector {
     ) {
         let (level_group, component_group) = order.level_and_component_groups();
         for caps in regex.captures_iter(text) {
+            if Self::inside_quotes(text, caps.get(0).unwrap().start()) {
+                continue;
+            }
             let level = caps.get(level_group).unwrap().as_str();
             let component = caps.get(component_group).unwrap().as_str();
 
@@ -138,6 +141,14 @@ impl StructuredMessageDetector {
                 });
             }
         }
+    }
+
+    fn inside_quotes(text: &str, at: usize) -> bool {
+        (0..at)
+            .filter(|&i| super::toggles_quote(text.as_bytes(), i))
+            .count()
+            % 2
+            == 1
     }
 
     fn apply_container_pattern(text: &str, tokens: &mut Vec<Token>) {
@@ -321,16 +332,16 @@ mod tests {
 
     #[test]
     fn test_microservice_structured_detection() {
-        let microservice_line = r#"{"timestamp":"2024-01-01T10:00:00Z","level":"ERROR","service":"payment-api","message":"Payment failed"}"#;
+        let microservice_line = r#"{"level":"error","timestamp":"2024-01-01T10:00:00Z","service":"payment-api","message":"Payment failed"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(microservice_line);
-
-        if !tokens.is_empty() {
-            assert_eq!(result, microservice_line, "text must be preserved verbatim");
-            if let Token::StructuredMessage { component, level } = &tokens[0] {
-                assert_eq!(component, "payment-api");
-                assert_eq!(level, "error");
-            }
-        }
+        assert_eq!(result, microservice_line);
+        assert_eq!(
+            tokens,
+            vec![Token::StructuredMessage {
+                component: "payment-api".to_string(),
+                level: "error".to_string()
+            }]
+        );
     }
 
     #[test]
@@ -340,26 +351,28 @@ mod tests {
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(logfmt_line);
 
         assert_eq!(result, logfmt_line, "text must be preserved verbatim");
-        if !tokens.is_empty()
-            && let Token::StructuredMessage { component, level } = &tokens[0]
-        {
-            assert_eq!(component, "api-gateway");
-            assert_eq!(level, "info");
-        }
+        assert_eq!(
+            tokens,
+            vec![Token::StructuredMessage {
+                component: "api-gateway".to_string(),
+                level: "info".to_string()
+            }]
+        );
     }
 
     #[test]
     fn test_container_structured_detection() {
-        let container_line = r#"{"log":"2024-01-01T10:00:00.000Z [INFO] application: Starting server\n","stream":"stdout"}"#;
+        let container_line = r#"{"log":"2024-01-01T10:00:00.000Z [INFO] application: Starting server\n","stream":"stdout","level":"info"}"#;
         let (result, tokens) = StructuredMessageDetector::detect_and_replace(container_line);
 
-        if !tokens.is_empty() {
-            assert_eq!(result, container_line, "text must be preserved verbatim");
-            if let Token::StructuredMessage { component, level } = &tokens[0] {
-                assert_eq!(component, "application");
-                assert_eq!(level, "info");
-            }
-        }
+        assert_eq!(result, container_line, "text must be preserved verbatim");
+        assert_eq!(
+            tokens,
+            vec![Token::StructuredMessage {
+                component: "application".to_string(),
+                level: "info".to_string()
+            }]
+        );
     }
 
     #[test]
@@ -470,9 +483,44 @@ mod tests {
             .filter(|token| matches!(token, Token::StructuredMessage { .. }))
             .count();
 
-        if structured_count > 0 {
-            assert_eq!(result, multi_line, "text must be preserved verbatim");
-        }
+        assert_eq!(result, multi_line, "text must be preserved verbatim");
+        assert_eq!(structured_count, 2);
+    }
+
+    #[test]
+    fn a_key_ending_in_level_is_not_the_level_key() {
+        let line = r#"{"risk_level":"critical","component":"payment-api","level":"info"}"#;
+        let (_r, tokens) = StructuredMessageDetector::detect_and_replace(line);
+        assert!(
+            !tokens.contains(&Token::StructuredMessage {
+                component: "payment-api".to_string(),
+                level: "critical".to_string()
+            }),
+            "{tokens:?}"
+        );
+    }
+
+    #[test]
+    fn a_component_first_record_reads_its_level() {
+        let line = r#"{"component":"payment-api","level":"warn","msg":"x"}"#;
+        let (_r, tokens) = StructuredMessageDetector::detect_and_replace(line);
+        assert_eq!(
+            tokens,
+            vec![Token::StructuredMessage {
+                component: "payment-api".to_string(),
+                level: "warn".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_logfmt_pair_inside_a_quoted_value_is_not_the_record_level() {
+        let line = r#"level=error msg="replayed level=info component=api-gw""#;
+        let (_r, tokens) = StructuredMessageDetector::detect_and_replace(line);
+        assert!(tokens.is_empty(), "{tokens:?}");
+        let (_r, tokens) =
+            StructuredMessageDetector::detect_and_replace("xlevel=info component=api-gw");
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 
     #[test]
@@ -896,7 +944,7 @@ mod tests {
     #[test]
     fn the_component_first_pattern_reads_the_level_from_group_two() {
         let (_, tokens) = StructuredMessageDetector::detect_and_replace(
-            r#"{"x"service":"db-proxy","level":"warn"}"#,
+            r#"{"service":"db-proxy","level":"warn"}"#,
         );
         assert_eq!(
             tokens,

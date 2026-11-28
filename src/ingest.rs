@@ -195,20 +195,28 @@ impl Ingestor {
             let lines = PhysicalLines::new(reader.by_ref(), self.max_line_length);
             for (line_index, line) in lines.enumerate() {
                 let line_number = SourceLineNumber::of_physical_line_index(line_index);
-                let line = line.map_err(|e| {
-                    anyhow::anyhow!("{}: line {}: {e}", source.display_name(), line_number.get())
-                })?;
-
                 if let Some(max_lines) = self.max_lines_reached_at(lines_seen) {
                     eprintln!("lessence: Line limit of {max_lines} reached, stopping processing");
                     report.max_lines_reached = true;
                     break;
                 }
+                let line = line.map_err(|e| {
+                    anyhow::anyhow!("{}: line {}: {e}", source.display_name(), line_number.get())
+                })?;
                 lines_seen += 1;
 
-                let Physical::Text(line) = line else {
-                    report.overlong_lines_skipped += 1;
-                    continue;
+                let line = match line {
+                    Physical::Text(line) => line,
+                    Physical::Overlong { indented } => {
+                        report.overlong_lines_skipped += 1;
+                        if self.frame_continuations
+                            && !indented
+                            && let Some(record) = framer.open.take()
+                        {
+                            record.emit(&mut sink)?;
+                        }
+                        continue;
+                    }
                 };
 
                 if self.fail_pattern_matches_raw(&line) {
@@ -308,7 +316,7 @@ const CRLF_ROOM: usize = "\r\n".len();
 
 enum Physical {
     Text(String),
-    Overlong,
+    Overlong { indented: bool },
 }
 
 /// `BufRead::lines` with a length limit that is applied while reading: a
@@ -371,7 +379,9 @@ impl<R: BufRead> PhysicalLines<R> {
             .max_length
             .is_some_and(|max_length| line.len() > max_length)
         {
-            return Ok(Some(Physical::Overlong));
+            return Ok(Some(Physical::Overlong {
+                indented: starts_indented(line.as_bytes()),
+            }));
         }
         Ok(Some(Physical::Text(line)))
     }
@@ -401,7 +411,9 @@ impl<R: BufRead> PhysicalLines<R> {
             }
         }
         match valid {
-            Ok(pending) if pending.is_empty() => Ok(Physical::Overlong),
+            Ok(pending) if pending.is_empty() => Ok(Physical::Overlong {
+                indented: starts_indented(kept),
+            }),
             _ => Err(not_utf8()),
         }
     }
@@ -468,6 +480,10 @@ impl AggregateHash {
     fn finish(self) -> [u8; 32] {
         self.0.finalize().into()
     }
+}
+
+fn starts_indented(bytes: &[u8]) -> bool {
+    matches!(bytes.first(), Some(b' ' | b'\t'))
 }
 
 fn is_indented_continuation(line: &str) -> bool {
@@ -546,7 +562,7 @@ mod tests {
         PhysicalLines::new(io::BufReader::with_capacity(4, bytes), max_length)
             .map(|line| match line {
                 Ok(Physical::Text(text)) => Ok(Some(text)),
-                Ok(Physical::Overlong) => Ok(None),
+                Ok(Physical::Overlong { .. }) => Ok(None),
                 Err(e) => Err(e.to_string()),
             })
             .collect()
@@ -986,6 +1002,44 @@ Traceback:\n  at foo\n  at bar\n",
             ]
         );
         assert_eq!(report.continuation_lines_to_add_back, 1);
+    }
+
+    #[test]
+    fn framing_closes_the_open_record_at_an_unindented_overlong_line() {
+        let long = "x".repeat(40);
+        let (events, _) = record(
+            &ingestor(&Config {
+                frame_continuations: true,
+                max_line_length: Some(10),
+                ..Config::default()
+            }),
+            vec![reader(None, &format!("a\n{long}\n  cont\n"))],
+        );
+        assert_eq!(
+            events,
+            vec![
+                Recorded::Begin(None),
+                Recorded::Line("a".into(), 1),
+                Recorded::Line("  cont".into(), 3),
+            ]
+        );
+    }
+
+    #[test]
+    fn max_lines_stops_before_an_undecodable_line_past_the_limit() {
+        let bytes = [b"ok\n".as_slice(), &[0xff, b'\n']].concat();
+        let (events, report) = record(
+            &ingestor(&Config {
+                max_lines: Some(1),
+                ..Config::default()
+            }),
+            vec![InputReader {
+                source: Source::Stdin,
+                reader: Box::new(io::Cursor::new(bytes)),
+            }],
+        );
+        assert_eq!(events.last(), Some(&Recorded::Line("ok".into(), 1)));
+        assert!(report.max_lines_reached);
     }
 
     #[test]

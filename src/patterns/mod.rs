@@ -311,8 +311,8 @@ pub(crate) fn is_word_sep(b: u8) -> bool {
     b.is_ascii_whitespace() || JSON_FIELD_SEPARATORS.contains(&b)
 }
 
-fn toggles_quote(b: &[u8], i: usize) -> bool {
-    b[i] == b'"' && (i == 0 || b[i - 1] != b'\\')
+pub(crate) fn toggles_quote(b: &[u8], i: usize) -> bool {
+    b[i] == b'"' && b[..i].iter().rev().take_while(|&&c| c == b'\\').count() % 2 == 0
 }
 
 pub(crate) fn word_spans(s: &str) -> impl Iterator<Item = (usize, usize)> + '_ {
@@ -664,5 +664,16 @@ mod similarity_token_boundaries {
             SimTokens::from_normalized(&capped),
             SimTokens::ByteOverlap
         ));
+    }
+
+    #[test]
+    fn a_quote_after_an_escaped_backslash_closes_the_string() {
+        let bs = "\\".repeat(2);
+        let line = format!(r#"{{"p":"C:{bs}","n":1}}"#);
+        let spans: Vec<&str> = word_spans(&line).map(|(s, l)| &line[s..s + l]).collect();
+        assert_eq!(
+            spans,
+            vec![format!(r#""p":"C:{bs}""#), r#""n":1"#.to_string()]
+        );
     }
 }

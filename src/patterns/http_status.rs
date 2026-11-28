@@ -6,22 +6,23 @@ const STATUS_CODE: &str = r"(?P<status>\d{3})";
 const WHOLE_STATUS_CODE: &str = r"\b[1-5]\d{2}\b";
 const ARROW_AND_TEXT_BETWEEN: &str = r"\s*->\s*.*?";
 const HTTP_METHODS: &str = "GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH";
-const PREFILTER_METHODS: [&str; 4] = ["GET ", "POST ", "PUT ", "DELETE "];
-const QUOTE_THEN_STATUS_DIGIT: [&str; 4] = ["\" 2", "\" 3", "\" 4", "\" 5"];
+const PREFILTER_METHODS: [&str; 7] = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"];
 
 static QUOTED_PROTOCOL_STATUS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#"(?:"[^"]*(?:HTTP/\d\.\d)"?\s+){STATUS_CODE}(?:\s+\d+(?:\s+|$))"#
+        r#"(?:"[^"]*(?:HTTP/\d\.\d)"?\s+){STATUS_CODE}(?:\s+(?:\d+|-)(?:\s+|$))"#
     ))
     .unwrap()
 });
 
 static ACCESS_LOG_STATUS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#""(?:{HTTP_METHODS})\s+[^"]*"\s+{STATUS_CODE}\s+\d+"#
+        r#""(?:{HTTP_METHODS})\s+[^"]*"\s+{STATUS_CODE}\s+(?:\d+|-(?:\s|$))"#
     ))
     .unwrap()
 });
+
+static WHOLE_STATUS: LazyLock<Regex> = LazyLock::new(|| Regex::new(WHOLE_STATUS_CODE).unwrap());
 
 static PROXY_STATUS_ARROW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
@@ -50,14 +51,23 @@ impl HttpStatusDetector {
 
     fn has_http_indicators(text: &str) -> bool {
         text.contains("HTTP/")
-            || PREFILTER_METHODS.iter().any(|method| text.contains(method))
+            || PREFILTER_METHODS
+                .iter()
+                .any(|method| Self::followed_by_whitespace(text, method))
             || Self::has_quote_then_status_digit(text)
     }
 
+    fn followed_by_whitespace(text: &str, needle: &str) -> bool {
+        text.match_indices(needle)
+            .any(|(i, _)| text[i + needle.len()..].starts_with(char::is_whitespace))
+    }
+
     fn has_quote_then_status_digit(text: &str) -> bool {
-        QUOTE_THEN_STATUS_DIGIT
-            .iter()
-            .any(|indicator| text.contains(indicator))
+        text.match_indices('"').any(|(i, _)| {
+            let rest = &text[i + 1..];
+            let digits = rest.trim_start();
+            digits.len() < rest.len() && digits.starts_with(|c: char| ('1'..='5').contains(&c))
+        })
     }
 
     fn apply_status_pattern(text: &mut String, tokens: &mut Vec<Token>, regex: &Regex) {
@@ -82,11 +92,16 @@ impl HttpStatusDetector {
     }
 
     fn apply_proxy_pattern(text: &mut String, tokens: &mut Vec<Token>) {
-        *text = PROXY_STATUS_ARROW
-            .replace_all(text, |caps: &regex::Captures| {
+        let source: &str = text;
+        let folded = PROXY_STATUS_ARROW
+            .replace_all(source, |caps: &regex::Captures| {
                 let upstream_status = &caps["upstream"];
                 let between = &caps["between"];
                 let downstream_status = &caps["downstream"];
+                let after = &source[caps.get(0).unwrap().end()..];
+                if between.contains("<HTTP_STATUS_") || WHOLE_STATUS.is_match(after) {
+                    return caps[0].to_string();
+                }
 
                 if let (Ok(upstream), Ok(downstream)) = (
                     upstream_status.parse::<u16>(),
@@ -108,6 +123,7 @@ impl HttpStatusDetector {
                 }
             })
             .to_string();
+        *text = folded;
     }
 
     fn classify_status_code(status: u16) -> String {
@@ -362,5 +378,49 @@ mod tests {
             miss,
             "GET /api upstream <HTTP_STATUS_5XX> -> cache miss on node 7 then <HTTP_STATUS_2XX>"
         );
+    }
+
+    #[test]
+    fn a_quote_needs_whitespace_then_a_status_digit() {
+        assert!(!HttpStatusDetector::has_quote_then_status_digit(
+            r#"x "200 y"#
+        ));
+        assert!(!HttpStatusDetector::has_quote_then_status_digit(
+            r#""/p" abc"#
+        ));
+        assert!(HttpStatusDetector::has_quote_then_status_digit(
+            "\"/p\"\t404"
+        ));
+    }
+
+    #[test]
+    fn a_tab_separated_head_request_folds_its_status() {
+        let (result, tokens) = HttpStatusDetector::detect_and_replace("\"HEAD /x\"\t404\t1");
+        assert_eq!(result, "\"HEAD /x\"\t<HTTP_STATUS_4XX>\t1");
+        assert_eq!(tokens, vec![Token::HttpStatusClass("4xx".into())]);
+    }
+
+    #[test]
+    fn a_dash_byte_field_still_marks_an_access_log_status() {
+        let (result, _) = HttpStatusDetector::detect_and_replace(r#""GET /cached" 304 -"#);
+        assert_eq!(result, r#""GET /cached" <HTTP_STATUS_3XX> -"#);
+    }
+
+    #[test]
+    fn a_number_after_a_folded_status_is_not_a_proxy_downstream() {
+        let input = r#"upstream 200 -> "GET /backend" 502 123"#;
+        let (result, _) = HttpStatusDetector::detect_and_replace(input);
+        assert_eq!(
+            result,
+            r#"upstream 200 -> "GET /backend" <HTTP_STATUS_5XX> 123"#
+        );
+    }
+
+    #[test]
+    fn two_status_shaped_numbers_after_an_arrow_leave_the_arrow_unfolded() {
+        let input = "GET /api 502 -> node 123 returned 200";
+        let (result, tokens) = HttpStatusDetector::detect_and_replace(input);
+        assert_eq!(result, input);
+        assert!(tokens.is_empty(), "{tokens:?}");
     }
 }

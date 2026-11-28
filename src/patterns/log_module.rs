@@ -23,7 +23,7 @@ static NGINX_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 static FRAMEWORK_LOG_MODULE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r"(?P<level>{FRAMEWORK_LEVELS})\s+\[(?P<module>[a-zA-Z][a-zA-Z0-9_.]+)\]"
+        r"\b(?P<level>{FRAMEWORK_LEVELS})\s+\[(?P<module>[a-zA-Z][a-zA-Z0-9_.]+)\]"
     ))
     .unwrap()
 });
@@ -585,5 +585,14 @@ mod tests {
             !LogWithModuleDetector::is_nginx_module("ngx_something"),
             "the ngx_ prefix alone is not enough"
         );
+    }
+
+    #[test]
+    fn a_level_word_must_start_at_a_word_boundary() {
+        let (_r, tokens) = LogWithModuleDetector::detect_and_replace("NOTERROR [spring.web] x");
+        assert!(tokens.is_empty(), "{tokens:?}");
+        let (_r, tokens) =
+            LogWithModuleDetector::detect_and_replace("<TIMESTAMP> ERROR [spring.web] x");
+        assert!(!tokens.is_empty());
     }
 }

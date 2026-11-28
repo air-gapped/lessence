@@ -80,7 +80,8 @@ fn classify_nearest_existing_ancestor(dir: &Path) -> Result<(u64, &'static str)>
     }
     let stat = nix::sys::statfs::statfs(probe)
         .with_context(|| format!("statfs {} failed", probe.display()))?;
-    let magic = stat.filesystem_type().0 as u64;
+    #[allow(clippy::unnecessary_cast)]
+    let magic = filesystem_magic(stat.filesystem_type().0 as i64);
     for (m, name) in LOCAL_BACKING.iter().chain(REMOTE_BACKING) {
         if *m == magic {
             return Ok((magic, name));
@@ -92,6 +93,11 @@ fn classify_nearest_existing_ancestor(dir: &Path) -> Result<(u64, &'static str)>
         }
     }
     Ok((magic, "unknown"))
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn filesystem_magic(raw: i64) -> u64 {
+    u64::from(raw as u32)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
@@ -450,6 +456,15 @@ impl Spool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn a_sign_extended_32_bit_filesystem_type_still_names_btrfs() {
+        let btrfs = LOCAL_BACKING.iter().find(|(_, n)| *n == "btrfs").unwrap().0;
+        let raw_on_32_bit = i64::from(u32::try_from(btrfs).unwrap().cast_signed());
+        assert!(raw_on_32_bit < 0);
+        assert_eq!(filesystem_magic(raw_on_32_bit), btrfs);
+    }
 
     #[test]
     fn finishing_syncs_the_base_and_the_parent_of_every_directory_this_run_created() {

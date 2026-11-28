@@ -108,6 +108,11 @@ impl DurationDetector {
         before || after
     }
 
+    fn continues_a_decimal(haystack: &str, start: usize) -> bool {
+        let b = haystack.as_bytes();
+        start >= 2 && b[start - 1] == b'.' && b[start - 2].is_ascii_digit()
+    }
+
     fn has_iso_duration_indicators(text: &str) -> bool {
         let b = text.as_bytes();
         text.match_indices('P').any(|(i, _)| {
@@ -209,18 +214,33 @@ impl DurationDetector {
             (&*MEMORY_ADDR_REGEX, "<ADDR>", Token::Number),
             (&*SIZE_REGEX, "<SIZE>", Token::Size),
         ] {
-            for found in regex.find_iter(result) {
+            let source: &str = result;
+            let folded = regex.replace_all(source, |caps: &Captures| {
+                let found = caps.get(0).unwrap();
+                if Self::continues_a_decimal(source, found.start()) {
+                    return found.as_str().to_string();
+                }
                 tokens.push(token(found.as_str().to_string()));
+                placeholder.to_string()
+            });
+            if let std::borrow::Cow::Owned(s) = folded {
+                *result = s;
             }
-            *result = regex.replace_all(result, placeholder).to_string();
         }
     }
 
     fn fold_registered_http_statuses(result: &mut String, tokens: &mut Vec<Token>) {
-        *result = HTTP_STATUS_REGEX
-            .replace_all(result, |caps: &Captures| {
+        let source: &str = result;
+        let folded = HTTP_STATUS_REGEX
+            .replace_all(source, |caps: &Captures| {
                 let full = caps.get(0).unwrap();
                 let code = caps.get(1).unwrap();
+                let rest = &source[full.end()..];
+                if rest.starts_with('%')
+                    || rest.starts_with('.') && rest[1..].starts_with(|c: char| c.is_ascii_digit())
+                {
+                    return full.as_str().to_string();
+                }
                 let Some(status_code) = code
                     .as_str()
                     .parse::<u16>()
@@ -234,6 +254,7 @@ impl DurationDetector {
                 format!("{context_ending_at_the_code}<HTTP_STATUS>")
             })
             .to_string();
+        *result = folded;
     }
 
     fn fold_percentages(result: &mut String, tokens: &mut Vec<Token>) {
@@ -837,6 +858,25 @@ mod dashed_tuple_dotted_version_iso_edges {
         assert!(DurationDetector::has_iso_duration_indicators("took PT5M"));
         for no in ["PT", "P", "PTx", "Px", "plain"] {
             assert!(!DurationDetector::has_iso_duration_indicators(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_fraction_of_minutes_is_not_cut_into_a_duration() {
+        let (result, _) = DurationDetector::detect_and_replace("waited 1.5m");
+        assert!(!result.contains("<DURATION>"), "{result}");
+        assert!(result.contains("1.5m"), "{result}");
+    }
+
+    #[test]
+    fn a_percentage_after_a_status_word_is_not_an_http_status() {
+        for line in ["sync status 100% complete", "error 404.5%"] {
+            let (result, tokens) = DurationDetector::detect_and_replace(line);
+            assert!(!result.contains("<HTTP_STATUS>"), "{result}");
+            assert!(
+                !tokens.iter().any(|t| matches!(t, Token::HttpStatus(_))),
+                "{tokens:?}"
+            );
         }
     }
 }

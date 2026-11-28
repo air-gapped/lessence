@@ -5302,3 +5302,53 @@ sync --target-url=https://blob-c.example.test done
 ##FROM invented blocked-request lines
 [03/Feb/2026:08:14:02 +0000] 10.20.30.41 GET "/user.php?name=<em>window.top='http://bad.example'</em>" 403 "Blocked: markup in query"
 [03/Feb/2026:08:14:09 +0000] 10.20.30.42 GET "/user.php?name=<em>window.top='http://bad.example'</em>" 403 "Blocked: markup in query"
+
+##CASE lessence-f1vp groups=2
+##WHY a tab-separated HEAD request that answered 200 and one that answered 404 are different events
+##FROM invented access lines
+"HEAD /x"	200	1
+"HEAD /x"	200	1
+"HEAD /x"	404	1
+
+##CASE lessence-f1vp template_absent=<VARIES>
+##WHY a byte count after a folded response status is not the downstream status of an arrow
+##FROM invented proxy lines
+upstream 200 -> "GET /backend" 502 123
+upstream 200 -> "GET /backend" 502 456
+
+##CASE lessence-f1vp template_absent=<VARIES>
+##WHY a node number after an arrow is not an HTTP status when a status follows it
+##FROM invented proxy lines
+GET /api 502 -> node 123 returned 200
+GET /api 502 -> node 345 returned 200
+
+##CASE lessence-f1vp groups=2
+##WHY a cached 200 and a 304 with a dash for the byte count are different responses
+##FROM invented access lines
+"GET /cached" 200 -
+"GET /cached" 200 -
+"GET /cached" 304 -
+
+##CASE lessence-f1vp out_absent=1.<DURATION>
+##WHY a duration placeholder stands for the whole value, never for the digits after a decimal point
+##FROM invented wait lines
+##FLAGS --explain
+waited 1.5m
+waited 2.5m
+waited 3.5m
+waited 4.5m
+
+##CASE lessence-f1vp groups=1
+##WHY a percentage after the word status is a percentage, so 100% and 40% are one event
+##FROM invented sync lines
+sync status 100% complete
+sync status 40% complete
+
+##CASE lessence-f1vp out_absent=<PATH>[
+##WHY a syslog program tag stays a literal program name after a URL earlier on the line was folded
+##FROM invented service lines
+##FLAGS --explain
+https://ex.com/a/b/c host /usr/bin/demo[123]: ready
+https://ex.com/a/b/c host /usr/bin/demo[124]: ready
+https://ex.com/a/b/c host /usr/bin/demo[125]: ready
+https://ex.com/a/b/c host /usr/bin/demo[126]: ready

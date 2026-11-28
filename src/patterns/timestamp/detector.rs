@@ -272,7 +272,7 @@ static PATTERNS: LazyLock<Vec<TimestampPattern>> = LazyLock::new(|| {
         ),
         p(
             "oracle",
-            r"\b\d{2}-[A-Z]{3}-\d{2}\s+\d{2}\.\d{2}\.\d{2}(?:\.\d+)?\s*(?:AM|PM)?",
+            r"\b\d{2}-[A-Z]{3}-\d{2}\s+\d{2}\.\d{2}\.\d{2}(?:\.\d+)?(?:\s*(?:AM|PM)\b)?",
             DatabaseShortForm,
             240,
         ),
@@ -697,20 +697,18 @@ impl UnifiedTimestampDetector {
             return text.to_string();
         }
 
-        let mut result = text.to_string();
-
-        let mut sorted_matches = matches.to_vec();
-        sorted_matches.sort_by_key(|m| std::cmp::Reverse(m.start_pos));
-
-        for timestamp_match in sorted_matches {
-            let range = timestamp_match.start_pos..timestamp_match.end_pos;
+        let mut result = String::with_capacity(text.len());
+        let mut copied_up_to = 0;
+        for timestamp_match in matches {
             debug_assert!(
-                range.end <= result.len(),
-                "disjoint matches replaced right to left never reach past the text"
+                copied_up_to <= timestamp_match.start_pos,
+                "resolved matches are disjoint and sorted by start"
             );
-            result.replace_range(range, TIMESTAMP_PLACEHOLDER);
+            result.push_str(&text[copied_up_to..timestamp_match.start_pos]);
+            result.push_str(TIMESTAMP_PLACEHOLDER);
+            copied_up_to = timestamp_match.end_pos;
         }
-
+        result.push_str(&text[copied_up_to..]);
         result
     }
 }
@@ -1130,6 +1128,27 @@ mod tests {
         let result = UnifiedTimestampDetector::resolve_overlaps(matches);
         assert_eq!(result.len(), 1, "only strongest should survive");
         assert_eq!(result[0].start_pos, 0);
+    }
+
+    #[test]
+    fn an_oracle_stamp_without_a_meridiem_leaves_the_next_word_whole() {
+        let oracle = patterns().iter().find(|p| p.name == "oracle").unwrap();
+        for (line, stamp) in [
+            ("14-MAR-25 10.30.40 query", "14-MAR-25 10.30.40"),
+            ("14-MAR-25 10.30.40 AMQP up", "14-MAR-25 10.30.40"),
+            ("14-MAR-25 10.30.40 PM done", "14-MAR-25 10.30.40 PM"),
+        ] {
+            assert_eq!(oracle.regex.find(line).unwrap().as_str(), stamp, "{line}");
+        }
+    }
+
+    #[test]
+    fn many_disjoint_matches_are_each_replaced_in_place() {
+        const N: usize = 100_000;
+        let text = "x".repeat(N * 2);
+        let matches: Vec<_> = (0..N).map(|i| make_match(i * 2, i * 2 + 1, -90)).collect();
+        let out = UnifiedTimestampDetector::apply_replacements(&text, &matches);
+        assert_eq!(out, format!("{TIMESTAMP_PLACEHOLDER}x").repeat(N));
     }
 
     #[test]

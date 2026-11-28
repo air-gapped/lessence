@@ -2027,6 +2027,31 @@ pub(super) fn slots_read_one_value(template: &str, member: &str) -> bool {
 /// different set of member keys on each: a record with a field the other
 /// lacks is another event, whatever the values. An object whose shape the
 /// text breaks is not read.
+fn converged_rows(groups: &[&PatternGroup]) -> Vec<usize> {
+    let mut by_claim: HashMap<(String, u64), usize> = HashMap::with_capacity(groups.len());
+    let mut heads: Vec<&PatternGroup> = Vec::with_capacity(groups.len());
+    let mut rows = Vec::with_capacity(groups.len());
+    for &group in groups {
+        let key = (group.template().to_string(), group.first().anchor);
+        let joins = (!group.refugee)
+            .then(|| by_claim.get(&key).copied())
+            .flatten()
+            .filter(|&at| {
+                !object_members_differ(heads[at].first().normalized(), group.first().normalized())
+            });
+        if let Some(at) = joins {
+            rows.push(at);
+            continue;
+        }
+        if !group.refugee {
+            by_claim.entry(key).or_insert(heads.len());
+        }
+        rows.push(heads.len());
+        heads.push(group);
+    }
+    rows
+}
+
 fn object_members_differ(founder: &str, member: &str) -> bool {
     object_members_differ_from(founder, member, &mut None)
 }
@@ -3318,19 +3343,25 @@ impl PatternFolder {
         Ok(line)
     }
 
-    fn nearest_group(&self, line: &LogLine) -> Option<Nearest> {
-        let (idx, score) = self
-            .buffer
-            .iter()
-            .enumerate()
-            .map(|(i, g)| (i, self.normalizer.similarity_score(line, g.first())))
-            .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    fn nearest_group(&self, line: &LogLine, refused_by: Option<usize>) -> Option<Nearest> {
+        let idx = match refused_by {
+            Some(idx) => idx,
+            None => {
+                self.buffer
+                    .iter()
+                    .enumerate()
+                    .map(|(i, g)| (i, self.normalizer.similarity_score(line, g.first())))
+                    .max_by(|a, b| a.1.total_cmp(&b.1))?
+                    .0
+            }
+        };
         let nearest = &self.buffer[idx];
+        let score = self.normalizer.similarity_score(line, nearest.first());
         Some(Nearest {
             group_line_no: nearest.first_line_no,
             score: (score * 10.0).round() / 10.0,
             anchor_mismatch: line.anchor != nearest.first().anchor,
-            slot_refused: false,
+            slot_refused: refused_by.is_some(),
             first_diff: first_diff(line, nearest.first()),
         })
     }
@@ -3343,6 +3374,7 @@ impl PatternFolder {
     ) {
         let mut edits = Vec::new();
         let mut false_claim = false;
+        let mut refused_by = None;
         let match_index = if let Some(&idx) = self.group_index.get(&normalized_line.hash) {
             Some(idx)
         } else {
@@ -3371,6 +3403,7 @@ impl PatternFolder {
                         Err(Refused::Unfit) => false,
                     }
             });
+            refused_by = found.filter(|_| false_claim);
             found.filter(|_| !false_claim)
         };
 
@@ -3402,12 +3435,8 @@ impl PatternFolder {
             let nearest = self
                 .config
                 .explain
-                .then(|| self.nearest_group(&normalized_line))
-                .flatten()
-                .map(|nearest| Nearest {
-                    slot_refused: false_claim,
-                    ..nearest
-                });
+                .then(|| self.nearest_group(&normalized_line, refused_by))
+                .flatten();
 
             let rep_hash = normalized_line.hash;
             let mut group = if let Some(location) = location {
@@ -3553,18 +3582,17 @@ impl PatternFolder {
             self.process_batch()?;
         }
 
-        let mut merged: HashMap<(String, u64), (usize, String)> = HashMap::new();
-        for group in &self.buffer {
-            let key = (group.template().to_string(), group.first().anchor);
-            let count = group.count();
-            let representative = group.first().original.clone();
-            merged
-                .entry(key)
-                .and_modify(|(c, _)| *c += count)
-                .or_insert((count, representative));
+        let mut groups: Vec<&PatternGroup> = self.buffer.iter().collect();
+        groups.sort_by_key(|group| group.position);
+        let mut sorted: Vec<(usize, String)> = Vec::with_capacity(groups.len());
+        for (group, row) in groups.iter().zip(converged_rows(&groups)) {
+            if let Some((count, _)) = sorted.get_mut(row) {
+                *count += group.count();
+            } else {
+                sorted.push((group.count(), group.first().original.clone()));
+            }
         }
 
-        let mut sorted: Vec<(usize, String)> = merged.into_values().collect();
         sorted.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
 
         let total_patterns = sorted.len();
@@ -3657,28 +3685,13 @@ impl PatternFolder {
         if self.config.group_sink.is_distilling() || groups.len() < 2 {
             return groups;
         }
-        let mut by_claim: HashMap<(String, u64), usize> = HashMap::with_capacity(groups.len());
+        let rows = converged_rows(&groups.iter().collect::<Vec<_>>());
         let mut out: Vec<PatternGroup> = Vec::with_capacity(groups.len());
-        for group in groups {
-            if group.refugee {
+        for (group, row) in groups.into_iter().zip(rows) {
+            if let Some(into) = out.get_mut(row) {
+                into.absorb(group);
+            } else {
                 out.push(group);
-                continue;
-            }
-            let key = (group.template().to_string(), group.first().anchor);
-            match by_claim.get(&key) {
-                Some(&at)
-                    if !object_members_differ(
-                        out[at].first().normalized(),
-                        group.first().normalized(),
-                    ) =>
-                {
-                    out[at].absorb(group);
-                }
-                Some(_) => out.push(group),
-                None => {
-                    by_claim.insert(key, out.len());
-                    out.push(group);
-                }
             }
         }
         out

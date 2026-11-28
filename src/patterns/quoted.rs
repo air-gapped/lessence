@@ -218,11 +218,10 @@ impl QuotedStringDetector {
             return (text.to_string(), Vec::new());
         }
         TransparentQuotedMemo::key_to(gates);
-        let haystack = text.to_string();
         let mut tokens = Vec::new();
 
         let result = QUOTED_STRING_PATTERN
-            .replace_all(&haystack, |caps: &regex::Captures| {
+            .replace_all(text, |caps: &regex::Captures| {
                 let matched = caps.get(0).unwrap();
                 let quoted_string = matched.as_str();
 
@@ -230,8 +229,7 @@ impl QuotedStringDetector {
                     Self::normalize_quoted(quoted_string, gates)
                 });
 
-                if outcome.vetoed_in_key_position && is_json_key(haystack.as_bytes(), matched.end())
-                {
+                if outcome.vetoed_in_key_position && is_json_key(text.as_bytes(), matched.end()) {
                     return quoted_string.to_string();
                 }
 
@@ -240,7 +238,7 @@ impl QuotedStringDetector {
                 }
                 outcome.replacement
             })
-            .to_string();
+            .into_owned();
 
         (result, tokens)
     }

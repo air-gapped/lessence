@@ -1631,6 +1631,23 @@ fn explain_records_the_nearest_group_and_the_first_differing_token() {
 }
 
 #[test]
+fn explain_names_the_group_that_refused_not_the_closest_one() {
+    let mut f = explaining_folder();
+    f.process_line("task beta closed in region north").unwrap();
+    f.process_line("task beta closed in region north, west")
+        .unwrap();
+    f.process_line("task beta closed in region north, south")
+        .unwrap();
+    assert_eq!(f.buffer.len(), 3);
+    let nearest = f.buffer[2].nearest.as_ref().unwrap();
+    assert!(nearest.slot_refused);
+    assert_eq!(
+        nearest.group_line_no, 1,
+        "slot_refused points at the group whose slot check refused"
+    );
+}
+
+#[test]
 fn explain_marks_a_split_the_slot_check_refused_and_no_other() {
     let mut f = explaining_folder();
     f.process_line("task beta closed in region north").unwrap();
@@ -2566,7 +2583,9 @@ fn a_masked_line_is_normalized_after_masking() {
         });
         f.process_line(&first).unwrap();
         let line = f.ingest(second.clone()).unwrap();
-        let nearest = f.nearest_group(&line).expect("a group to compare with");
+        let nearest = f
+            .nearest_group(&line, None)
+            .expect("a group to compare with");
         assert!(nearest.first_diff.is_some(), "{spec}: {nearest:?}");
         let seen = format!(
             "{} | {} | {} | {nearest:?}",
@@ -3000,6 +3019,23 @@ fn finish_updates_output_lines() {
         f.stats.output_lines > 0,
         "finish should update output_lines stat"
     );
+}
+
+#[test]
+fn prepare_summary_keeps_a_refugee_apart_as_the_text_output_does() {
+    let mut f = make_folder();
+    f.buffer.push(PatternGroup::new(
+        make_line("error <IP>", vec![Token::IPv4("10.0.0.1".into())]),
+        1,
+    ));
+    let mut refugee = PatternGroup::new(
+        make_line("error <IP>", vec![Token::IPv4("10.0.0.2".into())]),
+        2,
+    );
+    refugee.refugee = true;
+    f.buffer.push(refugee);
+    let SummaryRows { total_patterns, .. } = f.prepare_summary(None, None).unwrap();
+    assert_eq!(total_patterns, 2);
 }
 
 #[test]

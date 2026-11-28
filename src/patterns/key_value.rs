@@ -31,7 +31,7 @@ static NUMERIC_PAIR_REGEX: LazyLock<Regex> =
 
 static JSON_KV_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
-        r#""(?P<key>{KEY})"\s*:\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>\d+(?:\.\d+)?)|true|false|null)"#
+        r#""(?P<key>{KEY})"\s*:\s*(?:"(?P<quoted>[^"]+)"|(?P<bare>\d+(?:\.\d+)?)|(?P<lit>true|false|null))"#
     ))
     .unwrap()
 });
@@ -151,6 +151,7 @@ impl KeyValueDetector {
             }
             let value = quoted
                 .or_else(|| caps.name("bare"))
+                .or_else(|| caps.name("lit"))
                 .map_or("null", |m| m.as_str());
             let token = Self::pair(key, value);
             let whole = caps.get(0).unwrap().as_str();
@@ -250,7 +251,12 @@ impl KeyValueDetector {
             return ValueType::Percentage;
         }
 
-        if value.ends_with("ms") || value.ends_with("us") || value.ends_with("ns") {
+        if ["ms", "us", "ns"].iter().any(|unit| {
+            value
+                .strip_suffix(unit)
+                .and_then(|rest| rest.chars().next_back())
+                .is_some_and(|c| c.is_ascii_digit())
+        }) {
             return ValueType::Duration;
         }
         if value.ends_with('s')
@@ -288,7 +294,11 @@ impl KeyValueDetector {
             return ValueType::Boolean;
         }
 
-        if value.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        let unsigned = value
+            .strip_prefix('-')
+            .filter(|rest| !rest.is_empty())
+            .unwrap_or(value);
+        if unsigned.chars().all(|c| c.is_ascii_digit() || c == '.') {
             return ValueType::Number;
         }
 
@@ -1212,5 +1222,56 @@ mod general_pass_gates {
             out, "cpu duration=272ms",
             "cpu opens the gate; the only pair is a duration, owned by the duration detector"
         );
+    }
+
+    #[test]
+    fn a_json_boolean_is_typed_boolean() {
+        let mut text = r#"{"enabled":true}"#.to_string();
+        let mut tokens = Vec::new();
+        KeyValueDetector::apply_json_pattern(&mut text, &mut tokens);
+        assert!(
+            tokens.iter().any(|t| matches!(
+                t,
+                Token::KeyValuePair {
+                    value_type: ValueType::Boolean,
+                    ..
+                }
+            )),
+            "{tokens:?}"
+        );
+    }
+
+    #[test]
+    fn a_signed_number_is_typed_number() {
+        assert_eq!(
+            KeyValueDetector::classify_value_type("-1"),
+            ValueType::Number
+        );
+        assert_eq!(
+            KeyValueDetector::classify_value_type("-0.5"),
+            ValueType::Number
+        );
+        assert_ne!(
+            KeyValueDetector::classify_value_type("-"),
+            ValueType::Number
+        );
+    }
+
+    #[test]
+    fn a_word_ending_in_a_unit_suffix_is_not_a_duration() {
+        for word in ["systems", "status", "items", "ns"] {
+            assert_ne!(
+                KeyValueDetector::classify_value_type(word),
+                ValueType::Duration,
+                "{word}"
+            );
+        }
+        for d in ["5ms", "1.5us", "30ns"] {
+            assert_eq!(
+                KeyValueDetector::classify_value_type(d),
+                ValueType::Duration,
+                "{d}"
+            );
+        }
     }
 }
