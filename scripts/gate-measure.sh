@@ -128,3 +128,59 @@ mutation_score_of() {
         *) echo "failed (${outcome#broken })"; return 1 ;;
     esac
 }
+
+# new_case_entries <fixture> <base fixture> — prints "<line>:<header>" for each
+# ##CASE header appended after the base fixture's sequence. Header text
+# repeats across unrelated cases, so the two ordered sequences are diffed
+# and only append hunks are read; an edited or removed header is the
+# commit-msg hook's job. grep status 1 (no headers) is an empty list; an
+# unreadable fixture or a failing diff or awk returns 1 and prints nothing,
+# never "no new cases".
+new_case_entries() {
+    local fixture="$1" base="$2" numbered base_text new_text hunks rc out=""
+    numbered="$(grep -n '^##CASE ' "$fixture")" && rc=0 || rc=$?
+    [ "$rc" -le 1 ] || { echo "cases: reading $fixture failed" >&2; return 1; }
+    base_text="$(grep '^##CASE ' "$base")" && rc=0 || rc=$?
+    [ "$rc" -le 1 ] || { echo "cases: reading $base failed" >&2; return 1; }
+    new_text="$(sed -E 's/^[0-9]+://' <<<"$numbered")"
+    hunks="$(diff <(printf '%s\n' "$base_text" | sed '/^$/d') <(printf '%s\n' "$new_text" | sed '/^$/d'))" && rc=0 || rc=$?
+    [ "$rc" -le 1 ] || { echo "cases: diffing the headers failed" >&2; return 1; }
+    local idxs
+    idxs="$(awk '
+/^[0-9]+(,[0-9]+)?a[0-9]+(,[0-9]+)?$/ {
+    split($0, parts, "a"); right = parts[2]
+    if (right ~ /,/) { split(right, r, ","); s = r[1]; e = r[2] } else { s = right; e = right }
+    for (i = s; i <= e; i++) print i
+}' <<<"$hunks")" || { echo "cases: reading the header diff failed" >&2; return 1; }
+    local idx
+    while IFS= read -r idx; do
+        [ -n "$idx" ] || continue
+        out+="$(sed -n "${idx}p" <<<"$numbered")"$'\n'
+    done <<<"$idxs"
+    printf '%s' "$out"
+}
+
+# working_tree_binary <dest> — builds the working tree in release mode and
+# copies the executable cargo itself reports to <dest>: CARGO_TARGET_DIR or a
+# configured target dir moves it, and a fixed target/release path could then
+# hold an older build. No reported executable returns 1.
+working_tree_binary() {
+    local dest="$1" json exe
+    json="$(cargo build --release --message-format=json-render-diagnostics)" ||
+        { echo "build: cargo build --release failed" >&2; return 1; }
+    exe="$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "lessence"
+        and (.target.kind | index("bin")) and .executable != null) | .executable' <<<"$json" | tail -1)" ||
+        { echo "build: reading cargo's output failed" >&2; return 1; }
+    [ -n "$exe" ] && [ -x "$exe" ] || { echo "build: cargo reported no lessence executable" >&2; return 1; }
+    cp "$exe" "$dest"
+}
+
+# gate_number <value> — prints it when it is a plain JSON number usable as a
+# threshold (no sign, exponent or leading zero), else returns 1.
+gate_number() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] || return 1
+    printf '%s\n' "$1"
+}
+
+# json_str <text> — prints <text> as one JSON string.
+json_str() { jq -Rn --arg s "$1" '$s'; }

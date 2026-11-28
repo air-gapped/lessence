@@ -12,16 +12,21 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-# Mutants select from the commits up to HEAD while the gate, builds and
-# tests read the working tree, so the two agree only when the inputs that
-# build the binary are committed.
-if [ -n "$(git status --porcelain -- src Cargo.toml Cargo.lock build.rs)" ]; then
-    echo "release-check: src/, Cargo.toml, Cargo.lock or build.rs has uncommitted changes; commit them first" >&2
-    exit 1
-fi
-
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
+# An earlier report must never be read as this run's verdict, whatever
+# makes this run stop early; the new one appears only when complete.
+rm -f "$GATE_DIR/release.json"
+
+# Mutants select from the commits up to HEAD while the gate, builds and
+# tests read the working tree, so the two agree only when every input of
+# the verdict is committed: what builds the binary (the embedded skill
+# included), what tests it, and the scripts and Makefile that judge it.
+RELEASE_INPUTS=(src Cargo.toml Cargo.lock build.rs .claude/skills/lessence tests .config .cargo scripts Makefile)
+if [ -n "$(git status --porcelain -- "${RELEASE_INPUTS[@]}")" ]; then
+    echo "release-check: ${RELEASE_INPUTS[*]} has uncommitted changes; commit them first" >&2
+    exit 1
+fi
 
 # Scratch files live in a private directory removed on every exit.
 SCRATCH="$(mktemp -d)"
@@ -33,20 +38,34 @@ exec > >(tee "$GATE_DIR/release-check.log") 2>&1
 # exist without a published release (v0.6.0 did), and comparing against it
 # hides what the upgrade costs. `gh` knows which releases are published;
 # RELEASE_BASE overrides; without gh the newest tag is used and said so.
+# An empty list from a working gh is not an outage: there is no published
+# release, and a local tag would silently stand in for one.
 if [ -n "${RELEASE_BASE:-}" ]; then
     last_tag="$RELEASE_BASE"
-elif published="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null)" && [ -n "$published" ]; then
+elif published="$(gh release list --exclude-drafts --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null)"; then
+    if [ -z "$published" ]; then
+        echo "release-check: no published release to compare against; set RELEASE_BASE=<ref>" >&2
+        exit 1
+    fi
     last_tag="$published"
-else
-    last_tag="$(git describe --tags --abbrev=0)"
+elif last_tag="$(git describe --tags --abbrev=0 2>/dev/null)"; then
     echo "WARNING: gh unavailable; comparing against the newest tag $last_tag, which may be unpublished" >&2
+else
+    echo "release-check: gh unavailable and no tag is reachable from HEAD; set RELEASE_BASE=<ref>" >&2
+    exit 1
+fi
+# One resolved commit feeds both the gate and the mutant selection;
+# last_tag stays the label people read.
+if ! base_commit="$(git rev-parse --verify --quiet --end-of-options "${last_tag}^{commit}")"; then
+    echo "release-check: base '$last_tag' is not a commit" >&2
+    exit 1
 fi
 
 echo "Running gate against $last_tag (last published release)..." >&2
 gate_status="PASS"
 # Vacuity is judged per commit by the pre-commit gate; against the tag it
 # is only a count (see gate.sh, lessence-km2).
-GATE_BASE="$last_tag" GATE_VACUOUS_INFORMATIONAL=1 ./scripts/gate.sh || gate_status="FAIL"
+GATE_BASE="$base_commit" GATE_VACUOUS_INFORMATIONAL=1 ./scripts/gate.sh || gate_status="FAIL"
 
 # shellcheck source=scripts/gate-measure.sh
 . "$ROOT/scripts/gate-measure.sh"
@@ -66,7 +85,7 @@ else
     diff_file="$SCRATCH/mutants.diff"
     # Git pathspecs are not shell globs: '**/*.rs' matches nothing here, so
     # the directories are named literally (lessence-xr6, second finding).
-    git diff "${last_tag}..HEAD" -- src/folder src/normalize.rs src/patterns > "$diff_file"
+    git diff "${base_commit}..HEAD" -- src/folder src/normalize.rs src/patterns > "$diff_file"
     echo "Running cargo mutants --in-diff ${last_tag}..HEAD..." >&2
     # A previous run's outcomes must not be read as this run's (lessence-xr6).
     rm -rf mutants.out
@@ -202,20 +221,18 @@ echo "release targets: $targets_status${targets_msg:+ ($targets_msg)}"
 
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-cat > "$GATE_DIR/release.json" <<JSON
-{
-  "time": "${now}",
-  "git_head": "$(git rev-parse HEAD)",
-  "base_tag": "${last_tag}",
-  "gate": "${gate_status}",
-  "mutants": {"caught": ${mutants_caught}, "total": ${mutants_total}, "score_pct": "${mutation_score}"},
-  "ci": "${ci_status}",
-  "slow": "${slow_status}",
-  "readme_compression": "${readme_status}",
-  "agent_skill": "${skill_status}",
-  "release_targets": "${targets_status}"
-}
-JSON
+# jq escapes every string; the counters are numbers or the step failed.
+case "$mutants_caught$mutants_total" in *[!0-9]*|'') mutants_caught=0; mutants_total=0; gate_status="FAIL" ;; esac
+jq -n --arg time "$now" --arg head "$(git rev-parse HEAD)" --arg base "$last_tag" \
+    --arg base_commit "$base_commit" --arg gate "$gate_status" \
+    --argjson caught "$mutants_caught" --argjson total "$mutants_total" --arg score "$mutation_score" \
+    --arg ci "$ci_status" --arg slow "$slow_status" --arg readme "$readme_status" \
+    --arg skill "$skill_status" --arg targets "$targets_status" \
+    '{time: $time, git_head: $head, base_tag: $base, base_commit: $base_commit, gate: $gate,
+      mutants: {caught: $caught, total: $total, score_pct: $score},
+      ci: $ci, slow: $slow, readme_compression: $readme, agent_skill: $skill,
+      release_targets: $targets}' >"$GATE_DIR/release.json.tmp"
+mv -f "$GATE_DIR/release.json.tmp" "$GATE_DIR/release.json"
 
 [ "$gate_status" != "FAIL" ] && [ "$ci_status" = "pass" ] && [ "$slow_status" = "pass" ] \
     && [ "$readme_status" = "pass" ] && [ "$skill_status" = "pass" ] && [ "$targets_status" = "pass" ]

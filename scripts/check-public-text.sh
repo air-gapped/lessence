@@ -35,6 +35,14 @@ if [ "${OWNER_APPROVED_PUBLIC_SECURITY_TEXT:-}" = "1" ]; then
     exit 0
 fi
 
+# A list that is absent is optional; a list that is there must be readable.
+for list in "${LISTS[@]}"; do
+    if [ -e "$list" ] && { [ ! -r "$list" ] || [ -d "$list" ]; }; then
+        echo "check-public-text: cannot read $list; make it readable or remove it" >&2
+        exit 2
+    fi
+done
+
 DOCUMENT_NAMES='(^|/)(THREAT[_-]?MODEL|VULN[_-]FINDINGS|TRIAGE)[^/]*$|(^|/)PATCHES/|pentest|audit[_-]report|security[_-]audit|sanitize[_-]audit|crash[_-]input|(^|/)poc[-_./]'
 PROSE_PATHS='\.md$|^\.beads/issues\.jsonl$|\.txt$|\.html$'
 WEAKNESS_WORDS='vulnerab|exploit|attack surface|threat model|proof[- ]of[- ]concept|\bpoc\b|cve-[0-9]|unfixed|unpatched|not yet fixed|crafted input|malicious input|can be bypassed|bypass(es|ed|ing)? the (mask|sanitiz|redact|scrub)|leaks? (the|a|an) (secret|credential|password|token|key)'
@@ -48,7 +56,7 @@ complain() {
 check_names() {
     while IFS= read -r name; do
         [ -n "$name" ] || continue
-        if printf '%s\n' "$name" | grep -qiE "$DOCUMENT_NAMES"; then
+        if printf '%s\n' "$name" | grep -iE -- "$DOCUMENT_NAMES" >/dev/null; then
             complain "$name is a security working document by name; it stays out of the repo"
         fi
         case "$name" in
@@ -88,7 +96,9 @@ check_added_prose() {
 # string from .private-names.
 check_added_private_names() {
     local patterns
-    patterns=$(cat "${LISTS[@]}" 2>/dev/null | grep -vE '^(#|$)' || true)
+    local list
+    patterns=$(for list in "${LISTS[@]}"; do [ -e "$list" ] && cat -- "$list"; done; true)
+    patterns=$(printf '%s\n' "$patterns" | grep -vE '^(#|$)' || true)
     if [ -z "$patterns" ]; then
         cat >/dev/null
         echo 0
@@ -97,12 +107,13 @@ check_added_private_names() {
     added_lines | cut -f2- | grep -cFf <(printf '%s\n' "$patterns") || true
 }
 
-# $1: the message; $2: "strip" drops "#" lines, as git's default cleanup does
-# for a message still being edited. A committed message is read whole.
+# $1: the message; $2: "scissors" drops what follows git's scissors line,
+# which git never commits. Every other line, "#" lines included, is read:
+# whether git drops them depends on how the commit was made.
 check_message() {
     local text="$1"
-    if [ "${2:-}" = strip ]; then
-        text=$(printf '%s\n' "$text" | grep -v '^#' || true)
+    if [ "${2:-}" = scissors ]; then
+        text=$(printf '%s\n' "$text" | awk '/^. -+ >8 -+$/ { exit } { print }')
     fi
     local word
     word=$(printf '%s\n' "$text" | grep -oiE "$WEAKNESS_WORDS" | head -1 || true)
@@ -114,7 +125,7 @@ check_message() {
         [ -f "$list" ] || continue
         while IFS= read -r pattern || [ -n "$pattern" ]; do
             case "$pattern" in ""|\#*) continue ;; esac
-            if printf '%s\n' "$text" | grep -qF "$pattern"; then
+            if printf '%s\n' "$text" | grep -F -- "$pattern" >/dev/null; then
                 complain "the commit message contains a string from $(basename "$list")"
             fi
         done < "$list"
@@ -129,7 +140,7 @@ check_staged_blobs() {
         [ "$path" = ".blocklist" ] && continue
         while IFS= read -r pattern || [ -n "$pattern" ]; do
             case "$pattern" in ""|\#*) continue ;; esac
-            if git cat-file blob ":$path" 2>/dev/null | grep -qF -- "$pattern"; then
+            if git cat-file blob ":$path" | grep -F -- "$pattern" >/dev/null; then
                 complain "blocklisted pattern '$pattern' found in staged $path"
             fi
         done < "$list"
@@ -151,18 +162,20 @@ case "${1:-}" in
         check_staged_blobs
         ;;
     --message)
-        check_message "$(cat "$2")" strip
+        check_message "$(cat "$2")" scissors
         ;;
     --outgoing)
         # stdin: the lines git gives a pre-push hook; $2: the destination
         # remote's name. A new ref is read back to what that remote's
-        # tracking refs already hold; with no named remote, all of it.
+        # tracking refs already hold when the remote fetches from where it
+        # pushes; otherwise, or with no named remote, all of it.
         remote="${2:-}"
         zero=0000000000000000000000000000000000000000
         while read -r _ local_sha _ remote_sha; do
             [ "$local_sha" = "$zero" ] && continue
             if [ "$remote_sha" = "$zero" ]; then
-                if [ -n "$remote" ] && git remote | grep -qxF -- "$remote"; then
+                if [ -n "$remote" ] && git remote | grep -xF -- "$remote" >/dev/null &&
+                    [ "$(git remote get-url -- "$remote")" = "$(git remote get-url --push -- "$remote")" ]; then
                     revs=$(git rev-list "$local_sha" --not --remotes="$remote/*")
                 else
                     revs=$(git rev-list "$local_sha")

@@ -19,6 +19,11 @@ MIN_AVAILABLE_GB="${LESSENCE_BUILD_MIN_AVAILABLE_GB:-10}"
 
 input=$(cat)
 command=$(printf '%s' "$input" | jq -r '.tool_input.command // empty')
+# What the command runs: quoted strings are text (a commit message, a bead
+# description), not commands, so the build check reads the command with them
+# removed.
+executed=$(printf '%s' "$input" | jq -r '.tool_input.command // empty
+    | gsub("\u0027[^\u0027]*\u0027"; "") | gsub("\"([^\"\\\\]|\\\\.)*\""; "")')
 
 if printf '%s' "$command" | grep -qE '(^|[;&|(])[[:space:]]*(bash[[:space:]]+)?(\./)?scripts/record-review\.sh' && [ -z "$(printf '%s' "$input" | jq -r '.agent_id // empty')" ]; then
     jq -n --arg reason "build-guard: the main session does not record its own review. Spawn the fold-reviewer agent; it reads the golden diff and records the verdict." \
@@ -32,8 +37,12 @@ if printf '%s\n' "$command" | grep -qE "$long_run"; then
         '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
     exit 0
 fi
-heavy='(^|[;&|(]|[[:space:]])(cargo[[:space:]]+(build|test|nextest|clippy|doc|run|bench|mutants|install|check)|make[[:space:]]+(ci|gate|release-check|install|test|clippy|doc|distill|build|mutants|mutants-full)|(\./)?scripts/(gate|release-check|mutants)\.sh)'
-if ! printf '%s' "$command" | grep -qE "$heavy"; then
+# A build counts only in command position: at the start of a line or after
+# ; & | (, past any VAR=value prefixes and a time, nice or env wrapper. A
+# script path given as an argument (ocr scan scripts/gate.sh) is not a run.
+heavy='(^|[;&|(])[[:space:]]*([A-Za-z_]+=[^[:space:]]*[[:space:]]+)*((time|nice|env)[[:space:]]+)*(cargo[[:space:]]+(build|test|nextest|clippy|doc|run|bench|mutants|install|check)|make[[:space:]]+(ci|gate|release-check|install|test|clippy|doc|distill|build|mutants|mutants-full)|(\./)?scripts/(gate|release-check|mutants)\.sh)'
+if ! printf '%s
+' "$executed" | grep -qE "$heavy"; then
     exit 0
 fi
 

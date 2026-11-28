@@ -11,6 +11,10 @@
 #   gate-diff-hash.sh --index-is-tree      exit 0: every build input in the
 #                                          index equals the working tree and
 #                                          none is untracked; 1: they differ
+#   gate-diff-hash.sh --except <path>      the first hash with that one file
+#                                          left out: what a GATE_BLESS_SIZE=1
+#                                          run compares, as it writes the
+#                                          size baseline itself
 #
 # Staged and unstaged changes hash the same (the gate builds the working
 # tree); the hook asks --index-is-tree so that what it commits is what was
@@ -36,12 +40,15 @@ case "${1:-}" in
         [ -z "$(untracked | tr -d '\0')" ] || exit 1
         exit 0
         ;;
+    --except)
+        [ -n "${2:-}" ] || { echo "gate-diff-hash: --except needs a path" >&2; exit 2; }
+        ;;
     "") ;;
     *) echo "gate-diff-hash: unknown argument $1" >&2; exit 2 ;;
 esac
 
 {
-    git diff HEAD -- . ':(exclude).beads'
+    git diff HEAD -- . ':(exclude).beads' ${2:+":(exclude)$2"}
     untracked | while IFS= read -r -d '' f; do
         printf 'untracked %s\n' "$f"
         sha256sum < "$f"

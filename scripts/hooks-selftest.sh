@@ -60,9 +60,13 @@ stop_case "offer, nothing needed" block "$(stop_json $'I would delete those seve
 stop_case "stop_hook_active" allow "$(stop_json "$announce" '{"stop_hook_active":true}')"
 stop_case "background task" allow "$(stop_json "$announce" '{"background_tasks":[{"id":"x"}]}')"
 
+# pgrep is stubbed to report a build in progress, so a command the guard
+# wrongly takes for a build is refused whatever runs on this machine.
+busy_dir=$(mktemp -d)
+printf '#!/bin/sh\necho "4242 cargo build"\n' > "$busy_dir/pgrep"; chmod +x "$busy_dir/pgrep"
 build_case() { # name expect(deny|allow) command
     local out
-    out=$(jq -nc --arg c "$3" '{tool_input: {command: $c}}' | .claude/hooks/build-guard.sh)
+    out=$(jq -nc --arg c "$3" '{tool_input: {command: $c}}' | PATH="$busy_dir:$PATH" .claude/hooks/build-guard.sh)
     cases=$((cases + 1))
     if [ "$2" = deny ] && ! printf '%s' "$out" | grep -q 'hides its progress'; then
         echo "hooks selftest: FAIL build-guard should refuse: $1" >&2; exit 1
@@ -101,7 +105,14 @@ heavy_case "dot-slash gate script" deny "./scripts/gate.sh"
 heavy_case "dot-slash release-check script" deny "./scripts/release-check.sh"
 heavy_case "cargo build" deny "cargo build --release"
 heavy_case "a listing" allow "ls scripts"
-rm -rf "$probe_dir"
+heavy_case "after cd and &&" deny "cd /x && make gate"
+heavy_case "with an env prefix" deny "GATE_BLESS_SIZE=1 make gate"
+heavy_case "in a subshell" deny "(make ci)"
+heavy_case "after a newline" deny $'git status\ncargo test --lib'
+heavy_case "a script named in a quoted description" allow 'br create "gate fix" --description "run scripts/gate.sh, then make gate again"'
+heavy_case "scripts named as arguments" allow "ocr scan scripts/gate.sh scripts/release-check.sh"
+heavy_case "a build named in single quotes" allow "git commit -m 'make ci passes'"
+rm -rf "$probe_dir" "$busy_dir"
 
 review_guard_case() { # name expect(deny|allow) json
     local out
@@ -173,8 +184,22 @@ echo more >> "$pt_dir/old.txt"; pt_git add old.txt
 public_text_case "a staged file's whole content is read against .blocklist" fail --staged
 pt_git reset -q --hard; pt_git rm -q old.txt; pt_git commit -qm drop
 
+{ printf 'listed-host-q7\n'; head -c 300000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$pt_dir/big.txt"
+pt_git add big.txt; OWNER_APPROVED_PUBLIC_SECURITY_TEXT=1 pt_git commit -qm big
+echo more >> "$pt_dir/big.txt"; pt_git add big.txt
+public_text_case "a match at the start of a large staged file is found" fail --staged
+pt_git reset -q --hard; pt_git rm -q big.txt; pt_git commit -qm dropbig
+
+printf 'placeholder-name-q7\n' > "$pt_dir/locked.txt"; pt_git add locked.txt
+chmod 000 "$pt_dir/.private-names"
+public_text_case "an unreadable list refuses" fail --staged
+chmod 644 "$pt_dir/.private-names"
+pt_git rm -q --cached locked.txt; rm "$pt_dir/locked.txt"
+
 printf 'a note\n# placeholder-name-q7\n' > "$pt_dir/msg"
-public_text_case "a # line of a message being edited is not read" pass --message "$pt_dir/msg"
+public_text_case "a # line of a message is read" fail --message "$pt_dir/msg"
+printf 'a note\n# ------------------------ >8 ------------------------\n+placeholder-name-q7\n' > "$pt_dir/msg2"
+public_text_case "what follows the scissors line is not read" pass --message "$pt_dir/msg2"
 pt_git commit -q --allow-empty --cleanup=verbatim -F "$pt_dir/msg"
 public_text_case "a # line of a committed message is read" fail --commit HEAD
 pt_git reset -q --hard HEAD~1
@@ -194,6 +219,9 @@ printf 'refs/heads/main %s refs/heads/main %040d\n' "$(pt_git rev-parse HEAD)" 0
 pt_stdin="$pt_dir/push" public_text_case "a new ref is read back to the destination's own refs" fail --outgoing public
 pt_git update-ref refs/remotes/public/main HEAD
 pt_stdin="$pt_dir/push" public_text_case "history the destination already holds is not read again" pass --outgoing public
+pt_git remote set-url --push public /nonexistent-push-target
+pt_stdin="$pt_dir/push" public_text_case "a remote that pushes elsewhere than it fetches is read whole" fail --outgoing public
+pt_git remote set-url --push --delete public /nonexistent-push-target
 rm -rf "$pt_dir"
 
 if command -v gitleaks >/dev/null 2>&1; then

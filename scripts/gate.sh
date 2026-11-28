@@ -81,10 +81,23 @@ base_target="$ROOT/$GATE_DIR/base-target"
 # shellcheck source=scripts/gate-measure.sh
 . "$ROOT/scripts/gate-measure.sh"
 
+# Thresholds go into awk comparisons and, verbatim, into gate.json.
+for v in GATE_PERF_MAX GATE_PERF_RELEASE_MAX; do
+    gate_number "${!v}" >/dev/null || die2 "$v=${!v} is not a plain number (like 1.0)"
+done
+
 # The identity this run certifies, taken before anything is built; the
 # receipt is written only if it is unchanged after the measurements.
+# A GATE_BLESS_SIZE=1 run writes the size baseline (step 6c) itself, so its
+# identity leaves that one file out; the receipt still hashes the whole tree
+# as it stands after the write.
+SIZE_BASELINE="tests/fixtures/overview-size-baseline.json"
+identity() {
+    if [ -n "${GATE_BLESS_SIZE:-}" ]; then "$ROOT/scripts/gate-diff-hash.sh" --except "$SIZE_BASELINE"
+    else "$ROOT/scripts/gate-diff-hash.sh"; fi
+}
 start_head="$(git rev-parse HEAD)"
-start_diff_sha256="$("$ROOT/scripts/gate-diff-hash.sh")"
+start_diff_sha256="$(identity)"
 
 base_commit="$(git rev-parse "$GATE_BASE")"
 base_bin="$(baseline_binary "$base_commit" "$GATE_BASE")" || die2 "the $GATE_BASE baseline could not be built"
@@ -103,12 +116,11 @@ fi
 # ── 3. New: build the working tree (uncommitted changes included) ──────────
 
 echo "Building working tree..." >&2
-cargo build --release >/dev/null
 # The new-case harness runs `cargo test` below, which can rebuild the binary
 # with dev-dependency feature unification. Measure the release build whose
 # hash we record, not whichever executable that harness leaves in target/.
 new_bin="$GATE_DIR/working-tree-lessence"
-cp target/release/lessence "$new_bin"
+working_tree_binary "$new_bin" || die2 "the working tree could not be built"
 
 base_sha="$(sha256sum "$base_bin" | awk '{print $1}')"
 new_sha="$(sha256sum "$new_bin" | awk '{print $1}')"
@@ -142,30 +154,10 @@ git show "${base_commit}:${fixture}" > "$base_fixture" 2>/dev/null || : > "$base
 # before", and reports the tail as added. Only append ('a') hunks are read;
 # a case inserted mid-file or an edited/removed header is the commit-msg
 # hook's job (truth-layer check), not gate.sh's.
-new_headers_numbered="$GATE_DIR/new-headers-numbered.txt"
-grep -n '^##CASE ' "$fixture" > "$new_headers_numbered" || : > "$new_headers_numbered"
-new_headers_text="$GATE_DIR/new-headers-text.txt"
-sed -E 's/^[0-9]+://' "$new_headers_numbered" > "$new_headers_text"
-base_headers_text_file="$GATE_DIR/base-headers-text.txt"
-grep '^##CASE ' "$base_fixture" > "$base_headers_text_file" || : > "$base_headers_text_file"
-
-headers_diff="$GATE_DIR/headers.diff"
-diff "$base_headers_text_file" "$new_headers_text" > "$headers_diff" || true
-
+new_case_list="$(new_case_entries "$fixture" "$base_fixture")" ||
+    die2 "the ##CASE headers of $fixture could not be compared with $GATE_BASE"
 new_case_lines=()
-while IFS= read -r idx; do
-    [ -z "$idx" ] && continue
-    entry="$(sed -n "${idx}p" "$new_headers_numbered")"
-    lineno="${entry%%:*}"
-    header="${entry#*:}"
-    new_case_lines+=("$lineno:$header")
-done < <(awk '
-/^[0-9]+(,[0-9]+)?a[0-9]+(,[0-9]+)?$/ {
-    split($0, parts, "a")
-    right = parts[2]
-    if (right ~ /,/) { split(right, r, ","); s = r[1]; e = r[2] } else { s = right; e = right }
-    for (i = s; i <= e; i++) print i
-}' "$headers_diff")
+[ -z "$new_case_list" ] || mapfile -t new_case_lines <<<"$new_case_list"
 
 n_new="${#new_case_lines[@]}"
 vacuous=()
@@ -325,7 +317,7 @@ for name in "${distilled_corpora[@]}"; do
     fi
     rm -f "$e_new" "$j_new" "$e_base" "$j_base"
     if [ "$d_new" -ne 0 ] || { [ "$d_base" != "0" ] && [ "$d_base" != "null" ]; }; then
-        modes_json_rows+=("{\"corpus\": \"${name}\", \"base\": ${d_base}, \"new\": ${d_new}}")
+        modes_json_rows+=("{\"corpus\": $(json_str "$name"), \"base\": ${d_base}, \"new\": ${d_new}}")
         modes_table_rows+=("$(printf '%-24s explain/json rows differing: base=%s new=%s' "$name" "$d_base" "$d_new")")
     fi
     if [ "$d_base" = "0" ] && [ "$d_new" -ne 0 ]; then
@@ -336,6 +328,7 @@ done
 # ── 6. Perf: instructions:u on distilled kubelet, pinned, two rounds, min ──
 
 GATE_CPU="${GATE_CPU:-$(cut -d- -f1 /sys/devices/cpu_core/cpus 2>/dev/null || echo 0)}"
+[[ "$GATE_CPU" =~ ^(0|[1-9][0-9]*)$ ]] || die2 "GATE_CPU=$GATE_CPU is not a CPU number"
 PERF_CORPUS="examples/distilled/kubelet.log"
 [ -f "$PERF_CORPUS" ] || die2 "$PERF_CORPUS missing — run 'make distill' first"
 
@@ -439,7 +432,6 @@ rm -rf "$GATE_REPORTS"
 # comparative metric replaces the variable locator text (report path, run id,
 # byte size) with placeholders, so the baseline travels between machines.
 
-SIZE_BASELINE="tests/fixtures/overview-size-baseline.json"
 size_corpora=()
 for name in "${distilled_corpora[@]}"; do
     size_corpora+=("examples/distilled/${name}.log")
@@ -611,10 +603,10 @@ done
 
 # ── gate.json ────────────────────────────────────────────────────────────
 
-staged_diff_sha256="$("$ROOT/scripts/gate-diff-hash.sh")"
-if [ "$staged_diff_sha256" != "$start_diff_sha256" ] || [ "$(git rev-parse HEAD)" != "$start_head" ]; then
+if [ "$(identity)" != "$start_diff_sha256" ] || [ "$(git rev-parse HEAD)" != "$start_head" ]; then
     die2 "the tree or HEAD changed while the gate ran; nothing recorded, run it again on a still tree"
 fi
+staged_diff_sha256="$("$ROOT/scripts/gate-diff-hash.sh")"
 rustc_version="$(rustc --version)"
 git_head="$(git rev-parse HEAD)"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -637,14 +629,14 @@ cat > "$GATE_DIR/gate.json.tmp" <<JSON
   "time": "${now}",
   "git_head": "${git_head}",
   "staged_diff_sha256": "${staged_diff_sha256}",
-  "base": {"ref": "${GATE_BASE}", "commit": "${base_commit}", "sha256": "${base_sha}"},
-  "new": {"sha256": "${new_sha}", "rustc": "${rustc_version}"},
+  "base": {"ref": $(json_str "$GATE_BASE"), "commit": "${base_commit}", "sha256": "${base_sha}"},
+  "new": {"sha256": "${new_sha}", "rustc": $(json_str "$rustc_version")},
   "cases": {"new": ${n_new}, "new_failing_on_base": ${cases_new_failing_on_base}, "vacuous": [${vacuous_json}]},
   "golden": [${golden_json}],
   "modes": [${modes_json}],
   "perf": {"cpu": ${GATE_CPU}, "instructions_base": ${instr_base}, "instructions_new": ${instr_new},
            "spread_pct": ${spread_pct}, "delta_pct": ${delta_pct}, "threshold_pct": ${GATE_PERF_MAX},
-           "since_release": {"ref": "${release_ref}", "instructions": ${instr_release},
+           "since_release": {"ref": $(json_str "$release_ref"), "instructions": ${instr_release},
                              "delta_pct": ${release_delta_pct}, "threshold_pct": ${GATE_PERF_RELEASE_MAX}}},
   "rss_kb": {"base_default": ${rss_base:-null}, "new_default": ${rss_new:-null},
              "new_overview_all": ${rss_all:-null}, "allowance_kb": ${RSS_ALLOWANCE_KB}},

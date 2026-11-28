@@ -276,6 +276,16 @@ echo c >"$hash_repo/src/x.rs"
 if [ "$(dhash)" != "$gated_hash" ]; then ok "an edit after the gate moves the hash"; else
     bad "an edit after the gate left the hash where it was"
 fi
+# A bless run writes the size baseline itself: --except leaves that one
+# file out of the identity, and nothing else.
+mkdir -p "$hash_repo/tests/fixtures"; echo '{}' >"$hash_repo/tests/fixtures/size.json"
+except_hash="$(cd "$hash_repo" && "$ROOT/scripts/gate-diff-hash.sh" --except tests/fixtures/size.json 2>&1)"
+echo '{"x":1}' >"$hash_repo/tests/fixtures/size.json"
+check "--except ignores the excluded file" "$except_hash" "$(cd "$hash_repo" && "$ROOT/scripts/gate-diff-hash.sh" --except tests/fixtures/size.json 2>&1)"
+echo d >"$hash_repo/src/x.rs"
+if [ "$(cd "$hash_repo" && "$ROOT/scripts/gate-diff-hash.sh" --except tests/fixtures/size.json 2>&1)" != "$except_hash" ]; then ok "--except still sees any other change"; else
+    bad "--except let a source change through"
+fi
 
 # ── README --write: an updater that cannot write is a failure, not a success ─
 noregion="$WORK/README-noregion.md"; echo "# no generated region here" >"$noregion"
@@ -498,6 +508,83 @@ rs_case "release-check: exit 2 with no outcomes fails" 2 '{"outcomes":[]}' "fail
 rs_case "release-check: a string entry fails" 0 "{\"outcomes\":[$rs_ok,\"x\"]}" "failed"
 rs_case "release-check: a timeout fails" 3 "{\"outcomes\":[$rs_ok,{\"scenario\":{\"Mutant\":{}},\"summary\":\"Timeout\"}]}" "failed"
 rs_case "release-check: a complete run is scored" 2 "{\"outcomes\":[$rs_ok,{\"scenario\":{\"Mutant\":{}},\"summary\":\"CaughtMutant\"},{\"scenario\":{\"Mutant\":{}},\"summary\":\"MissedMutant\"}]}" "50.0 1 2"
+
+# ── release-check: release.json, input guard and base resolution (lessence-t328) ──
+rj="$WORK/release-json-repo"
+rj_setup() { # a fresh fixture repo with every step stubbed
+    rm -rf "$rj"; mkdir -p "$rj/scripts" "$rj/src" "$rj/bin" "$rj/tests" "$rj/.claude/skills/lessence"
+    cp "$ROOT/scripts/release-check.sh" "$ROOT/scripts/gate-measure.sh" "$rj/scripts/"
+    for s in gate.sh mutants.sh readme-compression.sh; do printf '#!/bin/sh\necho RAN %s\n' "$s" >"$rj/scripts/$s"; chmod +x "$rj/scripts/$s"; done
+    for s in make cargo rustup; do printf '#!/bin/sh\necho RAN %s\n' "$s" >"$rj/bin/$s"; chmod +x "$rj/bin/$s"; done
+    printf '#!/bin/sh\nprintf "%%s\\n" "${GH_STUB_OUT-}"; exit ${GH_STUB_RC:-0}\n' >"$rj/bin/gh"; chmod +x "$rj/bin/gh"
+    echo a >"$rj/src/lib.rs"; echo t >"$rj/tests/t.rs"; echo s >"$rj/.claude/skills/lessence/SKILL.md"
+    git -C "$rj" init -q && git -C "$rj" add -A && git -C "$rj" -c user.name=t -c user.email=t@example.invalid commit -qm init
+}
+rj_run() { # rj_run <env...>: runs release-check in the fixture, prints its exit code
+    local rc=0
+    env PATH="$rj/bin:$PATH" RELEASE_CHECK_SKIP_MUTANTS=1 "$@" "$rj/scripts/release-check.sh" >"$rj/out" 2>&1 || rc=$?
+    echo "$rc"
+}
+rj_setup; git -C "$rj" tag 'v1"rc'
+rj_run RELEASE_BASE='v1"rc' >/dev/null
+check "release-check: a tag with a quote still gives valid JSON" '"base_tag": "v1\"rc"' "$(jq . "$rj/target/gate/release.json" 2>&1)"
+rj_setup; echo dirty >>"$rj/tests/t.rs"
+rj_run RELEASE_BASE=HEAD >/dev/null
+check "release-check: a dirty tests/ is refused before the gate" "uncommitted" "$(cat "$rj/out")"
+rj_setup; echo dirty >>"$rj/.claude/skills/lessence/SKILL.md"
+rj_run RELEASE_BASE=HEAD >/dev/null
+check "release-check: a dirty embedded skill is refused" "uncommitted" "$(cat "$rj/out")"
+rj_setup; mkdir -p "$rj/target/gate"; echo '{"stale":"pass"}' >"$rj/target/gate/release.json"; echo dirty >>"$rj/src/lib.rs"
+rj_run RELEASE_BASE=HEAD >/dev/null
+check "release-check: a refused run leaves no earlier release.json" "absent" "$(cat "$rj/target/gate/release.json" 2>/dev/null || echo absent)"
+rj_setup
+check "release-check: an unknown RELEASE_BASE is refused" "1" "$(rj_run RELEASE_BASE=no-such-ref)"
+check "release-check: the unknown base never reaches the gate" "absent" "$(grep -q 'RAN gate.sh' "$rj/out" && echo ran || echo absent)"
+check "release-check: a blob as RELEASE_BASE is refused" "1" "$(rj_run RELEASE_BASE=HEAD:src/lib.rs)"
+git -C "$rj" tag v0.0.1
+check "release-check: no published release and no RELEASE_BASE is refused" "1" "$(rj_run GH_STUB_OUT= GH_STUB_RC=0)"
+check "release-check: the empty release list names RELEASE_BASE" "RELEASE_BASE" "$(cat "$rj/out")"
+rj_setup
+check "release-check: gh down and no tag is a clear refusal" "no tag" "$(rj_run GH_STUB_RC=1 >/dev/null; cat "$rj/out")"
+
+# ── gate-measure.sh: new cases, the working-tree build, receipt fields ────
+# (lessence-t328) An unreadable fixture, a stale target/ binary or a value
+# that is not JSON never becomes a receipt.
+t3="$WORK/t328"; mkdir -p "$t3"
+(
+    # shellcheck source=scripts/gate-measure.sh
+    . "$ROOT/scripts/gate-measure.sh"
+    printf '##CASE a\nx\n\n' >"$t3/base.log"
+    printf '##CASE a\nx\n\n##CASE b\ny\n' >"$t3/new.log"
+    echo "appended:$(new_case_entries "$t3/new.log" "$t3/base.log" | tr '\n' ' ')"
+    if new_case_entries "$t3/missing.log" "$t3/base.log" >/dev/null 2>&1; then echo "missing:accepted"; else echo "missing:refused"; fi
+    : >"$t3/empty-base.log"
+    echo "nobase:$(new_case_entries "$t3/new.log" "$t3/empty-base.log" | tr '\n' ' ')"
+    diff() { return 2; }
+    if new_case_entries "$t3/new.log" "$t3/base.log" >/dev/null 2>&1; then echo "diff2:accepted"; else echo "diff2:refused"; fi
+) >"$t3/cases.out" 2>&1
+check "new_case_entries reports an appended case" "appended:4:##CASE b" "$(cat "$t3/cases.out")"
+check "an unreadable fixture is refused, not zero new cases" "missing:refused" "$(cat "$t3/cases.out")"
+check "an empty base fixture makes every case new" "nobase:1:##CASE a 4:##CASE b" "$(cat "$t3/cases.out")"
+check "a failing diff is refused, not zero new cases" "diff2:refused" "$(cat "$t3/cases.out")"
+(
+    # shellcheck source=scripts/gate-measure.sh
+    . "$ROOT/scripts/gate-measure.sh"
+    cd "$t3" || exit 1
+    mkdir -p target/release elsewhere; echo stale >target/release/lessence; echo fresh >elsewhere/lessence; chmod +x elsewhere/lessence
+    cargo() { printf '{"reason":"compiler-artifact","target":{"name":"lessence","kind":["bin"]},"executable":"%s"}\n{"reason":"build-finished","success":true}\n' "$t3/elsewhere/lessence"; }
+    working_tree_binary "$t3/out-bin" && echo "copied:$(cat "$t3/out-bin")"
+    cargo() { printf '{"reason":"build-finished","success":true}\n'; }
+    if working_tree_binary "$t3/out2" 2>/dev/null; then echo "noexe:accepted"; else echo "noexe:refused"; fi
+    for v in 1.0 2 01 1e3 x ""; do if gate_number "$v" >/dev/null 2>&1; then echo "num[$v]:ok"; else echo "num[$v]:refused"; fi; done
+    echo "str:$(json_str 'v1"\x')"
+) >"$t3/build.out" 2>&1
+check "the gate copies the binary cargo reports, not target/release" "copied:fresh" "$(cat "$t3/build.out")"
+check "a build that names no executable is refused" "noexe:refused" "$(cat "$t3/build.out")"
+check "a plain decimal threshold is accepted" "num[1.0]:ok" "$(cat "$t3/build.out")"
+check "a leading-zero threshold is refused (not JSON)" "num[01]:refused" "$(cat "$t3/build.out")"
+check "an exponent or word threshold is refused" "num[1e3]:refused" "$(grep -c 'num\[1e3\]:refused\|num\[x\]:refused\|num\[\]:refused' "$t3/build.out" | sed 's/^3$/num[1e3]:refused/')"
+check "a string with a quote and backslash is JSON-encoded" 'str:"v1\"\\x"' "$(cat "$t3/build.out")"
 
 echo "--- $fails failure(s)"
 [ "$fails" -eq 0 ]
