@@ -2536,10 +2536,10 @@ fn a_credential_is_masked_exactly_once() {
             .unwrap()
             .text;
         if spec == "credential" {
-            assert_eq!(output, "Authorization: Bearer <SECRET>", "{spec}");
+            assert_eq!(output, "Authorization: <SECRET>", "{spec}");
         } else {
             assert!(
-                output.starts_with("Authorization: Bearer <SECRET:") && output.ends_with('>'),
+                output.starts_with("Authorization: <SECRET:") && output.ends_with('>'),
                 "{spec}: {output}"
             );
         }

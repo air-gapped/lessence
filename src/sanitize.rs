@@ -89,7 +89,7 @@ pub(crate) static PROVIDER_KEY: LazyLock<Regex> = LazyLock::new(|| {
 /// is the scheme word, group 2 the credentials; spaces between parts stay within the line.
 pub(crate) static AUTHORIZATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)(?:\b(?:proxy-)?authorization"?[ \t]*[=:][ \t]*"?(?:([a-z][a-z0-9_-]*)[ \t]+)?|\bbearer[ \t]+)([A-Za-z0-9._~+/-]+=*)"#,
+        r#"(?i)(?:\b(?:proxy-)?authorization"?[ \t]*[=:][ \t]*[\["]?(?:([a-z][a-z0-9_-]*)[ \t]+)?|\bbearer[ \t]+)([A-Za-z0-9._~+/-]+=*)"#,
     )
     .expect("static regex")
 });
@@ -112,15 +112,47 @@ pub(crate) fn authorization_credential_spans(text: &str) -> Vec<Range<usize>> {
             let cred = c.get(2)?;
             match c.get(1) {
                 Some(scheme)
-                    if cred.as_str().ends_with('=')
-                        && text[cred.end()..]
-                            .chars()
-                            .next()
-                            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '"') =>
+                    if (!scheme.as_str().contains('-')
+                        && scheme.as_str().bytes().any(|b| b.is_ascii_digit()))
+                        || cred.as_str().ends_with('=')
+                            && text[cred.end()..]
+                                .chars()
+                                .next()
+                                .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '"') =>
                 {
                     Some(scheme.range())
                 }
                 _ => Some(cred.range()),
+            }
+        })
+        .collect()
+}
+
+fn authorization_value_spans(text: &str) -> Vec<Range<usize>> {
+    AUTHORIZATION
+        .captures_iter(text)
+        .flat_map(|c| {
+            let Some(cred) = c.get(2) else {
+                return Vec::new();
+            };
+            let Some(scheme) = c.get(1) else {
+                return vec![cred.range()];
+            };
+            let word = scheme.as_str();
+            let key_value = cred.as_str().ends_with('=')
+                && text[cred.end()..]
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '"');
+            if key_value || (!word.contains('-') && word.bytes().any(|b| b.is_ascii_digit())) {
+                vec![scheme.range()]
+            } else if word.bytes().all(|b| b.is_ascii_alphabetic()) {
+                vec![Range {
+                    start: scheme.start(),
+                    end: cred.end(),
+                }]
+            } else {
+                vec![cred.range()]
             }
         })
         .collect()
@@ -397,7 +429,7 @@ impl Sanitizer {
         for m in PROVIDER_KEY.find_iter(text) {
             push(m.range(), "KEY", ClaimRank::ProviderKey);
         }
-        for range in authorization_credential_spans(text) {
+        for range in authorization_value_spans(text) {
             push(range, "SECRET", ClaimRank::AuthorizationHeader);
         }
         for range in userinfo_password_spans(text) {
@@ -889,8 +921,26 @@ mod tests {
             ),
             (
                 "Authorization: Basic YWxhZGRpbjpvcGVu==\nnext",
-                "Authorization: Basic <SECRET>\nnext",
+                "Authorization: <SECRET>\nnext",
             ),
+        ] {
+            assert_eq!(z.mask_text(line), masked, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn an_authorization_value_followed_by_a_word_is_masked() {
+        let z = s(&["credential"], false).unwrap();
+        for (line, masked) in [
+            ("Authorization: Qx9Rt7 user", "Authorization: <SECRET> user"),
+            ("Authorization:[Qx9Rt7]", "Authorization:[<SECRET>]"),
+            ("Authorization: QxRtVb user", "Authorization: <SECRET>"),
+            ("Bearer Zm9vYmFy next", "Bearer <SECRET> next"),
+            (
+                "authorization=\"k3yA9b next\"",
+                "authorization=\"<SECRET> next\"",
+            ),
+            ("Authorization: Digest username", "Authorization: <SECRET>"),
         ] {
             assert_eq!(z.mask_text(line), masked, "{line:?}");
         }
@@ -902,19 +952,19 @@ mod tests {
         for (line, masked) in [
             (
                 "Authorization: Bearer Zm9vYmFyYmF6cXV4",
-                "Authorization: Bearer <SECRET>",
+                "Authorization: <SECRET>",
             ),
             (
                 "proxy-authorization=Basic YWxhZGRpbjpvcGVu==;",
-                "proxy-authorization=Basic <SECRET>;",
+                "proxy-authorization=<SECRET>;",
             ),
             (
                 r#"{"Authorization":"Bearer abc.def-123_x~y"}"#,
-                r#"{"Authorization":"Bearer <SECRET>"}"#,
+                r#"{"Authorization":"<SECRET>"}"#,
             ),
             (
                 "headers map[Authorization:[Bearer Qx9Rt]]",
-                "headers map[Authorization:[Bearer <SECRET>]]",
+                "headers map[Authorization:[<SECRET>]]",
             ),
             (
                 "dial postgres://app:Hunter2Secret@db.example.com:5432/x",

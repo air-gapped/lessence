@@ -239,9 +239,9 @@ fn credential_forms_mask_the_secret_part() {
 
     let out = all_output_of_run(&input, &["--sanitize", "credential"], &["--no-report"]);
     for kept in [
-        "Authorization: Bearer <SECRET>",
+        "Authorization: <SECRET>",
         "postgres://app:<SECRET>@db.example.com:5432/x",
-        "Proxy-Authorization: Basic <SECRET>",
+        "Proxy-Authorization: <SECRET>",
     ] {
         assert!(
             out.contains(kept),
