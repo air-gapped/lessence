@@ -5361,3 +5361,11 @@ queue_size="12,40" worker=north
 queue_size="13,41" worker=north
 queue_size="14,42" worker=north
 queue_size="15,43" worker=north
+
+##CASE lessence-qxzl template_absent=<VARIES>  setting
+##WHY a diff's added and removed line that differ only in a leading lone + or - are two events, never one with the sign in a slot
+##FROM invented config diff lines
++  setting alpha value 12 in section north of config file
++  setting alpha value 13 in section north of config file
+-  setting alpha value 14 in section north of config file
+-  setting alpha value 15 in section north of config file

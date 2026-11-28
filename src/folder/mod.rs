@@ -1732,8 +1732,20 @@ fn admitted_edits_over<'m>(
 
 /// Whether the two lines hold, at the same word, one word marked `+` and
 /// the same word marked `-` (`+sdown` and `-sdown`): a sign flip names the
-/// opposite event, never another value of the same one.
+/// opposite event, never another value of the same one. A line that opens
+/// with a lone sign (`+  key: v` and `-  key: v`, a diff's added and
+/// removed line) is flipped the same way; a lone sign inside a line
+/// (`a + b`) is an operator, not a mark.
 fn sign_flipped(founder: &str, member: &str) -> bool {
+    fn lead(l: &str) -> Option<&[u8]> {
+        l.split_ascii_whitespace().next().map(str::as_bytes)
+    }
+    if matches!(
+        (lead(founder), lead(member)),
+        (Some(b"+"), Some(b"-")) | (Some(b"-"), Some(b"+"))
+    ) {
+        return true;
+    }
     founder
         .split_ascii_whitespace()
         .zip(member.split_ascii_whitespace())

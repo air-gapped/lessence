@@ -8798,6 +8798,9 @@ fn a_sign_flip_is_another_event() {
     assert!(sign_flipped("x # +sdown w", "x # -sdown w"));
     assert!(!sign_flipped("x # +sdown w", "x # +odown w"));
     assert!(!sign_flipped("delta +5 ok", "delta -5 ok"));
+    assert!(sign_flipped("+  key: alpha 12", "-  key: alpha 14"));
+    assert!(sign_flipped("- key: v", "+ key: v"));
+    assert!(!sign_flipped("+  key: alpha 12", "+  key: alpha 14"));
     assert_eq!(
         admitted_edits(
             "x # +sdown watcher a1",

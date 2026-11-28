@@ -286,6 +286,18 @@ echo d >"$hash_repo/src/x.rs"
 if [ "$(cd "$hash_repo" && "$ROOT/scripts/gate-diff-hash.sh" --except tests/fixtures/size.json 2>&1)" != "$except_hash" ]; then ok "--except still sees any other change"; else
     bad "--except let a source change through"
 fi
+# End to end (lessence-plkx): a bless run's receipt, taken on the tree as
+# the gate leaves it, is what the hook computes after `git add -A` stages
+# that same tree, a new file the round added included.
+echo '{"blessed":1}' >"$hash_repo/tests/fixtures/size.json"
+mkdir -p "$hash_repo/docs"; echo decision >"$hash_repo/docs/new.md"
+receipt="$(cd "$hash_repo" && "$ROOT/scripts/gate-diff-hash.sh")"
+git -C "$hash_repo" add -A
+check "a bless receipt matches the hook's hash once the tree is staged" "$receipt" "$(dhash)"
+echo changed >"$hash_repo/docs/new.md"
+if [ "$(dhash)" != "$receipt" ]; then ok "a staged new file edited after the gate moves the hash"; else
+    bad "an edit to a new file after the gate left the hash where it was"
+fi
 
 # ── README --write: an updater that cannot write is a failure, not a success ─
 noregion="$WORK/README-noregion.md"; echo "# no generated region here" >"$noregion"

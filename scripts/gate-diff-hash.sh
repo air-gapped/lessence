@@ -47,10 +47,13 @@ case "${1:-}" in
     *) echo "gate-diff-hash: unknown argument $1" >&2; exit 2 ;;
 esac
 
-{
-    git diff HEAD -- . ':(exclude).beads' ${2:+":(exclude)$2"}
-    untracked | while IFS= read -r -d '' f; do
-        printf 'untracked %s\n' "$f"
-        sha256sum < "$f"
-    done
-} | sha256sum | awk '{print $1}'
+# Hashed through a scratch index holding the whole tree, so that a file is
+# the same change whether it is tracked, staged, or new and not yet added:
+# `git diff HEAD` alone skips an untracked file until the commit stages it,
+# which moved the hash between the gate and the hook (lessence-plkx).
+tmp_index="$(mktemp)"
+trap 'rm -f "$tmp_index"' EXIT
+cp "$(git rev-parse --git-path index)" "$tmp_index" 2>/dev/null || rm -f "$tmp_index"
+GIT_INDEX_FILE="$tmp_index" git add -A -- . ':(exclude).beads' >/dev/null
+GIT_INDEX_FILE="$tmp_index" git diff --cached --no-renames --binary HEAD -- . ':(exclude).beads' ${2:+":(exclude)$2"} \
+    | sha256sum | awk '{print $1}'
