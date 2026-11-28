@@ -70,17 +70,19 @@ fi
 
 # make gate: any staged change to what builds the binary must have a fresh
 # PASS — src/, Cargo.toml, Cargo.lock, build.rs and the two skill files
-# src/skill.rs embeds (the same set scripts/gate.sh compares; keep them
-# equal). docs/verification.md "Hooks". Deletions count, and --no-renames
-# lists both sides of a rename. gate.json's staged_diff_sha256 must match
-# the diff actually being committed — a gate run against a different change
-# (or none at all) does not count.
+# src/skill.rs embeds (the list in scripts/gate-diff-hash.sh; scripts/gate.sh
+# compares the same set). docs/verification.md "Hooks". Any kind of change counts,
+# a type change or an unusually named file included. gate.json's
+# staged_diff_sha256 and git_head must match what is being committed, and
+# the staged build inputs must equal the working tree the gate built.
 staged_src=0
-for file in $(git diff --cached --name-only --no-renames --diff-filter=ACMRD); do
-    case "$file" in
-        src/*|Cargo.toml|Cargo.lock|build.rs|.claude/skills/lessence/SKILL.md|.claude/skills/lessence/references/flags.md) staged_src=1 ;;
-    esac
-done
+inputs_rc=0
+./scripts/gate-diff-hash.sh --staged-inputs || inputs_rc=$?
+case "$inputs_rc" in
+    0) staged_src=1 ;;
+    1) ;;
+    *) fail "git could not compare the staged build inputs with HEAD" ;;
+esac
 if [ "$staged_src" = "1" ]; then
     gate_json="target/gate/gate.json"
     if [ ! -f "$gate_json" ]; then
@@ -89,16 +91,21 @@ if [ "$staged_src" = "1" ]; then
     if command -v jq >/dev/null 2>&1; then
         verdict=$(jq -r '.verdict' "$gate_json" 2>/dev/null || echo "")
         recorded_sha=$(jq -r '.staged_diff_sha256' "$gate_json" 2>/dev/null || echo "")
+        recorded_head=$(jq -r '.git_head' "$gate_json" 2>/dev/null || echo "")
     else
         verdict=$(sed -n 's/.*"verdict": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
         recorded_sha=$(sed -n 's/.*"staged_diff_sha256": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
+        recorded_head=$(sed -n 's/.*"git_head": *"\([^"]*\)".*/\1/p' "$gate_json" | head -1)
     fi
     current_sha=$(./scripts/gate-diff-hash.sh)
     if [ "$verdict" != "PASS" ]; then
         fail "target/gate/gate.json verdict is '$verdict', not PASS — run 'make gate'"
     fi
-    if [ "$recorded_sha" != "$current_sha" ]; then
+    if [ "$recorded_sha" != "$current_sha" ] || [ "$recorded_head" != "$(git rev-parse HEAD)" ]; then
         fail "target/gate/gate.json was written for a different change — run 'make gate' again"
+    fi
+    if ! ./scripts/gate-diff-hash.sh --index-is-tree; then
+        fail "the staged build inputs differ from the working tree the gate built (a partly staged or untracked file under src/ or the other inputs) — stage all of it, or stash the rest and run 'make gate' again"
     fi
     pass "make gate PASS for this change"
     if ! review_out=$(./scripts/check-fold-review.sh 2>&1); then

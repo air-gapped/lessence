@@ -77,6 +77,32 @@ build_case "a listing through tail" allow "ls scripts | tail -3"
 build_case "long run with an env prefix through tail" deny "RELEASE_BASE=v1 make release-check 2>&1 | tail -5"
 build_case "long run named in text, then head elsewhere" allow $'echo "run make release-check at handoff"\nls scripts | head -3'
 
+# Every build entry point meets the resource checks. The memory floor is
+# set out of reach and pgrep stubbed to find nothing, so the refusal is the
+# memory one whatever runs on this machine.
+probe_dir=$(mktemp -d)
+printf '#!/bin/sh\nexit 1\n' > "$probe_dir/pgrep"; chmod +x "$probe_dir/pgrep"
+heavy_case() { # name expect(deny|allow) command
+    local out
+    out=$(jq -nc --arg c "$3" '{tool_input: {command: $c}}' | PATH="$probe_dir:$PATH" LESSENCE_BUILD_MIN_AVAILABLE_GB=1000000 .claude/hooks/build-guard.sh)
+    cases=$((cases + 1))
+    if [ "$2" = deny ] && ! printf '%s' "$out" | grep -q 'of memory is available'; then
+        echo "hooks selftest: FAIL build-guard should check resources for: $1" >&2; exit 1
+    fi
+    if [ "$2" = allow ] && [ -n "$out" ]; then
+        echo "hooks selftest: FAIL build-guard should allow: $1" >&2; exit 1
+    fi
+}
+heavy_case "make build" deny "make build"
+heavy_case "make mutants" deny "make mutants"
+heavy_case "make mutants-full" deny "make mutants-full"
+heavy_case "mutants script" deny "scripts/mutants.sh -f src/x.rs"
+heavy_case "dot-slash gate script" deny "./scripts/gate.sh"
+heavy_case "dot-slash release-check script" deny "./scripts/release-check.sh"
+heavy_case "cargo build" deny "cargo build --release"
+heavy_case "a listing" allow "ls scripts"
+rm -rf "$probe_dir"
+
 review_guard_case() { # name expect(deny|allow) json
     local out
     out=$(printf '%s' "$3" | .claude/hooks/build-guard.sh)
@@ -98,7 +124,7 @@ review_case() { # name expect(pass|fail) gate-json review-json-or-empty
     [ ! -e "$review_dir/review.json" ] || mv "$review_dir/review.json" "$review_dir/previous.json"
     [ -z "$4" ] || printf '%s' "$4" > "$review_dir/review.json"
     cases=$((cases + 1))
-    if GATE_JSON="$review_dir/gate.json" REVIEW_JSON="$review_dir/review.json" scripts/check-fold-review.sh >/dev/null 2>&1; then got=pass; else got=fail; fi
+    if scripts/check-fold-review.sh "$review_dir/gate.json" "$review_dir/review.json" >/dev/null 2>&1; then got=pass; else got=fail; fi
     if [ "$got" != "$2" ]; then
         echo "hooks selftest: FAIL fold review should $2: $1" >&2; exit 1
     fi

@@ -3,6 +3,8 @@
 #
 # Exit 0 = PASS, 1 = FAIL, 2 = cannot run (says why).
 set -euo pipefail
+# A failed command inside $(...) stops the run too, not only one at top level.
+shopt -s inherit_errexit
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -12,6 +14,8 @@ GATE_PERF_MAX="${GATE_PERF_MAX:-1.0}"
 GATE_PERF_RELEASE_MAX="${GATE_PERF_RELEASE_MAX:-2.0}"
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
+# This run replaces the receipt; until it writes a new one, none is valid.
+rm -f "$GATE_DIR/gate.json"
 
 die2() {
     echo "CANNOT RUN: $1" >&2
@@ -72,30 +76,18 @@ fi
 
 base_target="$ROOT/$GATE_DIR/base-target"
 
-# Prints the path of the release binary built from commit $1, building it
-# first when it is not cached.
-baseline_binary() {
-    local commit="$1" label="$2"
-    local worktree="$GATE_DIR/base-${commit}-wt" dir="$GATE_DIR/base-${commit}"
-    local bin="$dir/lessence"
-    if [ ! -x "$bin" ]; then
-        echo "Building baseline ($label = $commit)..." >&2
-        if [ ! -d "$worktree" ]; then
-            git worktree add --detach "$worktree" "$commit" >/dev/null
-        fi
-        ( cd "$worktree" && CARGO_TARGET_DIR="$base_target" cargo build --release >/dev/null )
-        mkdir -p "$dir"
-        # Copy then rename: an interrupted copy must not leave an executable
-        # that the cache check above would trust.
-        cp "$base_target/release/lessence" "$bin.partial"
-        mv "$bin.partial" "$bin"
-        git worktree remove --force "$worktree"
-    fi
-    printf '%s\n' "$bin"
-}
+# baseline_binary, perf_instructions and mutants_outcome live in
+# scripts/gate-measure.sh, where scripts/gate-selftest.sh tests them.
+# shellcheck source=scripts/gate-measure.sh
+. "$ROOT/scripts/gate-measure.sh"
+
+# The identity this run certifies, taken before anything is built; the
+# receipt is written only if it is unchanged after the measurements.
+start_head="$(git rev-parse HEAD)"
+start_diff_sha256="$("$ROOT/scripts/gate-diff-hash.sh")"
 
 base_commit="$(git rev-parse "$GATE_BASE")"
-base_bin="$(baseline_binary "$base_commit" "$GATE_BASE")"
+base_bin="$(baseline_binary "$base_commit" "$GATE_BASE")" || die2 "the $GATE_BASE baseline could not be built"
 
 # The last release, for the cumulative speed budget in step 6: the newest
 # tag reachable from HEAD, or RELEASE_BASE. No network is used; a clone
@@ -105,7 +97,7 @@ release_commit=""
 release_bin=""
 if [ -n "$release_ref" ]; then
     release_commit="$(git rev-parse "${release_ref}^{commit}")"
-    release_bin="$(baseline_binary "$release_commit" "$release_ref")"
+    release_bin="$(baseline_binary "$release_commit" "$release_ref")" || die2 "the $release_ref baseline could not be built"
 fi
 
 # ── 3. New: build the working tree (uncommitted changes included) ──────────
@@ -363,43 +355,11 @@ report_args() {
     fi
 }
 
-perf_instructions() {
-    local bin="$1" min="" prev="" spread="0"
-    local n_rounds=2
-    local i=0
-    local extra=()
-    mapfile -t extra < <(report_args "$bin")
-    while [ "$i" -lt "$n_rounds" ]; do
-        i=$((i + 1))
-        local raw
-        raw="$(LC_ALL=C taskset -c "$GATE_CPU" perf stat -e instructions:u,task-clock -x, -- \
-            "$bin" --threads 1 -q "${extra[@]}" "$PERF_CORPUS" 2>&1 >/dev/null)"
-        local sum
-        sum="$(awk -F, '/instructions\/u/ { if ($1 ~ /^[0-9]+$/) s+=$1 } END { print s+0 }' <<<"$raw")"
-        if [ -z "$min" ] || [ "$sum" -lt "$min" ]; then
-            min="$sum"
-        fi
-        if [ -n "$prev" ]; then
-            spread="$(awk -v a="$prev" -v b="$sum" 'BEGIN { d=a-b; if (d<0) d=-d; if (a==0){print 0} else {printf "%.4f", d/a*100} }')"
-        fi
-        prev="$sum"
-    done
-    # Third round if the two rounds differ by more than 0.3%.
-    if awk -v s="$spread" 'BEGIN { exit !(s>0.3) }'; then
-        local raw sum
-        raw="$(LC_ALL=C taskset -c "$GATE_CPU" perf stat -e instructions:u,task-clock -x, -- \
-            "$bin" --threads 1 -q "${extra[@]}" "$PERF_CORPUS" 2>&1 >/dev/null)"
-        sum="$(awk -F, '/instructions\/u/ { if ($1 ~ /^[0-9]+$/) s+=$1 } END { print s+0 }' <<<"$raw")"
-        if [ "$sum" -lt "$min" ]; then
-            min="$sum"
-        fi
-    fi
-    echo "$min $spread"
-}
-
 echo "Measuring perf (2+ rounds each, pinned to cpu $GATE_CPU, corpus $PERF_CORPUS)..." >&2
-read -r instr_base spread_base <<<"$(perf_instructions "$(pwd)/$base_bin")"
-read -r instr_new spread_new <<<"$(perf_instructions "$(pwd)/$new_bin")"
+perf_out="$(perf_instructions "$(pwd)/$base_bin")" || die2 "perf could not measure the baseline"
+read -r instr_base spread_base <<<"$perf_out"
+perf_out="$(perf_instructions "$(pwd)/$new_bin")" || die2 "perf could not measure the working tree"
+read -r instr_new spread_new <<<"$perf_out"
 spread_pct="$(awk -v a="$spread_base" -v b="$spread_new" 'BEGIN { print (a>b)?a:b }')"
 
 delta_pct="$(awk -v b="$instr_base" -v n="$instr_new" 'BEGIN { if (b==0) { print 0 } else { printf "%.4f", (n-b)/b*100 } }')"
@@ -417,7 +377,8 @@ if [ -n "$release_bin" ]; then
     if [ "$release_commit" = "$base_commit" ]; then
         instr_release="$instr_base"
     else
-        read -r instr_release _ <<<"$(perf_instructions "$(pwd)/$release_bin")"
+        perf_out="$(perf_instructions "$(pwd)/$release_bin")" || die2 "perf could not measure $release_ref"
+        read -r instr_release _ <<<"$perf_out"
     fi
     release_delta_pct="$(awk -v b="$instr_release" -v n="$instr_new" 'BEGIN { if (b==0) { print 0 } else { printf "%.4f", (n-b)/b*100 } }')"
     if awk -v d="$release_delta_pct" -v t="$GATE_PERF_RELEASE_MAX" 'BEGIN { exit !(d>t) }'; then
@@ -518,24 +479,16 @@ if [ "$GATE_BASE" = "HEAD" ] && [ -z "${GATE_SKIP_MUTANTS:-}" ]; then
         mutants_rc=0
         scripts/mutants.sh -f 'src/folder/**/*.rs' -f src/normalize.rs -f 'src/patterns/**/*.rs' \
             -C --lib --in-diff "$mutants_diff" >&2 || mutants_rc=$?
-        outcomes="mutants.out/outcomes.json"
-        case "$mutants_rc" in
-            0|2|3)
-                if jq -e '.outcomes | type == "array"' "$outcomes" >/dev/null 2>&1; then
-                    mutants_total="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant)] | length' "$outcomes")"
-                    mutants_missed="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant and .summary=="MissedMutant")] | length' "$outcomes")"
-                    mutants_line="${mutants_total} on the change, ${mutants_missed} missed"
-                    mutants_json="{\"ran\": true, \"total\": ${mutants_total}, \"missed\": ${mutants_missed}}"
-                elif [ "$mutants_rc" -eq 0 ] && [ ! -e mutants.out ]; then
-                    # cargo-mutants found no mutant in the changed lines (a
-                    # changed string or comment only) and wrote nothing.
-                    mutants_line="0 on the change (no mutable code in the changed lines)"
-                    mutants_json='{"ran": true, "total": 0, "missed": 0}'
-                else
-                    mutants_broken="rc=${mutants_rc}, no readable outcomes.json"
-                fi
-                ;;
-            *) mutants_broken="rc=${mutants_rc}" ;;
+        outcome="$(mutants_outcome "$mutants_rc" mutants.out/outcomes.json)"
+        case "$outcome" in
+            ok\ *)
+                read -r _ mutants_total mutants_missed <<<"$outcome"
+                mutants_line="${mutants_total} on the change, ${mutants_missed} missed"
+                mutants_json="{\"ran\": true, \"total\": ${mutants_total}, \"missed\": ${mutants_missed}}" ;;
+            none)
+                mutants_line="0 on the change (no mutable code in the changed lines)"
+                mutants_json='{"ran": true, "total": 0, "missed": 0}' ;;
+            *) mutants_broken="${outcome#broken }" ;;
         esac
     fi
     rm -f "$mutants_diff"
@@ -659,6 +612,9 @@ done
 # ── gate.json ────────────────────────────────────────────────────────────
 
 staged_diff_sha256="$("$ROOT/scripts/gate-diff-hash.sh")"
+if [ "$staged_diff_sha256" != "$start_diff_sha256" ] || [ "$(git rev-parse HEAD)" != "$start_head" ]; then
+    die2 "the tree or HEAD changed while the gate ran; nothing recorded, run it again on a still tree"
+fi
 rustc_version="$(rustc --version)"
 git_head="$(git rev-parse HEAD)"
 now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -676,7 +632,7 @@ print(",".join(json.dumps(l.rstrip("\n")) for l in sys.stdin))
 fi
 cases_new_failing_on_base=$((n_new - ${#vacuous[@]}))
 
-cat > "$GATE_DIR/gate.json" <<JSON
+cat > "$GATE_DIR/gate.json.tmp" <<JSON
 {
   "time": "${now}",
   "git_head": "${git_head}",
@@ -698,6 +654,7 @@ cat > "$GATE_DIR/gate.json" <<JSON
   "verdict": "${verdict}"
 }
 JSON
+mv "$GATE_DIR/gate.json.tmp" "$GATE_DIR/gate.json"
 
 if [ "$verdict" = "PASS" ]; then
     exit 0

@@ -12,13 +12,15 @@
 set -euo pipefail
 
 out="${1:?usage: scripts/capture-audit-log.sh <output.log>}"
-name="lessence-audit-$$"
+name="lessence-audit-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
 work=$(mktemp -d)
 export KUBECONFIG="$work/kubeconfig"
 k=kubectl
 
-cleanup() { kind delete cluster --name "$name" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
+# The cluster is deleted only once this run has created it; until then only
+# the work directory is ours.
+trap 'rm -rf "$work"' EXIT
+cleanup() { kind delete cluster --name "$name" >/dev/null 2>&1 || true; rm -rf "$work"; }
 
 cat > "$work/policy.yaml" <<'EOF'
 apiVersion: audit.k8s.io/v1
@@ -67,6 +69,7 @@ EOF
 
 echo "capture: creating kind cluster $name" >&2
 kind create cluster --name "$name" --config "$work/kind.yaml" --kubeconfig "$KUBECONFIG" >&2
+trap cleanup EXIT
 $k wait --for=condition=Ready nodes --all --timeout=180s >&2
 
 echo "capture: running the workload" >&2

@@ -84,7 +84,7 @@ $table
 <!-- gen:compression:end -->"
 
 if [ "${1:-}" = --write ]; then
-    python3 - "$README" "$block" <<'EOF'
+    if ! python3 - "$README" "$block" <<'EOF'
 import re, sys
 path, block = sys.argv[1], sys.argv[2]
 s = open(path).read()
@@ -93,6 +93,9 @@ if n != 1:
     sys.exit("README.md has no gen:compression region")
 open(path, "w").write(new)
 EOF
+    then
+        echo "README.md was not written" >&2; exit 1
+    fi
     echo "README.md compression table written ($version at $head_sha)"
 else
     printf '%s\n' "$block"

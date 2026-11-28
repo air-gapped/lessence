@@ -21,9 +21,10 @@
 # place). The pin moves there when a mutant sits at that line with the same
 # column and text, and the source line there reads exactly as the pinned
 # line did in HEAD. Second, for pins the diff cannot place: the dead pins of
-# one shape (same file, column, text and function) move when mutants of
-# that shape sit on exactly as many lines as there are pins, and each new
-# line reads the same as the pinned line did in the last commit.
+# one shape (same file, column, text and function) are printed as
+# suggestions, never written, when mutants of that shape sit on exactly as
+# many lines as there are pins and each new line reads the same as the
+# pinned line did in the last commit.
 #
 # What --repin leaves: `cargo mutants --list --no-config | grep '<function>'`,
 # pick the mutant the entry's comment describes, and write its location.
@@ -212,11 +213,11 @@ if dead and "--repin" in sys.argv[2:]:
                     "the entry's proof against the new code"
                 )
             continue
+        # Same count and same text do not show it is the same mutant: a
+        # look-alike can be added under another guard as the original goes.
+        # The place is printed for a reader, who checks the proof and moves it.
         for (_, e), line in pairs:
-            new = f"{head}{line}{tail}"
-            text = text.replace(e, new)
-            print(f"re-pinned (shape): {e}\n                to: {new}")
-            moved += 1
+            print(f"suggest (shape, not written): {e}\n                          to: {head}{line}{tail}")
     open(".cargo/mutants.toml", "w", encoding="utf-8").write(text)
     with open(".cargo/mutants.toml", "rb") as f:
         entries = tomllib.load(f).get("exclude_re", [])

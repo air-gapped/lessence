@@ -2,15 +2,16 @@
 # A change whose gate run changed any golden is committed only after the
 # fold-reviewer agent (.claude/agents/fold-reviewer.md) has read that golden
 # diff and recorded "pass" for exactly this change. Called by the pre-commit
-# hook after its gate check. GATE_JSON and REVIEW_JSON override the paths
-# for the self-test.
+# hook after its gate check, with no arguments: the canonical paths. The
+# self-tests pass a gate report and a review path as arguments; the
+# environment never chooses them.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-GATE="${GATE_JSON:-target/gate/gate.json}"
-REVIEW="${REVIEW_JSON:-target/gate/review.json}"
+GATE="${1:-target/gate/gate.json}"
+REVIEW="${2:-target/gate/review.json}"
 
 changed=$(jq '[.golden[]? | select((.added + .removed + .recounted) | length > 0)] | length' "$GATE")
 if [ "$changed" -eq 0 ]; then

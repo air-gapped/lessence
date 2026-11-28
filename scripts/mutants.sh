@@ -16,9 +16,16 @@ set -euo pipefail
 
 MUTANTS_RESERVE_GIB="${MUTANTS_RESERVE_GIB:-16}"
 MUTANTS_TIMEOUT_MULT="${MUTANTS_TIMEOUT_MULT:-3}"
-avail_gib="$(awk '/^MemAvailable:/ {printf "%d", $2/1048576}' /proc/meminfo)"
+avail_gib="$(awk '/^MemAvailable:/ {printf "%d", $2/1048576}' "${MUTANTS_MEMINFO:-/proc/meminfo}")"
 budget_gib=$(( avail_gib - MUTANTS_RESERVE_GIB ))
-[ "$budget_gib" -lt 4 ] && budget_gib=4
+# Below 4 GiB one worker does not fit beside the reserve. Raising the budget
+# to 4 anyway would take it from the reserve, so the run does not start
+# unless a cap or a smaller reserve is chosen on purpose.
+if [ "$budget_gib" -lt 4 ] && [ -z "${MUTANTS_MEM_MAX:-}" ]; then
+    echo "mutants: only ${avail_gib}G available, under the 4G minimum plus the ${MUTANTS_RESERVE_GIB}G reserve; not starting." >&2
+    echo "  Close what you can, or choose deliberately: MUTANTS_RESERVE_GIB=<smaller> or MUTANTS_MEM_MAX=<n>G $0 ..." >&2
+    exit 1
+fi
 MUTANTS_MEM_MAX="${MUTANTS_MEM_MAX:-${budget_gib}G}"
 budget_gib="${MUTANTS_MEM_MAX%G}"
 

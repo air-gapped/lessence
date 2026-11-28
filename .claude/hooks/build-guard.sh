@@ -32,7 +32,7 @@ if printf '%s\n' "$command" | grep -qE "$long_run"; then
         '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $reason}}'
     exit 0
 fi
-heavy='(^|[;&|(]|[[:space:]])(cargo[[:space:]]+(build|test|nextest|clippy|doc|run|bench|mutants|install|check)|make[[:space:]]+(ci|gate|release-check|install|test|clippy|doc|distill)|scripts/(gate|release-check)\.sh)'
+heavy='(^|[;&|(]|[[:space:]])(cargo[[:space:]]+(build|test|nextest|clippy|doc|run|bench|mutants|install|check)|make[[:space:]]+(ci|gate|release-check|install|test|clippy|doc|distill|build|mutants|mutants-full)|(\./)?scripts/(gate|release-check|mutants)\.sh)'
 if ! printf '%s' "$command" | grep -qE "$heavy"; then
     exit 0
 fi

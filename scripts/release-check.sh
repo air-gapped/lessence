@@ -12,6 +12,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Mutants select from the commits up to HEAD while the gate, builds and
+# tests read the working tree, so the two agree only when the inputs that
+# build the binary are committed.
+if [ -n "$(git status --porcelain -- src Cargo.toml Cargo.lock build.rs)" ]; then
+    echo "release-check: src/, Cargo.toml, Cargo.lock or build.rs has uncommitted changes; commit them first" >&2
+    exit 1
+fi
+
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
 exec > >(tee "$GATE_DIR/release-check.log") 2>&1
@@ -34,6 +42,9 @@ gate_status="PASS"
 # Vacuity is judged per commit by the pre-commit gate; against the tag it
 # is only a count (see gate.sh, lessence-km2).
 GATE_BASE="$last_tag" GATE_VACUOUS_INFORMATIONAL=1 ./scripts/gate.sh || gate_status="FAIL"
+
+# shellcheck source=scripts/gate-measure.sh
+. "$ROOT/scripts/gate-measure.sh"
 
 # ── mutants --in-diff on <last-tag>..HEAD ───────────────────────────────
 
@@ -59,28 +70,18 @@ else
     scripts/mutants.sh "${MUTANTS_FILES[@]}" -C --lib --in-diff "$diff_file" \
         || mutants_rc=$?
     rm -f "$diff_file"
-    outcomes="mutants.out/outcomes.json"
-    # cargo mutants exits 0 (all caught), 2 (missed) or 3 (timeouts) after
-    # a complete run. 4 is the baseline failing before any mutant ran, 1, 5
-    # and 6 are usage and diff errors, 70 is internal (mutants.rs/exit-codes);
-    # none of those, nor a partial or malformed outcomes.json, may be read
-    # as a score (lessence-xr6).
-    case "$mutants_rc" in
-        0|2|3) mutants_complete=1 ;;
-        *) mutants_complete=0 ;;
-    esac
-    if [ "$mutants_complete" -eq 0 ] || [ ! -f "$outcomes" ] \
-        || ! jq -e '.outcomes | type == "array"' "$outcomes" >/dev/null 2>&1; then
-        mutation_score="failed (rc=${mutants_rc}, no complete outcomes)"
-        gate_status="FAIL"
+    # One judge for the gate and this check (scripts/gate-measure.sh): an
+    # exit other than 0 or 2, a timeout, an empty or malformed outcomes.json,
+    # a failed baseline or counts that disagree with the exit code are a
+    # failed mutation step, never a score (lessence-xr6, lessence-65ct).
+    if score_out="$(mutation_score_of "$mutants_rc" mutants.out/outcomes.json)"; then
+        case "$score_out" in
+            n/a*) mutation_score="n/a (no mutants in diff)" ;;
+            *) read -r mutation_score mutants_caught mutants_total <<<"$score_out" ;;
+        esac
     else
-        mutants_caught="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant and .summary=="CaughtMutant")] | length' "$outcomes")"
-        mutants_total="$(jq '[.outcomes[] | select((.scenario|type=="object") and .scenario.Mutant)] | length' "$outcomes")"
-        if [ "$mutants_total" -gt 0 ]; then
-            mutation_score="$(awk -v c="$mutants_caught" -v t="$mutants_total" 'BEGIN{printf "%.1f", c/t*100}')"
-        else
-            mutation_score="n/a (no mutants in diff)"
-        fi
+        mutation_score="$score_out"
+        gate_status="FAIL"
     fi
 fi
 

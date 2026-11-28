@@ -44,9 +44,10 @@ for line in sys.stdin:
     o = json.loads(line)
     if o.get("type") != "group":
         continue
-    rows.append(f"{o[\"count\"]}\t{o[\"normalized\"]}")
+    rows.append("{}\t{}".format(o["count"], o["normalized"]))
 rows.sort()
-print("\n".join(rows))
+for row in rows:
+    print(row)
 '
     fi
 }
