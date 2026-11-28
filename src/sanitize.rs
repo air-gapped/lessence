@@ -47,8 +47,15 @@ pub struct Sanitizer {
     key: Option<PseudonymKey>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct PseudonymKey([u8; 32]);
+
+/// The key bytes never reach a formatted value.
+impl std::fmt::Debug for PseudonymKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PseudonymKey(<redacted>)")
+    }
+}
 
 const TAG_BITS: usize = 64;
 
@@ -78,10 +85,11 @@ pub(crate) static PROVIDER_KEY: LazyLock<Regex> = LazyLock::new(|| {
 /// The credentials of an HTTP `Authorization` / `Proxy-Authorization`
 /// header (`auth-scheme credentials`, RFC 9110 §11.6.2) and an RFC 6750
 /// `Bearer` token wherever it stands. The header name and the scheme stay;
-/// the capture is the credentials, in the `token68` alphabet.
+/// the capture is the credentials, in the `token68` alphabet. Group 1
+/// is the scheme word, group 2 the credentials; spaces between parts stay within the line.
 pub(crate) static AUTHORIZATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r#"(?i)(?:\b(?:proxy-)?authorization"?\s*[=:]\s*"?(?:[a-z][a-z0-9_-]*\s+)?|\bbearer\s+)([A-Za-z0-9._~+/-]+=*)"#,
+        r#"(?i)(?:\b(?:proxy-)?authorization"?[ \t]*[=:][ \t]*"?(?:([a-z][a-z0-9_-]*)[ \t]+)?|\bbearer[ \t]+)([A-Za-z0-9._~+/-]+=*)"#,
     )
     .expect("static regex")
 });
@@ -95,8 +103,27 @@ pub(crate) static URL_USERINFO: LazyLock<Regex> = LazyLock::new(|| {
         .expect("static regex")
 });
 
+/// When the word after the scheme reads as a `key=value` field, the
+/// header has no scheme and the first word is the credential.
 pub(crate) fn authorization_credential_spans(text: &str) -> Vec<Range<usize>> {
-    capture_spans(&AUTHORIZATION, text)
+    AUTHORIZATION
+        .captures_iter(text)
+        .filter_map(|c| {
+            let cred = c.get(2)?;
+            match c.get(1) {
+                Some(scheme)
+                    if cred.as_str().ends_with('=')
+                        && text[cred.end()..]
+                            .chars()
+                            .next()
+                            .is_some_and(|ch| ch.is_ascii_alphanumeric() || ch == '"') =>
+                {
+                    Some(scheme.range())
+                }
+                _ => Some(cred.range()),
+            }
+        })
+        .collect()
 }
 
 pub(crate) fn userinfo_password_spans(text: &str) -> Vec<Range<usize>> {
@@ -836,6 +863,37 @@ mod tests {
             out.starts_with("GET /r?email=<EMAIL:") && out.ends_with('>'),
             "{out}"
         );
+    }
+
+    #[test]
+    fn the_debug_form_of_a_sanitizer_shows_no_key_bytes() {
+        let z = s(&["host:pseudonym"], false).unwrap();
+        let shown = format!("{z:?}");
+        let key = Sanitizer::derive_key(&7u64.to_le_bytes());
+        let head = format!("{:?}", &key.0[..4]);
+        assert!(!shown.contains(head.trim_end_matches(']')), "{shown}");
+        assert!(shown.contains("PseudonymKey(<redacted>)"), "{shown}");
+    }
+
+    #[test]
+    fn an_authorization_value_without_a_scheme_is_masked_within_its_line() {
+        let z = s(&["credential"], false).unwrap();
+        for (line, masked) in [
+            (
+                "authorization=Qx9Rt7 user=web",
+                "authorization=<SECRET> user=web",
+            ),
+            (
+                "Authorization: Qx9Rt7\nnext line",
+                "Authorization: <SECRET>\nnext line",
+            ),
+            (
+                "Authorization: Basic YWxhZGRpbjpvcGVu==\nnext",
+                "Authorization: Basic <SECRET>\nnext",
+            ),
+        ] {
+            assert_eq!(z.mask_text(line), masked, "{line:?}");
+        }
     }
 
     #[test]

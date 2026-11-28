@@ -464,6 +464,30 @@ echo '{"verdict": "PASS"}' >"$rg/target/gate/gate.json"
 if [ -e "$rg/target/gate/gate.json" ]; then bad "a gate run that stops early leaves no earlier PASS behind"; else
     ok "a gate run that stops early leaves no earlier PASS behind"; fi
 
+# ── distill: the published log is the one that passed the scan ───────────
+ds_root="$WORK/ds-root"; mkdir -p "$ds_root/scripts" "$ds_root/target/release" "$ds_root/examples/originals" "$ds_root/examples/distilled" "$ds_root/bin"
+cp "$ROOT/scripts/distill.sh" "$ds_root/scripts/"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$ds_root/bin/cargo"; chmod +x "$ds_root/bin/cargo"
+printf '#!/usr/bin/env bash\necho "fresh line"\n' >"$ds_root/target/release/lessence"; chmod +x "$ds_root/target/release/lessence"
+echo "raw" >"$ds_root/examples/originals/k.log"
+: >"$ds_root/vocab"
+ds_run() { # ds_run <forbid regex> -> exit code; resets the earlier log first
+    echo "earlier" >"$ds_root/examples/distilled/k.log"
+    printf '%s\n' "$1" >"$ds_root/forbid"
+    PATH="$ds_root/bin:$PATH" SCRUB_VOCAB="$ds_root/vocab" SCRUB_FORBID="$ds_root/forbid" \
+        "$ds_root/scripts/distill.sh" >/dev/null 2>&1
+}
+ds_run 'fresh'; ds_rc=$?
+check "distill: output holding a forbidden string is refused" "rc=1" "rc=$ds_rc"
+check "distill: a refused output keeps the earlier log" "earlier" "$(cat "$ds_root/examples/distilled/k.log")"
+check "distill: a refused output leaves no pending file" "[k.log]" "[$(cd "$ds_root/examples/distilled" && ls -A | tr '\n' ' ' | sed 's/ $//')]"
+ds_run '('; ds_rc=$?
+check "distill: a forbid list grep cannot read is refused" "rc=1" "rc=$ds_rc"
+check "distill: an unreadable forbid list keeps the earlier log" "earlier" "$(cat "$ds_root/examples/distilled/k.log")"
+ds_run '-absent'; ds_rc=$?
+check "distill: a clean output replaces the earlier log" "rc=0 fresh line" "rc=$ds_rc $(cat "$ds_root/examples/distilled/k.log")"
+check "release-check keeps scratch files in its own temporary directory" "0" "$(grep -c '/tmp/' "$ROOT/scripts/release-check.sh")"
+
 # ── release-check scores mutants with the gate's judge (lessence-65ct) ────
 rs_case() { # rs_case <name> <rc> <json> <expected substring>
     printf '%s' "$3" >"$gm_dir/rs-outcomes.json"

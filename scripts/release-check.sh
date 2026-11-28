@@ -22,6 +22,11 @@ fi
 
 GATE_DIR="target/gate"
 mkdir -p "$GATE_DIR"
+
+# Scratch files live in a private directory removed on every exit.
+SCRATCH="$(mktemp -d)"
+trap 'rm -rf "$SCRATCH"' EXIT
+trap 'exit 130' INT TERM
 exec > >(tee "$GATE_DIR/release-check.log") 2>&1
 
 # The base is the last PUBLISHED release: what users actually run. A tag can
@@ -58,7 +63,7 @@ mutants_total=0
 if [ -n "${RELEASE_CHECK_SKIP_MUTANTS:-}" ]; then
     echo "RELEASE_CHECK_SKIP_MUTANTS=1 — skipping mutants" >&2
 else
-    diff_file="$(mktemp)"
+    diff_file="$SCRATCH/mutants.diff"
     # Git pathspecs are not shell globs: '**/*.rs' matches nothing here, so
     # the directories are named literally (lessence-xr6, second finding).
     git diff "${last_tag}..HEAD" -- src/folder src/normalize.rs src/patterns > "$diff_file"
@@ -133,11 +138,11 @@ fi
 
 echo "Running make ci..." >&2
 ci_status="pass"
-if ! make -C "$ROOT" ci >/tmp/release-check-ci.$$ 2>&1; then
+if ! make -C "$ROOT" ci >"$SCRATCH/ci" 2>&1; then
     ci_status="FAIL"
 fi
-ci_tail="$(tail -8 /tmp/release-check-ci.$$)"
-rm -f /tmp/release-check-ci.$$
+ci_tail="$(tail -8 "$SCRATCH/ci")"
+rm -f "$SCRATCH/ci"
 
 # ── every release target type-checks ────────────────────────────────────
 #
@@ -158,22 +163,22 @@ for t in "${RELEASE_TARGETS[@]}"; do
     if ! grep -qx "$t" <<<"$installed"; then
         targets_status="FAIL"
         targets_msg+="$t not installed (rustup target add $t); "
-    elif ! cargo check --release --target "$t" >/tmp/release-check-target.$$ 2>&1; then
+    elif ! cargo check --release --target "$t" >"$SCRATCH/target" 2>&1; then
         targets_status="FAIL"
-        targets_msg+="$t: $(grep -m1 '^error' /tmp/release-check-target.$$); "
+        targets_msg+="$t: $(grep -m1 '^error' "$SCRATCH/target"); "
     fi
 done
-rm -f /tmp/release-check-target.$$
+rm -f "$SCRATCH/target"
 
 # ── slow tests: the wall-clock profile the default profile excludes ─────
 
 echo "Running slow tests (cargo nextest run --release --profile slow)..." >&2
 slow_status="pass"
-if ! cargo nextest run --release --profile slow >/tmp/release-check-slow.$$ 2>&1; then
+if ! cargo nextest run --release --profile slow >"$SCRATCH/slow" 2>&1; then
     slow_status="FAIL"
 fi
-slow_tail="$(tail -8 /tmp/release-check-slow.$$)"
-rm -f /tmp/release-check-slow.$$
+slow_tail="$(tail -8 "$SCRATCH/slow")"
+rm -f "$SCRATCH/slow"
 
 # ── Output ───────────────────────────────────────────────────────────────
 

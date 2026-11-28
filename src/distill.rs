@@ -115,8 +115,18 @@ pub fn distill_and_self_check(
     let (kept, out_lines, output_fold) =
         select_until_no_merge(config, anonymized_source, opts, &source_fold)?;
 
+    let mut ok = contract_coverage_preserved(&source_fold, &output_fold, &kept);
+    let mut anonymity_held = true;
+    if let Some((_, a)) = anonymized.as_ref() {
+        let mut diag = io::stderr().lock();
+        anonymity_held &=
+            contract_no_replaced_value_survives(&a.replaced_originals(), &out_lines, &mut diag);
+        anonymity_held &= contract_vocabulary_gone(a, &out_lines, &mut diag);
+    }
+    ok &= anonymity_held;
+
     let mut stdout = io::stdout().lock();
-    for line in &out_lines {
+    for line in publishable(&out_lines, anonymity_held) {
         match writeln!(stdout, "{line}") {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
@@ -126,13 +136,6 @@ pub fn distill_and_self_check(
         }
     }
     stdout.flush()?;
-
-    let mut ok = true;
-    ok &= contract_coverage_preserved(&source_fold, &output_fold, &kept);
-    if let Some((_, a)) = anonymized.as_ref() {
-        ok &= contract_no_replaced_value_survives(&a.replaced_originals(), &out_lines);
-        ok &= contract_vocabulary_gone(a, &out_lines);
-    }
 
     Ok(if !ok {
         ContractOutcome::Broken
@@ -620,7 +623,17 @@ fn contract_coverage_preserved(source: &Fold, output: &Fold, cover: &Cover) -> b
     ok
 }
 
-fn contract_no_replaced_value_survives(values: &HashSet<String>, out_lines: &[String]) -> bool {
+/// The lines written to stdout: all of them when the anonymisation checks
+/// held, none when either found an original value in them.
+fn publishable(out_lines: &[String], anonymity_held: bool) -> &[String] {
+    if anonymity_held { out_lines } else { &[] }
+}
+
+fn contract_no_replaced_value_survives(
+    values: &HashSet<String>,
+    out_lines: &[String],
+    diag: &mut dyn Write,
+) -> bool {
     if values.is_empty() {
         return true;
     }
@@ -649,12 +662,19 @@ fn contract_no_replaced_value_survives(values: &HashSet<String>, out_lines: &[St
             }
         }
     }
-    let refs: Vec<&String> = survivors.iter().collect();
-    report("original value survived anonymisation", &refs);
+    report_count(
+        diag,
+        "original value survived anonymisation",
+        survivors.len(),
+    );
     survivors.is_empty()
 }
 
-fn contract_vocabulary_gone(anonymizer: &SealedAnonymizer, out_lines: &[String]) -> bool {
+fn contract_vocabulary_gone(
+    anonymizer: &SealedAnonymizer,
+    out_lines: &[String],
+    diag: &mut dyn Write,
+) -> bool {
     let vocab = anonymizer.vocabulary();
     if vocab.is_empty() {
         return true;
@@ -677,9 +697,19 @@ fn contract_vocabulary_gone(anonymizer: &SealedAnonymizer, out_lines: &[String])
             survivors.insert(word.clone());
         }
     }
-    let refs: Vec<&String> = survivors.iter().collect();
-    report("vocabulary word survived anonymisation", &refs);
+    report_count(
+        diag,
+        "vocabulary word survived anonymisation",
+        survivors.len(),
+    );
     survivors.is_empty()
+}
+
+/// States how many values a check found, never the values themselves.
+fn report_count(diag: &mut dyn Write, what: &str, count: usize) {
+    if count > 0 {
+        let _ = writeln!(diag, "lessence: {count} {what}; no output written");
+    }
 }
 
 fn report(what: &str, items: &[&String]) {
@@ -983,12 +1013,17 @@ mod tests {
         assert!(
             !contract_no_replaced_value_survives(
                 &values,
-                &["url=https://host7.example.com/x".to_string()]
+                &["url=https://host7.example.com/x".to_string()],
+                &mut io::sink()
             ),
             "a value inside a URL is still that value"
         );
         assert!(
-            contract_no_replaced_value_survives(&values, &["host7.example.community".to_string()]),
+            contract_no_replaced_value_survives(
+                &values,
+                &["host7.example.community".to_string()],
+                &mut io::sink()
+            ),
             "a longer token that merely starts the same is not a survivor"
         );
     }
@@ -999,12 +1034,13 @@ mod tests {
         assert!(
             contract_vocabulary_gone(
                 &a,
-                &["cfg80211 driver loaded".to_string(), "a8r8g8b8".to_string()]
+                &["cfg80211 driver loaded".to_string(), "a8r8g8b8".to_string()],
+                &mut io::sink()
             ),
             "a short vocabulary word glued inside a longer token is not a survivor"
         );
         assert!(
-            !contract_vocabulary_gone(&a, &["seen on g8 today".to_string()]),
+            !contract_vocabulary_gone(&a, &["seen on g8 today".to_string()], &mut io::sink()),
             "the same word as its own token is a survivor"
         );
     }
@@ -1125,8 +1161,40 @@ mod tests {
     fn a_long_vocabulary_word_glued_to_letters_is_a_survivor() {
         let a = Anonymizer::new(1, vec!["zorquid".to_string()]).seal();
         assert!(
-            !contract_vocabulary_gone(&a, &["node9zorquidfoo online".to_string()]),
+            !contract_vocabulary_gone(&a, &["node9zorquidfoo online".to_string()], &mut io::sink()),
             "a 6+ character vocabulary word is checked as a substring anywhere"
         );
+    }
+
+    #[test]
+    fn a_survivor_report_states_the_count_and_not_the_value() {
+        let mut values = HashSet::new();
+        values.insert("host7.example.com".to_string());
+        let mut diag: Vec<u8> = Vec::new();
+        assert!(!contract_no_replaced_value_survives(
+            &values,
+            &["url=https://host7.example.com/x".to_string()],
+            &mut diag
+        ));
+        let a = Anonymizer::new(1, vec!["zorquid".to_string()]).seal();
+        assert!(!contract_vocabulary_gone(
+            &a,
+            &["node zorquid online".to_string()],
+            &mut diag
+        ));
+        let text = String::from_utf8(diag).expect("utf8");
+        assert!(text.contains("lessence: 1 original value"), "{text}");
+        assert!(text.contains("lessence: 1 vocabulary word"), "{text}");
+        assert!(
+            !text.contains("host7") && !text.contains("zorquid"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn output_lines_are_written_only_when_the_anonymisation_checks_hold() {
+        let lines = vec!["one".to_string(), "two".to_string()];
+        assert_eq!(publishable(&lines, true), lines.as_slice());
+        assert!(publishable(&lines, false).is_empty());
     }
 }

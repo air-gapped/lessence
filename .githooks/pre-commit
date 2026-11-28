@@ -126,24 +126,8 @@ for file in $(git diff --cached --name-only --diff-filter=ACM); do
 done
 pass "no large files"
 
-# Blocklist check (private domains, hostnames, etc.)
-if [ -f "$BLOCKLIST" ]; then
-    for file in $(git diff --cached --name-only --diff-filter=ACM); do
-        # A blocklist necessarily contains its own patterns.
-        [ "$file" = ".blocklist" ] && continue
-        if [ -f "$file" ]; then
-            while IFS= read -r pattern || [ -n "$pattern" ]; do
-                case "$pattern" in
-                    ""|\#*) continue ;;
-                esac
-                if grep -qF "$pattern" "$file" 2>/dev/null; then
-                    fail "blocklisted pattern '$pattern' found in $file"
-                fi
-            done < "$BLOCKLIST"
-        fi
-    done
-    pass "blocklist"
-fi
+# Blocklist check (private domains, hostnames, etc.): scripts/check-public-text.sh
+# --staged below reads every staged file's content from the index against it.
 
 # Security working documents and prose that describes a weakness
 if ! scripts/check-public-text.sh --staged; then

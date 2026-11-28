@@ -64,6 +64,9 @@ fail() {
     exit "${2:-1}"
 }
 
+pending=""
+trap 'if [ -n "$pending" ]; then rm -f "$pending"; fi' EXIT
+
 shopt -s nullglob
 for f in examples/originals/*.log; do
     name="$(basename "$f" .log)"
@@ -78,19 +81,31 @@ for f in examples/originals/*.log; do
 
     echo "distill rate comparison: $name" >&2
 
+    # The output is written and scanned under a private name in the same
+    # directory and takes its final name only after the scan passes; a
+    # failing or interrupted run leaves the earlier distilled log as it was.
+    pending="$(mktemp "$DIST_DIR/.$name.log.XXXXXX")"
     set +e
-    "$BIN" --distill --anonymize --seed 1 --anonymize-words "$SCRUB_VOCAB" "$f" > "$dist_log"
+    "$BIN" --distill --anonymize --seed 1 --anonymize-words "$SCRUB_VOCAB" "$f" > "$pending"
     rc=$?
     set -e
     if [ "$rc" -ne 0 ]; then
-        rm -f "$dist_log"
         fail "$name (--distill exited $rc)"
     fi
 
-    if grep -qE "$forbid_regex" "$dist_log"; then
-        rm -f "$dist_log"
+    # grep exits 1 only when nothing matches; a match (0) or an error (2)
+    # both refuse the output.
+    set +e
+    grep -qE -e "$forbid_regex" "$pending"
+    rc=$?
+    set -e
+    if [ "$rc" -eq 0 ]; then
         fail "$name (forbidden string found in distilled output)"
+    elif [ "$rc" -ne 1 ]; then
+        fail "$name (forbid scan exited $rc)"
     fi
+    mv -f "$pending" "$dist_log"
+    pending=""
 
     lines_out="$(wc -l < "$dist_log")"
 
@@ -119,17 +134,18 @@ for f in examples/originals/*.log; do
         golden_of "$dist_log" > "$fresh"
         groups="$(wc -l < "$fresh")"
         if [ -f "$golden_file" ] && [ -z "${BLESS:-}" ]; then
-            if golden_diff "$golden_file" "$fresh" > /tmp/distill-golden-diff.$$; then
+            diff_out="$(mktemp)"
+            if golden_diff "$golden_file" "$fresh" > "$diff_out"; then
                 golden_status="kept"
             else
                 golden_status="changed"
-                cat /tmp/distill-golden-diff.$$ >&2
-                rm -f /tmp/distill-golden-diff.$$
+                cat "$diff_out" >&2
+                rm -f "$diff_out"
                 echo "$name  ${lines_in} -> ${lines_out}  groups=${groups}  golden:${golden_status}"
                 rm -f "$fresh"
                 exit 1
             fi
-            rm -f /tmp/distill-golden-diff.$$
+            rm -f "$diff_out"
         else
             if [ -f "$golden_file" ]; then
                 golden_diff "$golden_file" "$fresh" >&2 || true

@@ -14,8 +14,8 @@
 #   scripts/check-public-text.sh --staged          what `git commit` would publish
 #   scripts/check-public-text.sh --message FILE    a commit message
 #   scripts/check-public-text.sh --commit REV      one existing commit
-#   scripts/check-public-text.sh --outgoing        every commit a push would
-#                                                  send (pre-push hook stdin)
+#   scripts/check-public-text.sh --outgoing [REMOTE]  every commit a push
+#                                                  would send (pre-push hook stdin)
 #
 # What to do when it stops you: write the material in your private notes
 # and commit only what the code now does, in neutral words ("mask values
@@ -59,12 +59,21 @@ check_names() {
     done
 }
 
+# stdin: a unified diff. Prints "file<TAB>line" for each added line. A line
+# is a file header only between "diff" and the first "@@" of that file, so an
+# added line that starts with "++" is read as content.
+added_lines() {
+    awk '
+        /^diff / { in_hunk = 0; file = ""; next }
+        /^@@/ { in_hunk = 1; next }
+        !in_hunk && /^\+\+\+ / { file = substr($0, 5); sub(/^b\//, "", file); next }
+        in_hunk && /^\+/ { print file "\t" substr($0, 2) }
+    '
+}
+
 # stdin: a unified diff. Reports weakness words on added lines of prose files.
 check_added_prose() {
-    PROSE="$PROSE_PATHS" awk '
-        /^\+\+\+ / { file = substr($2, 3); in_prose = (file ~ ENVIRON["PROSE"]); next }
-        /^\+/ && in_prose { print file "\t" substr($0, 2) }
-    ' | while IFS=$'\t' read -r file line; do
+    added_lines | PROSE="$PROSE_PATHS" awk -F'\t' '$1 ~ ENVIRON["PROSE"]' | while IFS=$'\t' read -r file line; do
         word=$(printf '%s\n' "$line" | grep -oiE "$WEAKNESS_WORDS" | head -1 || true)
         if [ -n "$word" ]; then
             printf '%s\t%s\n' "$file" "$word"
@@ -85,13 +94,18 @@ check_added_private_names() {
         echo 0
         return
     fi
-    grep -E '^\+' | grep -vE '^\+\+\+ ' | grep -cFf <(printf '%s\n' "$patterns") || true
+    added_lines | cut -f2- | grep -cFf <(printf '%s\n' "$patterns") || true
 }
 
+# $1: the message; $2: "strip" drops "#" lines, as git's default cleanup does
+# for a message still being edited. A committed message is read whole.
 check_message() {
     local text="$1"
+    if [ "${2:-}" = strip ]; then
+        text=$(printf '%s\n' "$text" | grep -v '^#' || true)
+    fi
     local word
-    word=$(printf '%s\n' "$text" | grep -v '^#' | grep -oiE "$WEAKNESS_WORDS" | head -1 || true)
+    word=$(printf '%s\n' "$text" | grep -oiE "$WEAKNESS_WORDS" | head -1 || true)
     if [ -n "$word" ]; then
         complain "the commit message contains \"$word\"; describe the fix, not the hole"
     fi
@@ -100,11 +114,26 @@ check_message() {
         [ -f "$list" ] || continue
         while IFS= read -r pattern || [ -n "$pattern" ]; do
             case "$pattern" in ""|\#*) continue ;; esac
-            if printf '%s\n' "$text" | grep -v '^#' | grep -qF "$pattern"; then
+            if printf '%s\n' "$text" | grep -qF "$pattern"; then
                 complain "the commit message contains a string from $(basename "$list")"
             fi
         done < "$list"
     done
+}
+
+# Every staged file's full content, read from the index, against .blocklist.
+check_staged_blobs() {
+    local list="$MAIN/.blocklist" path pattern
+    [ -f "$list" ] || return 0
+    while IFS= read -r -d '' path; do
+        [ "$path" = ".blocklist" ] && continue
+        while IFS= read -r pattern || [ -n "$pattern" ]; do
+            case "$pattern" in ""|\#*) continue ;; esac
+            if git cat-file blob ":$path" 2>/dev/null | grep -qF -- "$pattern"; then
+                complain "blocklisted pattern '$pattern' found in staged $path"
+            fi
+        done < "$list"
+    done < <(git diff --cached --name-only -z --diff-filter=ACMRT)
 }
 
 report_private_names() {
@@ -115,21 +144,29 @@ report_private_names() {
 
 case "${1:-}" in
     --staged)
-        check_names < <(git diff --cached --name-only --diff-filter=ACMR)
-        added=$(git diff --cached -U0 --diff-filter=ACMR | check_added_prose)
+        check_names < <(git diff --cached --name-only --diff-filter=ACMRT)
+        added=$(git diff --cached -U0 --diff-filter=ACMRT | check_added_prose)
         complaints=$((complaints + added))
-        report_private_names "$(git diff --cached -U0 --diff-filter=ACMR | check_added_private_names)"
+        report_private_names "$(git diff --cached -U0 --diff-filter=ACMRT | check_added_private_names)"
+        check_staged_blobs
         ;;
     --message)
-        check_message "$(cat "$2")"
+        check_message "$(cat "$2")" strip
         ;;
     --outgoing)
-        # stdin: the lines git gives a pre-push hook.
+        # stdin: the lines git gives a pre-push hook; $2: the destination
+        # remote's name. A new ref is read back to what that remote's
+        # tracking refs already hold; with no named remote, all of it.
+        remote="${2:-}"
         zero=0000000000000000000000000000000000000000
         while read -r _ local_sha _ remote_sha; do
             [ "$local_sha" = "$zero" ] && continue
             if [ "$remote_sha" = "$zero" ]; then
-                revs=$(git rev-list "$local_sha" --not --remotes)
+                if [ -n "$remote" ] && git remote | grep -qxF -- "$remote"; then
+                    revs=$(git rev-list "$local_sha" --not --remotes="$remote/*")
+                else
+                    revs=$(git rev-list "$local_sha")
+                fi
             else
                 revs=$(git rev-list "$remote_sha..$local_sha")
             fi
@@ -141,14 +178,15 @@ case "${1:-}" in
         done
         ;;
     --commit)
-        check_names < <(git show --format= --name-only --diff-filter=ACMR "$2")
-        added=$(git show --format= -U0 --diff-filter=ACMR "$2" | check_added_prose)
+        # A merge is read against each parent.
+        check_names < <(git show --format= --diff-merges=separate --name-only --diff-filter=ACMRT "$2")
+        added=$(git show --format= --diff-merges=separate -U0 --diff-filter=ACMRT "$2" | check_added_prose)
         complaints=$((complaints + added))
-        report_private_names "$(git show --format= -U0 --diff-filter=ACMR "$2" | check_added_private_names)"
+        report_private_names "$(git show --format= --diff-merges=separate -U0 --diff-filter=ACMRT "$2" | check_added_private_names)"
         check_message "$(git show -s --format=%B "$2")"
         ;;
     *)
-        echo "usage: $0 --staged | --message FILE | --commit REV | --outgoing" >&2
+        echo "usage: $0 --staged | --message FILE | --commit REV | --outgoing [REMOTE]" >&2
         exit 2
         ;;
 esac

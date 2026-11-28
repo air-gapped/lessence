@@ -137,4 +137,76 @@ review_case "golden changed, review passes" pass "$moved" '{"staged_diff_sha256"
 review_case "review for another change" fail "$moved" '{"staged_diff_sha256":"bb","verdict":"pass","summary":"k ok"}'
 review_case "reviewer found a defect" fail "$moved" '{"staged_diff_sha256":"aa","verdict":"fail","summary":"k: a folds with b"}'
 
+# check-public-text.sh in a scratch repository with its own lists.
+# PUBLIC_TEXT_SCRIPT and GITLEAKS_CONFIG select the files under test.
+public_text_script="${PUBLIC_TEXT_SCRIPT:-$ROOT/scripts/check-public-text.sh}"
+pt_dir=$(mktemp -d)
+pt_git() { git -C "$pt_dir" -c core.hooksPath=/dev/null -c commit.gpgsign=false -c user.name=t -c user.email=t@example.invalid "$@"; }
+pt_git init -q -b main
+mkdir -p "$pt_dir/scripts"
+cp "$public_text_script" "$pt_dir/scripts/check-public-text.sh"
+printf 'placeholder-name-q7\n' > "$pt_dir/.private-names"
+printf 'listed-host-q7\n' > "$pt_dir/.blocklist"
+printf '/.private-names\n/.blocklist\n/scripts/\n' > "$pt_dir/.git/info/exclude"
+echo base > "$pt_dir/base.txt"; pt_git add base.txt; pt_git commit -qm base
+public_text_case() { # name expect(pass|fail) args...
+    local name="$1" expect="$2" got; shift 2
+    cases=$((cases + 1))
+    if (cd "$pt_dir" && scripts/check-public-text.sh "$@" < "${pt_stdin:-/dev/null}") >/dev/null 2>&1; then got=pass; else got=fail; fi
+    if [ "$got" != "$expect" ]; then
+        echo "hooks selftest: FAIL check-public-text should $expect: $name" >&2; exit 1
+    fi
+}
+
+printf '++ placeholder-name-q7\n' > "$pt_dir/plus.rs"; pt_git add plus.rs
+public_text_case "an added line that starts with ++ is read" fail --staged
+pt_git rm -q --cached plus.rs; rm "$pt_dir/plus.rs"
+
+ln -s base.txt "$pt_dir/link.md"; pt_git add link.md; pt_git commit -qm link
+rm "$pt_dir/link.md"; printf 'placeholder-name-q7\n' > "$pt_dir/link.md"; pt_git add link.md
+public_text_case "a symlink replaced by a file is read" fail --staged
+pt_git reset -q --hard
+
+printf 'listed-host-q7\n' > "$pt_dir/old.txt"; pt_git add old.txt
+OWNER_APPROVED_PUBLIC_SECURITY_TEXT=1 pt_git commit -qm old
+echo more >> "$pt_dir/old.txt"; pt_git add old.txt
+public_text_case "a staged file's whole content is read against .blocklist" fail --staged
+pt_git reset -q --hard; pt_git rm -q old.txt; pt_git commit -qm drop
+
+printf 'a note\n# placeholder-name-q7\n' > "$pt_dir/msg"
+public_text_case "a # line of a message being edited is not read" pass --message "$pt_dir/msg"
+pt_git commit -q --allow-empty --cleanup=verbatim -F "$pt_dir/msg"
+public_text_case "a # line of a committed message is read" fail --commit HEAD
+pt_git reset -q --hard HEAD~1
+
+pt_git checkout -qb side
+printf 'placeholder-name-q7\n' > "$pt_dir/side.txt"; pt_git add side.txt; pt_git commit -qm side
+pt_git checkout -q main
+echo other > "$pt_dir/main.txt"; pt_git add main.txt; pt_git commit -qm main
+pt_git merge -q --no-ff -m merge side
+public_text_case "a merge is read against each parent" fail --commit HEAD
+pt_git reset -q --hard HEAD~1; pt_git branch -qD side
+
+printf 'placeholder-name-q7\n' > "$pt_dir/far.txt"; pt_git add far.txt; pt_git commit -qm far
+pt_git remote add public /dev/null; pt_git remote add mirror /dev/null
+pt_git update-ref refs/remotes/mirror/main HEAD
+printf 'refs/heads/main %s refs/heads/main %040d\n' "$(pt_git rev-parse HEAD)" 0 > "$pt_dir/push"
+pt_stdin="$pt_dir/push" public_text_case "a new ref is read back to the destination's own refs" fail --outgoing public
+pt_git update-ref refs/remotes/public/main HEAD
+pt_stdin="$pt_dir/push" public_text_case "history the destination already holds is not read again" pass --outgoing public
+rm -rf "$pt_dir"
+
+if command -v gitleaks >/dev/null 2>&1; then
+    gl_dir=$(mktemp -d)
+    mkdir -p "$gl_dir/docs"
+    gl_value=$(printf '%s' Zx8Kq2Lm N4pR7sT1 vW3yB6cD 9fG0hJ5k)
+    printf 'api_%s = "%s"\n' key "$gl_value" > "$gl_dir/docs/a.md"
+    cases=$((cases + 1))
+    gl_config="${GITLEAKS_CONFIG:-$ROOT/.gitleaks.toml}"
+    if (cd "$gl_dir" && gitleaks dir --no-banner -c "$gl_config" .) >/dev/null 2>&1; then
+        echo "hooks selftest: FAIL gitleaks should report a non-UUID key in docs/" >&2; exit 1
+    fi
+    rm -rf "$gl_dir"
+fi
+
 echo "hooks selftest: $cases cases pass"

@@ -244,9 +244,10 @@ impl Anonymizer {
             .filter(|span| header_credential_is_secret(span.len()));
         let url_passwords = userinfo_password_spans(text);
         for span in header_credentials.chain(url_passwords) {
-            if span.is_empty() || overlaps(edits, span.start, span.end) {
+            if span.is_empty() || overlaps_without_containing(edits, span.start, span.end) {
                 continue;
             }
+            edits.retain(|(s, e, _)| !(span.start <= *s && *e <= span.end));
             let invention = self.credential_invention(&text[span.clone()]);
             edits.push((span.start, span.end, invention));
         }
@@ -370,9 +371,15 @@ impl Anonymizer {
         for _ in 0..COLLISION_TOLERATED_AFTER {
             invention = self.draw(class, value);
             let drew_its_own_original = !is_real_replacement(&invention, value);
+            if drew_its_own_original && class == Class::Credential {
+                continue;
+            }
             if drew_its_own_original || self.is_free_invention(&invention) {
                 break;
             }
+        }
+        if class == Class::Credential && !is_real_replacement(&invention, value) {
+            invention = invent_ascii_for_every_char(&mut self.rng, value);
         }
         self.issued_inventions.insert(invention.clone());
         invention
@@ -663,6 +670,35 @@ fn invent_same_char_classes(rng: &mut ChaCha8Rng, s: &str) -> String {
         .collect()
 }
 
+/// A credential the same-class draw cannot change (no ASCII letter or
+/// digit) gets an ASCII letter for every character that is not ASCII
+/// punctuation or whitespace, and for every character when none is.
+fn invent_ascii_for_every_char(rng: &mut ChaCha8Rng, s: &str) -> String {
+    let keep = |c: char| c.is_ascii_punctuation() || c.is_ascii_whitespace();
+    let replace_all = s.chars().all(keep);
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c.is_ascii_digit() {
+                (b'0' + rng.random_range(0..10u8)) as char
+            } else if c.is_ascii_uppercase() {
+                (b'A' + rng.random_range(0..26u8)) as char
+            } else if replace_all || !keep(c) {
+                (b'a' + rng.random_range(0..26u8)) as char
+            } else {
+                c
+            }
+        })
+        .collect();
+    if out == s
+        && let Some(first) = out.chars().next()
+    {
+        let other = if first == 'a' { "b" } else { "a" };
+        out.replace_range(..first.len_utf8(), other);
+    }
+    out
+}
+
 fn invent_hex_same_case(rng: &mut ChaCha8Rng, s: &str) -> String {
     let upper = s.chars().any(|c| c.is_ascii_uppercase());
     s.chars()
@@ -705,6 +741,14 @@ fn is_percent_escape(bytes: &[u8]) -> bool {
 
 fn overlaps(edits: &[Edit], start: usize, end: usize) -> bool {
     edits.iter().any(|(s, e, _)| start < *e && *s < end)
+}
+
+/// An edit that lies wholly inside `start..end` does not count: the wider
+/// span replaces it.
+fn overlaps_without_containing(edits: &[Edit], start: usize, end: usize) -> bool {
+    edits
+        .iter()
+        .any(|(s, e, _)| start < *e && *s < end && !(start <= *s && *e <= end))
 }
 
 fn apply_edits_back_to_front(text: &str, mut edits: Vec<Edit>) -> String {
@@ -1433,5 +1477,35 @@ mod whole_value_tests {
             "{out}"
         );
         assert_eq!(a.rewrite("Bearer token missing"), "Bearer token missing");
+    }
+
+    #[test]
+    fn a_url_password_holding_a_provider_key_is_replaced_whole() {
+        let mut a = Anonymizer::new(1, Vec::new()).seal();
+        let out = a.rewrite("dial https://app:front.sk-qwertyuiop.back@db/x");
+        assert!(
+            out.starts_with("dial https://app:") && out.ends_with("@db/x"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("front") && !out.contains("back@") && !out.contains("qwertyuiop"),
+            "every part of the password is invented: {out}"
+        );
+    }
+
+    #[test]
+    fn a_credential_without_ascii_letters_or_digits_is_still_replaced() {
+        for seed in 0..20u64 {
+            let mut a = Anonymizer::new(seed, Vec::new()).seal();
+            let out = a.rewrite("login password=密码密码 ok");
+            assert!(!out.contains("密码"), "seed {seed}: {out}");
+            assert!(
+                out.starts_with("login password=") && out.ends_with(" ok"),
+                "{out}"
+            );
+        }
+        let mut a = Anonymizer::new(1, Vec::new()).seal();
+        let out = a.rewrite("token=\"~~~~~~~~\"");
+        assert_ne!(out, "token=\"~~~~~~~~\"", "{out}");
     }
 }
