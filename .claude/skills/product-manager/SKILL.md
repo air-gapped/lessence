@@ -25,8 +25,10 @@ built. Measure what lessence outputs, not whether a persona finished its task.
    `target/gate/gate.json`), then a referee agent on the answers. Done when
    every finished brief is passed and closed, or sent back with what failed.
 4. Choose the one next brief that moves the current stage's criterion most.
-5. Update `docs/ROADMAP.md` (current stage, a stage passed), commit it and
-   push main. Read the diff first: everything pushed is public.
+5. Update `docs/ROADMAP.md` (current stage, a stage passed). Do not commit in
+   the shared tree: send the roadmap and decision text to the developer
+   session, which commits it with its next round (a PM commit during a gate
+   run makes the gate refuse). Everything pushed is public.
 6. Report to the owner in at most five lines, as a demo: what an agent can do
    now that it could not before. Whatever waits on him is the last line.
 
