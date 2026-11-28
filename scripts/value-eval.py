@@ -29,7 +29,7 @@ WORKING_BANK = ["kubelet", "k8s_etcd", "k8s_tetragon", "openssh_brute_force"]
 SOLVER = {"model": "claude-sonnet-5-5", "effort": "medium"}
 RELEASE_SOLVER = {"model": "claude-haiku-5-5", "effort": "low"}
 SCORER = {"model": "claude-opus-5-5", "effort": None}
-RUNS_PER_GROUP = 2
+RUNS_PER_GROUP = 3
 TIMEOUT_S = 1800
 
 TEXT_TOOLS = ["grep", "awk", "sort", "uniq", "wc", "head", "tail", "sed", "jq", "cut", "ls"]
@@ -123,6 +123,7 @@ def run_claude(call, token):
         p = subprocess.run([cli, *args], input=call["prompt"], cwd=call["workdir"], env=env,
                            capture_output=True, text=True, timeout=TIMEOUT_S)
         wall = time.monotonic() - t0
+    Path(call["transcript"]).parent.mkdir(parents=True, exist_ok=True)
     Path(call["transcript"]).write_text(p.stdout)
     result = None
     for line in p.stdout.splitlines():
@@ -135,14 +136,37 @@ def run_claude(call, token):
     if not result or result.get("is_error") or not (result.get("result") or "").strip():
         raise RuntimeError(f"{call['id']}: no successful result (exit {p.returncode}); "
                            f"transcript {call['transcript']}")
+    return result_of(result, wall)
+
+
+def result_of(result, wall=0.0):
+    """Final answer, tokens and seconds from a stream-json result event."""
     u = result.get("usage", {})
-    tokens = sum(u.get(k, 0) or 0 for k in ["input_tokens", "output_tokens",
-                 "cache_creation_input_tokens", "cache_read_input_tokens"])
-    return {"text": result["result"], "tokens": tokens,
+    io = sum(u.get(k, 0) or 0 for k in ["input_tokens", "output_tokens"])
+    cache = sum(u.get(k, 0) or 0 for k in ["cache_creation_input_tokens", "cache_read_input_tokens"])
+    return {"text": result["result"], "tokens": io + cache, "tokens_io": io, "tokens_cache": cache,
             "seconds": round(result.get("duration_ms", wall * 1000) / 1000, 1)}
 
 
-def plan(logs, release, lessence_bin, scratch):
+def from_transcript(path):
+    """A finished solver run read back from its transcript, or None."""
+    p = Path(path)
+    if not p.is_file():
+        return None
+    result = None
+    for line in p.read_text().splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("type") == "result":
+            result = ev
+    if not result or result.get("is_error") or not (result.get("result") or "").strip():
+        return None
+    return result_of(result)
+
+
+def plan(logs, release, lessence_bin, scratch, runs, tdir):
     """Solver workdirs hold the log, and lessence for S; nothing else."""
     solvers = [SOLVER] + ([RELEASE_SOLVER] if release else [])
     skill = (subprocess.run([lessence_bin, "--skill"], capture_output=True, text=True).stdout
@@ -154,14 +178,13 @@ def plan(logs, release, lessence_bin, scratch):
         questions = (BANK / log / "questions.md").read_text()
         for s in solvers:
             for group in ["R", "S"]:
-                for run in range(1, RUNS_PER_GROUP + 1):
+                for run in range(1, runs + 1):
                     calls.append({
                         "id": f"{log}/{s['model']}/{group}{run}", "log": log, "group": group,
                         "run": run, "model": s["model"], "effort": s["effort"],
                         "tools": GROUP_TOOLS[group],
                         "workdir": tempfile.mkdtemp(prefix="ve-", dir=scratch),
-                        "transcript": str(Path(scratch) / "transcripts"
-                                          / f"{log}-{s['model']}-{group}{run}.ndjson"),
+                        "transcript": str(Path(tdir) / f"{log}-{s['model']}-{group}{run}.ndjson"),
                         "prompt": SOLVER_PROMPT.format(log=log, questions=questions),
                         "system_prompt_file": str(skill_file) if group == "S" else None,
                         "files": [str(ORIGINALS / f"{log}.log")] + ([lessence_bin] if group == "S" else []),
@@ -202,12 +225,25 @@ def mean(xs):
     return round(sum(xs) / len(xs), 2) if xs else None
 
 
+def spread(xs):
+    """Mean and min-max over runs."""
+    xs = [x for x in xs if x is not None]
+    return {"mean": mean(xs), "min": min(xs), "max": max(xs)} if xs else None
+
+
+def fmt(s):
+    return "-" if not s else f"{s['mean']:g} [{s['min']:g}-{s['max']:g}]"
+
+
 def main():
     ap = argparse.ArgumentParser(description="lessence value eval (bead lessence-q9k0)")
     ap.add_argument("--preview", action="store_true", help="list every call; spend no tokens")
     ap.add_argument("--release", action="store_true", help="full bank plus the Haiku solver pass")
     ap.add_argument("--lessence", default=str(ROOT / "target" / "release" / "lessence"))
     ap.add_argument("--jobs", type=int, default=2)
+    ap.add_argument("--runs", type=int, default=RUNS_PER_GROUP, help="solver runs per group")
+    ap.add_argument("--reuse-transcripts", metavar="DIR",
+                    help="reuse solver runs whose transcript is in DIR; missing runs write there")
     a = ap.parse_args()
     a.lessence = os.path.realpath(a.lessence)
 
@@ -218,31 +254,36 @@ def main():
         die(f"bank incomplete: logs={logs} missing originals={missing}")
 
     scratch = tempfile.mkdtemp(prefix="lessence-value-eval-")
-    (Path(scratch) / "transcripts").mkdir()
-    calls = plan(logs, a.release, a.lessence, scratch)
+    tdir = Path(a.reuse_transcripts).expanduser().resolve() if a.reuse_transcripts else Path(scratch) / "transcripts"
+    tdir.mkdir(parents=True, exist_ok=True)
+    calls = plan(logs, a.release, a.lessence, scratch, a.runs, tdir)
+    reused = {c["id"]: r for c in calls if a.reuse_transcripts and (r := from_transcript(c["transcript"]))}
     solver_models = sorted({c["model"] for c in calls})
 
     if a.preview:
         for c in calls:
-            print(f"solver {c['id']:<44} effort={c['effort']} "
+            tag = "reuse " if c["id"] in reused else "call  "
+            print(f"solver {tag}{c['id']:<44} effort={c['effort']} "
                   f"workdir=[{', '.join(Path(f).name for f in c['files'])}] tools={','.join(c['tools'])}")
         for log in logs:
             for m in solver_models:
-                sets = ",".join(chr(65 + i) for i in range(2 * RUNS_PER_GROUP))
+                sets = ",".join(chr(65 + i) for i in range(2 * a.runs))
                 print(f"scorer {log + '/' + m + '/score':<44} model={SCORER['model']} "
                       f"workdir=[{log}.log, key.md, questions.md, set-{{{sets}}}.md] shuffled")
-        print(f"{len(calls)} solver + {len(logs) * len(solver_models)} scorer calls; no tokens spent")
+        print(f"{len(calls) - len(reused)} solver calls ({len(reused)} reused from {tdir}) + "
+              f"{len(logs) * len(solver_models)} scorer calls; no tokens spent")
         shutil.rmtree(scratch)
         return 0
 
     if not Path(a.lessence).is_file():
         die(f"lessence binary not found: {a.lessence} (build it, or pass --lessence)")
     token = oauth_token()
-    for c in calls:
+    answers = {c["id"]: (c, reused[c["id"]]) for c in calls if c["id"] in reused}
+    todo = [c for c in calls if c["id"] not in reused]
+    for c in todo:
         stage(c)
-    answers = {}
     with cf.ThreadPoolExecutor(max_workers=a.jobs) as ex:
-        futs = {ex.submit(run_claude, c, token): c for c in calls}
+        futs = {ex.submit(run_claude, c, token): c for c in todo}
         for f in cf.as_completed(futs):
             c = futs[f]
             answers[c["id"]] = (c, f.result())
@@ -261,16 +302,26 @@ def main():
                 results.setdefault(m, {}).setdefault(g, {}).setdefault(log, []).append({
                     "run": run, "set": letter, "score": v["total"], "q": v["q"],
                     "q1_recall": v["q1_recall"], "q3_recall": v["q3_recall"],
+                    "kinds_found": v["q1_recall"][0], "kinds_total": v["q1_recall"][1],
+                    "rare_found": v["q3_recall"][0], "rare_total": v["q3_recall"][1],
                     "false_claims": v["false_claims"], "false_claim_list": v.get("false_claim_list", []),
-                    "tokens": r["tokens"], "seconds": r["seconds"]})
+                    "tokens": r["tokens"], "tokens_io": r.get("tokens_io"),
+                    "tokens_cache": r.get("tokens_cache"), "seconds": r["seconds"],
+                    "reused": f"{log}/{m}/{g}{run}" in reused})
 
     summary = {}
     for m, groups in results.items():
         for g, per_log in groups.items():
             runs = [x for xs in per_log.values() for x in xs]
             per = {l: mean([x["score"] for x in xs]) for l, xs in per_log.items()}
+            per_log_stats = {l: {k: spread([x[k] for x in xs])
+                                 for k in ["score", "kinds_found", "rare_found", "false_claims",
+                                           "tokens_io", "tokens_cache"]}
+                             for l, xs in per_log.items()}
             summary.setdefault(m, {})[g] = {
-                "score_per_log": per, "score_sum": round(sum(v for v in per.values() if v is not None), 2),
+                "score_per_log": per, "per_log": per_log_stats,
+                "tokens_io_mean": mean([x["tokens_io"] for x in runs]),
+                "tokens_cache_mean": mean([x["tokens_cache"] for x in runs]), "score_sum": round(sum(v for v in per.values() if v is not None), 2),
                 "false_claims_per_run": mean([x["false_claims"] for x in runs]),
                 "tokens_mean": mean([x["tokens"] for x in runs]),
                 "seconds_mean": mean([x["seconds"] for x in runs])}
@@ -278,7 +329,7 @@ def main():
     prev = json.loads(OUT.read_text()) if OUT.is_file() else {}
     bar = {}
     for m, s in summary.items():
-        checks = {"S_beats_R_on_score": s["S"]["score_sum"] > s["R"]["score_sum"],
+        checks = {"S_beats_R_on_mean_score": s["S"]["score_sum"] > s["R"]["score_sum"],
                   "S_false_claims_le_R": s["S"]["false_claims_per_run"] <= s["R"]["false_claims_per_run"]}
         p = prev.get("summary", {}).get(m, {}).get("S")
         if p and set(p["score_per_log"]) == set(s["S"]["score_per_log"]):
@@ -292,8 +343,8 @@ def main():
            "lessence": out([a.lessence, "--version"]), "claude_cli": out(["claude", "--version"]),
            "release": a.release, "logs": logs,
            "models": {"solvers": [SOLVER] + ([RELEASE_SOLVER] if a.release else []), "scorer": SCORER},
-           "runs_per_group": RUNS_PER_GROUP, "results": results, "summary": summary,
-           "bar": bar, "key_errors": key_errors, "transcripts": str(Path(scratch) / "transcripts")}
+           "runs_per_group": a.runs, "reused_runs": sorted(reused), "results": results, "summary": summary,
+           "bar": bar, "key_errors": key_errors, "transcripts": str(tdir)}
     OUT.parent.mkdir(parents=True, exist_ok=True)
     tmp = OUT.with_name("value.json.tmp")
     tmp.write_text(json.dumps(doc, indent=2) + "\n")
@@ -306,6 +357,15 @@ def main():
         for name, passed in bar[m].items():
             print(f"  {'pass' if passed else 'FAIL'} {name}")
             ok &= passed
+        print(f"  {'log':<22} grp {'score':<16} {'kinds':<16} {'rare':<14} {'false':<12} "
+              f"{'tok in+out':<10} cache")
+        for log in logs:
+            for g in ["R", "S"]:
+                st = s[g]["per_log"].get(log, {})
+                print(f"  {log:<22} {g:<3} {fmt(st.get('score')):<16} {fmt(st.get('kinds_found')):<16} "
+                      f"{fmt(st.get('rare_found')):<14} {fmt(st.get('false_claims')):<12} "
+                      f"{(st.get('tokens_io') or {}).get('mean', '-')!s:<10} "
+                      f"{(st.get('tokens_cache') or {}).get('mean', '-')}")
     for e in key_errors:
         print(f"key error: {e}")
     print(f"value.json: {OUT}; transcripts: {doc['transcripts']}")

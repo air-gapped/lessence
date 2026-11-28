@@ -72,7 +72,7 @@ release-check:
 
 ## value-eval: Blind agent eval, R (raw log + grep) vs S (+ lessence); RELEASE=1 adds the full bank + Haiku; PREVIEW=1 spends no tokens
 value-eval:
-	python3 scripts/value-eval.py $(if $(RELEASE),--release) $(if $(PREVIEW),--preview)
+	python3 scripts/value-eval.py $(if $(RELEASE),--release) $(if $(PREVIEW),--preview) $(if $(LESSENCE),--lessence $(LESSENCE)) $(if $(REUSE),--reuse-transcripts $(REUSE)) $(if $(RUNS),--runs $(RUNS))
 
 ## distill: Regenerate examples/distilled/*.log + .golden from examples/originals/*.log
 distill:
